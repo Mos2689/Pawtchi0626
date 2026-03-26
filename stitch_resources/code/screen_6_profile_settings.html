@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-variant": "#f1f5f9",
+              "tertiary": "#605d34",
+              "surface-tint": "#FFFC00",
+              "primary": "#FFFC00",
+              "on-tertiary-fixed": "#4f4d26",
+              "on-secondary-fixed-variant": "#972900",
+              "primary-container": "#FFFC00",
+              "on-secondary-fixed": "#651900",
+              "on-surface-variant": "#64748b",
+              "on-secondary": "#ffefeb",
+              "on-background": "#0f172a",
+              "secondary-container": "#ffe4dc",
+              "secondary-fixed-dim": "#ffb19a",
+              "on-error-container": "#520c00",
+              "outline-variant": "#e2e8f0",
+              "surface-container-lowest": "#ffffff",
+              "surface-container": "#f8fafc",
+              "tertiary-fixed": "#fef8c3",
+              "secondary-dim": "#952800",
+              "primary-dim": "#e6e300",
+              "error": "#b02500",
+              "on-surface": "#0f172a",
+              "on-primary-fixed": "#1a1a00",
+              "surface-container-high": "#f1f5f9",
+              "outline": "#94a3b8",
+              "inverse-on-surface": "#929fa6",
+              "on-primary": "#1a1a00",
+              "surface-container-highest": "#e2e8f0",
+              "background": "#ffffff",
+              "surface-container-low": "#f8fafc",
+              "tertiary-container": "#fef8c3",
+              "on-primary-fixed-variant": "#4d4d00",
+              "surface": "#ffffff",
+              "primary-fixed": "#FFFC00",
+              "on-primary-container": "#1a1a00",
+              "inverse-primary": "#FFFC00",
+              "error-container": "#f95630",
+              "on-tertiary": "#faf5c0",
+              "inverse-surface": "#0f172a",
+              "error-dim": "#b92902",
+              "tertiary-dim": "#54512a",
+              "on-tertiary-container": "#625f36",
+              "secondary": "#a83206",
+              "primary-fixed-dim": "#e6e300",
+              "tertiary-fixed-dim": "#f0eab6",
+              "on-secondary-container": "#862400",
+              "on-error": "#ffefec",
+              "on-tertiary-fixed-variant": "#6d6940",
+              "secondary-fixed": "#ffc4b3",
+              "surface-bright": "#ffffff",
+              "surface-dim": "#f1f5f9"
+            },
+            fontFamily: {
+              "headline": ["Plus Jakarta Sans"],
+              "body": ["Plus Jakarta Sans"],
+              "label": ["Plus Jakarta Sans"]
+            },
+            borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #ffffff;
+        }
+    </style>
+<style>
+        body {
+            min-height: max(884px, 100dvh);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface min-h-screen pb-32">
+<!-- TopAppBar -->
+<header class="w-full top-0 z-50 bg-white dark:bg-slate-900 flex items-center justify-between px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-primary-container overflow-hidden border-2 border-[#1a1a00]">
+<img alt="Pet profile photo" class="w-full h-full object-cover" data-alt="Close up of a cute golden retriever" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDSVCn5Jxg8hoFfEgJa8LSRCwyl3NO2MG7jJNrgJZzMJfxL46FLo-nqkU5JAidR3fgFp8l7ePKJBvSDz8VhiM3JFn1tbjs-G3n0WLCh8JwXJmrMMgYkaTPvuIue2A1n4YgSJIDdpC-14Tp__lgmdyG8Sc3kEldqauEa-CifR1BnfiR00YkNDYhqBWft9zvNlpUF1v2SLVsC8DYO77FNB639FBkuw4VCV7Qw-PbhzrDBDLEUen3rqyQZ5DGbZVCB-iYoLF3zIBbpbRo"/>
+</div>
+<span class="font-['Plus_Jakarta_Sans'] font-bold tracking-tight text-[1.75rem] text-[#1a1a00] dark:text-[#FFFC00]">PawPulse</span>
+</div>
+<button class="text-[#1a1a00] dark:text-[#FFFC00] hover:opacity-80 transition-opacity active:scale-95 transition-transform duration-200">
+<span class="material-symbols-outlined text-3xl" data-icon="notifications">notifications</span>
+</button>
+</header>
+<main class="px-6 pt-4 space-y-8 max-w-2xl mx-auto">
+<!-- Hero Profile Section -->
+<section class="relative">
+<div class="bg-gradient-to-br from-[#FFFC00] to-[#e6e300] rounded-xl p-8 shadow-xl overflow-hidden relative">
+<div class="absolute -top-10 -right-10 w-40 h-40 bg-white/20 rounded-full blur-3xl"></div>
+<div class="flex flex-col md:flex-row items-center gap-6 relative z-10">
+<div class="w-32 h-32 rounded-full border-4 border-white shadow-xl overflow-hidden active:scale-95 transition-transform">
+<img alt="Pet Profile Large" class="w-full h-full object-cover" data-alt="Playful golden retriever dog smiling" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCDOsmxhMoKx_0_COhkNLon7nKZByE3hvmFIjNLp4z1GoC06TALmARE4aJojBwdU-PuVhYIQOIKoECQ20Gl6xstWysSziOFIawzeWt6VESCQWmXQjz-moUoDAM9FrjXzWaHT2Rm5mkRjB0FDZbjOrmlB5xYOmW1Cbqmv1YkNqzJPwMMT9CBb1CXnmsRukQX2q6ORObts3bPF8WGR9RYWI1mXltTEMU1dOUnzkicxEfrJp_0aLkZYqNcWWsFZ4RA560_pLx9Dlb-c8M"/>
+</div>
+<div class="text-center md:text-left">
+<h1 class="text-4xl font-black text-on-primary-fixed tracking-tight">Cooper</h1>
+<p class="text-on-primary-fixed-variant font-semibold">Golden Retriever • 2 Years Old</p>
+<div class="mt-4 flex flex-wrap justify-center md:justify-start gap-2">
+<span class="px-4 py-1.5 bg-white/30 backdrop-blur-md rounded-full text-xs font-bold text-on-primary-fixed border border-white/20">Active Walker</span>
+<span class="px-4 py-1.5 bg-white/30 backdrop-blur-md rounded-full text-xs font-bold text-on-primary-fixed border border-white/20">Pro Eater</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bento Grid: Pet Details -->
+<section class="grid grid-cols-2 md:grid-cols-3 gap-4">
+<div class="bg-white border border-slate-100 p-6 rounded-xl shadow-sm flex flex-col items-center justify-center text-center space-y-2">
+<span class="material-symbols-outlined text-[#1a1a00] text-3xl" data-icon="monitor_weight">monitor_weight</span>
+<span class="text-2xl font-black text-on-surface">24.5 kg</span>
+<span class="text-xs font-bold text-on-surface-variant uppercase tracking-wider">Weight</span>
+</div>
+<div class="bg-white border border-slate-100 p-6 rounded-xl shadow-sm flex flex-col items-center justify-center text-center space-y-2">
+<span class="material-symbols-outlined text-[#1a1a00] text-3xl" data-icon="cake">cake</span>
+<span class="text-2xl font-black text-on-surface">2.4 yrs</span>
+<span class="text-xs font-bold text-on-surface-variant uppercase tracking-wider">Age</span>
+</div>
+<div class="col-span-2 md:col-span-1 bg-[#ffe4dc] p-6 rounded-xl shadow-sm flex flex-col items-center justify-center text-center space-y-2">
+<span class="material-symbols-outlined text-secondary text-3xl" data-icon="electric_bolt">electric_bolt</span>
+<span class="text-2xl font-black text-on-secondary-container">High</span>
+<span class="text-xs font-bold text-on-secondary-container uppercase tracking-wider">Energy Level</span>
+</div>
+</section>
+<!-- Notification Settings Section -->
+<section class="space-y-4">
+<h2 class="text-xl font-extrabold text-on-surface flex items-center gap-2 px-2">
+<span class="material-symbols-outlined" data-icon="notifications_active">notifications_active</span>
+            Reminders &amp; Alerts
+        </h2>
+<div class="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2">
+<!-- Reminder Item -->
+<div class="bg-white border border-slate-100 p-4 rounded-lg flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+<div class="flex items-center gap-4">
+<div class="p-3 bg-tertiary-container rounded-full text-tertiary">
+<span class="material-symbols-outlined" data-icon="restaurant">restaurant</span>
+</div>
+<div>
+<p class="font-bold text-on-surface">Feeding Times</p>
+<p class="text-sm text-on-surface-variant italic">Next: 06:00 PM</p>
+</div>
+</div>
+<div class="w-12 h-6 bg-[#FFFC00] rounded-full relative flex items-center px-1">
+<div class="w-4 h-4 bg-white rounded-full ml-auto shadow-md"></div>
+</div>
+</div>
+<!-- Reminder Item -->
+<div class="bg-white border border-slate-100 p-4 rounded-lg flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+<div class="flex items-center gap-4">
+<div class="p-3 bg-[#FFFC00]/20 rounded-full text-[#1a1a00]">
+<span class="material-symbols-outlined" data-icon="directions_walk">directions_walk</span>
+</div>
+<div>
+<p class="font-bold text-on-surface">Walk Schedule</p>
+<p class="text-sm text-on-surface-variant italic">Daily at 07:00 AM</p>
+</div>
+</div>
+<div class="w-12 h-6 bg-[#FFFC00] rounded-full relative flex items-center px-1">
+<div class="w-4 h-4 bg-white rounded-full ml-auto shadow-md"></div>
+</div>
+</div>
+<!-- Reminder Item -->
+<div class="bg-white border border-slate-100 p-4 rounded-lg flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+<div class="flex items-center gap-4">
+<div class="p-3 bg-slate-100 rounded-full text-outline">
+<span class="material-symbols-outlined" data-icon="water_drop">water_drop</span>
+</div>
+<div>
+<p class="font-bold text-on-surface">Hydration Tracker</p>
+<p class="text-sm text-on-surface-variant italic">Every 4 hours</p>
+</div>
+</div>
+<div class="w-12 h-6 bg-slate-200 rounded-full relative flex items-center px-1">
+<div class="w-4 h-4 bg-white rounded-full shadow-md"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Account Settings -->
+<section class="space-y-4 pb-12">
+<h2 class="text-xl font-extrabold text-on-surface flex items-center gap-2 px-2">
+<span class="material-symbols-outlined" data-icon="manage_accounts">manage_accounts</span>
+            Account Info
+        </h2>
+<div class="bg-white border border-slate-100 rounded-xl p-2 shadow-sm space-y-1">
+<button class="w-full flex items-center justify-between p-4 hover:bg-slate-50 rounded-lg transition-all group">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-outline group-hover:text-[#1a1a00]" data-icon="person">person</span>
+<span class="font-semibold text-on-surface">Owner Profile</span>
+</div>
+<span class="material-symbols-outlined text-outline" data-icon="chevron_right">chevron_right</span>
+</button>
+<button class="w-full flex items-center justify-between p-4 hover:bg-slate-50 rounded-lg transition-all group">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-outline group-hover:text-[#1a1a00]" data-icon="payment">payment</span>
+<span class="font-semibold text-on-surface">Billing &amp; Subscription</span>
+</div>
+<span class="material-symbols-outlined text-outline" data-icon="chevron_right">chevron_right</span>
+</button>
+<button class="w-full flex items-center justify-between p-4 hover:bg-slate-50 rounded-lg transition-all group">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-outline group-hover:text-[#1a1a00]" data-icon="shield">shield</span>
+<span class="font-semibold text-on-surface">Privacy &amp; Security</span>
+</div>
+<span class="material-symbols-outlined text-outline" data-icon="chevron_right">chevron_right</span>
+</button>
+<button class="w-full flex items-center justify-between p-4 hover:bg-error/10 rounded-lg transition-all group">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-error" data-icon="logout">logout</span>
+<span class="font-semibold text-error">Logout</span>
+</div>
+</button>
+</div>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full rounded-t-[3rem] z-50 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-t border-slate-100 shadow-[0_-10px_25px_-5px_rgba(0,0,0,0.05)] flex justify-around items-center px-4 pb-8 pt-4">
+<a class="flex flex-col items-center justify-center text-on-surface opacity-60 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-full p-2 transition-all active:scale-90" href="#">
+<span class="material-symbols-outlined" data-icon="history">history</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Activity</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface opacity-60 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-full p-2 transition-all active:scale-90" href="#">
+<span class="material-symbols-outlined" data-icon="military_tech">military_tech</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Badges</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface opacity-60 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-full p-2 transition-all active:scale-90" href="#">
+<span class="material-symbols-outlined" data-icon="group">group</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Social</span>
+</a>
+<a class="flex flex-col items-center justify-center bg-[#FFFC00] text-[#1a1a00] rounded-full px-5 py-2 scale-105 active:scale-90 transition-all duration-200 ease-out border border-[#1a1a00]/10" href="#">
+<span class="material-symbols-outlined" data-icon="pets" style="font-variation-settings: 'FILL' 1;">pets</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Profile</span>
+</a>
+</nav>
+</body></html>

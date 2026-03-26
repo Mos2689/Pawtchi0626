@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Radiant Pet Community Leaderboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "error-container": "#f95630",
+                        "on-error": "#ffefec",
+                        "surface-dim": "#d4d5d1",
+                        "surface-tint": "#FFFC00",
+                        "on-surface": "#2e2f2d",
+                        "surface-variant": "#f1f1f1",
+                        "secondary-fixed": "#e5e2e1",
+                        "tertiary": "#755700",
+                        "secondary-container": "#e5e2e1",
+                        "on-primary-container": "#484700",
+                        "surface-container-highest": "#f3f3f1",
+                        "on-surface-variant": "#5b5c5a",
+                        "background": "#ffffff",
+                        "error": "#b02500",
+                        "on-tertiary-fixed-variant": "#604700",
+                        "surface-container": "#f8f8f7",
+                        "on-error-container": "#520c00",
+                        "primary-fixed": "#FFFC00",
+                        "primary-fixed-dim": "#e6e300",
+                        "surface-container-low": "#f9f9f8",
+                        "surface-container-high": "#efefec",
+                        "on-secondary-container": "#525151",
+                        "inverse-primary": "#fefb00",
+                        "on-primary-fixed-variant": "#656400",
+                        "primary-dim": "#535200",
+                        "surface": "#ffffff",
+                        "secondary": "#5c5b5b",
+                        "inverse-surface": "#0d0f0d",
+                        "on-background": "#2e2f2d",
+                        "inverse-on-surface": "#9d9d9a",
+                        "tertiary-fixed": "#fac129",
+                        "tertiary-fixed-dim": "#ebb317",
+                        "on-secondary": "#FFFC00",
+                        "error-dim": "#b92902",
+                        "tertiary-container": "#fac129",
+                        "on-tertiary-container": "#553e00",
+                        "on-tertiary": "#fff1db",
+                        "on-primary-fixed": "#3d2b00",
+                        "surface-container-lowest": "#ffffff",
+                        "primary-container": "#FFFC00",
+                        "outline-variant": "#adadab",
+                        "primary": "#605e00",
+                        "secondary-fixed-dim": "#d6d4d3",
+                        "on-primary": "#000000",
+                        "on-tertiary-fixed": "#3d2b00",
+                        "outline": "#767775",
+                        "tertiary-dim": "#664b00",
+                        "surface-bright": "#ffffff",
+                        "secondary-dim": "#504f4f",
+                        "on-secondary-fixed": "#403f3f",
+                        "on-secondary-fixed-variant": "#5c5b5b"
+                    },
+                    fontFamily: {
+                        "headline": ["Plus Jakarta Sans"],
+                        "body": ["Plus Jakarta Sans"],
+                        "label": ["Plus Jakarta Sans"]
+                    },
+                    borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .solar-flare-gradient {
+            background: linear-gradient(135deg, #FFFC00 0%, #fac129 100%);
+        }
+        .glass-shell {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(32px);
+        }
+        body {
+            min-height: max(884px, 100dvh);
+        }
+    </style>
+</head>
+<body class="bg-white text-on-surface font-body min-h-screen pb-32">
+<!-- TopAppBar -->
+<header class="bg-white/80 backdrop-blur-md flex justify-between items-center px-6 py-4 w-full sticky top-0 z-40 border-b border-surface-container-high">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center overflow-hidden border-2 border-primary">
+<img alt="Pet Profile" class="w-full h-full object-cover" data-alt="Portrait of a happy small dog" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA3VarY_gUCHI8UGqZKbWF_mPZq42nCPBGyAx7RyC888AuBsJtFUfKEybQVwYIZ_I2tFFfi3Cqwy2g13lRVkO9g1GxiKEYEhsuBMGfuSXzW5MVbTQU6I01WNke6J6zVdhVAjcHNnP-RKQrrzUnIvL4hPX8dYX49BQ-ddi5LON-_7CnBfDMYS7UGEEtVmSTd_CfM3_HywPUFcnq83ltVAYL-HRXQJJaIAz_Ef4xL3U3cWlOY637xkygdoDq0LzFGD31a4M1hdvTie4U"/>
+</div>
+<h1 class="font-headline font-black text-2xl italic text-[#605E00] tracking-tight">Radiant Pet</h1>
+</div>
+<div class="bg-surface-container-low border border-surface-container-high px-4 py-2 rounded-full hover:scale-105 transition-transform cursor-pointer">
+<span class="text-[#605E00] font-bold text-sm">1,250 PawCoins</span>
+</div>
+</header>
+<main class="px-6 py-8 max-w-2xl mx-auto space-y-12">
+<!-- Hero Section: 7-Day Streak Tracker -->
+<section class="relative overflow-hidden bg-surface-container rounded-xl p-8 border border-surface-container-high shadow-sm">
+<div class="absolute -top-12 -right-12 w-48 h-48 solar-flare-gradient opacity-20 rounded-full blur-3xl"></div>
+<div class="relative z-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
+<div>
+<p class="font-label text-xs uppercase tracking-widest text-on-surface-variant mb-2">Active Streak</p>
+<h2 class="font-headline font-bold text-4xl text-on-surface tracking-tight leading-none mb-1">7 Days Radiant</h2>
+<p class="text-on-surface-variant body-lg">You're in the top 5% of your neighborhood!</p>
+</div>
+<div class="flex items-center gap-2">
+<div class="flex gap-1.5">
+<div class="w-8 h-8 rounded-full solar-flare-gradient flex items-center justify-center shadow-lg">
+<span class="material-symbols-outlined text-[16px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+<div class="w-8 h-8 rounded-full solar-flare-gradient flex items-center justify-center shadow-lg">
+<span class="material-symbols-outlined text-[16px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+<div class="w-8 h-8 rounded-full solar-flare-gradient flex items-center justify-center shadow-lg">
+<span class="material-symbols-outlined text-[16px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+<div class="w-8 h-8 rounded-full solar-flare-gradient flex items-center justify-center shadow-lg">
+<span class="material-symbols-outlined text-[16px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+<div class="w-8 h-8 rounded-full solar-flare-gradient flex items-center justify-center shadow-lg">
+<span class="material-symbols-outlined text-[16px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+<div class="w-8 h-8 rounded-full solar-flare-gradient flex items-center justify-center shadow-lg">
+<span class="material-symbols-outlined text-[16px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">star</span>
+</div>
+<div class="w-10 h-10 -mt-1 rounded-full solar-flare-gradient flex items-center justify-center shadow-xl ring-4 ring-white">
+<span class="material-symbols-outlined text-[20px] text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">workspace_premium</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bento Leaderboard -->
+<section class="space-y-6">
+<div class="flex justify-between items-end">
+<h3 class="font-headline font-bold text-3xl tracking-tight">Community Leaders</h3>
+<span class="text-primary font-bold label-md cursor-pointer hover:underline">Weekly Reset: 2d 14h</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+<!-- Top 1 Card (Large Asymmetric) -->
+<div class="md:col-span-12 bg-surface-container-highest rounded-xl p-8 flex flex-col md:flex-row items-center gap-8 relative overflow-hidden group hover:scale-[1.01] transition-transform border border-surface-container-high shadow-sm">
+<div class="absolute top-0 right-0 p-4">
+<span class="solar-flare-gradient text-on-primary-fixed font-black px-6 py-2 rounded-full text-xl shadow-lg">#1</span>
+</div>
+<div class="w-32 h-32 rounded-full overflow-hidden border-4 border-primary-fixed shadow-2xl shrink-0">
+<img alt="Sarah and Cooper" class="w-full h-full object-cover" data-alt="Golden Retriever with its owner smiling" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDOf8CL7dPe-4eB6Rt9ri-_US1lHibwCzSvhEUfYcf_dtHmAXD_WWVmmoTp9SWySnx68rhtRzRgYm4utaxuuOngforndmtWEeHiMrNoPQwNjxXRYQCoMgIztWmnvaJRZsgl6d6D89rLCXmlix5WXJjU3fmslzb-MHhz3THh73VcwDqvEXSKmnUfzj_8E-cMgCBcsQ8grA-7m2atnwbuX9pSUgsW0sZuxW_-ZUtAfSDoazMFJ3u8RljiycLGj64z-QDm2ONkOUSIOX8"/>
+</div>
+<div class="flex-1 text-center md:text-left">
+<h4 class="font-headline font-bold text-2xl mb-2">Sarah &amp; Cooper</h4>
+<p class="text-on-surface-variant mb-4">Master of the Morning Run. 48-day streak maintained with unmatched energy.</p>
+<div class="flex flex-wrap justify-center md:justify-start gap-4">
+<div class="bg-white border border-surface-container-high px-4 py-2 rounded-full text-sm font-bold flex items-center gap-2 shadow-sm">
+<span class="material-symbols-outlined text-primary text-sm" style="font-variation-settings: 'FILL' 1;">bolt</span>
+                                14,200 XP
+                            </div>
+<div class="bg-white border border-surface-container-high px-4 py-2 rounded-full text-sm font-bold flex items-center gap-2 shadow-sm">
+<span class="material-symbols-outlined text-tertiary text-sm" style="font-variation-settings: 'FILL' 1;">emoji_events</span>
+                                Bondi Local Pro
+                            </div>
+</div>
+</div>
+</div>
+<!-- Rank 2 & 3 -->
+<div class="md:col-span-6 bg-surface-container rounded-xl p-6 flex items-center gap-4 relative border border-surface-container-high shadow-sm">
+<span class="absolute top-4 right-4 bg-tertiary-fixed text-on-tertiary-fixed font-bold px-3 py-1 rounded-full text-xs">#2</span>
+<div class="w-16 h-16 rounded-full overflow-hidden bg-surface-dim">
+<img alt="Marcus and Luna" class="w-full h-full object-cover" data-alt="Portrait of a sleek black dog" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1_IFhQyll83omI-F6B7JdY5mC6vHi7H2nj2SqP2uYII5c3J-sxR35XTQF5bm7YOERy2sqdFbJ3XbUatlocR5IxaMLwzuuMgrW57wRFVqx5sD78uAGfIRffEWE_NDQdUEtsU8x0Yul_pVIr8Eny-rbeQyaoeUdT_q4uVjm4uoP9E8b3CsoYIHbMFIk_x0bGm6-kdHmr5Oj_ycakNVbHe1yaA5Nt0ZThoV4ghVp-YsdFc9Xoz1KKdytm7hCpp3hSC5kd6lkvSwnAMY"/>
+</div>
+<div>
+<h5 class="font-bold">Marcus &amp; Luna</h5>
+<p class="text-on-surface-variant text-sm">12,850 XP</p>
+</div>
+</div>
+<div class="md:col-span-6 bg-surface-container rounded-xl p-6 flex items-center gap-4 relative border border-surface-container-high shadow-sm">
+<span class="absolute top-4 right-4 bg-tertiary-fixed text-on-tertiary-fixed font-bold px-3 py-1 rounded-full text-xs">#3</span>
+<div class="w-16 h-16 rounded-full overflow-hidden bg-surface-dim">
+<img alt="Elena and Rex" class="w-full h-full object-cover" data-alt="Golden labrador puppy face" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC__66y0jCESjxhxin8jI7DqbZZ94KbRk6DeQeN6tUs-CSOi-VOxgjXoidDAIYOtG1sbyj16gFISGeRAv6orSqW5Qcw_4olaRxIWamboURcDsIQGxdNSk58qDnMFnLLzXJZ4CTQqg3D7yIMjJnQFePVnV6RCNQarhbWaLtekxIucwntCoQU6YZUi-A1ldi0l-Q8gz_u_BY_gKfxddjLWHkYWc8rXfBobxYscloftIqxRNnBAjw-xXSsAOH3fg-sPwvdZbSbj5lutbw"/>
+</div>
+<div>
+<h5 class="font-bold">Elena &amp; Rex</h5>
+<p class="text-on-surface-variant text-sm">11,400 XP</p>
+</div>
+</div>
+</div>
+</section>
+<!-- Local Activity Feed -->
+<section class="space-y-6">
+<h3 class="font-headline font-bold text-3xl tracking-tight">Recent Heat</h3>
+<div class="space-y-4">
+<!-- Feed Item 1 -->
+<div class="bg-white border border-surface-container-high rounded-xl p-6 flex items-start gap-4 transition-all hover:translate-x-2 shadow-sm">
+<div class="w-12 h-12 rounded-full solar-flare-gradient flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-on-primary-fixed">pets</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start mb-2">
+<span class="font-bold text-on-surface">James &amp; Duke</span>
+<span class="text-xs text-on-surface-variant">2 min ago</span>
+</div>
+<p class="text-on-surface-variant leading-relaxed">Just completed the <span class="text-primary font-bold">Bondi Coastal Walk</span>! Duke found three new friends and one very interesting seagull. 🌊</p>
+<div class="mt-4 flex gap-2">
+<span class="bg-surface-container-low px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Activity</span>
+<span class="bg-surface-container-low px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">+50 XP</span>
+</div>
+</div>
+</div>
+<!-- Feed Item 2 -->
+<div class="bg-white border border-surface-container-high rounded-xl p-6 flex items-start gap-4 transition-all hover:translate-x-2 shadow-sm">
+<div class="w-12 h-12 rounded-full bg-tertiary-container flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-on-tertiary-container">military_tech</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start mb-2">
+<span class="font-bold text-on-surface">Mila &amp; Pip</span>
+<span class="text-xs text-on-surface-variant">15 min ago</span>
+</div>
+<p class="text-on-surface-variant leading-relaxed">Unlocked the <span class="text-tertiary font-bold">Golden Hour Walker</span> badge for the 5th time this month! Early birds get the worm.</p>
+<div class="mt-4 flex gap-2">
+<span class="bg-surface-container-low px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Badge</span>
+<span class="bg-surface-container-low px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Epic</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-6 pt-3 bg-white/95 backdrop-blur-xl shadow-[0_-10px_40px_rgba(0,0,0,0.08)] border-t border-surface-container-high rounded-t-[32px]">
+<div class="flex flex-col items-center justify-center text-[#2E2F2D] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity cursor-pointer">
+<span class="material-symbols-outlined" data-icon="home">home</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Home</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#2E2F2D] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity cursor-pointer">
+<span class="material-symbols-outlined" data-icon="add_circle">add_circle</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Log</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#2E2F2D] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity cursor-pointer">
+<span class="material-symbols-outlined" data-icon="shopping_bag">shopping_bag</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Shop</span>
+</div>
+<!-- Active Tab: Health with #FFFC00 Primary -->
+<div class="flex flex-col items-center justify-center bg-[#FFFC00] text-[#000000] rounded-full px-5 py-2 scale-110 shadow-lg cursor-pointer transition-transform active:scale-90 border border-black/5">
+<span class="material-symbols-outlined" data-icon="monitor_heart" style="font-variation-settings: 'FILL' 1;">monitor_heart</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Health</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#2E2F2D] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity cursor-pointer">
+<span class="material-symbols-outlined" data-icon="person">person</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Profile</span>
+</div>
+</nav>
+<!-- Floating Action Button - Join Challenge with #FFFC00 Primary -->
+<div class="fixed bottom-28 right-6 z-40">
+<button class="w-14 h-14 rounded-full solar-flare-gradient text-on-primary-fixed shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-3xl" style="font-variation-settings: 'FILL' 1;">add</span>
+</button>
+</div>
+</body></html>

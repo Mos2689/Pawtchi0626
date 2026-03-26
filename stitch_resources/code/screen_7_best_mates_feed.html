@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-variant": "#cde0ea",
+              "tertiary": "#605d34",
+              "surface-tint": "#755700",
+              "primary": "#FFFC00",
+              "on-tertiary-fixed": "#4f4d26",
+              "on-secondary-fixed-variant": "#972900",
+              "primary-container": "#FFFC00",
+              "on-secondary-fixed": "#651900",
+              "on-surface-variant": "#515d64",
+              "on-secondary": "#ffefeb",
+              "on-background": "#243036",
+              "secondary-container": "#ffc4b3",
+              "secondary-fixed-dim": "#ffb19a",
+              "on-error-container": "#520c00",
+              "outline-variant": "#a2afb6",
+              "surface-container-lowest": "#ffffff",
+              "surface-container": "#F4F7F9",
+              "tertiary-fixed": "#fef8c3",
+              "secondary-dim": "#952800",
+              "primary-dim": "#E5E200",
+              "error": "#b02500",
+              "on-surface": "#243036",
+              "on-primary-fixed": "#3d2b00",
+              "surface-container-high": "#E9EDF0",
+              "outline": "#6c7980",
+              "inverse-on-surface": "#929fa6",
+              "on-primary": "#000000",
+              "surface-container-highest": "#e0e7eb",
+              "background": "#FFFFFF",
+              "surface-container-low": "#F8FAFB",
+              "tertiary-container": "#fef8c3",
+              "on-primary-fixed-variant": "#604700",
+              "surface": "#FFFFFF",
+              "primary-fixed": "#FFFC00",
+              "on-primary-container": "#000000",
+              "inverse-primary": "#FFFC00",
+              "error-container": "#f95630",
+              "on-tertiary": "#faf5c0",
+              "inverse-surface": "#041015",
+              "error-dim": "#b92902",
+              "tertiary-dim": "#54512a",
+              "on-tertiary-container": "#625f36",
+              "secondary": "#a83206",
+              "primary-fixed-dim": "#E5E200",
+              "tertiary-fixed-dim": "#f0eab6",
+              "on-secondary-container": "#862400",
+              "on-error": "#ffefec",
+              "on-tertiary-fixed-variant": "#6d6940",
+              "secondary-fixed": "#ffc4b3",
+              "surface-bright": "#FFFFFF",
+              "surface-dim": "#F0F3F5"
+            },
+            fontFamily: {
+              "headline": ["Plus Jakarta Sans"],
+              "body": ["Plus Jakarta Sans"],
+              "label": ["Plus Jakarta Sans"]
+            },
+            borderRadius: {
+              "DEFAULT": "1.5rem",
+              "lg": "2.5rem",
+              "xl": "3.5rem",
+              "full": "9999px"
+            },
+          },
+        },
+      }
+    </script>
+<style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      .glass-effect { backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+    </style>
+<style>
+      body {
+        min-height: max(884px, 100dvh);
+      }
+    </style>
+</head>
+<body class="bg-white font-body text-on-surface selection:bg-primary-container">
+<!-- TopAppBar -->
+<header class="bg-white dark:bg-slate-900 w-full top-0 z-50 sticky border-b border-surface-container">
+<div class="flex items-center justify-between px-6 py-4 w-full">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full overflow-hidden bg-primary ring-2 ring-primary/10">
+<img class="w-full h-full object-cover" data-alt="Pet profile photo of a happy golden retriever" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAivqM2SDsM5vBF3lO6G1egO5JnHyZ_BC9ZG42Wyl8VzHZcWbX3IPGvtaBz7u12AiucedzIH4D6eP2nKsf_uYpmubrPP-Nxh_B1g3I9SJ4p7ijSceDODgXoWkWG3y2fSwEJGJ9o_xWRh7KdG3t6q6rnD30Je0Hkz5TvPhYhlAZ3xo_KZiFwCLjDPGj9SnMVCgR1GSKZDTjSoQY48LI64Jom1cFPGpbIXNZsCRPwVV301YAJPm1ccZY0xiKgC7SdY_9oOzwHSSkWOBs"/>
+</div>
+</div>
+<h1 class="font-['Plus_Jakarta_Sans'] font-extrabold tracking-tight text-[1.75rem] text-on-surface dark:text-white text-center absolute left-1/2 -translate-x-1/2">
+            PawPulse
+        </h1>
+<button class="text-on-surface dark:text-white hover:opacity-80 transition-opacity active:scale-95">
+<span class="material-symbols-outlined text-2xl">notifications</span>
+</button>
+</div>
+</header>
+<main class="max-w-xl mx-auto px-4 pt-6 pb-32">
+<!-- Best Mates Section -->
+<section class="mb-10">
+<div class="flex items-baseline justify-between mb-4 px-2">
+<h2 class="text-xl font-extrabold tracking-tight text-on-surface">Best Mates</h2>
+<span class="text-sm font-bold text-on-surface/60">See All</span>
+</div>
+<div class="flex gap-4 overflow-x-auto no-scrollbar py-2">
+<!-- Add New -->
+<button class="flex-shrink-0 flex flex-col items-center gap-2 group">
+<div class="w-20 h-20 rounded-full border-2 border-dashed border-outline-variant flex items-center justify-center group-active:scale-90 transition-transform bg-surface-container-low">
+<span class="material-symbols-outlined text-outline">add</span>
+</div>
+<span class="text-xs font-bold text-on-surface-variant">Add Mate</span>
+</button>
+<!-- Mate 1 -->
+<div class="flex-shrink-0 flex flex-col items-center gap-2">
+<div class="w-20 h-20 rounded-full p-1 bg-gradient-to-tr from-primary to-secondary/40">
+<div class="w-full h-full rounded-full border-4 border-white overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Beagle puppy portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBeuO2eWeAvKMUGhTCxO-8MfQVagtQLOFF3HGYDFVVqvwL8nqOGoqLH3bFMK2-Ota92agD8v5SwKiB8i15AhemDgfzePoWncn2aN6ZbeOnFESxXK71Yzhng9Ex1E17q_GnC8EgTw-TMbC6nELdS1RcS_8zkEvzBNrbFSkJysIBiBCCXsm_4nRnHlfEqxW_wMUH6OmG1EdGhYjo33Eq1vVK-zNurp5nLNMC16fXBv12FrRSeL5nDNJfVk4cNhYN7Ea75pL5X2u_bVvw"/>
+</div>
+</div>
+<span class="text-xs font-bold">Cooper</span>
+</div>
+<!-- Mate 2 -->
+<div class="flex-shrink-0 flex flex-col items-center gap-2">
+<div class="w-20 h-20 rounded-full p-1 bg-gradient-to-tr from-primary to-secondary/40">
+<div class="w-full h-full rounded-full border-4 border-white overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Corgi dog profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC4VG9tLrhFm6Vlg5QeR68d4yCP9QFB6qoJuxRC7PT8_h7uyVBWHCkz_EZcOV-ytiAZb4bw7nuF5R0rkFBM0MEBCOShSkkKRBMAc6frZUxrBz-nXI0jqGv1Xr3JDVnksjqMwlN47Lf-HckiDk9WSIu1rGUKQKPfuOLrzRYt9fuVRea4vOu6mygAdipcFGwRHm7bnElwogADFidfvdLeLpgQWca2dMXZyJBAFyltKxjrrh04AxXsr0O4hcAtWN_shmU9miC9MUyhmB4"/>
+</div>
+</div>
+<span class="text-xs font-bold">Bella</span>
+</div>
+<!-- Mate 3 -->
+<div class="flex-shrink-0 flex flex-col items-center gap-2">
+<div class="w-20 h-20 rounded-full p-1 bg-gradient-to-tr from-primary to-secondary/40">
+<div class="w-full h-full rounded-full border-4 border-white overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="French Bulldog profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBdkfgwmFgdiOSnbUci_-BFh79brw9rraCnC4NiqevOJt9TpOO0Lc8QuxArLbcVleJrqGx3UzLtEb9z8tksyZnsQkdGpIJqo_ilam69qXe38ylq7qOhWA7_d_IP7cvdE2wlMNIe075WEv0yT2clJcaKXSyIfJV6Gqw0vthcBVlqL-RbRevczKB9XIFzznltkgP0_snn4RXDWLEyTNT36fV62GoeLcuQrQRTbaIULNUx6pSfE8uSNVvwtxKUAW8tlCRTS0CHXg4jEws"/>
+</div>
+</div>
+<span class="text-xs font-bold">Luna</span>
+</div>
+<!-- Mate 4 -->
+<div class="flex-shrink-0 flex flex-col items-center gap-2">
+<div class="w-20 h-20 rounded-full p-1 bg-surface-container">
+<div class="w-full h-full rounded-full border-4 border-white overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Black Labrador portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBaAOlRGABIbnY9K08NlaH-EPG3DN06-8r8gVWrZur6dBKHpxb4GgGrQnVtRHiW-_fgEWWz343SylkC3mM2PYb5jqMiEUabTMOJX-kWIPv5r4i3c7b4ta-TAJ8aCF7Wilzo2z-RuLXBr4cLt62WVuFi54wdzwzfpKEhhvZIAFWEg4av-nh2M2J4za_anwnS1q1byuitWI-z6w1Gm0PLnTEh0RyO-xtB1iJpfnBd5_FRjY1wN1N6EhTIj0qb6fSAmBznH8Whp5VmpGg"/>
+</div>
+</div>
+<span class="text-xs font-bold opacity-70">Max</span>
+</div>
+</div>
+</section>
+<!-- Social Feed -->
+<div class="space-y-6">
+<!-- Feed Post 1 -->
+<article class="bg-white rounded-3xl overflow-hidden border border-surface-container shadow-sm group transition-all duration-300">
+<div class="p-5 flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-12 h-12 rounded-full overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Beagle dog profile photo" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDFASrwwZXey-XdMjukFi2Y6QQ5saKXO6xmyuP7CprVjMAZZHcBu2as9lQXZIE-8vNo0tlX8n72nW5UHOyatUq_XGudST9sDIKQk0ts1TAR6x_5PfuY_YPAUr8shQAQY0wX3MHIXNA3u-pHt6WGejizVj5NtMu2_iYK9lHfws18sMWpyrKMgfZqeMJdjmx5A3Npdp_wr3gFGw-gKNXJCGE_VDIj7QR8vyXJZulpLJDgdUeYJYzW7ahjUAh3zjxY--uBEqjjkoqzVUI"/>
+</div>
+<div>
+<h3 class="font-bold text-on-surface">Cooper</h3>
+<p class="text-xs text-on-surface-variant font-medium">20 mins ago • Bondi Beach</p>
+</div>
+</div>
+<button class="text-outline">
+<span class="material-symbols-outlined">more_horiz</span>
+</button>
+</div>
+<div class="px-5 pb-4">
+<p class="text-on-surface mb-4 leading-relaxed">
+                    Cooper just finished a <span class="bg-primary/30 px-1 rounded font-extrabold">3km walk</span> in Bondi! 🐾 Someone's definitely ready for a nap...
+                </p>
+<div class="relative rounded-2xl overflow-hidden h-64 border border-surface-container">
+<img class="w-full h-full object-cover" data-alt="Dog running on beach" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAqLJZWQXD3Co6yWYR09QyCEV4ZGeLf8pkFqTvZd1RyOZvPgwi77MvLs-VscdWhfMtlceIFlWvxuxljOfPHf2NTxdfPjPfN8behThN-IU_ggwdkJITL-xiEmgA-7WBFLd4kCLD2BLH6_9QXkIyiZ6SHQhZNfoJLLwIE9aVWe2uZ-X6AbJKP3dx5tx6XHP709qFkOJkUS-cmwjb6whN-UkD7jSUMqvsF1G1YY5FnuU6CwgmwoU9aQ9r9Uw7PkwKeZMfL5ppch-4Hr9I"/>
+<!-- Stat Overlay -->
+<div class="absolute bottom-4 left-4 flex gap-2">
+<div class="glass-effect bg-white/80 px-3 py-1.5 rounded-full flex items-center gap-2 shadow-sm">
+<span class="material-symbols-outlined text-on-surface text-sm" style="font-variation-settings: 'FILL' 1;">distance</span>
+<span class="text-xs font-black text-on-surface">3.2 KM</span>
+</div>
+<div class="glass-effect bg-white/80 px-3 py-1.5 rounded-full flex items-center gap-2 shadow-sm">
+<span class="material-symbols-outlined text-secondary text-sm" style="font-variation-settings: 'FILL' 1;">timer</span>
+<span class="text-xs font-black text-on-surface">45 MIN</span>
+</div>
+</div>
+</div>
+</div>
+<div class="px-5 py-4 bg-surface-container-low flex items-center justify-between border-t border-surface-container">
+<div class="flex -space-x-2">
+<div class="w-8 h-8 rounded-full border-2 border-white overflow-hidden bg-primary">
+<img class="w-full h-full object-cover" data-alt="Small dog avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDFDATouoIxY8Ex2Wx6sSR7KL_nJkUra1QofEcQS0cVXvvl2yS52IRTyOJwqqgCswvDe_V3MAIBajfc8jUjAybAGcSEb_C5hL_9dJVw9rGDxM4MfJTrVvO2zkXeM-I356mnhaVmXnAlSjtU_gLVFRPnDBnAkTB_xDetyW_UFQtPonNZYzb-qRZeflV3peZGYRv5Xbav9kQjMOv71bbSo7Xlr3-TDuYxfzQFIXi5qoqGGaRI3lOIb_rGOcQ1WhF_IjniyWYQvBsQs30"/>
+</div>
+<div class="w-8 h-8 rounded-full border-2 border-white overflow-hidden bg-secondary-container">
+<img class="w-full h-full object-cover" data-alt="Small dog avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBFm-LEV41vsMp-g3o5HrJF5u3PQYtKVSQmNbVl_T5K4uydoM3P-SF2D6sWzBeoKukVEEdcKGSCORTSmUJczc0IMuDWDgY8OlI-ioNJtk_3giXdYYsc4IZVLQn7tacEGOc6EofVwOKSCHoBwSVbYYoEwmTOUkdWc0coluLNUwHgMKxgDULFYL5Cltt_6X5HcEBIU1joq46DmrWmYrLjOWKoTh5QQruA5RCLUcwdv3d8-fAVO6o_ueG9W6ci3y1DKnEzL4dPr3cjRqE"/>
+</div>
+<div class="w-8 h-8 rounded-full border-2 border-white bg-surface-container flex items-center justify-center">
+<span class="text-[10px] font-bold">+12</span>
+</div>
+</div>
+<div class="flex gap-2">
+<button class="bg-primary text-black px-5 py-2 rounded-full flex items-center gap-2 text-sm font-black active:scale-90 transition-transform">
+<span class="material-symbols-outlined text-lg">front_hand</span>
+                        High-Five
+                    </button>
+<button class="bg-surface-container text-on-surface px-4 py-2 rounded-full flex items-center gap-2 text-sm font-black active:scale-90 transition-transform">
+<span class="material-symbols-outlined text-lg">chat_bubble</span>
+                        Bark
+                    </button>
+</div>
+</div>
+</article>
+<!-- Feed Post 2 -->
+<article class="bg-white rounded-3xl overflow-hidden border border-surface-container shadow-sm">
+<div class="p-5 flex items-center gap-3">
+<div class="w-12 h-12 rounded-full overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Corgi dog profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC4VG9tLrhFm6Vlg5QeR68d4yCP9QFB6qoJuxRC7PT8_h7uyVBWHCkz_EZcOV-ytiAZb4bw7nuF5R0rkFBM0MEBCOShSkkKRBMAc6frZUxrBz-nXI0jqGv1Xr3JDVnksjqMwlN47Lf-HckiDk9WSIu1rGUKQKPfuOLrzRYt9fuVRea4vOu6mygAdipcFGwRHm7bnElwogADFidfvdLeLpgQWca2dMXZyJBAFyltKxjrrh04AxXsr0O4hcAtWN_shmU9miC9MUyhmB4"/>
+</div>
+<div>
+<h3 class="font-bold text-on-surface">Bella</h3>
+<p class="text-xs text-on-surface-variant font-medium">2 hours ago</p>
+</div>
+</div>
+<div class="px-5 pb-5">
+<div class="bg-secondary-container/40 rounded-2xl p-6 mb-4 flex items-center justify-between relative overflow-hidden">
+<div class="relative z-10">
+<h4 class="text-secondary font-black text-2xl leading-none mb-1">NEW STREAK!</h4>
+<p class="text-on-secondary-container text-sm font-bold opacity-80">7 Days of Daily Playtime</p>
+<div class="mt-4 inline-flex bg-white px-3 py-1 rounded-full text-xs font-black text-secondary">
+                            +50 XP REWARD
+                        </div>
+</div>
+<span class="material-symbols-outlined text-[80px] text-secondary/10 absolute -right-4 -bottom-4 rotate-12">military_tech</span>
+</div>
+<p class="text-on-surface-variant text-sm italic">"Bella is officially a PawPulse Pro! Can anyone beat our streak? 🦴"</p>
+</div>
+<div class="px-5 py-4 border-t border-surface-container flex items-center justify-between">
+<span class="text-xs font-bold text-on-surface-variant">42 Barked back</span>
+<button class="text-on-surface font-black text-sm flex items-center gap-1 group">
+                    High-Five <span class="material-symbols-outlined text-lg transition-transform group-hover:scale-125">waving_hand</span>
+</button>
+</div>
+</article>
+<!-- Feed Post 3 -->
+<article class="bg-white rounded-3xl overflow-hidden border border-surface-container shadow-sm">
+<div class="p-5 flex items-center gap-3">
+<div class="w-12 h-12 rounded-full overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="French Bulldog profile" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBrnIOB2C3TpA8bTE8FuZzo69AGWf1TxXriOdEQu20w-5OdrwXJ3nAZ5BcdQAvdD33lSI-Z2E6Ih2WM3MvhK5oPLNnDOQguEnghQ-VlH9-QkSIBpZLaeBZhSLAsxbbZWW74QLfIjQWSOvHnLfo7NzOVkPDkm9jW83FIEjA0-e5-bnNftfCzv0U5qrE05VOQXjVvQcQTBPGW9Faz4Av3kHjV0wqnTzMw-rgbVxtStZYcw9zlToWYmezAmcZdWrLf1DQMluuHRoWq9wg"/>
+</div>
+<div>
+<h3 class="font-bold text-on-surface">Luna</h3>
+<p class="text-xs text-on-surface-variant font-medium">Yesterday</p>
+</div>
+</div>
+<div class="px-5 pb-5 grid grid-cols-2 gap-2">
+<div class="h-40 rounded-2xl overflow-hidden border border-surface-container">
+<img class="w-full h-full object-cover" data-alt="Golden Retriever playing" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBuuV39g3NOWVd--ap-XQS88tto629LUzs7pwuuBbJMkzw0wRTZFV1fjnwYvrGXNGOafQYU_JkZ4pYcDriKD8zHTeqCOzCIPh8QplCcVM6TK7OyymN2b5tpqv8snJQV__PzWkI6wTvv-PrNep5PSCsWD55JbvutDgUJ4wHD0jzOwWL6rybkRCyJcVKaLr-tsgSc_HPWiwHqBtEW63DgtL6Vf-o8eudMt5BKTDdC0mO1hMbibg6PCF64N1KjWt9iGdyesLMSwehpQl4"/>
+</div>
+<div class="h-40 rounded-2xl overflow-hidden border border-surface-container">
+<img class="w-full h-full object-cover" data-alt="Dogs at a park" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCWnN67IEoouAPfz0e-2im_QfrXKbrfj4WKKNFSRdtBMRngzo4hwJFxfYHjoiw7cpgv8elCGdBpZEGiNZ4sqUXAXvnVsfyoDM-ujBRXfU-5_Xn-yW2Tqn5OUMUvdfNTA6wNQCiAdl2yX4LjNIAYzpGw-DGnda18bo4fhJYpFi26tnmaj--jy_JUDrl-0cB46f5FbZdLvQF8wZ5Mkzq6TCK7ejnE-Xac5dWy7-JgFNXvwYN48bkq8GgyX5wjzyloNed3sm3bGyU2-aQ"/>
+</div>
+</div>
+</article>
+</div>
+</main>
+<!-- FAB for Posting -->
+<button class="fixed bottom-32 right-6 w-16 h-16 bg-primary text-black rounded-full shadow-2xl flex items-center justify-center z-40 active:scale-90 transition-transform hover:scale-105 ring-4 ring-white">
+<span class="material-symbols-outlined text-3xl font-black">add_a_photo</span>
+</button>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full rounded-t-3xl z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-surface-container shadow-[0_-4px_24px_rgba(0,0,0,0.05)]">
+<div class="flex justify-around items-center px-4 pb-8 pt-4 w-full">
+<!-- Activity -->
+<button class="flex flex-col items-center justify-center text-on-surface opacity-60 hover:bg-surface-container rounded-full px-4 py-2 transition-all active:scale-90">
+<span class="material-symbols-outlined" data-icon="history">history</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Activity</span>
+</button>
+<!-- Badges -->
+<button class="flex flex-col items-center justify-center text-on-surface opacity-60 hover:bg-surface-container rounded-full px-4 py-2 transition-all active:scale-90">
+<span class="material-symbols-outlined" data-icon="military_tech">military_tech</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Badges</span>
+</button>
+<!-- Social (Active) -->
+<button class="flex flex-col items-center justify-center bg-primary text-black rounded-full px-6 py-2 scale-105 shadow-md transition-all active:scale-90">
+<span class="material-symbols-outlined" data-icon="group" style="font-variation-settings: 'FILL' 1;">group</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Social</span>
+</button>
+<!-- Profile -->
+<button class="flex flex-col items-center justify-center text-on-surface opacity-60 hover:bg-surface-container rounded-full px-4 py-2 transition-all active:scale-90">
+<span class="material-symbols-outlined" data-icon="pets">pets</span>
+<span class="font-['Plus_Jakarta_Sans'] font-semibold text-[0.75rem]">Profile</span>
+</button>
+</div>
+</nav>
+</body></html>

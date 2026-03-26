@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Health Hub - Radiant Pet</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "error-container": "#f95630",
+              "on-error": "#ffefec",
+              "surface-dim": "#d4d5d1",
+              "surface-tint": "#605e00",
+              "on-surface": "#2e2f2d",
+              "surface-variant": "#ddddd9",
+              "secondary-fixed": "#e5e2e1",
+              "tertiary": "#755700",
+              "secondary-container": "#e5e2e1",
+              "on-primary-container": "#5b5a00",
+              "surface-container-highest": "#ddddd9",
+              "on-surface-variant": "#5b5c5a",
+              "background": "#ffffff",
+              "error": "#b02500",
+              "on-tertiary-fixed-variant": "#604700",
+              "surface-container": "#f8f8f8",
+              "on-error-container": "#520c00",
+              "primary-fixed": "#FFFC00",
+              "primary-fixed-dim": "#e6e300",
+              "surface-container-low": "#f5f5f5",
+              "surface-container-high": "#ebebeb",
+              "on-secondary-container": "#525151",
+              "inverse-primary": "#fefb00",
+              "on-primary-fixed-variant": "#656400",
+              "primary-dim": "#535200",
+              "surface": "#ffffff",
+              "secondary": "#5c5b5b",
+              "inverse-surface": "#0d0f0d",
+              "on-background": "#2e2f2d",
+              "inverse-on-surface": "#9d9d9a",
+              "tertiary-fixed": "#fac129",
+              "tertiary-fixed-dim": "#ebb317",
+              "on-secondary": "#f5f2f1",
+              "error-dim": "#b92902",
+              "tertiary-container": "#fac129",
+              "on-tertiary-container": "#553e00",
+              "on-tertiary": "#fff1db",
+              "on-primary-fixed": "#484700",
+              "surface-container-lowest": "#ffffff",
+              "primary-container": "#FFFC00",
+              "outline-variant": "#adadab",
+              "primary": "#FFFC00",
+              "secondary-fixed-dim": "#d6d4d3",
+              "on-primary": "#000000",
+              "on-tertiary-fixed": "#3d2b00",
+              "outline": "#767775",
+              "tertiary-dim": "#664b00",
+              "surface-bright": "#ffffff",
+              "secondary-dim": "#504f4f",
+              "on-secondary-fixed": "#403f3f",
+              "on-secondary-fixed-variant": "#5c5b5b"
+            },
+            fontFamily: {
+              "headline": ["Plus Jakarta Sans"],
+              "body": ["Plus Jakarta Sans"],
+              "label": ["Plus Jakarta Sans"]
+            },
+            borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+      body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #ffffff; }
+      .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+      .solar-flare { background: linear-gradient(135deg, #FFFC00 0%, #fac129 100%); }
+      .glass-card { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(32px); }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="text-on-surface pb-32 bg-white">
+<!-- Top App Bar -->
+<header class="bg-white/95 backdrop-blur-md dark:bg-[#2E2F2D] flex justify-between items-center px-6 py-4 w-full sticky top-0 z-40">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Golden Retriever puppy portrait profile photo" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD4RoOfkXJSDmadBPICZv4D-ifJ32nRDSyhP7f-IBx6XGeMb2QS2a8vrdTo5LfK-DiM61kLk7t6mrj2Mcxc1XPcCWvRasGURfTwRpuM1qSxn6QGHF5nQbtuQPIViigD8EKxdD_VBocxzeLU1SrgztbP8O_4ENV_HNxl46SRD-uyBJKTEf--8cyZ4jDm4A22ZUS5kv4Pzl42Ya4_iHgi9XP1G4tiAPHS64pYikdJMf07X9tHQk7lTbyKeAZM5LTngaZdrQyQGxiM1Eo"/>
+</div>
+<span class="font-['Plus_Jakarta_Sans'] font-bold tracking-tight text-xl text-[#000000] dark:text-[#FFFC00]">Radiant Pet</span>
+</div>
+<div class="flex items-center gap-2 px-4 py-2 bg-surface-container-low rounded-full hover:scale-105 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-tertiary text-sm" style="font-variation-settings: 'FILL' 1;">stars</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-xs text-on-surface">1,250 PawCoins</span>
+</div>
+</header>
+<main class="px-6 pt-4">
+<!-- Hero Section -->
+<section class="mb-10 mt-2">
+<h1 class="text-4xl font-extrabold tracking-tight mb-2 leading-none">Health Hub</h1>
+<p class="text-on-surface-variant font-medium">Monitoring Cooper's vitals today.</p>
+</section>
+<!-- Bento Grid Vitals -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+<!-- Large Bento Card: Weight Trend -->
+<div class="col-span-2 row-span-2 bg-surface-container-low rounded-lg p-6 relative overflow-hidden flex flex-col justify-between shadow-sm border border-black/5">
+<div>
+<div class="flex justify-between items-start mb-4">
+<span class="text-label-md font-bold uppercase tracking-widest text-on-surface-variant">Weight Trend</span>
+<span class="bg-primary-container text-on-primary-container px-3 py-1 rounded-full text-[10px] font-bold">-0.4kg this month</span>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="text-5xl font-black italic">24.2</span>
+<span class="text-xl font-bold text-on-surface-variant">kg</span>
+</div>
+</div>
+<!-- Simple Vector Chart Representation -->
+<div class="h-32 w-full mt-4 flex items-end justify-between gap-1">
+<div class="w-full bg-surface-container-highest rounded-t-full h-[60%]"></div>
+<div class="w-full bg-surface-container-highest rounded-t-full h-[75%]"></div>
+<div class="w-full bg-surface-container-highest rounded-t-full h-[65%]"></div>
+<div class="w-full bg-surface-container-highest rounded-t-full h-[90%]"></div>
+<div class="w-full solar-flare rounded-t-full h-[100%]"></div>
+</div>
+</div>
+<!-- Heart Rate Card -->
+<div class="bg-surface-container-low rounded-lg p-5 flex flex-col justify-between aspect-square shadow-sm border border-black/5">
+<span class="material-symbols-outlined text-error text-3xl" style="font-variation-settings: 'FILL' 1;">favorite</span>
+<div>
+<span class="block text-2xl font-black">72</span>
+<span class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">BPM Resting</span>
+</div>
+</div>
+<!-- Activity Card -->
+<div class="bg-surface-container-low rounded-lg p-5 flex flex-col justify-between aspect-square shadow-sm border border-black/5">
+<span class="material-symbols-outlined text-on-surface text-3xl">bolt</span>
+<div>
+<span class="block text-2xl font-black">8.4k</span>
+<span class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Steps Avg</span>
+</div>
+</div>
+<!-- Sleep Card -->
+<div class="col-span-2 bg-surface-container-low rounded-lg p-5 flex items-center justify-between shadow-sm border border-black/5">
+<div class="flex items-center gap-4">
+<div class="w-12 h-12 rounded-full solar-flare flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-fixed">bedtime</span>
+</div>
+<div>
+<span class="block font-bold">Sleep Quality</span>
+<span class="text-xs text-on-surface-variant font-medium italic">Deep &amp; Restful</span>
+</div>
+</div>
+<span class="text-2xl font-black">9.5h</span>
+</div>
+</div>
+<!-- Weekly Summary -->
+<section class="mb-10">
+<h2 class="text-2xl font-extrabold tracking-tight mb-6">Weekly Wellness</h2>
+<div class="space-y-4">
+<div class="bg-white p-6 rounded-lg flex items-center justify-between shadow-sm border border-black/5">
+<div class="flex items-center gap-4">
+<div class="w-2 h-12 rounded-full bg-primary-container"></div>
+<div>
+<p class="font-bold text-lg">Nutrition Goal</p>
+<p class="text-sm text-on-surface-variant font-medium">92% Met this week</p>
+</div>
+</div>
+<button class="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-on-surface">chevron_right</span>
+</button>
+</div>
+<div class="bg-white p-6 rounded-lg flex items-center justify-between shadow-sm border border-black/5">
+<div class="flex items-center gap-4">
+<div class="w-2 h-12 rounded-full bg-tertiary-container"></div>
+<div>
+<p class="font-bold text-lg">Medication</p>
+<p class="text-sm text-on-surface-variant font-medium">NexGard due in 2 days</p>
+</div>
+</div>
+<button class="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-on-surface">chevron_right</span>
+</button>
+</div>
+</div>
+</section>
+<!-- Reminder Toggles -->
+<section class="mb-8">
+<div class="flex items-center justify-between mb-6">
+<h2 class="text-2xl font-extrabold tracking-tight">Active Alerts</h2>
+<span class="text-xs font-bold uppercase tracking-widest text-[#605E00]">Manage All</span>
+</div>
+<div class="bg-surface-container-high/30 rounded-xl overflow-hidden border border-black/5">
+<div class="p-5 flex items-center justify-between border-b border-black/5">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary-dim">water_drop</span>
+<span class="font-bold">Hydration Reminders</span>
+</div>
+<div class="w-12 h-6 bg-primary-fixed rounded-full relative flex items-center px-1">
+<div class="w-4 h-4 bg-on-primary-fixed rounded-full translate-x-6"></div>
+</div>
+</div>
+<div class="p-5 flex items-center justify-between border-b border-black/5">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary-dim">pill</span>
+<span class="font-bold">Vitamin Schedule</span>
+</div>
+<div class="w-12 h-6 bg-primary-fixed rounded-full relative flex items-center px-1">
+<div class="w-4 h-4 bg-on-primary-fixed rounded-full translate-x-6"></div>
+</div>
+</div>
+<div class="p-5 flex items-center justify-between">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary-dim opacity-40">fitness_center</span>
+<span class="font-bold opacity-40">Post-Walk Recovery</span>
+</div>
+<div class="w-12 h-6 bg-surface-container-highest rounded-full relative flex items-center px-1">
+<div class="w-4 h-4 bg-white rounded-full"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- CTA Action -->
+<div class="solar-flare p-8 rounded-lg mb-4 text-on-primary-fixed">
+<h3 class="text-2xl font-black italic mb-2">Health Scan</h3>
+<p class="text-sm font-bold opacity-80 mb-6 leading-relaxed">Use your phone's camera to analyze Cooper's coat and eye health in seconds.</p>
+<button class="bg-on-primary-fixed text-primary-fixed px-8 py-4 rounded-full font-black uppercase text-xs tracking-widest shadow-xl active:scale-95 transition-all">Start Scan</button>
+</div>
+</main>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-6 pt-3 bg-white/95 dark:bg-[#2E2F2D]/80 backdrop-blur-xl shadow-[0_-10px_40px_rgba(0,0,0,0.06)] rounded-t-[32px] border-t border-black/5">
+<a class="flex flex-col items-center justify-center text-[#2E2F2D] dark:text-[#F7F6F3] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined" data-icon="home">home</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest">Home</span>
+</a>
+<a class="flex flex-col items-center justify-center text-[#2E2F2D] dark:text-[#F7F6F3] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined" data-icon="add_circle">add_circle</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest">Log</span>
+</a>
+<a class="flex flex-col items-center justify-center text-[#2E2F2D] dark:text-[#F7F6F3] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined" data-icon="shopping_bag">shopping_bag</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest">Shop</span>
+</a>
+<!-- ACTIVE ITEM: HEALTH -->
+<a class="flex flex-col items-center justify-center bg-[#FFFC00] dark:bg-[#605E00] text-[#000000] dark:text-[#FFFC00] rounded-full px-5 py-2 scale-110 active:scale-90 transition-transform duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="monitor_heart" style="font-variation-settings: 'FILL' 1;">monitor_heart</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest">Health</span>
+</a>
+<a class="flex flex-col items-center justify-center text-[#2E2F2D] dark:text-[#F7F6F3] opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined" data-icon="person">person</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest">Profile</span>
+</a>
+</nav>
+</body></html>

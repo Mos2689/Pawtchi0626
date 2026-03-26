@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Radiant Pet - Create Profile</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "error-container": "#f95630",
+              "on-error": "#ffefec",
+              "surface-dim": "#d4d5d1",
+              "surface-tint": "#605e00",
+              "on-surface": "#2e2f2d",
+              "surface-variant": "#ddddd9",
+              "secondary-fixed": "#e5e2e1",
+              "tertiary": "#755700",
+              "secondary-container": "#e5e2e1",
+              "on-primary-container": "#5b5a00",
+              "surface-container-highest": "#ddddd9",
+              "on-surface-variant": "#5b5c5a",
+              "background": "#FFFFFF",
+              "error": "#b02500",
+              "on-tertiary-fixed-variant": "#604700",
+              "surface-container": "#F5F5F5",
+              "on-error-container": "#520c00",
+              "primary-fixed": "#FFFC00",
+              "primary-fixed-dim": "#f5f200",
+              "surface-container-low": "#F9F9F9",
+              "surface-container-high": "#F0F0F0",
+              "on-secondary-container": "#525151",
+              "inverse-primary": "#fefb00",
+              "on-primary-fixed-variant": "#000000",
+              "primary-dim": "#535200",
+              "surface": "#FFFFFF",
+              "secondary": "#5c5b5b",
+              "inverse-surface": "#0d0f0d",
+              "on-background": "#2e2f2d",
+              "inverse-on-surface": "#9d9d9a",
+              "tertiary-fixed": "#fac129",
+              "tertiary-fixed-dim": "#ebb317",
+              "on-secondary": "#f5f2f1",
+              "error-dim": "#b92902",
+              "tertiary-container": "#fac129",
+              "on-tertiary-container": "#553e00",
+              "on-tertiary": "#fff1db",
+              "on-primary-fixed": "#000000",
+              "surface-container-lowest": "#ffffff",
+              "primary-container": "#FFFC00",
+              "outline-variant": "#adadab",
+              "primary": "#FFFC00",
+              "secondary-fixed-dim": "#d6d4d3",
+              "on-primary": "#000000",
+              "on-tertiary-fixed": "#3d2b00",
+              "outline": "#767775",
+              "tertiary-dim": "#664b00",
+              "surface-bright": "#FFFFFF",
+              "secondary-dim": "#504f4f",
+              "on-secondary-fixed": "#403f3f",
+              "on-secondary-fixed-variant": "#5c5b5b"
+            },
+            fontFamily: {
+              "headline": ["Plus Jakarta Sans"],
+              "body": ["Plus Jakarta Sans"],
+              "label": ["Plus Jakarta Sans"]
+            },
+            borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .solar-flare {
+        background: linear-gradient(135deg, #FFFC00 0%, #fac129 100%);
+      }
+      .pill-input {
+        @apply bg-surface-container-low border border-surface-container-high focus:ring-2 focus:ring-primary-fixed focus:border-transparent rounded-full px-6 py-4 w-full text-on-surface placeholder:text-outline transition-all;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+      }
+      body {
+        min-height: max(884px, 100dvh);
+      }
+    </style>
+</head>
+<body class="bg-background font-body text-on-background selection:bg-primary-fixed antialiased overflow-x-hidden">
+<!-- Supressing TopAppBar and BottomNavBar per Linear/Transactional Rule -->
+<main class="min-h-screen max-w-2xl mx-auto px-6 pt-12 pb-24 relative">
+<!-- Progress Steps -->
+<div class="flex items-center justify-between mb-12 px-2">
+<div class="flex-1 h-2 rounded-full solar-flare"></div>
+<div class="w-12 h-2 mx-2 rounded-full bg-surface-container-high"></div>
+<div class="w-12 h-2 rounded-full bg-surface-container-high"></div>
+</div>
+<!-- Header -->
+<header class="mb-10">
+<h1 class="text-5xl font-extrabold tracking-tight leading-none mb-4 font-headline">
+            New <span class="text-primary-dim italic" style="color: #605e00;">Companion.</span>
+</h1>
+<p class="text-on-surface-variant text-lg max-w-xs leading-relaxed">
+            Let's build a radiant profile for your best friend.
+        </p>
+</header>
+<!-- Form Section -->
+<div class="space-y-12">
+<!-- Pet Identity -->
+<section>
+<label class="block text-[10px] uppercase tracking-[0.2em] font-bold text-outline mb-4 px-2">Identification</label>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<input class="pill-input h-16 text-xl font-bold" placeholder="Pet Name" type="text"/>
+<div class="relative group">
+<select class="pill-input h-16 appearance-none pr-10 font-medium">
+<option>Select Species</option>
+<option>Dog</option>
+<option>Cat</option>
+</select>
+<span class="material-symbols-outlined absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-outline">expand_more</span>
+</div>
+</div>
+</section>
+<!-- Species Selection Visual (Asymmetric Bento) -->
+<section class="grid grid-cols-12 gap-4 h-64">
+<div class="col-span-7 bg-primary-fixed rounded-lg p-6 flex flex-col justify-between relative overflow-hidden transition-transform hover:scale-[1.02] shadow-sm">
+<span class="material-symbols-outlined text-5xl text-on-primary-fixed" style="font-variation-settings: 'FILL' 1;">pets</span>
+<div>
+<h3 class="text-2xl font-black text-on-primary-fixed italic">DOG</h3>
+<p class="text-on-primary-fixed-variant text-sm font-bold opacity-70">Active &amp; Loyal</p>
+</div>
+<!-- Decorative flare -->
+<div class="absolute -right-10 -bottom-10 w-40 h-40 bg-white/30 rounded-full blur-3xl"></div>
+</div>
+<div class="col-span-5 bg-surface-container-low border border-surface-container-high rounded-lg p-6 flex flex-col justify-between hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-4xl text-outline">pets</span>
+<div>
+<h3 class="text-xl font-bold text-on-surface">CAT</h3>
+<p class="text-outline text-xs">Agile &amp; Independent</p>
+</div>
+</div>
+</section>
+<!-- Vital Stats -->
+<section class="space-y-6">
+<label class="block text-[10px] uppercase tracking-[0.2em] font-bold text-outline px-2">Vital Statistics</label>
+<div class="grid grid-cols-2 gap-4">
+<div class="p-6 bg-surface-container-low border border-surface-container-high rounded-lg flex flex-col gap-2">
+<span class="text-xs font-bold text-outline uppercase tracking-wider">Current Age</span>
+<div class="flex items-baseline gap-1">
+<input class="bg-transparent border-none p-0 text-3xl font-black w-16 focus:ring-0" type="number" value="2"/>
+<span class="text-sm font-bold text-on-surface-variant">Years</span>
+</div>
+</div>
+<div class="p-6 bg-surface-container-low border border-surface-container-high rounded-lg flex flex-col gap-2">
+<span class="text-xs font-bold text-outline uppercase tracking-wider">Weight</span>
+<div class="flex items-baseline gap-1">
+<input class="bg-transparent border-none p-0 text-3xl font-black w-16 focus:ring-0" type="number" value="12"/>
+<span class="text-sm font-bold text-on-surface-variant">kg</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Weight Goal Slider -->
+<section class="space-y-8">
+<div class="flex justify-between items-end px-2">
+<div>
+<label class="block text-[10px] uppercase tracking-[0.2em] font-bold text-outline mb-1">Health Target</label>
+<h4 class="text-2xl font-bold text-on-surface">Weight Goal</h4>
+</div>
+<div class="text-right">
+<span class="text-3xl font-black text-primary-dim italic" style="color: #605e00;">10.5</span>
+<span class="text-xs font-bold text-outline uppercase ml-1">kg Target</span>
+</div>
+</div>
+<div class="relative pt-1">
+<input class="w-full h-12 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary focus:outline-none overflow-hidden" max="30" min="5" type="range" value="10.5"/>
+<div class="flex justify-between mt-4 px-4 text-[10px] font-bold text-outline uppercase tracking-widest">
+<span>Lean</span>
+<span>Healthy</span>
+<span>Overweight</span>
+</div>
+</div>
+</section>
+<!-- Breed Discovery (Asymmetric List) -->
+<section>
+<div class="pill-input flex items-center gap-4 bg-surface-container-high border-none">
+<span class="material-symbols-outlined text-outline">search</span>
+<input class="bg-transparent border-none focus:ring-0 w-full p-0 font-medium text-on-surface" placeholder="Search Breed..." type="text"/>
+</div>
+<div class="flex flex-wrap gap-2 mt-4">
+<span class="px-5 py-2 bg-primary-fixed text-on-primary-fixed text-sm font-bold rounded-full transition-transform hover:scale-105 cursor-pointer shadow-sm">Golden Retriever</span>
+<span class="px-5 py-2 bg-surface-container-low border border-surface-container-high text-on-surface-variant text-sm font-medium rounded-full hover:bg-surface-container-high cursor-pointer">Labrador</span>
+<span class="px-5 py-2 bg-surface-container-low border border-surface-container-high text-on-surface-variant text-sm font-medium rounded-full hover:bg-surface-container-high cursor-pointer">Beagle</span>
+<span class="px-5 py-2 bg-surface-container-low border border-surface-container-high text-on-surface-variant text-sm font-medium rounded-full hover:bg-surface-container-high cursor-pointer">Poodle</span>
+</div>
+</section>
+</div>
+<!-- Sticky Action -->
+<footer class="fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-background via-background/95 to-transparent pt-12">
+<div class="max-w-2xl mx-auto flex items-center gap-4">
+<button class="w-16 h-16 rounded-full bg-surface-container-low border border-surface-container-high flex items-center justify-center text-on-surface-variant transition-all hover:scale-105 active:scale-95 shadow-sm">
+<span class="material-symbols-outlined">arrow_back</span>
+</button>
+<button class="flex-1 h-16 rounded-full solar-flare text-on-primary-fixed text-lg font-black tracking-tight flex items-center justify-center gap-2 shadow-[0_10px_40px_rgba(255,252,0,0.3)] transition-all hover:scale-[1.02] active:scale-95">
+                CONTINUE
+                <span class="material-symbols-outlined">arrow_forward</span>
+</button>
+</div>
+</footer>
+<!-- Decorative Elements -->
+<div class="fixed top-[-10%] right-[-10%] w-[400px] h-[400px] bg-primary-fixed/10 blur-[120px] -z-10 rounded-full"></div>
+<div class="fixed bottom-[10%] left-[-20%] w-[300px] h-[300px] bg-primary-fixed/5 blur-[100px] -z-10 rounded-full"></div>
+</main>
+<!-- Visual Polish: Image Placeholder for Pet Preview -->
+<div class="hidden md:block fixed right-12 top-1/2 -translate-y-1/2 w-64 h-96 rounded-xl bg-surface-container-lowest shadow-2xl overflow-hidden border-8 border-white p-4 rotate-3">
+<div class="w-full h-full rounded-lg bg-surface-container-low overflow-hidden relative">
+<img alt="Portrait of a happy golden retriever" class="w-full h-full object-cover grayscale-[20%] opacity-80" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAJyN31hWxfZymamx_v_Qctr0xCWdsoyeHEz08caquBzqXZtDxhazvfgCxff9XOTRU0ufY5nPV62sqrxhgR_ocm1aW47gnha6JtTJ10Cbp8aPeg4NqJitIVff63b0v6BicpDqh5yB_bstlMW0h3IyyTHw_rh_4odzSwRyGi5s597u8_SXv9zHbSStYNyzKPaLUfXWGnvNeinOfO4HEE4aAx7eCIcefgG2W7ykkcy8zGaWS6An_pHAMCKlHxDKa1HAcu0YbDqRQYsqE"/>
+<div class="absolute bottom-0 left-0 w-full p-4 bg-gradient-to-t from-on-surface/80 to-transparent">
+<div class="w-12 h-1 bg-primary-fixed rounded-full mb-2"></div>
+<p class="text-white text-xs font-bold uppercase tracking-widest">Preview Mode</p>
+</div>
+</div>
+</div>
+</body></html>

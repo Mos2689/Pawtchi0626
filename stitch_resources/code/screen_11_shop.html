@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "error-container": "#f95630",
+              "on-error": "#ffefec",
+              "surface-dim": "#d4d5d1",
+              "surface-tint": "#605e00",
+              "on-surface": "#2e2f2d",
+              "surface-variant": "#ddddd9",
+              "secondary-fixed": "#e5e2e1",
+              "tertiary": "#755700",
+              "secondary-container": "#e5e2e1",
+              "on-primary-container": "#484700",
+              "surface-container-highest": "#ddddd9",
+              "on-surface-variant": "#5b5c5a",
+              "background": "#ffffff",
+              "error": "#b02500",
+              "on-tertiary-fixed-variant": "#604700",
+              "surface-container": "#f8f8f8",
+              "on-error-container": "#520c00",
+              "primary-fixed": "#FFFC00",
+              "primary-fixed-dim": "#e6e300",
+              "surface-container-low": "#fcfcfc",
+              "surface-container-high": "#f0f0f0",
+              "on-secondary-container": "#525151",
+              "inverse-primary": "#fefb00",
+              "on-primary-fixed-variant": "#656400",
+              "primary-dim": "#535200",
+              "surface": "#ffffff",
+              "secondary": "#5c5b5b",
+              "inverse-surface": "#0d0f0d",
+              "on-background": "#2e2f2d",
+              "inverse-on-surface": "#9d9d9a",
+              "tertiary-fixed": "#fac129",
+              "tertiary-fixed-dim": "#ebb317",
+              "on-secondary": "#f5f2f1",
+              "error-dim": "#b92902",
+              "tertiary-container": "#fac129",
+              "on-tertiary-container": "#553e00",
+              "on-tertiary": "#fff1db",
+              "on-primary-fixed": "#484700",
+              "surface-container-lowest": "#ffffff",
+              "primary-container": "#FFFC00",
+              "outline-variant": "#adadab",
+              "primary": "#FFFC00",
+              "secondary-fixed-dim": "#d6d4d3",
+              "on-primary": "#2e2f2d",
+              "on-tertiary-fixed": "#3d2b00",
+              "outline": "#767775",
+              "tertiary-dim": "#664b00",
+              "surface-bright": "#ffffff",
+              "secondary-dim": "#504f4f",
+              "on-secondary-fixed": "#403f3f",
+              "on-secondary-fixed-variant": "#5c5b5b"
+            },
+            fontFamily: {
+              "headline": ["Plus Jakarta Sans"],
+              "body": ["Plus Jakarta Sans"],
+              "label": ["Plus Jakarta Sans"]
+            },
+            borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .solar-flare {
+        background: linear-gradient(135deg, #FFFC00 0%, #fac129 100%);
+      }
+      .frosted-pill {
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(32px);
+      }
+      .card-shadow {
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+      }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="bg-background text-on-background font-body min-h-screen pb-32">
+<!-- Top App Bar -->
+<header class="bg-white/90 backdrop-blur-md fixed top-0 w-full z-50 border-b border-surface-container-high">
+<div class="flex justify-between items-center px-6 py-4 w-full">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Golden Retriever puppy profile avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD4obRmcQ8v72pqncRhZnx6vIy6oCidoOcJpAOWH10fsy70JKjFrdtIy16XcgI_9AsTOHK6Yyhes7YShef4nADtjERhN1scy9TNPmQH72tmkcMrSvmaKiXtPfz1qpII1Ikv8wPLUI76PUZIwaH9bi3Vqh7TC-848S9iRRw2m8Ykn1AfwGZO5jA8eUOHhhSlWCnskMKz5BGw6CrMrDDHbeqNJEoa3mLPSC05dehsQVnd0WTC5rS_tp7KbGLI4YePhG7xTtQhjwFD1HU"/>
+</div>
+<span class="font-['Plus_Jakarta_Sans'] font-bold tracking-tight text-xl text-on-surface">Radiant Pet</span>
+</div>
+<div class="flex items-center gap-2 bg-surface-container px-4 py-2 rounded-full hover:scale-105 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-tertiary text-lg" style="font-variation-settings: 'FILL' 1;">generating_tokens</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-sm text-on-surface">1,250 PawCoins</span>
+</div>
+</div>
+</header>
+<main class="pt-24 px-6 max-w-5xl mx-auto">
+<!-- Hero Section: Nudge -->
+<section class="mt-8 mb-12">
+<div class="solar-flare rounded-lg p-8 relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl shadow-primary-container/20">
+<div class="z-10 text-center md:text-left">
+<h1 class="text-4xl md:text-5xl font-black text-on-primary-fixed -tracking-wider mb-2 leading-tight">WANT MORE COINS?</h1>
+<p class="text-on-primary-fixed-variant text-lg font-medium opacity-90 max-w-sm">Complete today's 5k walk to unlock a bonus 500 PawCoins!</p>
+<button class="mt-6 bg-on-surface text-surface px-8 py-3 rounded-full font-bold uppercase tracking-widest text-xs hover:scale-105 transition-all">Start Journey</button>
+</div>
+<div class="relative z-10 w-48 h-48 md:w-64 md:h-64 flex items-center justify-center">
+<span class="material-symbols-outlined text-[120px] md:text-[160px] text-white/40 absolute rotate-12">pets</span>
+<span class="material-symbols-outlined text-[80px] md:text-[100px] text-white/80 absolute -rotate-12 translate-x-8 -translate-y-8">toll</span>
+</div>
+<!-- Kinetic flare elements -->
+<div class="absolute -right-20 -bottom-20 w-80 h-80 bg-white/20 rounded-full blur-3xl"></div>
+</div>
+</section>
+<!-- Categories / Filters -->
+<section class="flex gap-4 overflow-x-auto pb-6 no-scrollbar">
+<button class="px-6 py-2 bg-primary-container text-on-primary-container rounded-full font-bold text-sm whitespace-nowrap shadow-sm">All Items</button>
+<button class="px-6 py-2 bg-surface-container-high text-on-surface-variant rounded-full font-bold text-sm whitespace-nowrap hover:bg-surface-container-highest transition-colors">Bandanas</button>
+<button class="px-6 py-2 bg-surface-container-high text-on-surface-variant rounded-full font-bold text-sm whitespace-nowrap hover:bg-surface-container-highest transition-colors">Hats</button>
+<button class="px-6 py-2 bg-surface-container-high text-on-surface-variant rounded-full font-bold text-sm whitespace-nowrap hover:bg-surface-container-highest transition-colors">Backgrounds</button>
+<button class="px-6 py-2 bg-surface-container-high text-on-surface-variant rounded-full font-bold text-sm whitespace-nowrap hover:bg-surface-container-highest transition-colors">Premium</button>
+</section>
+<!-- Catalog Bento Grid -->
+<section class="grid grid-cols-2 md:grid-cols-4 gap-6">
+<!-- Item 1: Large Featured -->
+<div class="col-span-2 row-span-2 bg-surface-container-lowest rounded-lg p-6 flex flex-col group transition-all cursor-pointer card-shadow border border-surface-container-high">
+<div class="relative aspect-square mb-6 rounded-lg overflow-hidden bg-surface-container">
+<img class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" data-alt="Corgi wearing a stylish neon yellow bandana" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDn3hecOSkI8yryJQ73vc9lcoq4X2MbhoWxY6RbHHSCTH7fAcQqxaNzJ5jvbLCdjciHyhD9U96-irqUy2BuaezlVQCj08L_9yTSERvODlsOttHzPupsjyg3vi_aTfP4WrOnytIlC7pAlOChWlrWpQSufi2BXMatakhPAKDWkdvi3eKkEBT3Fb8fB8GRdEwiQLy0_HLs1C2NWeHeAVxt3QDOBRs30zg_RFIOOqt5lLhV-DNor7pFsdyQo0_lpOTeJ63TxF9zBt0dTbQ"/>
+<span class="absolute top-4 left-4 bg-tertiary-container text-on-tertiary-container text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest shadow-sm">New Arrival</span>
+</div>
+<div class="flex justify-between items-end mt-auto">
+<div>
+<h3 class="font-bold text-2xl text-on-surface leading-tight">Neon Bondi Bandana</h3>
+<p class="text-on-surface-variant text-sm">Limited Summer Edition</p>
+</div>
+<div class="bg-primary-fixed px-4 py-2 rounded-full flex items-center gap-1 shadow-sm">
+<span class="material-symbols-outlined text-sm font-bold">toll</span>
+<span class="font-black text-on-primary">450</span>
+</div>
+</div>
+</div>
+<!-- Item 2: Small -->
+<div class="col-span-2 md:col-span-1 bg-white rounded-lg p-4 flex flex-col hover:bg-surface-container-low transition-all cursor-pointer card-shadow border border-surface-container-high">
+<div class="aspect-square bg-surface-container rounded-lg mb-4 overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Tiny propeller hat for a dog" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA2WaI7gze-tcjVhR0dntDMKiFlwFj7YzIM7FLnHFu5xkxw5b89nQXxkX5X_PtY9cw_KDVA3Re2XJ-8Wtwq9mZC0YCVdLcbjNkWrT5EBYGWXXpb-A06FZwQPlI_PkO9tHBw37wEDGOm0rqeQ0_OSM9bZkTL20AGW3Ko9vyOUiYSGAwAcqz9EtUzlaQUnxDpoGQLKyfJA4AYg3pczLLpqpFX17sv0nHtNTruBZY_J1kCg5ZfsY3-VJk841WEbrVQ4meqijuKbX-dqmE"/>
+</div>
+<h3 class="font-bold text-on-surface truncate">Retro Propeller Hat</h3>
+<div class="mt-2 flex items-center gap-1 text-on-surface-variant font-black">
+<span class="material-symbols-outlined text-sm text-primary-fixed" style="font-variation-settings: 'FILL' 1;">toll</span>
+<span>120</span>
+</div>
+</div>
+<!-- Item 3: Small -->
+<div class="col-span-2 md:col-span-1 bg-white rounded-lg p-4 flex flex-col hover:bg-surface-container-low transition-all cursor-pointer card-shadow border border-surface-container-high">
+<div class="aspect-square bg-surface-container rounded-lg mb-4 overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Cozy sunbeam living room background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBwFoRd9H2yo8mD2ssop1uKMcKO6JwuY2cZ_er8p3iJhcuqWope9SSuXiqY_xAzkW4diIjITi6JKZzV7BY378Jwl8nIsqti2dYXPZc4rX6K8wP_NqMslX-TbV5lF25pwUWbT6o-k-TbHzi6ntUoEg4TACxF_JH_1NtABm2h0_5VxTLCHB28oB6FA2UgSYLCRYGqpV5yT7xdFE1OQocA_10ILbIj2W1hQ3yANYIgnEmQxv-PibkY3XH-bXsyXpYcx6Mk47NHjq2Ogwc"/>
+</div>
+<h3 class="font-bold text-on-surface truncate">Golden Hour BG</h3>
+<div class="mt-2 flex items-center gap-1 text-on-surface-variant font-black">
+<span class="material-symbols-outlined text-sm text-primary-fixed" style="font-variation-settings: 'FILL' 1;">toll</span>
+<span>300</span>
+</div>
+</div>
+<!-- Item 4: Medium Horizontal -->
+<div class="col-span-2 bg-white rounded-lg p-4 flex gap-6 items-center hover:bg-surface-container-low transition-all cursor-pointer card-shadow border border-surface-container-high">
+<div class="w-32 h-32 flex-shrink-0 bg-surface-container rounded-lg overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Blue luxury silk scarf for pets" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBQe2SsK8AhvmcWs6ZA9cc81LCaoSfWKUnkOerALIbRhjQOfDbQHvAwV8vJG57VXHfvpG9SPo16I_-O3fL8EHFDAIW1LKdcwq6JWNlV5sZauhmKmV_YmHY3nguBMjmvonuKPkRNML_4_bBWMuqq2nym5wflyPyU06_My7Jlg1rGJaE8raWtsWKd3D8gYPj4gD9huiUs87yX04pZcjXA1G2dbwvxgUYVUhc_wKrF_inIrKePYUZVcXt5zo2Dei6D4po1_2BcFfxn7PY"/>
+</div>
+<div class="flex-grow">
+<h3 class="font-bold text-xl text-on-surface">Royal Silk Scarf</h3>
+<p class="text-on-surface-variant text-sm mb-4">Unlocks 'Elegant' tag</p>
+<div class="inline-flex items-center gap-1 bg-primary-fixed px-3 py-1 rounded-full font-black text-on-primary shadow-sm">
+<span class="material-symbols-outlined text-sm">toll</span>
+<span>850</span>
+</div>
+</div>
+</div>
+<!-- Item 5: Small -->
+<div class="col-span-1 bg-white rounded-lg p-4 flex flex-col hover:bg-surface-container-low transition-all cursor-pointer card-shadow border border-surface-container-high">
+<div class="aspect-square bg-surface-container rounded-lg mb-4 overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Red classic knitted sweater" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB_gpTbahVOY85uyAJ14HxB7W3IqOqlJ1GqJX2htQzfXX6dA6Fnq4te_OhOCdhuxRWz3QCb11JzSAajIMoXZlIzfP7vBCDoJcAAz6-flFn1KIBaYOjFq5fyYc57_hq-3DCUlPuxjfjhzC-luesi4ysK79Gf8HX-eUH0Auvcnv4jXjjb8hGGD1GSf3F8XsqptLl4FraM0yoiny2Tk93FuTOEaNKJJCMV6EAF_fhKvuQ43U2V-9eboZgdpLBMx2aYvBV7djtGNUiB3hc"/>
+</div>
+<h3 class="font-bold text-on-surface truncate">Cozy Crimson</h3>
+<div class="mt-2 flex items-center gap-1 text-on-surface-variant font-black">
+<span class="material-symbols-outlined text-sm text-primary-fixed" style="font-variation-settings: 'FILL' 1;">toll</span>
+<span>210</span>
+</div>
+</div>
+<!-- Item 6: Small -->
+<div class="col-span-1 bg-white rounded-lg p-4 flex flex-col hover:bg-surface-container-low transition-all cursor-pointer card-shadow border border-surface-container-high">
+<div class="aspect-square bg-surface-container rounded-lg mb-4 overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Cool tinted sunglasses for dogs" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqAnzfdXkfLu4_m0YtkedQfLj_QVpdMh_cl8e_ARlB_l3D5XEzZyExKYMtPChn--G8mA2qOV5zjZD4m-Ls862Uu6N46S0JeqdY-EmnFnSxjTWW9MNdp94g_wzpBC-CIdpcIoZImStg4FV_bfMIPMYVDXO-QQV-cZ46N_2z826U8R_BhHxuA03RKVfT7maztICObe2b8j8IMMTdrcHv3h1oELC8PfmQy-ND1AGLcvm08xTrWIEkJpncTG_sLMdP3ux73atDKLFhovo"/>
+</div>
+<h3 class="font-bold text-on-surface truncate">Rad Shades</h3>
+<div class="mt-2 flex items-center gap-1 text-on-surface-variant font-black">
+<span class="material-symbols-outlined text-sm text-primary-fixed" style="font-variation-settings: 'FILL' 1;">toll</span>
+<span>180</span>
+</div>
+</div>
+</section>
+<!-- Footer Spacer -->
+<div class="h-12"></div>
+</main>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 pb-6 pt-3 bg-white/95 backdrop-blur-xl border-t border-surface-container-high shadow-[0_-10px_40px_rgba(0,0,0,0.04)] rounded-t-[32px]">
+<a class="flex flex-col items-center justify-center text-on-surface opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined text-2xl">home</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Home</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined text-2xl">add_circle</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Log</span>
+</a>
+<a class="flex flex-col items-center justify-center bg-primary-container text-on-primary-container rounded-full px-5 py-2 scale-110 shadow-lg shadow-primary/20" href="#">
+<span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">shopping_bag</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Shop</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined text-2xl">monitor_heart</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Health</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface opacity-50 px-4 py-2 hover:opacity-100 transition-opacity" href="#">
+<span class="material-symbols-outlined text-2xl">person</span>
+<span class="font-['Plus_Jakarta_Sans'] font-bold text-[10px] uppercase tracking-widest mt-1">Profile</span>
+</a>
+</nav>
+</body></html>
