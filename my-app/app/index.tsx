@@ -1,19 +1,28 @@
 import React, { useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Animated } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Animated, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors } from '../constants/Theme';
+import { useAuth } from '../providers/AuthProvider';
 
 // Screen 3: Welcome
 export default function WelcomeScreen() {
   const router = useRouter();
   const theme = Colors.light;
   const insets = useSafeAreaInsets();
-  
+  const { session, isLoading: authLoading } = useAuth();
+
+  // Redirect authenticated users to tabs
+  useEffect(() => {
+    if (!authLoading && session) {
+      router.replace('/(tabs)');
+    }
+  }, [session, authLoading]);
+
   // Floating animation for the badge
   const bounceAnim = useRef(new Animated.Value(0)).current;
-  
+
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
@@ -22,6 +31,15 @@ export default function WelcomeScreen() {
       ])
     ).start();
   }, [bounceAnim]);
+
+  // Show loading spinner while checking auth state
+  if (authLoading || session) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#FFFC00" />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>

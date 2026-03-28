@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -8,17 +8,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import CircularProgress from '../../components/CircularProgress';
-
-interface FoodScan {
-  id: string;
-  ai_identified_food: string;
-  ai_estimated_calories: number;
-  ai_confidence_score: number;
-  created_at: string;
-}
+import { NudgeCard } from '../../components/NudgeCard';
 
 // Screen 8: Home Dashboard
 export default function HomeScreen() {
@@ -29,78 +23,29 @@ export default function HomeScreen() {
   const { currentStreak, longestStreak, pawCoins, fetchStreak } = useStreakStore();
   const { user } = useAuth();
 
-  const [todayCalories, setTodayCalories] = useState(0);
-  const [todayWater, setTodayWater] = useState(0);
-  const [todayWalks, setTodayWalks] = useState(0);
-  const [todayScans, setTodayScans] = useState<FoodScan[]>([]);
-  const [nextActivity, setNextActivity] = useState<any>(null);
+  const todayCalories = usePetContextStore(s => s.todayCalories);
+  const todayWater = usePetContextStore(s => s.todayWater);
+  const todayWalks = usePetContextStore(s => s.todayWalks);
+  const todayScans = usePetContextStore(s => s.todayScans);
+  const nextActivity = usePetContextStore(s => s.nextActivity);
+  const calPercent = usePetContextStore(s => s.calPercent);
+  const waterPercent = usePetContextStore(s => s.waterPercent);
+  const caloriesRemaining = usePetContextStore(s => s.caloriesRemaining);
+  const refreshToday = usePetContextStore(s => s.refreshToday);
 
   const isProfileComplete = !!(
-    activePet?.body_condition_score && 
-    activePet?.diet_type && 
+    activePet?.body_condition_score &&
+    activePet?.diet_type &&
     activePet.diet_type.length > 0
   );
 
   const targetCal = activePet?.target_daily_calories || 0;
-  const calPercent = targetCal > 0 ? Math.min(Math.round((todayCalories / targetCal) * 100), 100) : 0;
-
-  // Real targets dynamically calculated
-  const targetWater = (activePet?.current_weight_kg || 15) * 50; 
-  const waterPercent = targetWater > 0 ? Math.min(todayWater / targetWater, 1) : 0;
-  
-  const targetWalks = 2; // Default to 2 walks a day
-  const walksPercent = targetWalks > 0 ? Math.min(todayWalks / targetWalks, 1) : 0;
+  const walksPercent = Math.min(todayWalks / 2, 1);
 
   useFocusEffect(
     useCallback(() => {
-      if (!activePet?.id) return;
-      const getLocalYMD = (d: Date) => {
-        const year = d.getFullYear();
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-      };
-      const today = getLocalYMD(new Date());
-
-      // Fetch today's calorie total
-      supabase
-        .from('daily_logs')
-        .select('*')
-        .eq('pet_id', activePet.id)
-        .eq('log_date', today)
-        .single()
-        .then(({ data }) => {
-          setTodayCalories(data?.calories_consumed || 0);
-          setTodayWater(data?.water_ml || 0);
-          setTodayWalks(data?.walks_count || 0);
-        });
-
-      // Fetch today's food scans
-      supabase
-        .from('food_scans')
-        .select('*')
-        .eq('pet_id', activePet.id)
-        .gte('created_at', `${today}T00:00:00`)
-        .order('created_at', { ascending: false })
-        .limit(5)
-        .then(({ data }) => {
-          setTodayScans((data as FoodScan[]) || []);
-        });
-
-      // Fetch the next pending activity for today
-      supabase
-        .from('activities')
-        .select('*')
-        .eq('pet_id', activePet.id)
-        .eq('scheduled_date', today)
-        .eq('status', 'pending')
-        .order('scheduled_time', { ascending: true })
-        .limit(1)
-        .single()
-        .then(({ data }) => {
-          setNextActivity(data || null);
-        });
-    }, [activePet?.id])
+      if (activePet?.id) refreshToday(activePet.id);
+    }, [activePet?.id, refreshToday])
   );
 
   // Refresh streak data when screen focuses
@@ -145,28 +90,11 @@ export default function HomeScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
-        {/* Nudge if incomplete */}
-        {!isProfileComplete && (
-          <TouchableOpacity 
-            style={[styles.premiumNudge, { marginBottom: 32 }]}
-            onPress={() => router.push('/medical')}
-            activeOpacity={0.9}
-          >
-            <LinearGradient
-              colors={['#0f172a', '#1e293b']}
-              style={styles.nudgeGradient}
-            >
-              <View style={styles.nudgeLeft}>
-                <MaterialIcons name="health-and-safety" size={32} color="#FFFC00" />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.nudgeTitle}>Clinical Profile Setup</Text>
-                  <Text style={styles.nudgeSub}>Gemini AI needs this data to start.</Text>
-                </View>
-              </View>
-              <MaterialIcons name="arrow-forward-ios" size={16} color="#94a3b8" />
-            </LinearGradient>
-          </TouchableOpacity>
-        )}
+        {/* Contextual Nudge Card */}
+        <NudgeCard
+          isProfileComplete={isProfileComplete}
+          onProfilePress={() => router.push('/medical')}
+        />
 
         {/* Greeting Section */}
         <View style={styles.greetingSection}>
@@ -260,6 +188,7 @@ export default function HomeScreen() {
               <Text style={[styles.caloriesLabel, { color: '#5b5c5a' }]}>CALORIES</Text>
               <Text style={[styles.caloriesValue, { color: '#2e2f2d' }]}>{todayCalories}</Text>
               <Text style={[styles.caloriesSub, { color: '#5b5c5a' }]}>/ {targetCal} kcal</Text>
+              <Text style={[styles.caloriesSub, { color: '#94a3b8', fontSize: 12 }]}>{caloriesRemaining} remaining</Text>
               {targetCal > 0 && (
                 <View style={styles.progressBarBg}>
                   <View style={[styles.progressBarFill, { width: `${calPercent}%`, backgroundColor: calPercent > 90 ? '#ef4444' : '#FFFC00' }]} />
@@ -510,41 +439,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 32,
     paddingBottom: 100, // accommodate tab bar
-  },
-  premiumNudge: {
-    borderRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 20,
-    elevation: 8,
-  },
-  nudgeGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 24,
-    borderRadius: 24,
-  },
-  nudgeLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    flex: 1,
-    paddingRight: 16,
-  },
-  nudgeTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 18,
-    color: '#FFFC00',
-    marginBottom: 2,
-  },
-  nudgeSub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
-    fontSize: 13,
-    color: '#94a3b8',
   },
   greetingSection: {
     marginBottom: 48,

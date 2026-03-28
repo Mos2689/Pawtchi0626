@@ -10,7 +10,7 @@ import { usePetStore } from '../../store/usePetStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import Slider from '@react-native-community/slider';
 
-import { calculateDailyKcal } from '../../lib/healthMath';
+import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
 
 // Screen 13: Set Goal (Step 4 in UI)
 export default function GoalScreen() {
@@ -78,7 +78,7 @@ export default function GoalScreen() {
       speciesVal,
       petData.isNeutered,
       petData.activityLevel || 'normal',
-      petData.goal || 'maintain',
+      deriveGoal(weightVal, targetWeight),
       parseInt(petData.ageMonths) || undefined
     );
     

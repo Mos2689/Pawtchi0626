@@ -1,8 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Tabs as ExpoTabs, useRouter } from 'expo-router';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,8 +15,10 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const { session, isLoading: authLoading } = useAuth();
   const { fetchPet, activePet, isLoading: petLoading } = useActivePetStore();
-  const { fetchStreak } = useStreakStore();
+  const { fetchStreak, isLoading: streakLoading } = useStreakStore();
+  const { fetchContext } = usePetContextStore();
   const router = useRouter();
+  const [redirectingToOnboarding, setRedirectingToOnboarding] = useState(false);
 
   useEffect(() => {
     if (!authLoading) {
@@ -28,19 +31,28 @@ export default function TabLayout() {
     }
   }, [session, authLoading]);
 
-  // If we are still loading, block rendering to prevent flickering
-  if (authLoading || (session && petLoading)) {
+  // Redirect users without a configured pet into onboarding (via useEffect, not render body)
+  useEffect(() => {
+    if (!authLoading && session && !petLoading && !activePet && !redirectingToOnboarding) {
+      setRedirectingToOnboarding(true);
+      router.replace('/onboarding/species');
+    }
+  }, [authLoading, session, petLoading, activePet]);
+
+  // Hydrate pet context store once the active pet is loaded
+  useEffect(() => {
+    if (activePet?.id) {
+      fetchContext(activePet.id);
+    }
+  }, [activePet?.id]);
+
+  // Block rendering while loading or redirecting to prevent flickering
+  if (authLoading || (session && (petLoading || streakLoading)) || redirectingToOnboarding) {
     return (
       <View style={{ flex: 1, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color="#FFFC00" />
       </View>
     );
-  }
-
-  // Force users without a configured pet into onboarding
-  if (!authLoading && session && !petLoading && !activePet) {
-     router.replace('/onboarding/species');
-     return null;
   }
 
   return (

@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 
@@ -194,6 +195,10 @@ export default function LogScreen() {
           calories_consumed: scanResult.calories_per_serving,
         });
       }
+
+      // Update context store with new calorie total
+      const newCalTotal = (existingLog?.calories_consumed || 0) + scanResult.calories_per_serving;
+      usePetContextStore.getState().updateCalories(newCalTotal);
 
       Alert.alert(
         'Logged Successfully! 🎉',

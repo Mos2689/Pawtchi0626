@@ -8,6 +8,8 @@ import { Colors } from '../../constants/Theme';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { useStreakStore } from '../../store/useStreakStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 
 // Screen 6: Profile & Settings
 export default function ProfileScreen() {
@@ -17,6 +19,8 @@ export default function ProfileScreen() {
 
   const { user } = useAuth();
   const { activePet, clearPet } = useActivePetStore();
+  const { clearStreak } = useStreakStore();
+  const { clearContext } = usePetContextStore();
 
   const [feedingToggle, setFeedingToggle] = useState(true);
   const [walkToggle, setWalkToggle] = useState(true);
@@ -24,6 +28,8 @@ export default function ProfileScreen() {
 
   const handleSignOut = async () => {
     clearPet();
+    clearStreak();
+    clearContext();
     await supabase.auth.signOut();
     // Wait for the auth listener in `_layout` to kick us out
   };

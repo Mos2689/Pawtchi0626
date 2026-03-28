@@ -13,6 +13,7 @@ import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
+import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
 
 // Screen 10: Health Hub — Data-Driven
 export default function HealthScreen() {
@@ -255,8 +256,26 @@ export default function HealthScreen() {
         source: 'manual',
       });
 
-      // Also update pet's current weight
-      await supabase.from('pets').update({ current_weight_kg: weight }).eq('id', activePet.id);
+      // Recalculate daily calorie target based on new weight
+      const goal = deriveGoal(weight, activePet.target_weight_kg);
+      const newCalories = calculateDailyKcal(
+        weight,
+        activePet.species,
+        activePet.is_neutered,
+        activePet.activity_level,
+        goal,
+      );
+
+      // Update pet's current weight and recalculated calorie target
+      await supabase.from('pets').update({
+        current_weight_kg: weight,
+        target_daily_calories: newCalories,
+      }).eq('id', activePet.id);
+
+      // Refresh pet store so home screen sees updated target
+      if (user?.id) {
+        await useActivePetStore.getState().fetchPet(user.id);
+      }
 
       setShowWeightModal(false);
       setWeightInput('');

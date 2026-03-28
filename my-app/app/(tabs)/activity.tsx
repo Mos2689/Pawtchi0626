@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../lib/supabase';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
@@ -216,11 +217,27 @@ export default function ActivityScreen() {
             updates.walks_count = (existingLog.walks_count || 0) + 1;
           }
           await supabase.from('daily_logs').update(updates).eq('id', existingLog.id);
+
+          // Update context store incrementally
+          if (item.activity_type === 'water' && item.water_ml) {
+            usePetContextStore.getState().updateWater((existingLog.water_ml || 0) + item.water_ml);
+          }
+          if (item.activity_type === 'walk') {
+            usePetContextStore.getState().updateWalks((existingLog.walks_count || 0) + 1);
+          }
         } else {
           const inserts: any = { pet_id: activePet!.id, log_date: dateStr }; // Use viewed date
           if (item.activity_type === 'water') inserts.water_ml = item.water_ml || 0;
           if (item.activity_type === 'walk') inserts.walks_count = 1;
           await supabase.from('daily_logs').insert(inserts);
+
+          // Update context store for new log
+          if (item.activity_type === 'water' && item.water_ml) {
+            usePetContextStore.getState().updateWater(item.water_ml);
+          }
+          if (item.activity_type === 'walk') {
+            usePetContextStore.getState().updateWalks(1);
+          }
         }
       }
 

@@ -59,7 +59,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             set({ activePet: data || null, isLoading: false, error: null });
         }
     },
-    clearPet: () => set({ activePet: null }),
+    clearPet: () => set({ activePet: null, isLoading: true, error: null }),
 
     unlockItem: async (itemId: string) => {
         const { activePet } = get();

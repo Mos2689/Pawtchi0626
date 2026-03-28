@@ -85,3 +85,19 @@ export function calculateDailyKcal(
   const factor = getMERFactor(species, isNeutered, activityLevel, goal, ageMonths);
   return Math.round(rer * factor);
 }
+
+/**
+ * Derive a goal (lose/maintain/gain) by comparing current weight to target weight.
+ * Threshold of 0.5kg prevents trivial slider movements from changing the goal.
+ */
+export function deriveGoal(
+  currentWeightKg: number,
+  targetWeightKg: number | null | undefined,
+  threshold: number = 0.5
+): 'lose' | 'maintain' | 'gain' {
+  if (!targetWeightKg) return 'maintain';
+  const diff = targetWeightKg - currentWeightKg;
+  if (diff < -threshold) return 'lose';   // target below current = lose
+  if (diff > threshold) return 'gain';    // target above current = gain
+  return 'maintain';
+}

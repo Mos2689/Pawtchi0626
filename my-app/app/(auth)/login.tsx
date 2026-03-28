@@ -48,8 +48,8 @@ export default function LoginScreen() {
     } else if (data.session === null) {
       Alert.alert('Check your inbox', 'Please check your inbox for email verification!');
     } else {
-      // Direct them to onboarding immediately after successful registration
-      router.replace('/onboarding/species');
+      // Route to tabs — the tabs layout handles the "no pet → onboarding" redirect
+      router.replace('/(tabs)');
     }
   }
 

@@ -31,6 +31,7 @@ interface StreakState {
   awardCoins: (userId: string, action: string, referenceId?: string) => Promise<void>;
   deductCoins: (userId: string, amount: number) => Promise<boolean>;
   clearLastEarn: () => void;
+  clearStreak: () => void;
 }
 
 export const useStreakStore = create<StreakState>((set) => ({
@@ -74,14 +75,11 @@ export const useStreakStore = create<StreakState>((set) => ({
 
   awardCoins: async (userId: string, action: string, referenceId?: string) => {
     try {
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      const res = await fetch(`${supabaseUrl}/functions/v1/update-streak`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, action, referenceId }),
+      const { data, error } = await supabase.functions.invoke('update-streak', {
+        body: { userId, action, referenceId },
       });
 
-      const data = await res.json();
+      if (error) throw error;
 
       if (data.success) {
         const earnEvent: EarnEvent = {
@@ -141,4 +139,13 @@ export const useStreakStore = create<StreakState>((set) => ({
   },
 
   clearLastEarn: () => set({ lastEarnEvent: null }),
+
+  clearStreak: () => set({
+    currentStreak: 0,
+    longestStreak: 0,
+    pawCoins: 0,
+    lastLoggedDate: null,
+    isLoading: true,
+    lastEarnEvent: null,
+  }),
 }));
