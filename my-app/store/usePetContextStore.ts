@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import { useActivePetStore, Pet } from './useActivePetStore';
 import { computeNudge, Nudge } from '../lib/nudgeEngine';
+import { adjustDailyTarget, deriveGoal } from '../lib/healthMath';
 
 // ---- Supporting types ----
 
@@ -10,6 +11,7 @@ interface FoodScanSummary {
   ai_identified_food: string;
   ai_estimated_calories: number;
   created_at: string;
+  is_treat?: boolean;
 }
 
 interface ActivitySummary {
@@ -29,11 +31,16 @@ interface TodayData {
   todayWater: number;
   todayWalks: number;
   treatsConsumed: number;
+  treatCaloriesConsumed: number;
   todayScans: FoodScanSummary[];
   nextActivity: ActivitySummary | null;
+  todayActivityMinutes: number;
+  activityCompletionRate: number;
 }
 
 interface DerivedToday {
+  adjustedTarget: number;
+  adjustmentReason: string | null;
   caloriesRemaining: number;
   treatBudget: number;
   waterTarget: number;
@@ -47,6 +54,8 @@ interface TrendData {
   activityScore: { thisWeek: number; lastWeek: number } | null;
   hydrationScore: { avgMl: number; targetMl: number } | null;
   weightTrend: { latest: number; previous: number; direction: 'up' | 'down' | 'stable' } | null;
+  avgTreatsPerDay: number | null;
+  weeklyTreatCalPercent: number | null; // what % of weekly calories came from treats
 }
 
 interface ClinicalContext {
@@ -81,11 +90,16 @@ const initialTodayData: TodayData = {
   todayWater: 0,
   todayWalks: 0,
   treatsConsumed: 0,
+  treatCaloriesConsumed: 0,
   todayScans: [],
   nextActivity: null,
+  todayActivityMinutes: 0,
+  activityCompletionRate: 0,
 };
 
 const initialDerived: DerivedToday = {
+  adjustedTarget: 0,
+  adjustmentReason: null,
   caloriesRemaining: 0,
   treatBudget: 0,
   waterTarget: 0,
@@ -99,6 +113,8 @@ const initialTrends: TrendData = {
   activityScore: null,
   hydrationScore: null,
   weightTrend: null,
+  avgTreatsPerDay: null,
+  weeklyTreatCalPercent: null,
 };
 
 const initialClinical: ClinicalContext = {
@@ -148,17 +164,37 @@ function deriveClinical(pet: Pet | null): ClinicalContext {
   };
 }
 
-function computeDerived(today: TodayData, pet: Pet | null): DerivedToday {
-  const target = pet?.target_daily_calories || 0;
+function computeDerived(
+  today: TodayData,
+  pet: Pet | null,
+  weightTrend: TrendData['weightTrend'] | null = null,
+): DerivedToday {
+  const baseTarget = pet?.target_daily_calories || 0;
   const weightKg = pet?.current_weight_kg || 0;
   const waterTarget = Math.round(weightKg * 50);
 
+  // Dynamic daily budget: adjust base target based on activity + weight trends
+  const goal = deriveGoal(
+    pet?.current_weight_kg || 0,
+    pet?.target_weight_kg,
+  );
+  const { adjustedTarget, reason } = adjustDailyTarget(
+    baseTarget,
+    today.todayActivityMinutes,
+    weightTrend?.direction ?? null,
+    goal,
+  );
+
+  const target = adjustedTarget || baseTarget; // fallback to base if adjustment returns 0
+
   return {
-    caloriesRemaining: Math.max(0, target - today.todayCalories),
-    treatBudget: Math.max(0, Math.round(target * 0.1)),
+    adjustedTarget: target,
+    adjustmentReason: reason,
+    caloriesRemaining: target - today.todayCalories, // negative when over limit
+    treatBudget: Math.max(0, Math.round(Math.min(target * 0.1, target - today.todayCalories))),
     waterTarget,
     waterRemaining: Math.max(0, waterTarget - today.todayWater),
-    calPercent: target > 0 ? Math.min(Math.round((today.todayCalories / target) * 100), 100) : 0,
+    calPercent: target > 0 ? Math.round((today.todayCalories / target) * 100) : 0, // uncapped — lets nudge engine see true overage
     waterPercent: waterTarget > 0 ? Math.min(today.todayWater / waterTarget, 1) : 0,
   };
 }
@@ -169,8 +205,19 @@ function buildNudgeInput(state: PetContextState) {
     calPercent: state.calPercent,
     caloriesRemaining: state.caloriesRemaining,
     waterPercent: state.waterPercent,
+    todayWalks: state.todayWalks,
+    treatsConsumed: state.treatsConsumed,
+    treatCaloriesConsumed: state.treatCaloriesConsumed,
+    treatBudget: state.treatBudget,
+    todayActivityMinutes: state.todayActivityMinutes,
+    activityCompletionRate: state.activityCompletionRate,
     weightTrend: state.weightTrend,
-    clinical: state.clinical,
+    clinical: {
+      activityRestrictions: state.clinical.activityRestrictions,
+      medicalConditions: state.clinical.medicalConditions,
+    },
+    avgTreatsPerDay: state.avgTreatsPerDay,
+    weeklyTreatCalPercent: state.weeklyTreatCalPercent,
   };
 }
 
@@ -199,7 +246,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const today = getLocalYMD(new Date());
 
     try {
-      const [logRes, scansRes, activityRes] = await Promise.all([
+      const [logRes, scansRes, activityRes, completedActsRes] = await Promise.all([
         supabase
           .from('daily_logs')
           .select('calories_consumed, water_ml, walks_count, treats_consumed')
@@ -208,7 +255,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
           .single(),
         supabase
           .from('food_scans')
-          .select('id, ai_identified_food, ai_estimated_calories, created_at')
+          .select('id, ai_identified_food, ai_estimated_calories, created_at, is_treat')
           .eq('pet_id', petId)
           .gte('created_at', `${today}T00:00:00`)
           .order('created_at', { ascending: false })
@@ -222,18 +269,43 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
           .order('scheduled_time', { ascending: true })
           .limit(1)
           .single(),
+        // Fetch today's activity stats for nudge engine
+        supabase
+          .from('activities')
+          .select('duration_minutes, status')
+          .eq('pet_id', petId)
+          .eq('scheduled_date', today)
+          .in('activity_type', ['walk', 'play', 'training']),
       ]);
+
+      // Compute today's activity minutes and completion rate
+      const allActs = completedActsRes.data || [];
+      const completedActs = allActs.filter((a: any) => a.status === 'completed');
+      const todayActivityMinutes = completedActs.reduce(
+        (sum: number, a: any) => sum + (a.duration_minutes || 0), 0
+      );
+      const activityCompletionRate = allActs.length > 0
+        ? completedActs.length / allActs.length
+        : 0;
+
+      const scans = (scansRes.data as FoodScanSummary[]) || [];
+      const treatCaloriesConsumed = scans
+        .filter((s) => s.is_treat === true)
+        .reduce((sum, s) => sum + (s.ai_estimated_calories || 0), 0);
 
       const todayData: TodayData = {
         todayCalories: logRes.data?.calories_consumed || 0,
         todayWater: logRes.data?.water_ml || 0,
         todayWalks: logRes.data?.walks_count || 0,
         treatsConsumed: logRes.data?.treats_consumed || 0,
-        todayScans: (scansRes.data as FoodScanSummary[]) || [],
+        treatCaloriesConsumed,
+        todayScans: scans,
         nextActivity: (activityRes.data as ActivitySummary) || null,
+        todayActivityMinutes,
+        activityCompletionRate,
       };
 
-      const derived = computeDerived(todayData, pet);
+      const derived = computeDerived(todayData, pet, get().weightTrend);
       const clinical = deriveClinical(pet);
 
       set({
@@ -266,7 +338,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const fourteenStr = getLocalYMD(fourteenAgo);
 
     try {
-      const [logs7Res, actsThisRes, actsLastRes, waterRes, weightRes] = await Promise.all([
+      const [logs7Res, actsThisRes, actsLastRes, waterRes, weightRes, treats7Res, treatScans7Res] = await Promise.all([
         supabase
           .from('daily_logs')
           .select('calories_consumed, log_date')
@@ -301,6 +373,20 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
           .eq('pet_id', petId)
           .order('logged_at', { ascending: false })
           .limit(2),
+        // Treats over 7 days for average calculation
+        supabase
+          .from('daily_logs')
+          .select('treats_consumed')
+          .eq('pet_id', petId)
+          .gte('log_date', sevenStr)
+          .lte('log_date', todayStr),
+        // Treat scans over 7 days for calorie percentage
+        supabase
+          .from('food_scans')
+          .select('ai_estimated_calories, is_treat')
+          .eq('pet_id', petId)
+          .eq('is_treat', true)
+          .gte('created_at', `${sevenStr}T00:00:00`),
       ]);
 
       // Nutrition score: days within ±10% of target
@@ -340,11 +426,29 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         weightTrend = { latest, previous: latest, direction: 'stable' };
       }
 
+      // Average treats per day over 7 days
+      const treatsData = treats7Res.data || [];
+      const totalTreats = treatsData.reduce((s: number, l: any) => s + (l.treats_consumed || 0), 0);
+      const avgTreatsPerDay = treatsData.length > 0 ? totalTreats / treatsData.length : null;
+
+      // Weekly treat calorie percentage
+      const weeklyTreatCals = (treatScans7Res.data || []).reduce(
+        (s: number, scan: any) => s + (scan.ai_estimated_calories || 0), 0
+      );
+      const weeklyTotalCals = (logs7Res.data || []).reduce(
+        (s: number, l: any) => s + (l.calories_consumed || 0), 0
+      );
+      const weeklyTreatCalPercent = weeklyTotalCals > 0
+        ? Math.round((weeklyTreatCals / weeklyTotalCals) * 100)
+        : null;
+
       set({
         nutritionScore,
         activityScore,
         hydrationScore,
         weightTrend,
+        avgTreatsPerDay,
+        weeklyTreatCalPercent,
         isTrendsLoading: false,
       });
 
@@ -363,7 +467,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const pet = useActivePetStore.getState().activePet;
     const current = get();
     const todayData: TodayData = { ...current, todayCalories: newTotal };
-    const derived = computeDerived(todayData, pet);
+    const derived = computeDerived(todayData, pet, current.weightTrend);
     const nudge = computeNudge(buildNudgeInput({ ...current, todayCalories: newTotal, ...derived }));
     set({ todayCalories: newTotal, ...derived, nudge });
   },
@@ -372,7 +476,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const pet = useActivePetStore.getState().activePet;
     const current = get();
     const todayData: TodayData = { ...current, todayWater: newTotal };
-    const derived = computeDerived(todayData, pet);
+    const derived = computeDerived(todayData, pet, current.weightTrend);
     set({ todayWater: newTotal, ...derived });
   },
 

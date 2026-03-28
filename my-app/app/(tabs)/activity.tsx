@@ -8,6 +8,7 @@ import { supabase } from '../../lib/supabase';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
+import { contextualizeWalk } from '../../lib/contextualizer';
 import { useAuth } from '../../providers/AuthProvider';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
@@ -56,7 +57,7 @@ export default function ActivityScreen() {
   const [formDuration, setFormDuration] = useState(15);
   const [formDistance, setFormDistance] = useState('');
   const [formWater, setFormWater] = useState(250);
-  const [formIntensity, setFormIntensity] = useState<'low'|'moderate'|'high'>('moderate');
+  const [formIntensity, setFormIntensity] = useState<'low' | 'moderate' | 'high'>('moderate');
 
   const getLocalYMD = (d: Date) => {
     const year = d.getFullYear();
@@ -65,11 +66,12 @@ export default function ActivityScreen() {
     return `${year}-${month}-${day}`;
   };
 
+  const dateStr = getLocalYMD(currentDate);
+
   const fetchData = useCallback(async () => {
     if (!activePet) return;
     setIsLoading(true);
 
-    const dateStr = getLocalYMD(currentDate);
     const startOfDay = new Date(currentDate);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(currentDate);
@@ -108,7 +110,7 @@ export default function ActivityScreen() {
     } finally {
       setIsLoading(false);
     }
-  }, [activePet, currentDate]);
+  }, [activePet, currentDate, dateStr]);
 
   // Check last 7 days completion rate for auto-adjustment
   const fetchWeeklyStats = useCallback(async () => {
@@ -284,7 +286,7 @@ export default function ActivityScreen() {
     }
   };
 
-  // Auto-Adjustment: delete future pending + regenerate lighter schedule
+  // Auto-Adjustment: delete future pending + regenerate with performance context
   const adjustSchedule = async () => {
     if (!activePet) return;
     setIsAdjusting(true);
@@ -300,19 +302,55 @@ export default function ActivityScreen() {
         .eq('status', 'pending')
         .gt('scheduled_date', todayStr);
 
-      // Regenerate with adjusted context
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      const skippedPct = weeklyStats ? Math.round((weeklyStats.skipped / weeklyStats.total) * 100) : 0;
+      // Build performance context from weekly stats + context store
+      const contextStore = usePetContextStore.getState();
+      const completionRate = weeklyStats && weeklyStats.total > 0
+        ? weeklyStats.completed / weeklyStats.total
+        : 1;
+      const skippedCount = weeklyStats?.skipped ?? 0;
 
+      // Fetch average completed duration from last 7 days
+      const sevenAgo = new Date();
+      sevenAgo.setDate(sevenAgo.getDate() - 7);
+      const { data: completedActs } = await supabase
+        .from('activities')
+        .select('duration_minutes')
+        .eq('pet_id', activePet.id)
+        .eq('status', 'completed')
+        .in('activity_type', ['walk', 'play', 'training'])
+        .gte('scheduled_date', getLocalYMD(sevenAgo))
+        .lte('scheduled_date', todayStr);
+
+      const durations = (completedActs || [])
+        .map((a: any) => a.duration_minutes)
+        .filter((d: number | null) => d !== null && d > 0);
+      const avgCompletedDurationMins = durations.length > 0
+        ? Math.round(durations.reduce((s: number, d: number) => s + d, 0) / durations.length)
+        : null;
+
+      // Fatigue detection: more skipped than completed AND meaningful sample size
+      const fatigueDetected = weeklyStats
+        ? weeklyStats.skipped > weeklyStats.completed && weeklyStats.total >= 5
+        : false;
+
+      const performanceContext = {
+        lastWeekCompletionRate: completionRate,
+        lastWeekSkippedCount: skippedCount,
+        avgCompletedDurationMins,
+        todayCalPercent: contextStore.calPercent,
+        weightTrendDirection: contextStore.weightTrend?.direction ?? null,
+        fatigueDetected,
+      };
+
+      // Regenerate with performance-aware context
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
       const res = await fetch(`${supabaseUrl}/functions/v1/generate-schedule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          petProfile: {
-            ...activePet,
-            _adjustment_context: `The user missed ${skippedPct}% of tasks last week. Generate SHORTER, MORE ACHIEVABLE activities. Reduce walk durations by 30-50%. Keep water reminders. Make it feel encouraging, not punishing.`
-          },
+          petProfile: activePet,
           daysToGenerate: 7,
+          performanceContext,
         }),
       });
 
@@ -322,9 +360,13 @@ export default function ActivityScreen() {
       setShowAdjustBanner(false);
       setAdjustDismissed(true);
 
+      const adjustMsg = fatigueDetected
+        ? 'A gentler, enrichment-focused plan has been created. Small steps count!'
+        : `A lighter, more achievable plan has been generated across ${data.days_generated} days.`;
+
       Alert.alert(
-        'Schedule Adjusted! \u2728',
-        `A lighter, more achievable plan has been generated across ${data.days_generated} days.`,
+        'Schedule Adjusted! ✨',
+        adjustMsg,
         [{ text: 'Thank you!', onPress: () => fetchData() }]
       );
     } catch (e: any) {
@@ -432,7 +474,7 @@ export default function ActivityScreen() {
   const heroPlay = activities
     .filter(a => ['walk', 'play', 'training'].includes(a.activity_type) && a.status === 'completed')
     .reduce((sum, a) => sum + (a.duration_minutes || 0), 0);
-  
+
   // Calculate target play based on generated activities (or fallback to 30)
   const targetPlay = activities
     .filter(a => ['walk', 'play', 'training'].includes(a.activity_type))
@@ -452,13 +494,13 @@ export default function ActivityScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-      
+
       {/* Top Header */}
       <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <View style={styles.headerLeft}>
           <View style={[styles.avatarMini, { backgroundColor: '#FFFC00' }]}>
-            <Image 
-              source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=200' }} 
+            <Image
+              source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=200' }}
               style={styles.avatarMiniImg}
             />
           </View>
@@ -470,7 +512,7 @@ export default function ActivityScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
+
         {/* Daily Summary Hero */}
         <View style={[styles.heroSection, { backgroundColor: '#FFFC00' }]}>
           <View style={[styles.heroBlobRight, { backgroundColor: 'rgba(255,255,255,0.2)' }]} />
@@ -479,7 +521,7 @@ export default function ActivityScreen() {
           <View style={{ zIndex: 10 }}>
             <Text style={[styles.heroSubtitle, { color: '#1A1A1A', opacity: 0.8 }]}>TODAY&apos;S PULSE</Text>
             <Text style={[styles.heroTitle, { color: '#1A1A1A' }]}>{heroMessage}</Text>
-            
+
             {/* Completion Progress */}
             {totalScheduled > 0 && (
               <View style={styles.completionBar}>
@@ -526,23 +568,26 @@ export default function ActivityScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.adjustBannerTitle}>Busy week?</Text>
                 <Text style={styles.adjustBannerDesc}>
-                  I noticed some tasks were missed. Want me to build a lighter, more achievable plan for next week?
+                  {weeklyStats && weeklyStats.skipped > weeklyStats.completed
+                    ? `I noticed most tasks were skipped this week. Let me create a gentler plan with enrichment activities your pet will love.`
+                    : `I noticed some tasks were missed. Want me to build a lighter, more achievable plan based on what's been working?`
+                  }
                 </Text>
               </View>
             </View>
             <View style={styles.adjustBannerActions}>
-              <TouchableOpacity 
-                style={[styles.adjustBtnYes, isAdjusting && { opacity: 0.7 }]} 
+              <TouchableOpacity
+                style={[styles.adjustBtnYes, isAdjusting && { opacity: 0.7 }]}
                 onPress={adjustSchedule}
                 disabled={isAdjusting}
               >
-                {isAdjusting 
+                {isAdjusting
                   ? <ActivityIndicator color="#1A1A1A" size="small" />
                   : <Text style={styles.adjustBtnYesText}>Yes, adjust my plan</Text>
                 }
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.adjustBtnNo} 
+              <TouchableOpacity
+                style={styles.adjustBtnNo}
                 onPress={() => { setShowAdjustBanner(false); setAdjustDismissed(true); }}
               >
                 <Text style={styles.adjustBtnNoText}>I&apos;m good</Text>
@@ -588,8 +633,8 @@ export default function ActivityScreen() {
                 Let our AI coach plan your pet&apos;s week!{"\n"}
                 Walks, water, play, and grooming — all tailored to {activePet?.name || 'your pet'}&apos;s profile.
               </Text>
-              <TouchableOpacity 
-                style={[styles.generateBtn, isGenerating && { opacity: 0.7 }]} 
+              <TouchableOpacity
+                style={[styles.generateBtn, isGenerating && { opacity: 0.7 }]}
                 onPress={generateSchedule}
                 disabled={isGenerating}
                 activeOpacity={0.9}
@@ -616,7 +661,7 @@ export default function ActivityScreen() {
                 const isPending = item.status === 'pending';
                 const isCompleted = item.status === 'completed';
                 const isSkipped = item.status === 'skipped';
-                const timeStr = item.scheduled_time 
+                const timeStr = item.scheduled_time
                   ? item.scheduled_time.slice(0, 5)
                   : new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -642,10 +687,10 @@ export default function ActivityScreen() {
                 // Normal Activity
                 const typeDef = ACTIVITY_TYPES.find(t => t.id === item.activity_type) || ACTIVITY_TYPES[0];
                 return (
-                  <View 
-                    key={`act-${item.id}`} 
+                  <View
+                    key={`act-${item.id}`}
                     style={[
-                      styles.timelineCard, 
+                      styles.timelineCard,
                       { borderLeftColor: isSkipped ? '#e5e7eb' : typeDef.color },
                       isSkipped && { opacity: 0.5 },
                     ]}
@@ -654,7 +699,7 @@ export default function ActivityScreen() {
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                         {/* Status Checkmark */}
                         {isPending ? (
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={styles.checkCircleEmpty}
                             onPress={() => handleCheckTap(item)}
                             activeOpacity={0.7}
@@ -663,13 +708,13 @@ export default function ActivityScreen() {
                           </TouchableOpacity>
                         ) : (
                           <View style={[
-                            styles.checkCircleFilled, 
+                            styles.checkCircleFilled,
                             { backgroundColor: isCompleted ? '#FFFC00' : '#e5e7eb' }
                           ]}>
-                            <MaterialIcons 
-                              name={isCompleted ? "check" : "close"} 
-                              size={16} 
-                              color={isCompleted ? "#1A1A1A" : "#9ca3af"} 
+                            <MaterialIcons
+                              name={isCompleted ? "check" : "close"}
+                              size={16}
+                              color={isCompleted ? "#1A1A1A" : "#9ca3af"}
                             />
                           </View>
                         )}
@@ -690,7 +735,7 @@ export default function ActivityScreen() {
                     </View>
                     <Text style={[styles.cardTitle, { color: '#1A1A1A', marginLeft: isPending || isCompleted || isSkipped ? 44 : 0 }]}>{item.title}</Text>
                     {!!item.notes && <Text style={[styles.cardDesc, { color: '#515d64', marginLeft: isPending || isCompleted || isSkipped ? 44 : 0 }]}>{item.notes}</Text>}
-                    
+
                     <View style={[styles.cardTagsRow, { marginLeft: isPending || isCompleted || isSkipped ? 44 : 0 }]}>
                       {!!item.duration_minutes && (
                         <View style={styles.iconTag}>
@@ -702,6 +747,14 @@ export default function ActivityScreen() {
                         <View style={styles.iconTag}>
                           <MaterialIcons name="straighten" size={14} color="#E6E300" />
                           <Text style={[styles.iconTagText, { color: '#1A1A1A' }]}>{item.distance_km} km</Text>
+                        </View>
+                      )}
+                      {!item.distance_km && !!item.duration_minutes && ['walk', 'play'].includes(item.activity_type) && activePet?.current_weight_kg && (
+                        <View style={styles.iconTag}>
+                          <MaterialIcons name="straighten" size={14} color="#94a3b8" />
+                          <Text style={[styles.iconTagText, { color: '#94a3b8' }]}>
+                            {contextualizeWalk(item.duration_minutes, activePet.current_weight_kg)}
+                          </Text>
                         </View>
                       )}
                       {!!item.water_ml && (
@@ -719,14 +772,14 @@ export default function ActivityScreen() {
 
                     {/* Smart Completion Inline UI */}
                     {confirmingTaskId === item.id && (
-                      <View style={[styles.smartConfirm, { marginLeft: 44 }]}>  
+                      <View style={[styles.smartConfirm, { marginLeft: 44 }]}>
                         <Text style={styles.smartConfirmLabel}>How long did you go?</Text>
                         <View style={styles.smartConfirmRow}>
                           {[5, 10, 15, 20, 30, 45, 60].map(mins => {
                             const isScheduled = mins === (item.duration_minutes || 15);
                             const isSelected = mins === confirmingDuration;
                             return (
-                              <TouchableOpacity 
+                              <TouchableOpacity
                                 key={mins}
                                 style={[
                                   styles.smartChip,
@@ -747,14 +800,14 @@ export default function ActivityScreen() {
                           })}
                         </View>
                         <View style={styles.smartConfirmActions}>
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={styles.smartDoneBtn}
                             onPress={() => confirmCompletion(item, confirmingDuration)}
                           >
                             <MaterialIcons name="check" size={18} color="#1A1A1A" />
                             <Text style={styles.smartDoneBtnText}>Done</Text>
                           </TouchableOpacity>
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={styles.smartCancelBtn}
                             onPress={() => setConfirmingTaskId(null)}
                           >
@@ -773,8 +826,8 @@ export default function ActivityScreen() {
       </ScrollView>
 
       {/* FAB */}
-      <TouchableOpacity 
-        style={[styles.fab, { backgroundColor: '#FFFC00', bottom: insets.bottom + 90 }]} 
+      <TouchableOpacity
+        style={[styles.fab, { backgroundColor: '#FFFC00', bottom: insets.bottom + 90 }]}
         activeOpacity={0.9}
         onPress={() => setIsModalVisible(true)}
       >
@@ -803,8 +856,8 @@ export default function ActivityScreen() {
               {!selectedType ? (
                 <View style={styles.typeGrid}>
                   {ACTIVITY_TYPES.map(type => (
-                    <TouchableOpacity 
-                      key={type.id} 
+                    <TouchableOpacity
+                      key={type.id}
                       style={[styles.typeBtn, { backgroundColor: type.color }]}
                       onPress={() => setSelectedType(type.id)}
                     >
@@ -815,27 +868,27 @@ export default function ActivityScreen() {
                 </View>
               ) : (
                 <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0 }}>
-                  
+
                   {['medicine', 'vet_visit', 'grooming', 'other'].includes(selectedType) && (
                     <View style={styles.inputGroup}>
                       <Text style={styles.inputLabel}>Title</Text>
-                      <TextInput 
-                        style={styles.input} 
+                      <TextInput
+                        style={styles.input}
                         value={formTitle}
                         onChangeText={setFormTitle}
-                        placeholder={ACTIVITY_TYPES.find(t=>t.id===selectedType)?.label} 
+                        placeholder={ACTIVITY_TYPES.find(t => t.id === selectedType)?.label}
                       />
                     </View>
                   )}
 
                   {['walk', 'play', 'training'].includes(selectedType) && (
                     <View style={styles.inputGroup}>
-                      <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8}}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
                         <Text style={styles.inputLabel}>Duration</Text>
                         <Text style={styles.inputLabel}>{formDuration} mins</Text>
                       </View>
                       <Slider
-                        style={{width: '100%', height: 40}}
+                        style={{ width: '100%', height: 40 }}
                         minimumValue={5}
                         maximumValue={120}
                         step={5}
@@ -851,12 +904,12 @@ export default function ActivityScreen() {
                   {selectedType === 'walk' && (
                     <View style={styles.inputGroup}>
                       <Text style={styles.inputLabel}>Distance (km) - Optional</Text>
-                      <TextInput 
-                        style={styles.input} 
+                      <TextInput
+                        style={styles.input}
                         value={formDistance}
                         onChangeText={setFormDistance}
                         keyboardType="decimal-pad"
-                        placeholder="e.g. 2.5" 
+                        placeholder="e.g. 2.5"
                       />
                     </View>
                   )}
@@ -866,8 +919,8 @@ export default function ActivityScreen() {
                       <Text style={styles.inputLabel}>Water Amount (ml)</Text>
                       <View style={styles.presetRow}>
                         {[100, 250, 500, 1000].map(amt => (
-                          <TouchableOpacity 
-                            key={amt} 
+                          <TouchableOpacity
+                            key={amt}
                             style={[styles.presetBtn, formWater === amt && styles.presetBtnActive]}
                             onPress={() => setFormWater(amt)}
                           >
@@ -883,8 +936,8 @@ export default function ActivityScreen() {
                       <Text style={styles.inputLabel}>Intensity</Text>
                       <View style={styles.presetRow}>
                         {(['low', 'moderate', 'high'] as const).map(lvl => (
-                          <TouchableOpacity 
-                            key={lvl} 
+                          <TouchableOpacity
+                            key={lvl}
                             style={[styles.presetBtn, formIntensity === lvl && styles.presetBtnActive]}
                             onPress={() => setFormIntensity(lvl)}
                           >
@@ -897,23 +950,23 @@ export default function ActivityScreen() {
 
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Notes</Text>
-                    <TextInput 
-                      style={[styles.input, { height: 80, textAlignVertical: 'top' }]} 
+                    <TextInput
+                      style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
                       value={formNotes}
                       onChangeText={setFormNotes}
-                      placeholder="Add any details..." 
+                      placeholder="Add any details..."
                       multiline
                     />
                   </View>
 
-                  <TouchableOpacity 
-                    style={[styles.submitBtn, isSubmitting && {opacity: 0.7}]} 
+                  <TouchableOpacity
+                    style={[styles.submitBtn, isSubmitting && { opacity: 0.7 }]}
                     onPress={handleLogActivity}
                     disabled={isSubmitting}
                   >
-                     <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.submitGradient}>
-                       {isSubmitting ? <ActivityIndicator color="#1A1A1A" /> : <Text style={styles.submitText}>SAVE ACTIVITY</Text>}
-                     </LinearGradient>
+                    <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.submitGradient}>
+                      {isSubmitting ? <ActivityIndicator color="#1A1A1A" /> : <Text style={styles.submitText}>SAVE ACTIVITY</Text>}
+                    </LinearGradient>
                   </TouchableOpacity>
 
                   <TouchableOpacity style={styles.cancelBtn} onPress={resetForm} disabled={isSubmitting}>
@@ -975,7 +1028,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 24,
     paddingTop: 24,
-    paddingBottom: 160, 
+    paddingBottom: 160,
   },
   heroSection: {
     padding: 32,
@@ -1028,7 +1081,7 @@ const styles = StyleSheet.create({
     color: '#1A1A1A',
   },
   statUnit: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 10, fontWeight: '700', 
+    fontFamily: 'Plus Jakarta Sans', fontSize: 10, fontWeight: '700',
     color: '#1A1A1A', opacity: 0.5, marginTop: -2,
   },
   statLabel: {

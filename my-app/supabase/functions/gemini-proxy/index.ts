@@ -58,12 +58,17 @@ You MUST respond with ONLY valid JSON in this exact format, no markdown, no extr
   "food_name": "string",
   "calories_per_serving": number,
   "serving_size": "string (e.g. '1 cup / 240g')",
+  "is_treat": boolean,
   "is_allergy_trigger": boolean,
   "allergy_warnings": ["string array of specific warnings"],
   "ingredients_of_concern": ["string array"],
   "recommendation": "string",
   "confidence": number between 0 and 1
 }
+
+CLASSIFICATION RULE for "is_treat":
+- Set true for: dog/cat treats, biscuits, chews, dental sticks, jerky, training treats, rawhide, bones, snack products, table scraps, human food given as reward
+- Set false for: complete meals, kibble, wet food, raw diet, prescription diet, puppy/kitten food
 
 If you cannot read the label clearly, set confidence below 0.5 and explain in recommendation.`;
 

@@ -15,6 +15,7 @@ interface ScanResult {
   food_name: string;
   calories_per_serving: number;
   serving_size: string;
+  is_treat: boolean;
   is_allergy_trigger: boolean;
   allergy_warnings: string[];
   ingredients_of_concern: string[];
@@ -180,19 +181,26 @@ export default function LogScreen() {
         ai_estimated_calories: scanResult.calories_per_serving,
         ai_confidence_score: Math.round(scanResult.confidence * 100),
         is_user_confirmed: true,
+        is_treat: scanResult.is_treat === true,
       });
 
-      // 2. Upsert today's daily_log
+      // 2. Upsert today's daily_log (with treat tracking)
+      const isTreat = scanResult.is_treat === true;
       if (existingLog) {
-        await supabase.from('daily_logs').update({
+        const updateData: Record<string, unknown> = {
           calories_consumed: (existingLog.calories_consumed || 0) + scanResult.calories_per_serving,
           updated_at: new Date().toISOString(),
-        }).eq('id', existingLog.id);
+        };
+        if (isTreat) {
+          updateData.treats_consumed = (existingLog.treats_consumed || 0) + 1;
+        }
+        await supabase.from('daily_logs').update(updateData).eq('id', existingLog.id);
       } else {
         await supabase.from('daily_logs').insert({
           pet_id: activePet.id,
           log_date: today,
           calories_consumed: scanResult.calories_per_serving,
+          treats_consumed: isTreat ? 1 : 0,
         });
       }
 
@@ -200,9 +208,16 @@ export default function LogScreen() {
       const newCalTotal = (existingLog?.calories_consumed || 0) + scanResult.calories_per_serving;
       usePetContextStore.getState().updateCalories(newCalTotal);
 
+      // Build success message — with dinner reduction guidance for treats
+      const targetCal = activePet.target_daily_calories || 0;
+      const treatKcal = scanResult.calories_per_serving;
+      const dinnerReduction = isTreat && targetCal > 0
+        ? `\n\n🍽 Vet tip: Reduce tonight's dinner by ~${treatKcal} kcal (about ${Math.max(1, Math.round(treatKcal / 30))} tablespoon${treatKcal >= 60 ? 's' : ''} less kibble) to keep ${activePet.name} on target.`
+        : '';
+
       Alert.alert(
-        'Logged Successfully! 🎉',
-        `${scanResult.calories_per_serving} kcal from ${scanResult.food_name} has been added to ${activePet.name}'s daily tracker.`,
+        isTreat ? 'Treat Logged 🦴' : 'Logged Successfully! 🎉',
+        `${treatKcal} kcal from ${scanResult.food_name} has been added to ${activePet.name}'s daily tracker.${dinnerReduction}`,
         [{ text: 'OK', onPress: () => { setCapturedImage(null); setScanResult(null); fetchRecentScans(); } }]
       );
 

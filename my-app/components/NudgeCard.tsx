@@ -14,12 +14,16 @@ const iconMap: Record<string, { name: keyof typeof MaterialIcons.glyphMap; color
   suggest_walk: { name: 'directions-walk', color: '#FFFC00' },
   remind_log: { name: 'restaurant', color: '#FFFC00' },
   remind_water: { name: 'water-drop', color: '#3091F9' },
+  treat_ok: { name: 'celebration', color: '#4ade80' },
+  reduce_dinner: { name: 'restaurant-menu', color: '#fb923c' },
 };
 
 const routeMap: Record<string, string> = {
   suggest_walk: '/(tabs)/activity',
   remind_log: '/(tabs)/log',
   remind_water: '/(tabs)/activity',
+  treat_ok: '/(tabs)/log',
+  reduce_dinner: '/(tabs)/log',
 };
 
 export function NudgeCard({ isProfileComplete, onProfilePress }: NudgeCardProps) {
@@ -40,7 +44,8 @@ export function NudgeCard({ isProfileComplete, onProfilePress }: NudgeCardProps)
         <View style={styles.left}>
           <MaterialIcons name={icon.name} size={32} color={icon.color} />
           <View style={{ flex: 1 }}>
-            <Text style={[styles.title, !isAction && { color: '#e2e8f0' }]}>{nudge.message}</Text>
+            <Text style={[styles.title, !isAction && { color: '#e2e8f0' }]}>{nudge.title}</Text>
+            <Text style={styles.sub}>{nudge.message}</Text>
           </View>
         </View>
         {isAction && route && (
@@ -115,14 +120,15 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '800',
-    fontSize: 18,
+    fontSize: 16,
     color: '#FFFC00',
-    marginBottom: 2,
+    marginBottom: 4,
   },
   sub: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '500',
     fontSize: 13,
     color: '#94a3b8',
+    lineHeight: 18,
   },
 });

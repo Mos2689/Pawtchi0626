@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { petProfile, daysToGenerate } = await req.json()
+    const { petProfile, daysToGenerate, performanceContext } = await req.json()
     const numDays = daysToGenerate || 7;
     const petId = petProfile?.id;
     if (!petId) throw new Error('Pet ID is required.');
@@ -54,6 +54,56 @@ Deno.serve(async (req) => {
       weightRule = `WEIGHT MAINTENANCE: The pet is at their ideal healthy weight of ${targetWeightKg}kg. Prioritize sustaining this healthy baseline.`;
     }
 
+    // ── Build performance-aware prompt additions ──
+    let performanceRules = '';
+    let durationMultiplier = 1.0;
+
+    if (performanceContext) {
+      const cr = performanceContext.lastWeekCompletionRate ?? null;
+      const skipped = performanceContext.lastWeekSkippedCount ?? 0;
+      const avgDuration = performanceContext.avgCompletedDurationMins ?? null;
+      const calPercent = performanceContext.todayCalPercent ?? null;
+      const weightDir = performanceContext.weightTrendDirection ?? null;
+      const fatigued = performanceContext.fatigueDetected ?? false;
+
+      console.log(`[generate-schedule] Performance context: CR=${cr}, skipped=${skipped}, avgDur=${avgDuration}, calPct=${calPercent}, weightDir=${weightDir}, fatigue=${fatigued}`);
+
+      // Fatigue detection: user is overwhelmed, switch to gentle activities
+      if (fatigued) {
+        performanceRules += `\nADAPTIVE RULE — FATIGUE DETECTED: The owner has been struggling to keep up. Focus on ENRICHMENT and GENTLE PLAY over physical exercise. Suggest short nose-work games, gentle grooming sessions, and calm bonding activities. Keep everything under 15 minutes. Be encouraging, not demanding.`;
+        durationMultiplier = 0.5;
+      }
+      // Low completion: make activities shorter and more achievable
+      else if (cr !== null && cr < 0.5) {
+        performanceRules += `\nADAPTIVE RULE — LOW COMPLETION (${Math.round(cr * 100)}%): The owner completed less than half of last week's activities. Generate SHORTER, MORE ACHIEVABLE activities. Prioritize 5-10 minute quick wins. Use encouraging language in "why_its_good" — celebrate small efforts, don't guilt-trip.`;
+        durationMultiplier = 0.6;
+      }
+      // Moderate completion: slightly reduce
+      else if (cr !== null && cr < 0.7) {
+        performanceRules += `\nADAPTIVE RULE — MODERATE COMPLETION (${Math.round(cr * 100)}%): Activities are slightly too long. Shorten durations by ~20% and ensure variety to maintain engagement.`;
+        durationMultiplier = 0.8;
+      }
+
+      // If we know the average duration the user actually completes, cap suggestions
+      if (avgDuration !== null && avgDuration > 0 && !fatigued) {
+        performanceRules += `\nDURATION INSIGHT: The owner typically completes activities around ${avgDuration} minutes on average. Keep suggestions close to this sweet spot.`;
+      }
+
+      // Calorie-aware: if pet is running high on calories, add extra walk
+      if (calPercent !== null && calPercent > 85) {
+        performanceRules += `\nCALORIE CONTEXT: The pet's calorie intake is high (${calPercent}% of daily target). Include at least one extra moderate walk in the daily plan to help balance energy intake. A vet would recommend consistent moderate exercise for calorie management.`;
+      }
+
+      // Weight trending up: emphasize calorie-burning activities
+      if (weightDir === 'up') {
+        performanceRules += `\nWEIGHT TREND: Weight is trending up. Prioritize low-impact but consistent calorie-burning activities (brisk walks, fetch). Avoid treat-based training games unless using measured kibble from daily allowance.`;
+      }
+      // Weight trending down toward goal: celebrate and maintain
+      else if (weightDir === 'down') {
+        performanceRules += `\nWEIGHT TREND: Weight is trending down (good progress toward goal). Maintain current activity levels. Mention progress encouragingly in "why_its_good".`;
+      }
+    }
+
     const systemPrompt = `You are an empathetic, practical pet care expert.
 Your job is to generate a pool of 8 highly personalized, actionable "Activity Archetypes" for the pet below.
 
@@ -69,6 +119,7 @@ ${weightRule}
 - Medical Conditions: ${petProfile?.medical_conditions?.join(', ') || 'None'}
 - Allergies: ${petProfile?.allergies?.join(', ') || 'None'}
 - Activity Level: ${petProfile?.activity_level || 'moderate'}
+${performanceRules}
 
 RULES (CRITICAL):
 1. Focus on Practical Personalization. Do not use pretentious buzzwords. Suggest actionable mini-games, indoor puzzles, or specific types of walks.
@@ -126,6 +177,14 @@ Respond ONLY with valid JSON matching this schema:
 
     const archetypes = parsedArchetypes.archetypes || [];
     if (archetypes.length === 0) throw new Error('AI returned 0 archetypes.');
+
+    // Apply duration multiplier from performance context
+    if (durationMultiplier !== 1.0) {
+      console.log(`[generate-schedule] Applying duration multiplier: ${durationMultiplier}x`);
+      for (const arch of archetypes) {
+        arch.duration_minutes = Math.max(5, Math.round(arch.duration_minutes * durationMultiplier));
+      }
+    }
 
     // Helper to get a random archetype
     const getRandomArchetype = () => archetypes[Math.floor(Math.random() * archetypes.length)];

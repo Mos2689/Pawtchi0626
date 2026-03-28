@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
   Modal, TextInput, Alert, ActivityIndicator,
+  KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -11,6 +12,7 @@ import * as ImagePicker from 'expo-image-picker';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
@@ -30,6 +32,9 @@ export default function HealthScreen() {
   const [recentAllergyScans, setRecentAllergyScans] = useState<any[]>([]);
   const [healthInsight, setHealthInsight] = useState<any>(null);
 
+
+  // Loading state for health data fetch
+  const [isLoading, setIsLoading] = useState(true);
 
   // Weight log modal
   const [showWeightModal, setShowWeightModal] = useState(false);
@@ -277,6 +282,12 @@ export default function HealthScreen() {
         await useActivePetStore.getState().fetchPet(user.id);
       }
 
+      // Refresh context store so dynamic budget recalculates with new weight trend
+      if (activePet.id) {
+        usePetContextStore.getState().refreshTrends(activePet.id);
+        usePetContextStore.getState().refreshToday(activePet.id);
+      }
+
       setShowWeightModal(false);
       setWeightInput('');
       setWeightNotes('');
@@ -363,7 +374,7 @@ export default function HealthScreen() {
             <View style={styles.insightTop}>
               <View style={styles.insightBadge}>
                 <MaterialIcons name="auto-awesome" size={14} color="#fac129" />
-                <Text style={styles.insightBadgeText}>AI HEALTH INSIGHT</Text>
+                <Text style={styles.insightBadgeText}>WEEKLY REFLECTION</Text>
               </View>
               {healthInsight ? (
                 <TouchableOpacity onPress={generateHealthInsight} disabled={isGeneratingInsight}>
@@ -376,8 +387,98 @@ export default function HealthScreen() {
                 <ActivityIndicator color="#fac129" />
                 <Text style={styles.insightText}>Analyzing {activePet?.name || 'your pet'}&apos;s health data...</Text>
               </View>
+            ) : healthInsight?.insight_data ? (
+              <>
+                {/* Structured Insight */}
+                <Text style={[styles.insightText, { fontSize: 17, fontWeight: '800', marginBottom: 16 }]}>
+                  {healthInsight.insight_data.headline}
+                </Text>
+
+                {/* Wins */}
+                {healthInsight.insight_data.wins?.length > 0 && (
+                  <View style={{ marginBottom: 12 }}>
+                    {healthInsight.insight_data.wins.map((win: string, i: number) => (
+                      <View key={`win-${i}`} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                        <Text style={{ fontSize: 14, marginTop: 1 }}>✅</Text>
+                        <Text style={[styles.insightText, { flex: 1, fontSize: 14 }]}>{win}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Concerns */}
+                {healthInsight.insight_data.concerns?.length > 0 && (
+                  <View style={{ marginBottom: 12 }}>
+                    {healthInsight.insight_data.concerns.map((concern: string, i: number) => (
+                      <View key={`concern-${i}`} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                        <Text style={{ fontSize: 14, marginTop: 1 }}>⚠️</Text>
+                        <Text style={[styles.insightText, { flex: 1, fontSize: 14, color: '#fbbf24' }]}>{concern}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Actionable Tip */}
+                {healthInsight.insight_data.tip && (
+                  <View style={{
+                    backgroundColor: 'rgba(250,193,41,0.1)',
+                    borderRadius: 14,
+                    padding: 14,
+                    marginBottom: 12,
+                    borderLeftWidth: 3,
+                    borderLeftColor: '#fac129',
+                  }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                      <MaterialIcons name="lightbulb" size={16} color="#fac129" />
+                      <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 12, color: '#fac129', letterSpacing: 0.5 }}>
+                        THIS WEEK&apos;S TIP
+                      </Text>
+                    </View>
+                    <Text style={[styles.insightText, { fontSize: 14 }]}>{healthInsight.insight_data.tip}</Text>
+                  </View>
+                )}
+
+                {/* Comparison Chips */}
+                {healthInsight.insight_data.comparison && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                    {[
+                      { label: 'Calories', value: healthInsight.insight_data.comparison.caloriesVsLastWeek, icon: 'restaurant' },
+                      { label: 'Activity', value: healthInsight.insight_data.comparison.activityVsLastWeek, icon: 'directions-run' },
+                      { label: 'Water', value: healthInsight.insight_data.comparison.waterVsLastWeek, icon: 'water-drop' },
+                    ].filter(c => c.value && c.value !== 'N/A').map((chip) => {
+                      const isPositive = chip.label === 'Calories'
+                        ? chip.value.startsWith('-') // less calories = good (if trying to lose)
+                        : chip.value.startsWith('+') || !chip.value.startsWith('-'); // more activity/water = good
+                      return (
+                        <View key={chip.label} style={{
+                          flexDirection: 'row', alignItems: 'center', gap: 6,
+                          backgroundColor: 'rgba(255,255,255,0.08)',
+                          paddingHorizontal: 12, paddingVertical: 6,
+                          borderRadius: 12,
+                        }}>
+                          <MaterialIcons name={chip.icon as any} size={14} color="#94a3b8" />
+                          <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, color: '#94a3b8' }}>
+                            {chip.label}
+                          </Text>
+                          <Text style={{
+                            fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 12,
+                            color: chip.value === '0%' || chip.value === '+0%' ? '#94a3b8' : isPositive ? '#4ade80' : '#fb923c',
+                          }}>
+                            {chip.value}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+
+                <Text style={[styles.insightTime, { marginTop: 4 }]}>
+                  Generated {new Date(healthInsight.generated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                </Text>
+              </>
             ) : healthInsight ? (
               <>
+                {/* Fallback: plain text insight (backward compatible) */}
                 <Text style={styles.insightText}>{healthInsight.insight_text}</Text>
                 <Text style={[styles.insightTime, { marginTop: 12 }]}>
                   Generated {new Date(healthInsight.generated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
@@ -386,7 +487,7 @@ export default function HealthScreen() {
             ) : (
               <View style={{ alignItems: 'center', paddingVertical: 12 }}>
                 <MaterialIcons name="psychology" size={32} color="#475569" />
-                <Text style={[styles.insightText, { textAlign: 'center', marginTop: 8 }]}>Tap to generate your first AI health insight</Text>
+                <Text style={[styles.insightText, { textAlign: 'center', marginTop: 8 }]}>Tap to generate your first weekly reflection</Text>
               </View>
             )}
           </LinearGradient>
@@ -634,54 +735,62 @@ export default function HealthScreen() {
 
       {/* Weight Log Modal */}
       <Modal visible={showWeightModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHandle} />
-            <Text style={styles.modalTitle}>Log Weight</Text>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <KeyboardAvoidingView
+            style={styles.modalOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <View style={styles.modalContent}>
+              <View style={styles.modalHandle} />
+              <Text style={styles.modalTitle}>Log Weight</Text>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Weight (kg)</Text>
-              <TextInput
-                style={styles.input}
-                value={weightInput}
-                onChangeText={setWeightInput}
-                keyboardType="decimal-pad"
-                placeholder="e.g. 24.5"
-                placeholderTextColor="#94a3b8"
-              />
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Weight (kg)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={weightInput}
+                  onChangeText={setWeightInput}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 24.5"
+                  placeholderTextColor="#94a3b8"
+                  returnKeyType="done"
+                  onSubmitEditing={Keyboard.dismiss}
+                />
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Notes (optional)</Text>
+                <TextInput
+                  style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
+                  value={weightNotes}
+                  onChangeText={setWeightNotes}
+                  multiline
+                  placeholder="Any observations..."
+                  placeholderTextColor="#94a3b8"
+                  blurOnSubmit
+                />
+              </View>
+
+              <TouchableOpacity
+                style={[styles.saveBtn, isSavingWeight && { opacity: 0.7 }]}
+                onPress={() => { Keyboard.dismiss(); saveWeightLog(); }}
+                disabled={isSavingWeight}
+                activeOpacity={0.9}
+              >
+                <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.saveBtnGradient}>
+                  {isSavingWeight
+                    ? <ActivityIndicator color="#1A1A1A" />
+                    : <Text style={styles.saveBtnText}>SAVE WEIGHT</Text>
+                  }
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowWeightModal(false); }} style={styles.cancelBtn}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
             </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Notes (optional)</Text>
-              <TextInput
-                style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-                value={weightNotes}
-                onChangeText={setWeightNotes}
-                multiline
-                placeholder="Any observations..."
-                placeholderTextColor="#94a3b8"
-              />
-            </View>
-
-            <TouchableOpacity
-              style={[styles.saveBtn, isSavingWeight && { opacity: 0.7 }]}
-              onPress={saveWeightLog}
-              disabled={isSavingWeight}
-              activeOpacity={0.9}
-            >
-              <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.saveBtnGradient}>
-                {isSavingWeight
-                  ? <ActivityIndicator color="#1A1A1A" />
-                  : <Text style={styles.saveBtnText}>SAVE WEIGHT</Text>
-                }
-              </LinearGradient>
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={() => setShowWeightModal(false)} style={styles.cancelBtn}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+          </KeyboardAvoidingView>
+        </TouchableWithoutFeedback>
       </Modal>
     </View>
   );

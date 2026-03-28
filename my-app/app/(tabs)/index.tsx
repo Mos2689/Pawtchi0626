@@ -13,6 +13,7 @@ import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import CircularProgress from '../../components/CircularProgress';
 import { NudgeCard } from '../../components/NudgeCard';
+import { contextualizeCalories, contextualizeWater } from '../../lib/contextualizer';
 
 // Screen 8: Home Dashboard
 export default function HomeScreen() {
@@ -31,6 +32,11 @@ export default function HomeScreen() {
   const calPercent = usePetContextStore(s => s.calPercent);
   const waterPercent = usePetContextStore(s => s.waterPercent);
   const caloriesRemaining = usePetContextStore(s => s.caloriesRemaining);
+  const treatBudget = usePetContextStore(s => s.treatBudget);
+  const treatsConsumed = usePetContextStore(s => s.treatsConsumed);
+  const treatCaloriesConsumed = usePetContextStore(s => s.treatCaloriesConsumed);
+  const adjustedTarget = usePetContextStore(s => s.adjustedTarget);
+  const adjustmentReason = usePetContextStore(s => s.adjustmentReason);
   const refreshToday = usePetContextStore(s => s.refreshToday);
 
   const isProfileComplete = !!(
@@ -39,7 +45,8 @@ export default function HomeScreen() {
     activePet.diet_type.length > 0
   );
 
-  const targetCal = activePet?.target_daily_calories || 0;
+  const baseTargetCal = activePet?.target_daily_calories || 0;
+  const targetCal = adjustedTarget || baseTargetCal; // dynamic target (may differ from base)
   const walksPercent = Math.min(todayWalks / 2, 1);
 
   useFocusEffect(
@@ -176,6 +183,11 @@ export default function HomeScreen() {
                <MaterialIcons name="water-drop" size={24} color="#3091F9" />
              </CircularProgress>
              <Text style={[styles.ringLabel, { color: '#5c5b5b', marginTop: 4 }]}>{todayWater > 0 ? `${todayWater}ml` : 'WATER'}</Text>
+             {todayWater > 0 && activePet?.current_weight_kg && (
+               <Text style={[styles.ringLabel, { color: '#94a3b8', fontSize: 9, marginTop: 1 }]}>
+                 {contextualizeWater(todayWater, activePet.current_weight_kg)}
+               </Text>
+             )}
           </View>
 
         </View>
@@ -188,10 +200,27 @@ export default function HomeScreen() {
               <Text style={[styles.caloriesLabel, { color: '#5b5c5a' }]}>CALORIES</Text>
               <Text style={[styles.caloriesValue, { color: '#2e2f2d' }]}>{todayCalories}</Text>
               <Text style={[styles.caloriesSub, { color: '#5b5c5a' }]}>/ {targetCal} kcal</Text>
-              <Text style={[styles.caloriesSub, { color: '#94a3b8', fontSize: 12 }]}>{caloriesRemaining} remaining</Text>
+              <Text style={[styles.caloriesSub, { color: caloriesRemaining < 0 ? '#ef4444' : '#94a3b8', fontSize: 12, fontWeight: caloriesRemaining < 0 ? '800' : '700' }]}>
+                {caloriesRemaining >= 0 ? `${caloriesRemaining} remaining` : `${Math.abs(caloriesRemaining)} over`}
+              </Text>
+              {todayCalories > 0 && (
+                <Text style={[styles.caloriesSub, { color: '#94a3b8', fontSize: 10, marginTop: 1 }]}>
+                  {contextualizeCalories(todayCalories)}
+                </Text>
+              )}
+              {adjustmentReason && (
+                <Text style={[styles.caloriesSub, {
+                  fontSize: 10,
+                  marginTop: 2,
+                  color: adjustmentReason.includes('Trending up') || adjustmentReason.includes('dipping') ? '#f59e0b' : '#16a34a',
+                  fontWeight: '600',
+                }]}>
+                  {adjustmentReason}
+                </Text>
+              )}
               {targetCal > 0 && (
                 <View style={styles.progressBarBg}>
-                  <View style={[styles.progressBarFill, { width: `${calPercent}%`, backgroundColor: calPercent > 90 ? '#ef4444' : '#FFFC00' }]} />
+                  <View style={[styles.progressBarFill, { width: `${Math.min(calPercent, 100)}%`, backgroundColor: calPercent > 90 ? '#ef4444' : '#FFFC00' }]} />
                 </View>
               )}
             </View>
@@ -220,6 +249,36 @@ export default function HomeScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Treat Budget Pill */}
+        {targetCal > 0 && (() => {
+          const overLimit = caloriesRemaining < 0;
+          const treatBudgetLeft = Math.max(0, treatBudget - treatCaloriesConsumed);
+          const treatWarning = overLimit || treatBudgetLeft === 0;
+          const dinnerReduction = treatCaloriesConsumed > 0 ? treatCaloriesConsumed : 0;
+          return (
+            <TouchableOpacity
+              style={[styles.treatPill, {
+                backgroundColor: treatWarning ? '#fef2f2' : '#f0fdf4',
+                borderColor: treatWarning ? '#fecaca' : '#bbf7d0',
+              }]}
+              onPress={() => router.push('/(tabs)/log')}
+              activeOpacity={0.85}
+            >
+              <Text style={{ fontSize: 16 }}>{treatWarning ? '⚠️' : '🦴'}</Text>
+              <Text style={[styles.treatPillText, {
+                color: treatWarning ? '#dc2626' : '#16a34a',
+              }]}>
+                {overLimit
+                  ? `No treat budget — ${Math.abs(caloriesRemaining)} kcal over daily limit`
+                  : treatsConsumed > 0
+                    ? `${treatsConsumed} treat${treatsConsumed !== 1 ? 's' : ''} (${treatCaloriesConsumed} kcal) · Reduce dinner by ${dinnerReduction} kcal`
+                    : `Treat budget: ${treatBudget} kcal available`
+                }
+              </Text>
+            </TouchableOpacity>
+          );
+        })()}
 
         {/* Streak Break Encouragement — Loss Aversion Nudge */}
         {currentStreak === 0 && longestStreak > 0 && (
@@ -583,7 +642,22 @@ const styles = StyleSheet.create({
   bentoGrid: {
     flexDirection: 'row',
     gap: 16,
+    marginBottom: 12,
+  },
+  treatPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
     marginBottom: 16,
+  },
+  treatPillText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 13,
   },
   caloriesCard: {
     flex: 1,
