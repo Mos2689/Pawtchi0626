@@ -1,17 +1,22 @@
 {
   "expo": {
-    "name": "my-app",
-    "slug": "my-app",
+    "name": "Pawtchi",
+    "slug": "pawtchi",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "myapp",
+    "scheme": "pawtchi",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "owner": "hey_mousami",
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.pawtchi.app",
+      "permissions": [
+        "INTERNET"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -43,6 +48,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "41552d8e-7b06-463c-a6d8-2a9c97461071"
+      }
     }
   }
 }
