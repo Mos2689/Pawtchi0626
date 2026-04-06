@@ -30,7 +30,7 @@ export default function SpeciesScreen() {
         {/* Progress Indicator */}
         <View style={styles.progressSection}>
           <View style={styles.progressTextRow}>
-            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 1 OF 6</Text>
+            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 1 OF 5</Text>
             <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>SPECIES</Text>
           </View>
           <View style={[styles.progressBarBg, { backgroundColor: '#F1F3F5' }]}>

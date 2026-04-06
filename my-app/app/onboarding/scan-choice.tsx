@@ -18,7 +18,7 @@ export default function ScanChoiceScreen() {
     species,
     setName, setBreed, setGender, setIsNeutered,
     setWeight, setAgeYears, setAgeMonths,
-    setAllergies, setBodyConditionScore,
+    setAllergies, setMedicalConditions, setBodyConditionScore,
   } = usePetStore();
 
   const pickImage = async (source: 'camera' | 'gallery') => {
@@ -80,6 +80,9 @@ export default function ScanChoiceScreen() {
       if (extracted.allergies && extracted.allergies.length > 0) {
         setAllergies(extracted.allergies);
       }
+      if (extracted.medical_conditions && extracted.medical_conditions.length > 0) {
+        setMedicalConditions(extracted.medical_conditions);
+      }
       if (extracted.body_condition_score) {
         setBodyConditionScore(extracted.body_condition_score);
       }
@@ -136,7 +139,7 @@ export default function ScanChoiceScreen() {
         {/* Progress */}
         <View style={styles.progressSection}>
           <View style={styles.progressTextRow}>
-            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 2 OF 6</Text>
+            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 2 OF 5</Text>
             <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>QUICK START</Text>
           </View>
           <View style={[styles.progressBarBg, { backgroundColor: '#F1F3F5' }]}>
@@ -170,13 +173,13 @@ export default function ScanChoiceScreen() {
             <View style={styles.cardsContainer}>
               {/* Camera Card */}
               <TouchableOpacity
-                style={[styles.card, { backgroundColor: '#FFFFFF', borderColor: '#FFFC00', borderWidth: 3 }]}
+                style={[styles.card, { backgroundColor: '#FFFFFF', borderColor: '#FFFC00', borderWidth: 2 }]}
                 onPress={() => handleScan('camera')}
                 activeOpacity={0.9}
               >
                 <View style={styles.cardContent}>
                   <View style={[styles.iconCircle, { backgroundColor: '#FFFDE0' }]}>
-                    <MaterialIcons name="photo-camera" size={32} color="#000" />
+                    <MaterialIcons name="photo-camera" size={24} color="#000" />
                   </View>
                   <Text style={[styles.cardTitle, { color: theme['on-surface'] }]}>Take a Photo</Text>
                   <Text style={[styles.cardSubtitle, { color: theme['on-surface-variant'] }]}>
@@ -187,13 +190,13 @@ export default function ScanChoiceScreen() {
 
               {/* Gallery Card */}
               <TouchableOpacity
-                style={[styles.card, { backgroundColor: '#F8F9FA', borderColor: '#DEE2E6' }]}
+                style={[styles.card, { backgroundColor: '#F8F9FA', borderColor: '#DEE2E6', borderWidth: 2 }]}
                 onPress={() => handleScan('gallery')}
                 activeOpacity={0.9}
               >
                 <View style={styles.cardContent}>
                   <View style={[styles.iconCircle, { backgroundColor: '#F1F3F5' }]}>
-                    <MaterialIcons name="photo-library" size={32} color="#495057" />
+                    <MaterialIcons name="photo-library" size={24} color="#495057" />
                   </View>
                   <Text style={[styles.cardTitle, { color: theme['on-surface'] }]}>From Gallery</Text>
                   <Text style={[styles.cardSubtitle, { color: theme['on-surface-variant'] }]}>
@@ -203,35 +206,32 @@ export default function ScanChoiceScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Tips */}
-            <View style={[styles.tipsCard, { backgroundColor: '#F8F9FA' }]}>
-              <Text style={[styles.tipsTitle, { color: theme['on-surface'] }]}>Tips for best results</Text>
-              <View style={styles.tipRow}>
-                <MaterialIcons name="check-circle" size={16} color="#868E96" />
-                <Text style={[styles.tipText, { color: theme['on-surface-variant'] }]}>Use a well-lit, flat surface</Text>
-              </View>
-              <View style={styles.tipRow}>
-                <MaterialIcons name="check-circle" size={16} color="#868E96" />
-                <Text style={[styles.tipText, { color: theme['on-surface-variant'] }]}>Include the header with pet name & details</Text>
-              </View>
-              <View style={styles.tipRow}>
-                <MaterialIcons name="check-circle" size={16} color="#868E96" />
-                <Text style={[styles.tipText, { color: theme['on-surface-variant'] }]}>Vet reports, vaccination cards, or discharge notes all work</Text>
-              </View>
+            <View style={styles.dividerContainer}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>OR</Text>
+              <View style={styles.dividerLine} />
             </View>
 
             {/* Manual Entry */}
             <View style={styles.footerSection}>
               <TouchableOpacity
-                style={styles.skipBtn}
+                style={styles.manualBtn}
                 onPress={() => router.push('/onboarding/vitals')}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.skipText, { color: theme['on-surface-variant'] }]}>
-                  I don't have a report — enter details manually
+                <MaterialIcons name="edit" size={20} color={theme['on-surface']} />
+                <Text style={[styles.manualText, { color: theme['on-surface'] }]}>
+                  Enter details manually
                 </Text>
-                <MaterialIcons name="arrow-forward" size={18} color={theme['on-surface-variant']} />
               </TouchableOpacity>
+            </View>
+
+            {/* Compact Tips */}
+            <View style={styles.compactTips}>
+              <MaterialIcons name="info-outline" size={16} color="#868E96" style={{ marginTop: 2 }} />
+              <Text style={[styles.compactTipsText, { color: theme['on-surface-variant'] }]}>
+                Works with vet reports, vaccination cards, or discharge notes. Well-lit photos work best!
+              </Text>
             </View>
           </>
         )}
@@ -298,73 +298,104 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 6,
   },
-  headlineSection: { marginBottom: 40 },
+  headlineSection: { marginBottom: 24 },
   mainHeading: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '800',
-    fontSize: 32,
-    lineHeight: 38,
+    fontSize: 28,
+    lineHeight: 34,
     letterSpacing: -1,
-    marginBottom: 16,
+    marginBottom: 8,
   },
   subHeading: {
     fontFamily: 'Plus Jakarta Sans',
-    fontSize: 17,
-    lineHeight: 26,
+    fontSize: 15,
+    lineHeight: 22,
   },
   cardsContainer: {
-    gap: 16,
-    marginBottom: 32,
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
   },
   card: {
-    borderRadius: 20,
+    flex: 1,
+    borderRadius: 16,
     borderWidth: 1,
-    padding: 24,
+    padding: 16,
   },
   cardContent: {
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
   },
   iconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 4,
+    // marginBottom removed to save space
   },
   cardTitle: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '800',
-    fontSize: 20,
+    fontSize: 15,
+    textAlign: 'center',
   },
   cardSubtitle: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '500',
-    fontSize: 15,
+    fontSize: 12,
     textAlign: 'center',
   },
-  tipsCard: {
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 32,
-    gap: 10,
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+    paddingHorizontal: 20,
   },
-  tipsTitle: {
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E7EB',
+  },
+  dividerText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 13,
+    color: '#9CA3AF',
+    paddingHorizontal: 16,
+  },
+  footerSection: {
+    marginBottom: 24,
+  },
+  manualBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 16,
+    gap: 8,
+  },
+  manualText: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '700',
     fontSize: 15,
-    marginBottom: 4,
   },
-  tipRow: {
+  compactTips: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    backgroundColor: '#F8F9FA',
+    padding: 16,
+    borderRadius: 16,
+    gap: 12,
+    alignItems: 'flex-start',
   },
-  tipText: {
+  compactTipsText: {
     fontFamily: 'Plus Jakarta Sans',
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     flex: 1,
   },
   scanningContainer: {
@@ -383,20 +414,5 @@ const styles = StyleSheet.create({
   scanningSubtext: {
     fontFamily: 'Plus Jakarta Sans',
     fontSize: 15,
-  },
-  footerSection: {
-    marginTop: 'auto',
-  },
-  skipBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 16,
-    gap: 8,
-  },
-  skipText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 16,
   },
 });

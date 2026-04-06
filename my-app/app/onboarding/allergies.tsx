@@ -18,15 +18,19 @@ export default function AllergiesScreen() {
   const theme = Colors.light;
   const insets = useSafeAreaInsets();
 
-  const { species, breed, name, setAllergies } = usePetStore();
-
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [noneSelected, setNoneSelected] = useState(true);
-  const [customAllergens, setCustomAllergens] = useState<string[]>([]);
-  const [customInput, setCustomInput] = useState('');
+  const { species, breed, name, allergies, setAllergies } = usePetStore();
 
   const breedDefaults = getBreedDefaults(species, breed);
   const breedAllergens = breedDefaults?.commonAllergens ?? [];
+
+  const initialCustom = (allergies || []).filter(
+    a => !COMMON_ALLERGENS.includes(a) && !breedAllergens.includes(a)
+  );
+
+  const [selected, setSelected] = useState<Set<string>>(new Set(allergies || []));
+  const [noneSelected, setNoneSelected] = useState((allergies || []).length === 0);
+  const [customAllergens, setCustomAllergens] = useState<string[]>(initialCustom);
+  const [customInput, setCustomInput] = useState('');
 
   const toggleAllergen = (allergen: string) => {
     setSelected(prev => {
@@ -87,7 +91,7 @@ export default function AllergiesScreen() {
           <Text style={[styles.headerTitle, { color: theme['on-surface'] }]}>Pet Journey</Text>
         </View>
         <View style={[styles.stepBadge, { backgroundColor: '#F1F5F9' }]}>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 4 of 6</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 4 of 5</Text>
         </View>
       </View>
 

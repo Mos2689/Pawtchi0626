@@ -49,8 +49,7 @@ ${weightRule}
 - Medical Conditions: ${petProfile?.medical_conditions?.join(', ') || 'None reported'}
 - Current Diet: ${petProfile?.diet_type?.join(', ') || 'Unknown'}
 - Daily Calorie Target: ${petProfile?.target_daily_calories || '?'} kcal
-- Regular Food Brands: ${petProfile?.food_brands ? `Kibble: [${(petProfile.food_brands.kibble || []).join(', ') || 'Not set'}], Treats: [${(petProfile.food_brands.treats || []).join(', ') || 'Not set'}], Wet Food: [${(petProfile.food_brands.wet_food || []).join(', ') || 'Not set'}]` : 'Not set'}
-- Typical Bowl Size: ${petProfile?.bowl_size || 'Unknown'}
+- Known Food Pantry: ${petProfile?.food_pantry && petProfile.food_pantry.length > 0 ? petProfile.food_pantry.map((p: any) => `${p.brand} ${p.product_name} (${p.food_type}${p.is_primary ? ', primary' : ''}): ${p.kcal_per_serving || '?'} kcal/${p.serving_unit || 'serving'}`).join('; ') : 'No foods registered yet'}
 
 IMPORTANT RULES:
 1. Extract the food name, calorie content per serving, and serving size from the image.
@@ -58,26 +57,39 @@ IMPORTANT RULES:
 3. Identify ingredients of concern for the pet's species and medical conditions.
 4. Provide a short recommendation (1-2 sentences).
 5. ALWAYS PROVIDE A CALORIE ESTIMATE: If the label is missing or it is just "unknown kibble", use generic averages (e.g., standard dry food is ~350 kcal/cup). NEVER return null or 0 for calories_per_serving.
-6. BRAND AWARENESS & UNLABELED ITEMS: If the image shows generic, unlabeled food OR a loose treat/chew WITH NO clearly visible brand name, you MUST ASSUME it matches one of the pet's listed "Regular Food Brands" (use the Kibble/Wet Food brand for main meals, or the Treat brand for snacks). Use that brand's name in the title (e.g. "{name}'s Regular Treat ([Brand Name])") and use its brand-specific nutritional data.
-7. NEW FOOD DETECTION: Only note "New food detected" if the image clearly shows a specific brand label that is DIFFERENT from the ones in their profile, OR if it is human food.
-8. Factor the typical bowl size into serving estimates when label portion data is ambiguous or missing.
+6. PANTRY MATCHING: If the image shows generic, unlabeled food (e.g. a bowl of kibble, a loose treat), match it against the pet's Known Food Pantry. Use the PRIMARY item for that food_type. Apply its exact kcal_per_serving for the calorie estimate and use its brand name in the title (e.g. "{pet name}'s Regular Kibble (Royal Canin Maxi Adult)").
+7. NEW FOOD DETECTION: Only note "New food detected" if the image clearly shows a specific brand label that is DIFFERENT from the pantry items, OR if it is human food.
+8. LABEL EXTRACTION: If a clear product label or packaging is visible, extract brand and product_name as separate fields. Also extract protein_pct, fat_pct, fibre_pct, and key_ingredients from the guaranteed analysis / ingredient list if visible.
 
 You MUST respond with ONLY valid JSON in this exact format, no markdown, no extra text:
 {
-  "food_name": "string",
+  "food_name": "string (brand + product combined for display)",
+  "brand": "string or null if not identifiable",
+  "product_name": "string or null if not identifiable",
+  "food_type": "kibble | wet_food | treat | raw | supplement | human_food",
   "calories_per_serving": number,
   "serving_size": "string (e.g. '1 cup / 240g')",
+  "serving_unit": "cup | pouch | piece | gram | can | null",
+  "protein_pct": number or null,
+  "fat_pct": number or null,
+  "fibre_pct": number or null,
+  "protein_g": number or null,
+  "carbs_g": number or null,
+  "fats_g": number or null,
+  "key_ingredients": ["top 5-10 ingredients from label"] or null,
   "is_treat": boolean,
   "is_allergy_trigger": boolean,
   "allergy_warnings": ["string array of specific warnings"],
   "ingredients_of_concern": ["string array"],
   "recommendation": "string",
-  "confidence": number between 0 and 1
+  "confidence": number between 0 and 1,
+  "is_labeled_product": boolean
 }
 
-CLASSIFICATION RULE for "is_treat":
-- Set true for: dog/cat treats, biscuits, chews, dental sticks, jerky, training treats, rawhide, bones, snack products, table scraps, human food given as reward
-- Set false for: complete meals, kibble, wet food, raw diet, prescription diet, puppy/kitten food
+CLASSIFICATION RULES:
+- "is_treat": true for treats, biscuits, chews, dental sticks, jerky, training treats, rawhide, bones, snack products, table scraps, human food given as reward. False for complete meals, kibble, wet food, raw diet, prescription diet, puppy/kitten food.
+- "food_type": classify based on what you see. Use "kibble" for dry food, "wet_food" for cans/pouches, "treat" for snacks/chews, "raw" for raw diets, "supplement" for vitamins/oils, "human_food" for people food.
+- "is_labeled_product": true ONLY if you can clearly read a brand name and product name on packaging/label in the image. False for bowls of food, loose treats, or unreadable labels.
 
 If you cannot read the label clearly, set confidence below 0.5 and explain in recommendation.`;
 

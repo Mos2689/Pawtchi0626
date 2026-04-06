@@ -4,14 +4,6 @@ export type Species = 'dog' | 'cat' | null;
 export type WeightUnit = 'kg' | 'lb';
 export type ActivityLevel = 'sedentary' | 'normal' | 'active' | 'highly_active';
 export type Goal = 'lose' | 'maintain' | 'gain';
-export type BowlSize = 'small' | 'medium' | 'large' | 'xl';
-
-export interface FoodBrands {
-  kibble: string[];
-  treats: string[];
-  wet_food: string[];
-  other: string[];
-}
 
 export type Gender = 'male' | 'female' | null;
 
@@ -30,9 +22,8 @@ interface PetState {
   goal: Goal;
   imageUri: string | null;
   allergies: string[];
+  medicalConditions: string[];
   bodyConditionScore: number | null;
-  foodBrands: FoodBrands;
-  bowlSize: BowlSize | null;
 
   // Actions
   setSpecies: (species: Species) => void;
@@ -48,9 +39,8 @@ interface PetState {
   setGoal: (goal: Goal) => void;
   setImageUri: (uri: string | null) => void;
   setAllergies: (allergies: string[]) => void;
+  setMedicalConditions: (conditions: string[]) => void;
   setBodyConditionScore: (score: number | null) => void;
-  setFoodBrands: (brands: FoodBrands) => void;
-  setBowlSize: (size: BowlSize | null) => void;
 
   // Reset
   resetForm: () => void;
@@ -70,9 +60,8 @@ const initialState = {
   goal: 'maintain' as Goal,
   imageUri: null,
   allergies: [] as string[],
+  medicalConditions: [] as string[],
   bodyConditionScore: null as number | null,
-  foodBrands: { kibble: [], treats: [], wet_food: [], other: [] } as FoodBrands,
-  bowlSize: null as BowlSize | null,
 };
 
 export const usePetStore = create<PetState>((set) => ({
@@ -90,8 +79,7 @@ export const usePetStore = create<PetState>((set) => ({
   setGoal: (goal) => set({ goal }),
   setImageUri: (imageUri) => set({ imageUri }),
   setAllergies: (allergies) => set({ allergies }),
+  setMedicalConditions: (medicalConditions) => set({ medicalConditions }),
   setBodyConditionScore: (bodyConditionScore) => set({ bodyConditionScore }),
-  setFoodBrands: (foodBrands) => set({ foodBrands }),
-  setBowlSize: (bowlSize) => set({ bowlSize }),
   resetForm: () => set(initialState),
 }));

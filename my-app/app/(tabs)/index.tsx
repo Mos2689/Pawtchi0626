@@ -33,10 +33,9 @@ export default function HomeScreen() {
   // Sync push token silently
   React.useEffect(() => {
     if (user?.id && expoPushToken) {
-      supabase.from('push_tokens').upsert({
-        user_id: user.id,
-        token: expoPushToken
-      }, { onConflict: 'token' }).then(({ error }) => {
+      supabase.rpc('register_push_token', {
+        push_token: expoPushToken
+      }).then(({ error }) => {
         if (error) console.error("Failed to sync push token:", error.message);
       });
     }

@@ -164,12 +164,12 @@ export default function GoalScreen() {
     if (error) {
       Alert.alert('Error creating profile', error.message);
     } else {
-      // Await fetching the newly created pet to hydrate the store
-      // BEFORE routing to the brands step
+      // Hydrate the active pet store and reset the onboarding form
       await useActivePetStore.getState().fetchPet(user.id);
+      usePetStore.getState().resetForm();
 
-      // Navigate to brands step — form reset happens there
-      router.push('/onboarding/brands');
+      // Navigate to main app — food data captured via scan pantry, not onboarding
+      router.replace('/(tabs)');
     }
   };
 
@@ -195,7 +195,7 @@ export default function GoalScreen() {
             <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
             <View style={[styles.progressPill, { backgroundColor: '#E5E7EB', width: 40 }]} />
           </View>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 5 OF 6</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 5 OF 5</Text>
         </View>
 
         {/* Hero Section */}

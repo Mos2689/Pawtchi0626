@@ -220,6 +220,7 @@ export default function BrandsScreen() {
                 .update({
                     food_brands: brandsPayload,
                     bowl_size: bowlSize,
+                    medical_conditions: usePetStore.getState().medicalConditions.length > 0 ? usePetStore.getState().medicalConditions : null,
                 })
                 .eq('id', activePet.id);
 

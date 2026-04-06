@@ -42,7 +42,7 @@ EXTRACT the following if visible in the document:
 7. **age_months** - Remaining months beyond years. Only use if DOB is not available.
 8. **weight_kg** - Most recent weight in kilograms. If weight is in lbs, convert (1 lb = 0.4536 kg). Round to 1 decimal.
 9. **body_condition_score** - Integer 1-9 if noted (BCS)
-10. **allergies** - Array of confirmed allergens/sensitivities. Only include explicitly stated allergies, not suspected.
+10. **allergies** - Array of confirmed allergens/sensitivities. Include any "Common Allergens", "Common Allergies", or sensitivities listed. Separate them into individual strings (e.g., ["Chicken", "Beef", "Certain grains"]).
 11. **medical_conditions** - Array of diagnosed conditions
 12. **microchip_number** - If visible
 
