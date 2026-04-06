@@ -21,6 +21,7 @@ export interface NudgeInput {
   // Trend-level fields (from refreshTrends)
   avgTreatsPerDay: number | null;
   weeklyTreatCalPercent: number | null;
+  profileCompleteness?: number; // 0-1, fraction of profile fields filled
 }
 
 /**
@@ -172,6 +173,19 @@ export function computeNudge(input: NudgeInput): Nudge | null {
       title: 'Light Week — That\'s OK',
       message: 'It\'s been a quiet week for activities. Even a 5-minute play session or short sniff walk counts and keeps your pet stimulated!',
       actionType: 'suggest_walk',
+    };
+  }
+
+  // ── P11.5: Incomplete profile — gentle prompt during daytime ──
+  if (
+    input.profileCompleteness !== undefined &&
+    input.profileCompleteness < 0.8 &&
+    hour >= 10 && hour <= 20
+  ) {
+    return {
+      priority: 'info',
+      title: 'Complete Your Profile',
+      message: 'Adding allergies and medical info helps us give better food recommendations.',
     };
   }
 

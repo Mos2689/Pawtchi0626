@@ -5,6 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
@@ -25,6 +26,7 @@ interface ScanResult {
 
 export default function LogScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [search, setSearch] = useState('');
   const { activePet } = useActivePetStore();
   const { pawCoins, awardCoins } = useStreakStore();
@@ -224,6 +226,20 @@ export default function LogScreen() {
       // Award coins for food log
       if (user?.id) {
         awardCoins(user.id, 'food_log');
+      }
+
+      // First-scan nudge: prompt to add medical info for better results
+      if (!activePet.medical_conditions?.length && !activePet.diet_type?.length) {
+        setTimeout(() => {
+          Alert.alert(
+            'Want more personalized results?',
+            `Add ${activePet.name}'s medical history and diet info for even more accurate food scan analysis. It only takes 30 seconds.`,
+            [
+              { text: 'Maybe Later', style: 'cancel' },
+              { text: 'Add Now', onPress: () => router.push('/medical') },
+            ]
+          );
+        }, 1500);
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';

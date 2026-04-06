@@ -10,7 +10,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { species, breed, age_years, current_weight_kg } = await req.json();
+    const { species, breed, age_years, age_months, current_weight_kg, gender } = await req.json();
 
     if (!species || !current_weight_kg) {
       throw new Error("Missing required parameters: species, current_weight_kg");
@@ -29,7 +29,8 @@ Your task is to mathematically estimate the IDEAL target weight for a pet based 
 Pet Profile:
 - Species: ${species}
 - Breed: ${breed || 'Unknown / Mixed'}
-- Age: ${age_years ? `${age_years} years` : 'Unknown'}
+- Gender: ${gender || 'Unknown'}
+- Age: ${age_years ? `${age_years} years` : 'Unknown'}${age_months ? ` ${age_months} months` : ''}
 - Current Weight: ${current_weight_kg} kg
 
 RULES:

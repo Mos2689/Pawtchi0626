@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, Switch, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -6,36 +6,63 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
-import { usePetStore } from '../../store/usePetStore';
+import { usePetStore, ActivityLevel } from '../../store/usePetStore';
+import { getBreedDefaults } from '../../lib/breedData';
 
 const DOG_BREEDS = [
-  "Mixed Breed", "Labrador Retriever", "French Bulldog", "German Shepherd", "Golden Retriever", 
-  "Bulldog", "Poodle", "Beagle", "Rottweiler", "Yorkshire Terrier", "Dachshund", 
+  "Mixed Breed", "Labrador Retriever", "French Bulldog", "German Shepherd", "Golden Retriever",
+  "Bulldog", "Poodle", "Beagle", "Rottweiler", "Yorkshire Terrier", "Dachshund",
   "Boxer", "Husky", "Corgi", "Pug", "Australian Shepherd", "Shih Tzu", "Pomeranian", "Other"
 ];
 
 const CAT_BREEDS = [
-  "Mixed Breed / Domestic Shorthair", "Domestic Longhair", "Ragdoll", "Maine Coon", "Persian", 
+  "Mixed Breed / Domestic Shorthair", "Domestic Longhair", "Ragdoll", "Maine Coon", "Persian",
   "British Shorthair", "Sphynx", "Bengal", "Abyssinian", "Scottish Fold", "Siamese", "Russian Blue", "Other"
 ];
 
-// Screen 2: Vital Stats (Step 3 in UI)
+const ACTIVITY_OPTIONS: { level: ActivityLevel; label: string; description: string; icon: string }[] = [
+  { level: 'sedentary', label: 'Couch Potato', description: 'Mostly resting', icon: 'weekend' },
+  { level: 'normal', label: 'Casual Walker', description: 'Regular walks', icon: 'pets' },
+  { level: 'active', label: 'Active Explorer', description: 'Loves to play', icon: 'directions-run' },
+  { level: 'highly_active', label: 'Athlete', description: 'High energy', icon: 'fitness-center' },
+];
+
+// Screen 2: Vital Stats
 export default function VitalsScreen() {
   const router = useRouter();
   const theme = Colors.light;
   const insets = useSafeAreaInsets();
-  
-  const { 
+
+  const {
     species,
-    name, setName, 
+    name, setName,
     breed, setBreed,
-    ageYears, setAgeYears, 
-    weight, setWeight, 
+    ageYears, setAgeYears,
+    ageMonths, setAgeMonths,
+    weight, setWeight,
+    gender, setGender,
     isNeutered, setIsNeutered,
+    activityLevel, setActivityLevel,
     imageUri, setImageUri
   } = usePetStore();
 
   const [breedModalVisible, setBreedModalVisible] = useState(false);
+  const hasManuallySetActivity = useRef(false);
+
+  // Pre-fill activity level from breed defaults
+  useEffect(() => {
+    if (breed && !hasManuallySetActivity.current) {
+      const defaults = getBreedDefaults(species, breed);
+      if (defaults) {
+        setActivityLevel(defaults.typicalActivityLevel);
+      }
+    }
+  }, [breed, species, setActivityLevel]);
+
+  const handleActivitySelect = (level: ActivityLevel) => {
+    hasManuallySetActivity.current = true;
+    setActivityLevel(level);
+  };
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
@@ -61,12 +88,12 @@ export default function VitalsScreen() {
           <Text style={[styles.headerTitle, { color: theme['on-surface'] }]}>Pet Journey</Text>
         </View>
         <View style={[styles.stepBadge, { backgroundColor: '#F1F5F9' }]}>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 3 of 4</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 2 of 4</Text>
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
+
         {/* Headline */}
         <View style={styles.headlineSection}>
           <View style={[styles.blurBlob, { backgroundColor: 'rgba(255,252,0,0.1)' }]} />
@@ -80,7 +107,7 @@ export default function VitalsScreen() {
 
         {/* Form Container */}
         <View style={styles.formContainer}>
-          
+
           {/* Image Upload Section */}
           <View style={{ alignItems: 'center', marginBottom: 16 }}>
             <TouchableOpacity onPress={pickImage} style={styles.avatarPickerRoot} activeOpacity={0.8}>
@@ -102,7 +129,7 @@ export default function VitalsScreen() {
           <View style={styles.inputGroup}>
             <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Pet Name</Text>
             <View style={styles.inputWrapper}>
-              <TextInput 
+              <TextInput
                 style={[styles.input, { backgroundColor: '#FFFFFF', borderColor: 'rgba(209,213,225,0.3)' }]}
                 placeholder="e.g. Barnaby"
                 placeholderTextColor={theme['outline-variant']}
@@ -116,7 +143,7 @@ export default function VitalsScreen() {
           {/* Breed */}
           <View style={styles.inputGroup}>
             <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Breed (Optional)</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.inputWrapper, { height: 64, borderWidth: 1, borderColor: 'rgba(209,213,225,0.3)', borderRadius: 16, backgroundColor: '#FFFFFF', paddingHorizontal: 20, justifyContent: 'center' }]}
               onPress={() => setBreedModalVisible(true)}
               activeOpacity={0.7}
@@ -128,11 +155,11 @@ export default function VitalsScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Bento Grid (Age / Weight) */}
+          {/* Bento Grid (Age Years / Age Months / Weight) */}
           <View style={styles.bentoGrid}>
             <View style={styles.bentoItem}>
               <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Age (Years)</Text>
-              <TextInput 
+              <TextInput
                 style={[styles.bentoInput, { backgroundColor: '#FFFFFF', borderColor: 'rgba(209,213,225,0.3)' }]}
                 placeholder="2"
                 placeholderTextColor={theme['outline-variant']}
@@ -143,8 +170,23 @@ export default function VitalsScreen() {
               />
             </View>
             <View style={styles.bentoItem}>
+              <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Months</Text>
+              <TextInput
+                style={[styles.bentoInput, { backgroundColor: '#FFFFFF', borderColor: 'rgba(209,213,225,0.3)' }]}
+                placeholder="0"
+                placeholderTextColor={theme['outline-variant']}
+                keyboardType="numeric"
+                value={ageMonths}
+                onChangeText={(val) => {
+                  const num = parseInt(val) || 0;
+                  setAgeMonths(num > 11 ? '11' : val);
+                }}
+                textAlign="center"
+              />
+            </View>
+            <View style={styles.bentoItem}>
               <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Weight (kg)</Text>
-              <TextInput 
+              <TextInput
                 style={[styles.bentoInput, { backgroundColor: '#FFFFFF', borderColor: 'rgba(209,213,225,0.3)' }]}
                 placeholder="12.5"
                 placeholderTextColor={theme['outline-variant']}
@@ -156,7 +198,40 @@ export default function VitalsScreen() {
             </View>
           </View>
 
-          {/* Toggle Card */}
+          {/* Gender Toggle */}
+          <View style={styles.inputGroup}>
+            <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Sex</Text>
+            <View style={styles.genderRow}>
+              <TouchableOpacity
+                style={[
+                  styles.genderCard,
+                  gender === 'male'
+                    ? { backgroundColor: '#FFFFFF', borderColor: '#FFFC00', borderWidth: 3 }
+                    : { backgroundColor: '#F8F9FA', borderColor: 'rgba(209,213,225,0.3)', borderWidth: 1 }
+                ]}
+                onPress={() => setGender('male')}
+                activeOpacity={0.8}
+              >
+                <MaterialIcons name="male" size={28} color={gender === 'male' ? '#243036' : '#94a3b8'} />
+                <Text style={[styles.genderLabel, { color: gender === 'male' ? '#243036' : '#94a3b8' }]}>Male</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.genderCard,
+                  gender === 'female'
+                    ? { backgroundColor: '#FFFFFF', borderColor: '#FFFC00', borderWidth: 3 }
+                    : { backgroundColor: '#F8F9FA', borderColor: 'rgba(209,213,225,0.3)', borderWidth: 1 }
+                ]}
+                onPress={() => setGender('female')}
+                activeOpacity={0.8}
+              >
+                <MaterialIcons name="female" size={28} color={gender === 'female' ? '#243036' : '#94a3b8'} />
+                <Text style={[styles.genderLabel, { color: gender === 'female' ? '#243036' : '#94a3b8' }]}>Female</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Desexed Toggle Card */}
           <View style={[styles.toggleCard, { backgroundColor: '#F8F9FA', borderColor: 'rgba(209,213,225,0.2)' }]}>
             <View style={styles.toggleLeft}>
               <View style={[styles.toggleIconContainer, { backgroundColor: '#FFFC00' }]}>
@@ -167,26 +242,43 @@ export default function VitalsScreen() {
                 <Text style={[styles.toggleSubtitle, { color: theme['on-surface-variant'] }]}>Important for calorie tracking</Text>
               </View>
             </View>
-            <Switch 
-              value={isNeutered} 
-              onValueChange={setIsNeutered} 
+            <Switch
+              value={isNeutered}
+              onValueChange={setIsNeutered}
               trackColor={{ false: '#f1f5f9', true: '#FFFC00' }}
               thumbColor="#FFFFFF"
             />
           </View>
 
-          {/* Decorative Visual Card */}
-          <View style={styles.decorativeContainer}>
-            <View style={[styles.decorativeBlur, { backgroundColor: 'rgba(255,252,0,0.1)' }]} />
-            <View style={[styles.decorativeCard, { backgroundColor: '#FFFFFF', borderColor: 'rgba(209,213,225,0.2)' }]}>
-              <Image 
-                source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCuq9b2sfmCI1kyQij1fFOS-ExiC6u8sJZD3DBN263YLeYZa3tOEd_Ttiytu8h_YUUSqManvAdG2Yyr59dPXQp5A-SFuyavlu0edh5Rz7JYkIIRj7Dm0funkDftfbubZloxdmJkbF8bluV7tKrfqmgNvdTHvrg9LJoRudpkcphxtVZjYxW5R7EkSpAN1dIhiHuRi1yXsXIBMo9AZPWBgwQEDXnBd7lbwuwUM728q26RT195tXPPfflmzBaSBuD59EAaswv5BkYf71c' }} 
-                style={styles.decorativeImg}
-              />
-              <View style={styles.decorativeTextContainer}>
-                <Text style={[styles.decorativeLabel, { color: theme['on-surface'] }]}>QUICK TIP</Text>
-                <Text style={[styles.decorativeBody, { color: theme['on-surface-variant'] }]}>Active pups need more protein!</Text>
-              </View>
+          {/* Activity Level Picker */}
+          <View style={styles.inputGroup}>
+            <Text style={[styles.label, { color: theme['on-surface-variant'] }]}>Activity Level</Text>
+            <View style={styles.activityGrid}>
+              {ACTIVITY_OPTIONS.map((opt) => (
+                <TouchableOpacity
+                  key={opt.level}
+                  style={[
+                    styles.activityCard,
+                    activityLevel === opt.level
+                      ? { backgroundColor: '#FFFFFF', borderColor: '#FFFC00', borderWidth: 3 }
+                      : { backgroundColor: '#F8F9FA', borderColor: 'rgba(209,213,225,0.3)', borderWidth: 1 }
+                  ]}
+                  onPress={() => handleActivitySelect(opt.level)}
+                  activeOpacity={0.8}
+                >
+                  <MaterialIcons
+                    name={opt.icon as any}
+                    size={24}
+                    color={activityLevel === opt.level ? '#243036' : '#94a3b8'}
+                  />
+                  <Text style={[styles.activityLabel, { color: activityLevel === opt.level ? '#243036' : '#64748b' }]}>
+                    {opt.label}
+                  </Text>
+                  <Text style={[styles.activityDesc, { color: activityLevel === opt.level ? '#64748b' : '#94a3b8' }]}>
+                    {opt.description}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
 
@@ -206,8 +298,8 @@ export default function VitalsScreen() {
             </View>
             <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
               {(species === 'cat' ? CAT_BREEDS : DOG_BREEDS).map(b => (
-                <TouchableOpacity 
-                  key={b} 
+                <TouchableOpacity
+                  key={b}
                   style={styles.modalItem}
                   onPress={() => { setBreed(b); setBreedModalVisible(false); }}
                 >
@@ -227,9 +319,9 @@ export default function VitalsScreen() {
           style={[styles.footerGradient, { paddingBottom: insets.bottom + 40 }]}
           locations={[0, 0.4, 1]}
         >
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.nextBtn, { backgroundColor: '#FFFC00' }]}
-            onPress={() => router.push('/onboarding/goal')}
+            onPress={() => router.push('/onboarding/allergies')}
             activeOpacity={0.9}
           >
             <Text style={[styles.nextBtnText, { color: '#243036' }]}>Next</Text>
@@ -237,7 +329,7 @@ export default function VitalsScreen() {
           </TouchableOpacity>
         </LinearGradient>
       </View>
-      
+
     </View>
   );
 }
@@ -285,7 +377,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 24,
     paddingTop: 16,
-    paddingBottom: 160, // Space for sticky footer
+    paddingBottom: 160,
     alignItems: 'center',
   },
   headlineSection: {
@@ -392,7 +484,7 @@ const styles = StyleSheet.create({
   },
   bentoGrid: {
     flexDirection: 'row',
-    gap: 16,
+    gap: 12,
   },
   bentoItem: {
     flex: 1,
@@ -411,6 +503,29 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 2,
     elevation: 2,
+  },
+  genderRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  genderCard: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  genderLabel: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 16,
   },
   toggleCard: {
     flexDirection: 'row',
@@ -441,49 +556,36 @@ const styles = StyleSheet.create({
     fontFamily: 'Plus Jakarta Sans',
     fontSize: 12,
   },
-  decorativeContainer: {
-    marginTop: 16,
-    alignItems: 'center',
-    width: '100%',
-  },
-  decorativeBlur: {
-    position: 'absolute',
-    width: '100%',
-    height: '100%',
-    borderRadius: 40,
-  },
-  decorativeCard: {
+  activityGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  activityCard: {
+    width: '47%',
     alignItems: 'center',
-    padding: 16,
-    borderRadius: 40,
-    borderWidth: 1,
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+    borderRadius: 16,
+    gap: 4,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 4,
-    gap: 16,
-    maxWidth: '90%',
+    shadowRadius: 2,
+    elevation: 2,
   },
-  decorativeImg: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-  },
-  decorativeTextContainer: {
-    paddingRight: 24,
-  },
-  decorativeLabel: {
+  activityLabel: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '700',
-    fontSize: 12,
-    letterSpacing: 2,
+    fontSize: 14,
+    textAlign: 'center',
   },
-  decorativeBody: {
+  activityDesc: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '500',
-    fontSize: 14,
+    fontSize: 11,
+    textAlign: 'center',
   },
   stickyFooterContainer: {
     position: 'absolute',
@@ -497,7 +599,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   nextBtn: {
-    width: 250, // Matches max-w-xl scale roughly 
+    width: 250,
     maxWidth: '100%',
     flexDirection: 'row',
     justifyContent: 'center',

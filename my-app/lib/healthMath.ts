@@ -13,7 +13,8 @@ export function getMERFactor(
   isNeutered: boolean,
   activityLevel: ActivityLevel,
   goal: 'lose' | 'maintain' | 'gain' = 'maintain',
-  ageMonths?: number
+  ageMonths?: number,
+  lifeStageMultiplier: number = 1.0,
 ): number {
   // Base multipliers
   let factor = 1.0;
@@ -66,9 +67,12 @@ export function getMERFactor(
     }
 
     // Goal adjustments
-    if (goal === 'lose') factor = 0.8; 
+    if (goal === 'lose') factor = 0.8;
     if (goal === 'gain') factor *= 1.2;
   }
+
+  // Apply life stage multiplier (mature/senior/geriatric reduce calories)
+  factor *= lifeStageMultiplier;
 
   return factor;
 }
@@ -79,10 +83,11 @@ export function calculateDailyKcal(
   isNeutered: boolean,
   activityLevel: ActivityLevel,
   goal: 'lose' | 'maintain' | 'gain' = 'maintain',
-  ageMonths?: number
+  ageMonths?: number,
+  lifeStageMultiplier: number = 1.0,
 ): number {
   const rer = calculateRER(weightKg);
-  const factor = getMERFactor(species, isNeutered, activityLevel, goal, ageMonths);
+  const factor = getMERFactor(species, isNeutered, activityLevel, goal, ageMonths, lifeStageMultiplier);
   return Math.round(rer * factor);
 }
 

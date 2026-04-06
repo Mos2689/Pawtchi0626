@@ -37,6 +37,9 @@ Pet Profile:
 - Name: ${petProfile?.name || 'Unknown'}
 - Species: ${petProfile?.species || 'dog'}
 - Breed: ${petProfile?.breed || 'Unknown'}
+- Gender: ${petProfile?.gender || 'Unknown'}
+- Age: ${petProfile?.age_years ? `${petProfile.age_years} years` : 'Unknown'}
+- Life Stage: ${petProfile?.life_stage || 'Unknown'}
 - Weight: ${weightKg} kg
 
 ${weightRule}

@@ -40,9 +40,12 @@ export default function HomeScreen() {
   const refreshToday = usePetContextStore(s => s.refreshToday);
 
   const isProfileComplete = !!(
+    activePet?.gender &&
     activePet?.body_condition_score &&
+    activePet?.allergies &&
     activePet?.diet_type &&
-    activePet.diet_type.length > 0
+    activePet.diet_type.length > 0 &&
+    activePet?.medical_conditions
   );
 
   const baseTargetCal = activePet?.target_daily_calories || 0;
