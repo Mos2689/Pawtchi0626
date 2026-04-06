@@ -10,14 +10,23 @@ import { usePetStore, ActivityLevel } from '../../store/usePetStore';
 import { getBreedDefaults } from '../../lib/breedData';
 
 const DOG_BREEDS = [
-  "Mixed Breed", "Labrador Retriever", "French Bulldog", "German Shepherd", "Golden Retriever",
-  "Bulldog", "Poodle", "Beagle", "Rottweiler", "Yorkshire Terrier", "Dachshund",
-  "Boxer", "Husky", "Corgi", "Pug", "Australian Shepherd", "Shih Tzu", "Pomeranian", "Other"
+  "Mixed Breed",
+  "Labrador Retriever", "Staffordshire Bull Terrier", "French Bulldog", "German Shepherd",
+  "Golden Retriever", "Border Collie", "Cavalier King Charles Spaniel", "Australian Kelpie",
+  "Bulldog", "Beagle", "Rottweiler", "Yorkshire Terrier", "Boxer", "Husky", "Corgi",
+  "Pug", "Australian Shepherd", "Australian Cattle Dog", "Shih Tzu", "Pomeranian",
+  "Maltese", "Jack Russell Terrier", "Miniature Schnauzer", "Cocker Spaniel",
+  "West Highland White Terrier",
+  "Toy Poodle", "Miniature Poodle", "Standard Poodle",
+  "Miniature Dachshund", "Standard Dachshund",
+  "Cavoodle", "Labradoodle", "Groodle", "Spoodle", "Moodle", "Puggle",
+  "Other",
 ];
 
 const CAT_BREEDS = [
   "Mixed Breed / Domestic Shorthair", "Domestic Longhair", "Ragdoll", "Maine Coon", "Persian",
-  "British Shorthair", "Sphynx", "Bengal", "Abyssinian", "Scottish Fold", "Siamese", "Russian Blue", "Other"
+  "British Shorthair", "Sphynx", "Bengal", "Abyssinian", "Scottish Fold", "Siamese",
+  "Russian Blue", "Burmese", "Birman", "Other",
 ];
 
 const ACTIVITY_OPTIONS: { level: ActivityLevel; label: string; description: string; icon: string }[] = [

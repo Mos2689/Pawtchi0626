@@ -18,7 +18,15 @@ export interface Pet {
     body_condition_score?: number;
     allergies?: string[];
     medical_conditions?: string[];
+    parent_title?: string;
     diet_type?: string[];
+    food_brands?: {
+        kibble?: string[];
+        treats?: string[];
+        wet_food?: string[];
+        other?: string[];
+    };
+    bowl_size?: 'small' | 'medium' | 'large' | 'xl';
     unlocked_items?: string[];
     equipped_items?: string[];
     current_avatar_url?: string;
@@ -42,7 +50,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
     error: null,
     fetchPet: async (userId) => {
         set({ isLoading: true, error: null });
-        
+
         // Fetch the most recently created pet for this user
         const { data, error } = await supabase
             .from('pets')
@@ -51,7 +59,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
-            
+
         if (error && error.code !== 'PGRST116') { // PGRST116 means no rows found, which isn't a fatal error
             console.error('Error fetching pet:', error);
             set({ error: error.message, isLoading: false, activePet: null });
@@ -77,7 +85,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             .from('pets')
             .update({ unlocked_items: newUnlocked })
             .eq('id', activePet.id);
-            
+
         if (error) {
             console.error('Failed to unlock item', error);
             // Revert on fail
@@ -123,14 +131,14 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             if (data && data.success) {
                 const activePetId = get().activePet?.id;
                 if (activePetId) {
-                  const refreshedPet = { ...get().activePet!, current_avatar_url: data.url };
-                  set({ activePet: refreshedPet });
-                  
-                  // Persist the new Avatar payload to Supabase so it persists everywhere
-                  await supabase
-                    .from('pets')
-                    .update({ current_avatar_url: data.url })
-                    .eq('id', activePetId);
+                    const refreshedPet = { ...get().activePet!, current_avatar_url: data.url };
+                    set({ activePet: refreshedPet });
+
+                    // Persist the new Avatar payload to Supabase so it persists everywhere
+                    await supabase
+                        .from('pets')
+                        .update({ current_avatar_url: data.url })
+                        .eq('id', activePetId);
                 }
             }
         } catch (e) {

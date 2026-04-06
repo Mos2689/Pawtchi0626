@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
@@ -16,6 +17,7 @@ import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
+import WeeklyNutritionChart, { DayMacro } from '../../components/WeeklyNutritionChart';
 
 // Screen 10: Health Hub — Data-Driven
 export default function HealthScreen() {
@@ -23,18 +25,16 @@ export default function HealthScreen() {
   const { activePet } = useActivePetStore();
   const { awardCoins, pawCoins } = useStreakStore();
   const { user } = useAuth();
+  const router = useRouter();
 
   // Live data states
   const [weightLogs, setWeightLogs] = useState<any[]>([]);
-  const [nutritionScore, setNutritionScore] = useState<{ onTarget: number; total: number } | null>(null);
   const [activityScore, setActivityScore] = useState<{ thisWeek: number; lastWeek: number } | null>(null);
   const [hydrationScore, setHydrationScore] = useState<{ avgMl: number; targetMl: number } | null>(null);
   const [recentAllergyScans, setRecentAllergyScans] = useState<any[]>([]);
   const [healthInsight, setHealthInsight] = useState<any>(null);
-
-
+  const [weeklyMacros, setWeeklyMacros] = useState<DayMacro[]>([]);
   // Loading state for health data fetch
-  const [isLoading, setIsLoading] = useState(true);
 
   // Weight log modal
   const [showWeightModal, setShowWeightModal] = useState(false);
@@ -51,7 +51,6 @@ export default function HealthScreen() {
 
   const fetchHealthData = useCallback(async () => {
     if (!activePet) return;
-    setIsLoading(true);
 
     const today = new Date();
     const sevenDaysAgo = new Date(today);
@@ -73,21 +72,40 @@ export default function HealthScreen() {
         .limit(6);
       setWeightLogs(wLogs || []);
 
-      // 2. Nutrition Score: last 7 days of daily_logs
-      const { data: logs7 } = await supabase
-        .from('daily_logs')
-        .select('calories_consumed, log_date')
+      // 2. Weekly Macros (Last 7 days of food_scans)
+      const { data: scans7 } = await supabase
+        .from('food_scans')
+        .select('created_at, ai_estimated_calories, protein_g, carbs_g, fat_g')
         .eq('pet_id', activePet.id)
-        .gte('log_date', sevenStr)
-        .lte('log_date', todayStr);
+        .gte('created_at', `${sevenStr}T00:00:00`);
 
-      if (logs7 && activePet.target_daily_calories) {
-        const target = activePet.target_daily_calories;
-        const onTarget = logs7.filter(l =>
-          l.calories_consumed >= target * 0.9 && l.calories_consumed <= target * 1.1
-        ).length;
-        setNutritionScore({ onTarget, total: logs7.length || 7 });
+      const daysArr: DayMacro[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        daysArr.push({
+          date: dateStr,
+          dayLabel: d.toLocaleDateString('en-US', { weekday: 'narrow' }),
+          calories: 0,
+          protein: 0,
+          carbs: 0,
+          fat: 0,
+          isToday: i === 0
+        });
       }
+
+      (scans7 || []).forEach(scan => {
+        const scanDate = new Date(scan.created_at).toISOString().split('T')[0];
+        const dayIdx = daysArr.findIndex(d => d.date === scanDate);
+        if (dayIdx >= 0) {
+          daysArr[dayIdx].calories += (scan.ai_estimated_calories || 0);
+          daysArr[dayIdx].protein += (scan.protein_g || 0);
+          daysArr[dayIdx].carbs += (scan.carbs_g || 0);
+          daysArr[dayIdx].fat += (scan.fat_g || 0);
+        }
+      });
+      setWeeklyMacros(daysArr);
 
       // 3. Activity Score: last 7 vs previous 7 days
       const { data: actsThisWeek } = await supabase
@@ -162,8 +180,6 @@ export default function HealthScreen() {
       setVetReports(vReports || []);
     } catch (e) {
       console.error('Health data error:', e);
-    } finally {
-      setIsLoading(false);
     }
   }, [activePet]);
 
@@ -205,9 +221,20 @@ export default function HealthScreen() {
       const ext = data.extracted_data;
       let summary = 'Report processed successfully!\n';
       if (ext.weight_kg) summary += `\nWeight: ${ext.weight_kg} kg`;
+      if (ext.body_condition_score) summary += `\nBCS: ${ext.body_condition_score}/9`;
       if (ext.diagnoses?.length) summary += `\nDiagnoses: ${ext.diagnoses.join(', ')}`;
+      if (ext.allergies?.length) summary += `\nAllergies: ${ext.allergies.join(', ')}`;
       if (ext.medications?.length) summary += `\nMedications: ${ext.medications.map((m: any) => m.name).join(', ')}`;
       if (ext.next_appointment) summary += `\nNext visit: ${ext.next_appointment}`;
+
+      // Force a global refresh of the pet profile so new conditions/allergies sync to the Clinical Profile and Intelligent Layer instantly
+      if (user?.id) {
+        await useActivePetStore.getState().fetchPet(user.id);
+      }
+      if (activePet.id) {
+        usePetContextStore.getState().refreshTrends(activePet.id);
+        usePetContextStore.getState().refreshToday(activePet.id);
+      }
 
       Alert.alert('Vet Report Scanned ✅', summary, [
         { text: 'Great!', onPress: () => fetchHealthData() }
@@ -311,10 +338,6 @@ export default function HealthScreen() {
     ? (weightLogs[0].weight_kg - weightLogs[weightLogs.length - 1].weight_kg).toFixed(1)
     : null;
 
-  const nutritionPct = nutritionScore
-    ? Math.round((nutritionScore.onTarget / Math.max(nutritionScore.total, 1)) * 100)
-    : 0;
-
   const activityHrs = activityScore ? (activityScore.thisWeek / 60).toFixed(1) : '0';
   const activityTrend = activityScore
     ? activityScore.thisWeek > activityScore.lastWeek ? 'up'
@@ -329,9 +352,9 @@ export default function HealthScreen() {
   const hasWeightGoal = activePet?.target_weight_kg && activePet.target_weight_kg !== activePet.current_weight_kg;
   const weightGoalPct = hasWeightGoal
     ? Math.min(Math.round(
-        Math.abs(1 - (Math.abs(currentWeight - activePet!.target_weight_kg!) /
-          Math.abs((weightLogs[weightLogs.length - 1]?.weight_kg || activePet!.current_weight_kg) - activePet!.target_weight_kg!))) * 100
-      ), 100)
+      Math.abs(1 - (Math.abs(currentWeight - activePet!.target_weight_kg!) /
+        Math.abs((weightLogs[weightLogs.length - 1]?.weight_kg || activePet!.current_weight_kg) - activePet!.target_weight_kg!))) * 100
+    ), 100)
     : 0;
 
   return (
@@ -493,6 +516,11 @@ export default function HealthScreen() {
           </LinearGradient>
         </TouchableOpacity>
 
+        {/* Weekly Nutrition Chart */}
+        {weeklyMacros.length > 0 && (
+          <WeeklyNutritionChart data={weeklyMacros} />
+        )}
+
         {/* Bento Grid — Live Vitals */}
         <View style={styles.bentoGrid}>
           <View style={styles.bentoRow}>
@@ -554,31 +582,34 @@ export default function HealthScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Right Column: Score Cards */}
+            {/* Right Column: Active Navigation Card */}
             <View style={styles.metricsColumn}>
-              {/* Nutrition Score */}
-              <View style={[styles.squareCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
-                <MaterialIcons name="restaurant" size={28} color={nutritionPct >= 80 ? '#16a34a' : nutritionPct >= 50 ? '#ca8a04' : '#dc2626'} />
-                <View>
-                  <Text style={[styles.metricValue, { color: '#2e2f2d' }]}>{nutritionPct}%</Text>
-                  <Text style={[styles.metricLabel, { color: '#5b5c5a' }]}>NUTRITION</Text>
-                </View>
-              </View>
-              {/* Activity Score */}
-              <View style={[styles.squareCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <MaterialIcons name="directions-run" size={28} color="#2e2f2d" />
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => router.push('/routine' as any)}
+                style={[styles.squareCard, { backgroundColor: '#f1f5f9', borderColor: 'rgba(0,0,0,0.05)', flex: 1, justifyContent: 'space-between', minHeight: 260 }]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                  <View style={{ backgroundColor: '#e2e8f0', padding: 8, borderRadius: 12 }}>
+                    <MaterialIcons name="directions-run" size={24} color="#0f172a" />
+                  </View>
                   <MaterialIcons
                     name={activityTrend === 'up' ? 'trending-up' : activityTrend === 'down' ? 'trending-down' : 'trending-flat'}
-                    size={18}
+                    size={22}
                     color={activityTrend === 'up' ? '#16a34a' : activityTrend === 'down' ? '#dc2626' : '#94a3b8'}
                   />
                 </View>
+
                 <View>
-                  <Text style={[styles.metricValue, { color: '#2e2f2d' }]}>{activityHrs}h</Text>
-                  <Text style={[styles.metricLabel, { color: '#5b5c5a' }]}>ACTIVE</Text>
+                  <Text style={[styles.metricValue, { color: '#0f172a', fontSize: 32 }]}>{activityHrs}h</Text>
+                  <Text style={[styles.metricLabel, { color: '#64748b', fontSize: 13 }]}>ACTIVE THIS WEEK</Text>
                 </View>
-              </View>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ffffff', alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 }}>
+                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 12, fontWeight: '700', color: '#0f172a' }}>View Routines</Text>
+                  <MaterialIcons name="arrow-forward" size={14} color="#0f172a" />
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -657,25 +688,6 @@ export default function HealthScreen() {
           </View>
         )}
 
-        {/* Vet Report CTA */}
-        <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.ctaCard}>
-          <Text style={[styles.ctaTitle, { color: '#3d2b00' }]}>Scan Vet Report</Text>
-          <Text style={[styles.ctaDesc, { color: '#3d2b00' }]}>
-            Upload your vet&apos;s report and let AI extract vitals, diagnoses, and medication schedules instantly.
-          </Text>
-          <TouchableOpacity
-            style={[styles.ctaBtn, { backgroundColor: '#3d2b00' }, isScanning && { opacity: 0.7 }]}
-            activeOpacity={0.9}
-            onPress={scanVetReport}
-            disabled={isScanning}
-          >
-            {isScanning
-              ? <ActivityIndicator color="#FFFC00" />
-              : <Text style={[styles.ctaBtnText, { color: '#FFFC00' }]}>SCAN REPORT</Text>
-            }
-          </TouchableOpacity>
-        </LinearGradient>
-
         {/* Vet Records */}
         {vetReports.length > 0 && (
           <View style={styles.vetRecordsSection}>
@@ -730,6 +742,25 @@ export default function HealthScreen() {
             </View>
           </View>
         )}
+
+        {/* Vet Report CTA */}
+        <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.ctaCard}>
+          <Text style={[styles.ctaTitle, { color: '#3d2b00' }]}>Scan Vet Report</Text>
+          <Text style={[styles.ctaDesc, { color: '#3d2b00' }]}>
+            Upload your vet&apos;s report and let AI extract vitals, diagnoses, and medication schedules instantly.
+          </Text>
+          <TouchableOpacity
+            style={[styles.ctaBtn, { backgroundColor: '#3d2b00' }, isScanning && { opacity: 0.7 }]}
+            activeOpacity={0.9}
+            onPress={scanVetReport}
+            disabled={isScanning}
+          >
+            {isScanning
+              ? <ActivityIndicator color="#FFFC00" />
+              : <Text style={[styles.ctaBtnText, { color: '#FFFC00' }]}>SCAN REPORT</Text>
+            }
+          </TouchableOpacity>
+        </LinearGradient>
 
       </ScrollView>
 

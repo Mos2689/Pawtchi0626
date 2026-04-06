@@ -1,10 +1,13 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
 import 'react-native-reanimated';
+import Purchases, { LOG_LEVEL } from 'react-native-purchases';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { AuthProvider, useAuth } from '@/providers/AuthProvider';
+import { AuthProvider } from '@/providers/AuthProvider';
+import { WalkthroughProvider } from '@/providers/WalkthroughContext';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -12,10 +15,13 @@ export const unstable_settings = {
 
 function RootLayoutNav() {
   const colorScheme = useColorScheme();
-  
-  // Note: We removed the aggressive global redirect here. 
-  // The app should naturally load `app/index.tsx` (Welcome Screen) first.
-  // We will protect the `(tabs)` group specifically later.
+
+  // Initialize RevenueCat SDK on mount
+  useEffect(() => {
+    Purchases.setLogLevel(LOG_LEVEL.VERBOSE);
+    const apiKey = 'test_EYcOTcqUpCQyBHlHvtZtqKFjQiv';
+    Purchases.configure({ apiKey });
+  }, []);
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
@@ -23,6 +29,7 @@ function RootLayoutNav() {
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="medical" options={{ presentation: 'modal', headerShown: false }} />
+        <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>
@@ -32,7 +39,9 @@ function RootLayoutNav() {
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <RootLayoutNav />
+      <WalkthroughProvider>
+        <RootLayoutNav />
+      </WalkthroughProvider>
     </AuthProvider>
   );
 }

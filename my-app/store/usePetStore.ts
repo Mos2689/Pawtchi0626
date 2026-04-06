@@ -4,6 +4,14 @@ export type Species = 'dog' | 'cat' | null;
 export type WeightUnit = 'kg' | 'lb';
 export type ActivityLevel = 'sedentary' | 'normal' | 'active' | 'highly_active';
 export type Goal = 'lose' | 'maintain' | 'gain';
+export type BowlSize = 'small' | 'medium' | 'large' | 'xl';
+
+export interface FoodBrands {
+  kibble: string[];
+  treats: string[];
+  wet_food: string[];
+  other: string[];
+}
 
 export type Gender = 'male' | 'female' | null;
 
@@ -23,6 +31,8 @@ interface PetState {
   imageUri: string | null;
   allergies: string[];
   bodyConditionScore: number | null;
+  foodBrands: FoodBrands;
+  bowlSize: BowlSize | null;
 
   // Actions
   setSpecies: (species: Species) => void;
@@ -39,6 +49,8 @@ interface PetState {
   setImageUri: (uri: string | null) => void;
   setAllergies: (allergies: string[]) => void;
   setBodyConditionScore: (score: number | null) => void;
+  setFoodBrands: (brands: FoodBrands) => void;
+  setBowlSize: (size: BowlSize | null) => void;
 
   // Reset
   resetForm: () => void;
@@ -59,6 +71,8 @@ const initialState = {
   imageUri: null,
   allergies: [] as string[],
   bodyConditionScore: null as number | null,
+  foodBrands: { kibble: [], treats: [], wet_food: [], other: [] } as FoodBrands,
+  bowlSize: null as BowlSize | null,
 };
 
 export const usePetStore = create<PetState>((set) => ({
@@ -77,5 +91,7 @@ export const usePetStore = create<PetState>((set) => ({
   setImageUri: (imageUri) => set({ imageUri }),
   setAllergies: (allergies) => set({ allergies }),
   setBodyConditionScore: (bodyConditionScore) => set({ bodyConditionScore }),
+  setFoodBrands: (foodBrands) => set({ foodBrands }),
+  setBowlSize: (bowlSize) => set({ bowlSize }),
   resetForm: () => set(initialState),
 }));

@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import Svg, { Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -12,6 +13,10 @@ import { contextualizeWalk } from '../../lib/contextualizer';
 import { useAuth } from '../../providers/AuthProvider';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const RING_CIRCUMFERENCE = 2 * Math.PI * 28; // r=28
 
 // Activity Type Definitions
 const ACTIVITY_TYPES = [
@@ -244,7 +249,15 @@ export default function ActivityScreen() {
       }
 
       setConfirmingTaskId(null);
-      fetchData();
+
+      // Optimistic update — instantly mark completed in local state (no reload flash)
+      setActivities(prev =>
+        prev.map(a =>
+          a.id === item.id
+            ? { ...a, status: 'completed', ...(durationOverride !== null ? { duration_minutes: durationOverride } : {}) }
+            : a
+        )
+      );
 
       // Award coins for activity completion
       if (user?.id) {
@@ -441,7 +454,11 @@ export default function ActivityScreen() {
 
       setIsModalVisible(false);
       resetForm();
-      fetchData();
+
+      // Optimistic update — append new activity to local state (no reload flash)
+      setActivities(prev => [...prev, { ...actPayload, id: `temp-${Date.now()}` }].sort((a, b) =>
+        (a.scheduled_time || '').localeCompare(b.scheduled_time || '')
+      ));
 
       // Award coins for logged activity
       if (user?.id) {
@@ -492,70 +509,122 @@ export default function ActivityScreen() {
   if (completionPct === 100 && totalScheduled > 0) heroMessage = "All Done! \uD83C\uDF89";
   if (totalScheduled === 0 && heroPlay > 0) heroMessage = "Active Day!";
 
+  // Date slider: 5 days centered around today
+  const weekDates = useMemo(() => {
+    const today = new Date();
+    return Array.from({ length: 5 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(today.getDate() + i - 1);
+      return d;
+    });
+  }, []);
+
+  const calPct = Math.min(1, targetCalories > 0 ? heroCalories / targetCalories : 0);
+  const waterPct = Math.min(1, targetWater > 0 ? heroWater / targetWater : 0);
+  const playPct = Math.min(1, targetPlay > 0 ? heroPlay / targetPlay : 0);
+
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
 
       {/* Top Header */}
       <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <View style={styles.headerLeft}>
-          <View style={[styles.avatarMini, { backgroundColor: '#FFFC00' }]}>
+          <View style={styles.avatarMini}>
             <Image
               source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=200' }}
               style={styles.avatarMiniImg}
             />
           </View>
-          <Text style={[styles.headerTitle, { color: '#1A1A1A' }]}>PAWTCHI</Text>
+          <Text style={styles.headerTitle}>Pawtchi</Text>
         </View>
         <TouchableOpacity style={styles.bellBtn}>
-          <MaterialIcons name="notifications" size={28} color="#1A1A1A" />
+          <MaterialIcons name="settings" size={24} color="#243036" />
         </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-        {/* Daily Summary Hero */}
-        <View style={[styles.heroSection, { backgroundColor: '#FFFC00' }]}>
-          <View style={[styles.heroBlobRight, { backgroundColor: 'rgba(255,255,255,0.2)' }]} />
-          <View style={[styles.heroBlobLeft, { backgroundColor: 'rgba(0,0,0,0.1)' }]} />
+        {/* Progress Section */}
+        <View style={styles.progressSection}>
+          <Text style={styles.progressSubtitle}>DAILY PULSE</Text>
+          <Text style={styles.progressTitle}>Today&apos;s Progress</Text>
 
-          <View style={{ zIndex: 10 }}>
-            <Text style={[styles.heroSubtitle, { color: '#1A1A1A', opacity: 0.8 }]}>TODAY&apos;S PULSE</Text>
-            <Text style={[styles.heroTitle, { color: '#1A1A1A' }]}>{heroMessage}</Text>
+          {/* Date Slider */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateSlider}>
+            {weekDates.map((date, idx) => {
+              const isSelected = getLocalYMD(date) === dateStr;
+              const isFuture = date.setHours(0, 0, 0, 0) > new Date().setHours(0, 0, 0, 0);
+              return (
+                <TouchableOpacity
+                  key={idx}
+                  style={[
+                    styles.datePill,
+                    isSelected && styles.datePillActive,
+                    isFuture && !isSelected && { opacity: 0.6 },
+                  ]}
+                  onPress={() => setCurrentDate(new Date(date))}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.datePillDay, isSelected && styles.datePillDayActive]}>
+                    {DAY_NAMES[date.getDay()]}
+                  </Text>
+                  <Text style={[styles.datePillDate, isSelected && styles.datePillDateActive]}>
+                    {date.getDate()} {MONTH_NAMES[date.getMonth()]}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
 
-            {/* Completion Progress */}
-            {totalScheduled > 0 && (
-              <View style={styles.completionBar}>
-                <View style={styles.completionBarBg}>
-                  <View style={[styles.completionBarFill, { width: `${completionPct}%` }]} />
-                </View>
-                <Text style={styles.completionText}>{completedCount}/{totalScheduled} tasks</Text>
+          {/* Completion Badge */}
+          {totalScheduled > 0 && (
+            <View style={styles.completionBadge}>
+              <Text style={styles.completionBadgeText}>{completionPct}% Total</Text>
+            </View>
+          )}
+
+          {/* Stats Grid with SVG Rings */}
+          <View style={styles.statsGrid}>
+            {/* Calories Ring */}
+            <View style={[styles.ringCard, { backgroundColor: '#f8fafc' }]}>
+              <View style={styles.ringContainer}>
+                <Svg width={64} height={64} style={{ transform: [{ rotate: '-90deg' }] }}>
+                  <Circle cx={32} cy={32} r={28} stroke="#e2e8f0" strokeWidth={6} fill="transparent" />
+                  <Circle cx={32} cy={32} r={28} stroke="#041015" strokeWidth={6} fill="transparent"
+                    strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE * (1 - calPct)} strokeLinecap="round" />
+                </Svg>
+                <MaterialIcons name="local-fire-department" size={22} color="#041015" style={styles.ringIcon} />
               </View>
-            )}
+              <Text style={styles.ringValue}>{heroCalories}</Text>
+              <Text style={styles.ringLabel}>kcal</Text>
+            </View>
 
-            <View style={styles.statsGrid}>
-              {/* Food Card */}
-              <View style={styles.statCard}>
-                <MaterialIcons name="restaurant" size={20} color="#1A1A1A" style={{ opacity: 0.6 }} />
-                <Text style={styles.statValue}>{heroCalories}</Text>
-                <Text style={styles.statUnit}>/ {targetCalories} kcal</Text>
-                <Text style={styles.statLabel}>FOOD</Text>
+            {/* Water Ring */}
+            <View style={[styles.ringCard, { backgroundColor: '#041015' }]}>
+              <View style={styles.ringContainer}>
+                <Svg width={64} height={64} style={{ transform: [{ rotate: '-90deg' }] }}>
+                  <Circle cx={32} cy={32} r={28} stroke="#1e293b" strokeWidth={6} fill="transparent" />
+                  <Circle cx={32} cy={32} r={28} stroke="#FFFC00" strokeWidth={6} fill="transparent"
+                    strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE * (1 - waterPct)} strokeLinecap="round" />
+                </Svg>
+                <MaterialIcons name="water-drop" size={22} color="#FFFC00" style={styles.ringIcon} />
               </View>
+              <Text style={[styles.ringValue, { color: '#FFFFFF' }]}>{(heroWater / 1000).toFixed(1)}</Text>
+              <Text style={[styles.ringLabel, { color: '#94a3b8' }]}>Liters</Text>
+            </View>
 
-              {/* Water Card */}
-              <View style={styles.statCard}>
-                <MaterialIcons name="water-drop" size={20} color="#1A1A1A" style={{ opacity: 0.6 }} />
-                <Text style={styles.statValue}>{heroWater}</Text>
-                <Text style={styles.statUnit}>/ {targetWater} ml</Text>
-                <Text style={styles.statLabel}>WATER</Text>
+            {/* Play Ring */}
+            <View style={[styles.ringCard, { backgroundColor: '#f8fafc' }]}>
+              <View style={styles.ringContainer}>
+                <Svg width={64} height={64} style={{ transform: [{ rotate: '-90deg' }] }}>
+                  <Circle cx={32} cy={32} r={28} stroke="#e2e8f0" strokeWidth={6} fill="transparent" />
+                  <Circle cx={32} cy={32} r={28} stroke="#041015" strokeWidth={6} fill="transparent"
+                    strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE * (1 - playPct)} strokeLinecap="round" />
+                </Svg>
+                <MaterialIcons name="sports-tennis" size={22} color="#041015" style={styles.ringIcon} />
               </View>
-
-              {/* Play Card */}
-              <View style={styles.statCard}>
-                <MaterialIcons name="directions-run" size={20} color="#1A1A1A" style={{ opacity: 0.6 }} />
-                <Text style={styles.statValue}>{heroPlay}</Text>
-                <Text style={styles.statUnit}>/ {targetPlay} min</Text>
-                <Text style={styles.statLabel}>PLAY</Text>
-              </View>
+              <Text style={styles.ringValue}>{heroPlay}</Text>
+              <Text style={styles.ringLabel}>Mins</Text>
             </View>
           </View>
         </View>
@@ -596,26 +665,10 @@ export default function ActivityScreen() {
           </View>
         )}
 
-        {/* Date Navigator */}
-        <View style={[styles.dateNav, { backgroundColor: '#F9FAFB', borderColor: '#E5E7EB' }]}>
-          <TouchableOpacity style={styles.dateBtn} onPress={() => changeDate(-1)}>
-            <MaterialIcons name="chevron-left" size={24} color="#1A1A1A" />
-          </TouchableOpacity>
-          <View style={{ alignItems: 'center' }}>
-            <Text style={[styles.dateText, { color: '#1A1A1A' }]}>
-              {currentDate.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}
-            </Text>
-            {isToday && <Text style={[styles.todayText, { color: '#515d64' }]}>TODAY</Text>}
-          </View>
-          <TouchableOpacity style={styles.dateBtn} onPress={() => changeDate(1)}>
-            <MaterialIcons name="chevron-right" size={24} color="#1A1A1A" />
-          </TouchableOpacity>
-        </View>
-
         {/* Activity Feed */}
         <View style={styles.feedSection}>
           <View style={styles.feedHeader}>
-            <Text style={[styles.feedTitle, { color: '#1A1A1A' }]}>Timeline</Text>
+            <Text style={styles.feedTitle}>Timeline</Text>
             {pendingCount > 0 && (
               <View style={[styles.pendingBadge, { backgroundColor: '#FEF3C7' }]}>
                 <Text style={styles.pendingBadgeText}>{pendingCount} pending</Text>
@@ -656,7 +709,7 @@ export default function ActivityScreen() {
             </View>
           ) : (
             <View style={styles.timelineList}>
-              {timeline.map((item) => {
+              {timeline.map((item, idx) => {
                 const isFood = item._feedType === 'food';
                 const isPending = item.status === 'pending';
                 const isCompleted = item.status === 'completed';
@@ -664,159 +717,122 @@ export default function ActivityScreen() {
                 const timeStr = item.scheduled_time
                   ? item.scheduled_time.slice(0, 5)
                   : new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const isLastItem = idx === timeline.length - 1;
 
                 if (isFood) {
                   return (
-                    <View key={`food-${item.id}`} style={[styles.timelineCard, { borderLeftColor: '#f3f4f6' }]}>
-                      <View style={styles.cardHeader}>
-                        <View style={[styles.timelineIconBg, { backgroundColor: '#f3f4f6' }]}>
-                          <MaterialIcons name="restaurant" size={24} color="#1A1A1A" />
+                    <View key={`food-${item.id}`} style={styles.tlItem}>
+                      {/* Timeline dot */}
+                      <View style={styles.tlDotCol}>
+                        <View style={[styles.tlDot, styles.tlDotCompleted]}>
+                          <MaterialIcons name="check" size={12} color="#041015" />
                         </View>
-                        <View style={[styles.timeTag, { backgroundColor: '#F3F4F6' }]}>
-                          <Text style={[styles.timeText, { color: '#515d64' }]}>{timeStr}</Text>
-                        </View>
+                        {!isLastItem && <View style={styles.tlLine} />}
                       </View>
-                      <Text style={[styles.cardTitle, { color: '#1A1A1A' }]}>{item.ai_identified_food || 'Food'}</Text>
-                      <View style={[styles.pillBadge, { backgroundColor: '#F3F4F6' }]}>
-                        <Text style={[styles.pillBadgeText, { color: '#1A1A1A' }]}>{item.ai_estimated_calories} kcal</Text>
+                      {/* Card */}
+                      <View style={styles.tlCard}>
+                        <Text style={styles.tlTime}>{timeStr}</Text>
+                        <Text style={styles.tlTitle}>{item.ai_identified_food || 'Food'}</Text>
+                        <Text style={styles.tlDesc}>{item.ai_estimated_calories} calories logged</Text>
+                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+                          <View style={styles.tlBadge}>
+                            <Text style={styles.tlBadgeText}>{item.ai_estimated_calories} KCAL</Text>
+                          </View>
+                        </View>
+                        <View style={styles.tlWatermark}>
+                          <MaterialIcons name="restaurant" size={100} color="rgba(255,255,255,0.06)" />
+                        </View>
                       </View>
                     </View>
                   );
                 }
 
-                // Normal Activity
                 const typeDef = ACTIVITY_TYPES.find(t => t.id === item.activity_type) || ACTIVITY_TYPES[0];
+                const metricLabel = item.water_ml ? `${item.water_ml} ML` : item.duration_minutes ? `${item.duration_minutes} MIN` : null;
+
                 return (
-                  <View
-                    key={`act-${item.id}`}
-                    style={[
-                      styles.timelineCard,
-                      { borderLeftColor: isSkipped ? '#e5e7eb' : typeDef.color },
-                      isSkipped && { opacity: 0.5 },
-                    ]}
-                  >
-                    <View style={styles.cardHeader}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                        {/* Status Checkmark */}
-                        {isPending ? (
-                          <TouchableOpacity
-                            style={styles.checkCircleEmpty}
-                            onPress={() => handleCheckTap(item)}
-                            activeOpacity={0.7}
-                          >
-                            <View style={styles.checkCircleInner} />
-                          </TouchableOpacity>
-                        ) : (
-                          <View style={[
-                            styles.checkCircleFilled,
-                            { backgroundColor: isCompleted ? '#FFFC00' : '#e5e7eb' }
-                          ]}>
-                            <MaterialIcons
-                              name={isCompleted ? "check" : "close"}
-                              size={16}
-                              color={isCompleted ? "#1A1A1A" : "#9ca3af"}
-                            />
-                          </View>
-                        )}
-                        <View style={[styles.timelineIconBg, { backgroundColor: typeDef.color }]}>
-                          <MaterialIcons name={typeDef.icon as any} size={24} color="#1A1A1A" />
-                        </View>
-                      </View>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        {item.is_ai_generated && (
-                          <View style={[styles.aiBadge]}>
-                            <MaterialIcons name="auto-awesome" size={12} color="#fac129" />
-                          </View>
-                        )}
-                        <View style={[styles.timeTag, { backgroundColor: '#F3F4F6' }]}>
-                          <Text style={[styles.timeText, { color: '#515d64' }]}>{timeStr}</Text>
-                        </View>
-                      </View>
-                    </View>
-                    <Text style={[styles.cardTitle, { color: '#1A1A1A', marginLeft: isPending || isCompleted || isSkipped ? 44 : 0 }]}>{item.title}</Text>
-                    {!!item.notes && <Text style={[styles.cardDesc, { color: '#515d64', marginLeft: isPending || isCompleted || isSkipped ? 44 : 0 }]}>{item.notes}</Text>}
-
-                    <View style={[styles.cardTagsRow, { marginLeft: isPending || isCompleted || isSkipped ? 44 : 0 }]}>
-                      {!!item.duration_minutes && (
-                        <View style={styles.iconTag}>
-                          <MaterialIcons name="timer" size={14} color="#E6E300" />
-                          <Text style={[styles.iconTagText, { color: '#1A1A1A' }]}>{item.duration_minutes} mins</Text>
+                  <View key={`act-${item.id}`} style={[styles.tlItem, isSkipped && { opacity: 0.4 }]}>
+                    {/* Timeline dot */}
+                    <View style={styles.tlDotCol}>
+                      {isPending ? (
+                        <TouchableOpacity style={[styles.tlDot, styles.tlDotPending]} onPress={() => handleCheckTap(item)} activeOpacity={0.7}>
+                          <MaterialIcons name="schedule" size={12} color="#041015" />
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={[styles.tlDot, isCompleted ? styles.tlDotCompleted : styles.tlDotSkipped]}>
+                          <MaterialIcons name={isCompleted ? "check" : "close"} size={12} color={isCompleted ? "#041015" : "#9ca3af"} />
                         </View>
                       )}
-                      {!!item.distance_km && (
-                        <View style={styles.iconTag}>
-                          <MaterialIcons name="straighten" size={14} color="#E6E300" />
-                          <Text style={[styles.iconTagText, { color: '#1A1A1A' }]}>{item.distance_km} km</Text>
-                        </View>
-                      )}
-                      {!item.distance_km && !!item.duration_minutes && ['walk', 'play'].includes(item.activity_type) && activePet?.current_weight_kg && (
-                        <View style={styles.iconTag}>
-                          <MaterialIcons name="straighten" size={14} color="#94a3b8" />
-                          <Text style={[styles.iconTagText, { color: '#94a3b8' }]}>
-                            {contextualizeWalk(item.duration_minutes, activePet.current_weight_kg)}
-                          </Text>
-                        </View>
-                      )}
-                      {!!item.water_ml && (
-                        <View style={styles.iconTag}>
-                          <MaterialIcons name="water-drop" size={14} color="#3b82f6" />
-                          <Text style={[styles.iconTagText, { color: '#1A1A1A' }]}>{item.water_ml} ml</Text>
-                        </View>
-                      )}
-                      {!!item.intensity && (
-                        <View style={[styles.outlinePill, { backgroundColor: '#F3F4F6', borderColor: '#E5E7EB', marginLeft: 'auto' }]}>
-                          <Text style={[styles.outlinePillText, { color: '#1A1A1A' }]}>{item.intensity.toUpperCase()}</Text>
-                        </View>
-                      )}
+                      {!isLastItem && <View style={styles.tlLine} />}
                     </View>
 
-                    {/* Smart Completion Inline UI */}
-                    {confirmingTaskId === item.id && (
-                      <View style={[styles.smartConfirm, { marginLeft: 44 }]}>
-                        <Text style={styles.smartConfirmLabel}>How long did you go?</Text>
-                        <View style={styles.smartConfirmRow}>
-                          {[5, 10, 15, 20, 30, 45, 60].map(mins => {
-                            const isScheduled = mins === (item.duration_minutes || 15);
-                            const isSelected = mins === confirmingDuration;
-                            return (
-                              <TouchableOpacity
-                                key={mins}
-                                style={[
-                                  styles.smartChip,
-                                  isSelected && styles.smartChipActive,
-                                  isScheduled && !isSelected && styles.smartChipScheduled,
-                                ]}
-                                onPress={() => setConfirmingDuration(mins)}
-                              >
-                                <Text style={[
-                                  styles.smartChipText,
-                                  isSelected && styles.smartChipTextActive,
-                                ]}>{mins}m</Text>
-                                {isScheduled && !isSelected && (
-                                  <Text style={styles.smartChipHint}>✓</Text>
-                                )}
-                              </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-                        <View style={styles.smartConfirmActions}>
-                          <TouchableOpacity
-                            style={styles.smartDoneBtn}
-                            onPress={() => confirmCompletion(item, confirmingDuration)}
-                          >
-                            <MaterialIcons name="check" size={18} color="#1A1A1A" />
-                            <Text style={styles.smartDoneBtnText}>Done</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.smartCancelBtn}
-                            onPress={() => setConfirmingTaskId(null)}
-                          >
-                            <Text style={styles.smartCancelBtnText}>Cancel</Text>
-                          </TouchableOpacity>
+                    {/* Card */}
+                    <View style={[styles.tlCard, isSkipped && { borderStyle: 'dashed' as any, borderWidth: 2, borderColor: '#e2e8f0', backgroundColor: 'transparent' }]}>
+                      <View style={{ position: 'relative', zIndex: 10 }}>
+                        <Text style={[styles.tlTime, isSkipped && { color: '#94a3b8' }]}>{timeStr}</Text>
+                        <Text style={[styles.tlTitle, isSkipped && { color: '#94a3b8' }]}>{item.title}</Text>
+                        {!!item.notes && <Text style={styles.tlDesc}>{item.notes}</Text>}
+
+                        {/* Tags row */}
+                        <View style={styles.tlTagsRow}>
+                          {!!item.duration_minutes && !item.distance_km && ['walk', 'play'].includes(item.activity_type) && activePet?.current_weight_kg && (
+                            <Text style={styles.tlDescSmall}>{contextualizeWalk(item.duration_minutes, activePet.current_weight_kg)}</Text>
+                          )}
+                          {!!item.distance_km && (
+                            <Text style={styles.tlDescSmall}>{item.distance_km} km</Text>
+                          )}
+                          <View style={{ flex: 1 }} />
+                          {metricLabel && (
+                            <View style={styles.tlBadge}>
+                              <Text style={styles.tlBadgeText}>{metricLabel}</Text>
+                            </View>
+                          )}
                         </View>
                       </View>
-                    )}
 
+                      {/* Watermark icon */}
+                      {!isSkipped && (
+                        <View style={styles.tlWatermark}>
+                          <MaterialIcons name={typeDef.icon as any} size={100} color="rgba(255,255,255,0.06)" />
+                        </View>
+                      )}
+
+                      {/* Smart Completion Inline UI */}
+                      {confirmingTaskId === item.id && (
+                        <View style={styles.smartConfirm}>
+                          <Text style={styles.smartConfirmLabel}>How long did you go?</Text>
+                          <View style={styles.smartConfirmRow}>
+                            {[5, 10, 15, 20, 30, 45, 60].map(mins => {
+                              const isScheduled = mins === (item.duration_minutes || 15);
+                              const isSelected = mins === confirmingDuration;
+                              return (
+                                <TouchableOpacity
+                                  key={mins}
+                                  style={[
+                                    styles.smartChip,
+                                    isSelected && styles.smartChipActive,
+                                    isScheduled && !isSelected && styles.smartChipScheduled,
+                                  ]}
+                                  onPress={() => setConfirmingDuration(mins)}
+                                >
+                                  <Text style={[styles.smartChipText, isSelected && styles.smartChipTextActive]}>{mins}m</Text>
+                                  {isScheduled && !isSelected && <Text style={styles.smartChipHint}>✓</Text>}
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                          <View style={styles.smartConfirmActions}>
+                            <TouchableOpacity style={styles.smartDoneBtn} onPress={() => confirmCompletion(item, confirmingDuration)}>
+                              <MaterialIcons name="check" size={18} color="#1A1A1A" />
+                              <Text style={styles.smartDoneBtnText}>Done</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.smartCancelBtn} onPress={() => setConfirmingTaskId(null)}>
+                              <Text style={styles.smartCancelBtnText}>Cancel</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </View>
                   </View>
                 );
               })}
@@ -854,17 +870,58 @@ export default function ActivityScreen() {
               </View>
 
               {!selectedType ? (
-                <View style={styles.typeGrid}>
-                  {ACTIVITY_TYPES.map(type => (
+                <View style={styles.bentoGrid}>
+                  {/* Hero Card: Walk */}
+                  <TouchableOpacity
+                    style={[styles.bentoHero, { backgroundColor: ACTIVITY_TYPES.find(t => t.id === 'walk')?.color }]}
+                    onPress={() => setSelectedType('walk')}
+                    activeOpacity={0.9}
+                  >
+                    <View style={styles.heroOverlay}>
+                      <MaterialIcons name="directions-walk" size={56} color="#1A1A1A" />
+                      <Text style={styles.heroLabel}>Walk</Text>
+                      <View style={{ position: 'absolute', right: 24, top: 24, backgroundColor: 'rgba(255,255,255,0.4)', borderRadius: 20, padding: 4 }}>
+                        <MaterialIcons name="chevron-right" size={24} color="#1A1A1A" />
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Secondary Row: Play & Water */}
+                  <View style={styles.bentoRow}>
                     <TouchableOpacity
-                      key={type.id}
-                      style={[styles.typeBtn, { backgroundColor: type.color }]}
-                      onPress={() => setSelectedType(type.id)}
+                      style={[styles.bentoSquare, { backgroundColor: ACTIVITY_TYPES.find(t => t.id === 'play')?.color }]}
+                      onPress={() => setSelectedType('play')}
+                      activeOpacity={0.9}
                     >
-                      <MaterialIcons name={type.icon as any} size={32} color="#1A1A1A" />
-                      <Text style={styles.typeLabel}>{type.label}</Text>
+                      <MaterialIcons name="sports-baseball" size={36} color="#1A1A1A" />
+                      <Text style={styles.bentoLabel}>Play</Text>
                     </TouchableOpacity>
-                  ))}
+                    <TouchableOpacity
+                      style={[styles.bentoSquare, { backgroundColor: ACTIVITY_TYPES.find(t => t.id === 'water')?.color }]}
+                      onPress={() => setSelectedType('water')}
+                      activeOpacity={0.9}
+                    >
+                      <MaterialIcons name="water-drop" size={36} color="#1A1A1A" />
+                      <Text style={styles.bentoLabel}>Water</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Tertiary Scroll Row: Care & Health */}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.bentoTagsScroll}>
+                    {ACTIVITY_TYPES.filter(t => !['walk', 'play', 'water'].includes(t.id)).map(type => (
+                      <TouchableOpacity
+                        key={type.id}
+                        style={[styles.bentoTag, { backgroundColor: type.color }]}
+                        onPress={() => setSelectedType(type.id)}
+                        activeOpacity={0.8}
+                      >
+                        <View style={styles.bentoTagIconBox}>
+                          <MaterialIcons name={type.icon as any} size={18} color="#1A1A1A" />
+                        </View>
+                        <Text style={styles.bentoTagLabel}>{type.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
                 </View>
               ) : (
                 <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0 }}>
@@ -988,199 +1045,177 @@ export default function ActivityScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingBottom: 16,
-    backgroundColor: '#FFFFFF',
-    zIndex: 50,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F9FAFB',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 24, paddingBottom: 16, backgroundColor: '#FFFFFF',
+    zIndex: 50, borderBottomWidth: 1, borderBottomColor: '#f1f5f9',
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatarMini: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    overflow: 'hidden',
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 44, height: 44, borderRadius: 22, overflow: 'hidden',
+    borderWidth: 2.5, borderColor: '#FFFC00',
   },
   avatarMiniImg: { width: '100%', height: '100%' },
   headerTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 24,
-    letterSpacing: -0.5,
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 22,
+    letterSpacing: -0.5, color: '#243036',
   },
-  bellBtn: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'flex-end',
+  bellBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'flex-end' },
+  scrollContent: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 160 },
+
+  // Progress Section
+  progressSection: { marginBottom: 28 },
+  progressSubtitle: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11,
+    letterSpacing: 2, color: '#94a3b8', marginBottom: 4,
   },
-  scrollContent: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 160,
+  progressTitle: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 26,
+    letterSpacing: -0.5, color: '#0f172a', marginBottom: 20,
   },
-  heroSection: {
-    padding: 32,
-    borderRadius: 24,
-    overflow: 'hidden',
-    marginBottom: 24,
+
+  // Date Slider
+  dateSlider: { gap: 10, paddingVertical: 4, marginBottom: 20 },
+  datePill: {
+    paddingHorizontal: 18, paddingVertical: 12, borderRadius: 16,
+    backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', alignItems: 'center',
   },
-  heroBlobRight: {
-    position: 'absolute', top: -40, right: -40,
-    width: 160, height: 160, borderRadius: 80,
+  datePillActive: {
+    backgroundColor: '#FFFC00', borderColor: '#FFFC00',
+    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
-  heroBlobLeft: {
-    position: 'absolute', bottom: -40, left: -40,
-    width: 128, height: 128, borderRadius: 64,
+  datePillDay: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11,
+    letterSpacing: 1, color: '#94a3b8', marginBottom: 2,
   },
-  heroSubtitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12,
-    letterSpacing: 2, marginBottom: 4,
+  datePillDayActive: { color: '#0f172a' },
+  datePillDate: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 13, color: '#475569',
   },
-  heroTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 32,
-    letterSpacing: -1, marginBottom: 16,
+  datePillDateActive: { color: '#0f172a' },
+
+  // Completion Badge
+  completionBadge: {
+    alignSelf: 'flex-start', backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0',
+    paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, marginBottom: 20,
   },
-  completionBar: {
-    marginBottom: 24,
-    gap: 6,
+  completionBadgeText: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 13, color: '#16a34a',
   },
-  completionBarBg: {
-    height: 8,
-    backgroundColor: 'rgba(0,0,0,0.1)',
-    borderRadius: 4,
-    overflow: 'hidden',
+
+  // Stats Grid & Rings
+  statsGrid: { flexDirection: 'row', gap: 12 },
+  ringCard: {
+    flex: 1, borderRadius: 20, padding: 16, alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
   },
-  completionBarFill: {
-    height: '100%',
-    backgroundColor: '#1A1A1A',
-    borderRadius: 4,
+  ringContainer: {
+    width: 64, height: 64, justifyContent: 'center', alignItems: 'center', marginBottom: 10,
   },
-  completionText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12,
-    color: '#1A1A1A', opacity: 0.7,
+  ringIcon: { position: 'absolute' },
+  ringValue: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18, color: '#0f172a',
   },
-  statsGrid: { flexDirection: 'row', gap: 16 },
-  statCard: {
-    flex: 1, backgroundColor: 'rgba(255,255,255,0.4)',
-    borderRadius: 16, padding: 16, alignItems: 'center',
+  ringLabel: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 11, color: '#94a3b8', marginTop: 2,
   },
-  statValue: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 22, marginTop: 8,
-    color: '#1A1A1A',
-  },
-  statUnit: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 10, fontWeight: '700',
-    color: '#1A1A1A', opacity: 0.5, marginTop: -2,
-  },
-  statLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 9,
-    letterSpacing: 1.5, marginTop: 8, color: '#1A1A1A', opacity: 0.4,
-  },
-  dateNav: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    padding: 8, borderRadius: 40, borderWidth: 1, marginBottom: 32,
-  },
-  dateBtn: {
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center',
-  },
-  dateText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 16 },
-  todayText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 10, letterSpacing: 1 },
-  feedSection: { marginBottom: 32 },
+
+  // Feed Section
+  feedSection: { marginTop: 32, marginBottom: 32 },
   feedHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 8, marginBottom: 24,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24,
   },
   feedTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, letterSpacing: -0.5,
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 22, letterSpacing: -0.5, color: '#0f172a',
   },
-  pendingBadge: {
-    paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16,
-  },
+  pendingBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16 },
   pendingBadgeText: {
     fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, color: '#92400e',
   },
+
+  // Empty State
   emptyState: {
-    alignItems: 'center', padding: 40, backgroundColor: '#F9FAFB', borderRadius: 24,
+    alignItems: 'center', padding: 40, backgroundColor: '#f8fafc', borderRadius: 24,
+    borderWidth: 1, borderColor: '#e2e8f0',
   },
   emptyTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18,
-    color: '#1A1A1A', marginBottom: 8,
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18, color: '#1A1A1A', marginBottom: 8,
   },
   emptyDesc: {
     fontFamily: 'Plus Jakarta Sans', fontSize: 14, color: '#6b7280',
     textAlign: 'center', lineHeight: 20, marginBottom: 24,
   },
-  generateBtn: {
-    borderRadius: 32, overflow: 'hidden', width: '100%',
+  generateBtn: { borderRadius: 32, overflow: 'hidden', width: '100%' },
+  generateGradient: { paddingVertical: 16, alignItems: 'center', justifyContent: 'center' },
+  generateText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 16, color: '#1A1A1A' },
+
+  // Timeline Items
+  timelineList: { gap: 0 },
+  tlItem: { flexDirection: 'row', gap: 16 },
+  tlDotCol: { alignItems: 'center', width: 28 },
+  tlDot: {
+    width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: '#e2e8f0', backgroundColor: '#FFFFFF',
   },
-  generateGradient: {
-    paddingVertical: 16, alignItems: 'center', justifyContent: 'center',
+  tlDotCompleted: {
+    backgroundColor: '#FFFC00', borderColor: '#FFFC00',
   },
-  generateText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 16, color: '#1A1A1A',
+  tlDotPending: {
+    backgroundColor: '#f8fafc', borderColor: '#cbd5e1',
   },
-  timelineList: { gap: 16 },
-  timelineCard: {
-    backgroundColor: '#FFFFFF', padding: 24, borderRadius: 24,
-    borderWidth: 1, borderColor: '#E5E7EB', borderLeftWidth: 8,
+  tlDotSkipped: {
+    backgroundColor: '#f1f5f9', borderColor: '#e2e8f0',
   },
-  cardHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12,
+  tlLine: {
+    width: 2, flex: 1, backgroundColor: '#e2e8f0', marginVertical: 4,
   },
-  timelineIconBg: {
-    width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center',
+  tlCard: {
+    flex: 1, backgroundColor: '#041015', borderRadius: 20, padding: 20,
+    marginBottom: 16, overflow: 'hidden', position: 'relative',
   },
-  timeTag: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16 },
-  timeText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 10, letterSpacing: 1 },
-  cardTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18, marginBottom: 8 },
-  cardDesc: { fontFamily: 'Plus Jakarta Sans', fontSize: 14, lineHeight: 20, marginBottom: 16 },
-  cardTagsRow: { flexDirection: 'row', gap: 16 },
-  iconTag: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  iconTagText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12 },
-  pillBadge: { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16 },
-  pillBadgeText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12 },
-  outlinePill: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16, borderWidth: 1 },
-  outlinePillText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 10, letterSpacing: 1 },
-  checkCircleEmpty: {
-    width: 32, height: 32, borderRadius: 16,
-    borderWidth: 3, borderColor: '#d1d5db',
-    justifyContent: 'center', alignItems: 'center',
+  tlTime: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11,
+    letterSpacing: 1.5, color: '#FFFC00', marginBottom: 6,
   },
-  checkCircleInner: {
-    width: 12, height: 12, borderRadius: 6, backgroundColor: '#e5e7eb',
+  tlTitle: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 17,
+    color: '#FFFFFF', marginBottom: 4,
   },
-  checkCircleFilled: {
-    width: 32, height: 32, borderRadius: 16,
-    justifyContent: 'center', alignItems: 'center',
+  tlDesc: {
+    fontFamily: 'Plus Jakarta Sans', fontSize: 13, color: '#94a3b8',
+    lineHeight: 18, marginBottom: 12,
   },
-  aiBadge: {
-    width: 24, height: 24, borderRadius: 12,
-    backgroundColor: '#FEF3C7', justifyContent: 'center', alignItems: 'center',
+  tlDescSmall: {
+    fontFamily: 'Plus Jakarta Sans', fontSize: 12, color: '#64748b',
   },
+  tlTagsRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4,
+  },
+  tlBadge: {
+    backgroundColor: 'rgba(255,252,0,0.15)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12,
+  },
+  tlBadgeText: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11,
+    letterSpacing: 1, color: '#FFFC00',
+  },
+  tlWatermark: {
+    position: 'absolute', bottom: -10, right: -10,
+  },
+
+  // FAB
   fab: {
     position: 'absolute', right: 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.2, shadowRadius: 20, elevation: 10, borderRadius: 32,
+    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35, shadowRadius: 16, elevation: 10, borderRadius: 32,
   },
   fabInner: {
     width: 64, height: 64, borderRadius: 32,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 4, borderColor: '#FFFFFF',
   },
-  // Modal Styles
+
+  // Modal
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
   modalContent: {
     backgroundColor: '#FFFFFF', borderTopLeftRadius: 32, borderTopRightRadius: 32,
@@ -1192,38 +1227,61 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, color: '#1A1A1A',
   },
-  typeGrid: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between',
+  bentoGrid: { gap: 16 },
+  bentoHero: {
+    width: '100%', height: 130, borderRadius: 32, overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 10, elevation: 5,
   },
-  typeBtn: {
-    width: '47%', aspectRatio: 1, borderRadius: 24,
-    justifyContent: 'center', alignItems: 'center', gap: 12,
+  heroOverlay: {
+    flex: 1, padding: 24, justifyContent: 'flex-end', alignItems: 'flex-start',
   },
-  typeLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 16, color: '#1A1A1A',
+  heroLabel: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 28, color: '#1A1A1A', marginTop: 8,
+  },
+  bentoRow: { flexDirection: 'row', gap: 16 },
+  bentoSquare: {
+    flex: 1, height: 120, borderRadius: 32, padding: 24, justifyContent: 'flex-end', alignItems: 'flex-start',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 4,
+  },
+  bentoLabel: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 18, color: '#1A1A1A', marginTop: 12,
+  },
+  bentoTagsScroll: { gap: 12, paddingVertical: 8, paddingHorizontal: 4 },
+  bentoTag: {
+    flexDirection: 'row', alignItems: 'center', padding: 8, paddingRight: 18, borderRadius: 100, gap: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
+  },
+  bentoTagIconBox: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.4)', justifyContent: 'center', alignItems: 'center',
+  },
+  bentoTagLabel: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 15, color: '#1A1A1A',
   },
   inputGroup: { marginBottom: 20 },
   inputLabel: {
     fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#515d64', marginBottom: 8,
   },
   input: {
-    backgroundColor: '#F3F4F6', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 14,
+    backgroundColor: '#F8FAFC', borderRadius: 20, paddingHorizontal: 18, paddingVertical: 16,
     fontFamily: 'Plus Jakarta Sans', fontSize: 16, color: '#1A1A1A',
+    borderWidth: 1, borderColor: '#e2e8f0', shadowColor: '#000', shadowOpacity: 0.03, shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 1,
   },
-  presetRow: { flexDirection: 'row', gap: 8 },
+  presetRow: { flexDirection: 'row', gap: 8, backgroundColor: '#f1f5f9', padding: 6, borderRadius: 20 },
   presetBtn: {
-    flex: 1, paddingVertical: 12, borderRadius: 12,
-    backgroundColor: '#F3F4F6', alignItems: 'center',
+    flex: 1, paddingVertical: 12, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
   },
-  presetBtnActive: { backgroundColor: '#FFFC00' },
+  presetBtnActive: {
+    backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, elevation: 2,
+  },
   presetBtnText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, color: '#6b7280',
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#64748b',
   },
   submitBtn: { marginTop: 8, borderRadius: 32, overflow: 'hidden' },
   submitGradient: { paddingVertical: 16, alignItems: 'center' },
   submitText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 16, color: '#1A1A1A' },
   cancelBtn: { paddingVertical: 16, alignItems: 'center', marginTop: 8 },
   cancelText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 16, color: '#6b7280' },
+
   // Auto-Adjustment Banner
   adjustBanner: {
     backgroundColor: '#FFFBEB', borderRadius: 24, padding: 24, marginBottom: 24,
@@ -1238,9 +1296,7 @@ const styles = StyleSheet.create({
   adjustBannerDesc: {
     fontFamily: 'Plus Jakarta Sans', fontSize: 14, lineHeight: 20, color: '#78350f',
   },
-  adjustBannerActions: {
-    flexDirection: 'row', gap: 12,
-  },
+  adjustBannerActions: { flexDirection: 'row', gap: 12 },
   adjustBtnYes: {
     flex: 1, backgroundColor: '#FFFC00', borderRadius: 16, paddingVertical: 14, alignItems: 'center',
   },
@@ -1253,38 +1309,30 @@ const styles = StyleSheet.create({
   adjustBtnNoText: {
     fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#92400e',
   },
+
   // Smart Completion
   smartConfirm: {
-    marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#F3F4F6',
+    marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)',
+    position: 'relative', zIndex: 20,
   },
   smartConfirmLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#515d64', marginBottom: 12,
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8', marginBottom: 12,
   },
-  smartConfirmRow: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16,
-  },
+  smartConfirmRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
   smartChip: {
     paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12,
-    backgroundColor: '#F3F4F6', alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center',
   },
-  smartChipActive: {
-    backgroundColor: '#FFFC00',
-  },
-  smartChipScheduled: {
-    borderWidth: 2, borderColor: '#d1d5db',
-  },
+  smartChipActive: { backgroundColor: '#FFFC00' },
+  smartChipScheduled: { borderWidth: 2, borderColor: 'rgba(255,255,255,0.2)' },
   smartChipText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#6b7280',
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8',
   },
-  smartChipTextActive: {
-    color: '#1A1A1A',
-  },
+  smartChipTextActive: { color: '#1A1A1A' },
   smartChipHint: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 10, color: '#9ca3af', marginTop: 2,
+    fontFamily: 'Plus Jakarta Sans', fontSize: 10, color: '#64748b', marginTop: 2,
   },
-  smartConfirmActions: {
-    flexDirection: 'row', gap: 12,
-  },
+  smartConfirmActions: { flexDirection: 'row', gap: 12 },
   smartDoneBtn: {
     flex: 1, flexDirection: 'row', gap: 6, backgroundColor: '#FFFC00', borderRadius: 14,
     paddingVertical: 12, alignItems: 'center', justifyContent: 'center',
@@ -1294,9 +1342,10 @@ const styles = StyleSheet.create({
   },
   smartCancelBtn: {
     paddingVertical: 12, paddingHorizontal: 20, borderRadius: 14,
-    backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center',
   },
   smartCancelBtnText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#6b7280',
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#94a3b8',
   },
 });
+

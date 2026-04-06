@@ -4,10 +4,12 @@ import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
+import { useSubscription } from '../../hooks/useSubscription';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator, View } from 'react-native';
+import { Hotspot } from '../../components/walkthrough/Hotspot';
 import { CoinToast } from '../../components/CoinToast';
 
 export default function TabLayout() {
@@ -19,6 +21,7 @@ export default function TabLayout() {
   const { fetchContext } = usePetContextStore();
   const router = useRouter();
   const [redirectingToOnboarding, setRedirectingToOnboarding] = useState(false);
+  const { status: subStatus } = useSubscription();
 
   useEffect(() => {
     if (!authLoading) {
@@ -46,6 +49,13 @@ export default function TabLayout() {
     }
   }, [activePet?.id]);
 
+  // Subscription gating: redirect expired users to the paywall
+  useEffect(() => {
+    if (subStatus === 'expired') {
+      router.replace('/paywall' as any);
+    }
+  }, [subStatus]);
+
   // Block rendering while loading or redirecting to prevent flickering
   if (authLoading || (session && (petLoading || streakLoading)) || redirectingToOnboarding) {
     return (
@@ -57,82 +67,94 @@ export default function TabLayout() {
 
   return (
     <>
-    <CoinToast />
-    <ExpoTabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: theme.primary,
-        tabBarInactiveTintColor: theme['on-surface-variant'],
-        tabBarStyle: {
-          backgroundColor: theme.surface,
-          borderTopColor: theme['surface-container-highest'],
-          height: 60 + insets.bottom,
-          paddingBottom: insets.bottom || 12,
-          paddingTop: 12,
-        },
-        tabBarLabelStyle: {
-          fontFamily: 'Plus Jakarta Sans',
-          fontWeight: '600',
-          fontSize: 11,
-          marginTop: 4,
-        }
-      }}
-    >
-      <ExpoTabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <MaterialIcons name="home" size={26} color={color} />,
+      <CoinToast />
+      <ExpoTabs
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: theme.primary,
+          tabBarInactiveTintColor: theme['on-surface-variant'],
+          tabBarStyle: {
+            backgroundColor: theme.surface,
+            borderTopColor: theme['surface-container-highest'],
+            height: 60 + insets.bottom,
+            paddingBottom: insets.bottom || 12,
+            paddingTop: 12,
+          },
+          tabBarLabelStyle: {
+            fontFamily: 'Plus Jakarta Sans',
+            fontWeight: '600',
+            fontSize: 11,
+            marginTop: 4,
+          }
         }}
-      />
-      <ExpoTabs.Screen
-        name="log"
-        options={{
-          title: 'Log',
-          tabBarIcon: ({ color }) => <MaterialIcons name="add-circle" size={32} color={color} />,
-        }}
-      />
-      <ExpoTabs.Screen
-        name="activity"
-        options={{
-          title: 'Activity',
-          tabBarIcon: ({ color }) => <MaterialIcons name="directions-run" size={26} color={color} />,
-        }}
-      />
-      <ExpoTabs.Screen
-        name="community"
-        options={{
-          href: null,
-        }}
-      />
-      <ExpoTabs.Screen
-        name="shop"
-        options={{
-          title: 'Shop',
-          tabBarIcon: ({ color }) => <MaterialIcons name="local-mall" size={26} color={color} />,
-        }}
-      />
-      <ExpoTabs.Screen
-        name="explore"
-        options={{
-          href: null,
-        }}
-      />
-      <ExpoTabs.Screen
-        name="health"
-        options={{
-          title: 'Health',
-          tabBarIcon: ({ color }) => <MaterialIcons name="monitor-heart" size={26} color={color} />,
-        }}
-      />
-      <ExpoTabs.Screen
-        name="profile"
-        options={{
-          title: 'Profile',
-          tabBarIcon: ({ color }) => <MaterialIcons name="person" size={26} color={color} />,
-        }}
-      />
-    </ExpoTabs>
+      >
+        <ExpoTabs.Screen
+          name="index"
+          options={{
+            title: 'Home',
+            tabBarIcon: ({ color }) => <MaterialIcons name="home" size={26} color={color} />,
+          }}
+        />
+        <ExpoTabs.Screen
+          name="meal"
+          options={{
+            title: 'Meal',
+            tabBarIcon: ({ color }) => <MaterialIcons name="add-circle" size={32} color={color} />,
+          }}
+        />
+        <ExpoTabs.Screen
+          name="activity"
+          options={{
+            title: 'Activity',
+            tabBarIcon: ({ color }) => (
+              <MaterialIcons name="directions-run" size={26} color={color} />
+            ),
+          }}
+        />
+        <ExpoTabs.Screen
+          name="community"
+          options={{
+            href: null,
+          }}
+        />
+        <ExpoTabs.Screen
+          name="shop"
+          options={{
+            href: null,
+            title: 'Shop',
+            tabBarIcon: ({ color }) => <MaterialIcons name="local-mall" size={26} color={color} />,
+          }}
+        />
+        <ExpoTabs.Screen
+          name="explore"
+          options={{
+            href: null,
+          }}
+        />
+        <ExpoTabs.Screen
+          name="health"
+          options={{
+            title: 'Health',
+            tabBarIcon: ({ color }) => (
+              <Hotspot
+                stepKey="health_tab"
+                title="Health Dashboard"
+                description="View your pet's complete nutritional and activity history here!"
+                position="top-right"
+              >
+                <MaterialIcons name="monitor-heart" size={26} color={color} />
+              </Hotspot>
+            ),
+          }}
+        />
+        <ExpoTabs.Screen
+          name="profile"
+          options={{
+            title: 'Profile',
+            tabBarIcon: ({ color }) => <MaterialIcons name="person" size={26} color={color} />,
+          }}
+        />
+      </ExpoTabs>
     </>
   );
 }

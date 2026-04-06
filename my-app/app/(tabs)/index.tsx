@@ -1,9 +1,9 @@
 import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, ActivityIndicator, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { MaterialIcons } from '@expo/vector-icons';
+import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -11,27 +11,49 @@ import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
+import { usePushNotifications } from '../../hooks/usePushNotifications';
 import CircularProgress from '../../components/CircularProgress';
+import { LiquidFillCard } from '../../components/LiquidFillCard';
 import { NudgeCard } from '../../components/NudgeCard';
+import { TrialBanner } from '../../components/TrialBanner';
 import { contextualizeCalories, contextualizeWater } from '../../lib/contextualizer';
+import { Hotspot } from '../../components/walkthrough/Hotspot';
 
 // Screen 8: Home Dashboard
 export default function HomeScreen() {
   const router = useRouter();
+  const scrollY = React.useRef(new Animated.Value(0)).current;
 
   const insets = useSafeAreaInsets();
   const { activePet, isTailoring } = useActivePetStore();
   const { currentStreak, longestStreak, pawCoins, fetchStreak } = useStreakStore();
   const { user } = useAuth();
+  const { expoPushToken } = usePushNotifications();
+
+  // Sync push token silently
+  React.useEffect(() => {
+    if (user?.id && expoPushToken) {
+      supabase.from('push_tokens').upsert({
+        user_id: user.id,
+        token: expoPushToken
+      }, { onConflict: 'token' }).then(({ error }) => {
+        if (error) console.error("Failed to sync push token:", error.message);
+      });
+    }
+  }, [user?.id, expoPushToken]);
 
   const todayCalories = usePetContextStore(s => s.todayCalories);
   const todayWater = usePetContextStore(s => s.todayWater);
-  const todayWalks = usePetContextStore(s => s.todayWalks);
   const todayScans = usePetContextStore(s => s.todayScans);
   const nextActivity = usePetContextStore(s => s.nextActivity);
   const calPercent = usePetContextStore(s => s.calPercent);
   const waterPercent = usePetContextStore(s => s.waterPercent);
   const caloriesRemaining = usePetContextStore(s => s.caloriesRemaining);
+  const activityCompletionRate = usePetContextStore(s => s.activityCompletionRate);
+  const todayActivityMinutes = usePetContextStore(s => s.todayActivityMinutes);
+  const todayProtein = usePetContextStore(s => s.todayProtein);
+  const todayCarbs = usePetContextStore(s => s.todayCarbs);
+  const todayFats = usePetContextStore(s => s.todayFats);
   const treatBudget = usePetContextStore(s => s.treatBudget);
   const treatsConsumed = usePetContextStore(s => s.treatsConsumed);
   const treatCaloriesConsumed = usePetContextStore(s => s.treatCaloriesConsumed);
@@ -50,7 +72,7 @@ export default function HomeScreen() {
 
   const baseTargetCal = activePet?.target_daily_calories || 0;
   const targetCal = adjustedTarget || baseTargetCal; // dynamic target (may differ from base)
-  const walksPercent = Math.min(todayWalks / 2, 1);
+  const exercisePercent = activityCompletionRate; // 0–1 based on completed/total activities today
 
   useFocusEffect(
     useCallback(() => {
@@ -67,19 +89,44 @@ export default function HomeScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-      
-      {/* Top Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+
+      {/* Trial Countdown Banner */}
+      <TrialBanner />
+
+      {/* Dynamic Top Header */}
+      <Animated.View style={[styles.header, {
+        paddingTop: insets.top + 12, // Reduced padding
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 50,
+        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(229, 231, 235, 0.5)', // Subtle shadow line
+        opacity: scrollY.interpolate({
+          inputRange: [50, 100],
+          outputRange: [0, 1],
+          extrapolate: 'clamp',
+        }),
+        transform: [{
+          translateY: scrollY.interpolate({
+            inputRange: [50, 100],
+            outputRange: [-20, 0],
+            extrapolate: 'clamp',
+          })
+        }]
+      }]}>
         <View style={styles.headerLeft}>
           <View style={[styles.avatarMini, { borderColor: '#e5e7eb' }]}>
-            <Image 
-              source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=400' }} 
+            <Image
+              source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=400' }}
               style={styles.avatarMiniImg}
             />
           </View>
           <Text style={[styles.headerTitle, { color: '#2e2f2d' }]}>PAWTCHI</Text>
           {/* DEV: Reset Pet Data Button */}
-          <TouchableOpacity 
+          <TouchableOpacity
             onPress={async () => {
               if (activePet?.id) {
                 await supabase.from('pets').delete().eq('id', activePet.id);
@@ -96,10 +143,18 @@ export default function HomeScreen() {
           <MaterialIcons name="generating-tokens" size={20} color="#fac129" />
           <Text style={[styles.coinText, { color: '#2e2f2d' }]}>{pawCoins.toLocaleString()} PawCoins</Text>
         </View>
-      </View>
+      </Animated.View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
+      <Animated.ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + (activePet ? 60 : 20) }]}
+        showsVerticalScrollIndicator={false}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true }
+        )}
+        scrollEventThrottle={16}
+      >
+
         {/* Contextual Nudge Card */}
         <NudgeCard
           isProfileComplete={isProfileComplete}
@@ -130,91 +185,83 @@ export default function HomeScreen() {
         <View style={styles.avatarSection}>
           {/* Background Ambient Glow */}
           <View style={[styles.ambientGlow, { backgroundColor: activePet?.equipped_items?.includes('wearable_bg') ? '#f59e0b' : 'rgba(255,252,0,0.1)' }]} />
-          
+
           {/* Main Avatar */}
           <View style={[styles.mainAvatarContainer, { shadowColor: '#000', shadowOffset: { width: 0, height: 40 }, shadowOpacity: 0.05, shadowRadius: 80, elevation: 12 }]}>
             <View style={[styles.avatarRing, { borderColor: '#FFFC00' }]}>
-               <Image 
-                 source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000&auto=format&fit=crop' }} 
-                 style={styles.mainAvatarImg}
-               />
-               
-               {/* Tailoring Loading State overlay */}
-               {isTailoring && (
-                 <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }]}>
-                   <ActivityIndicator size="large" color="#FFFC00" />
-                   <Text style={{ color: '#FFFC00', fontWeight: 'bold', marginTop: 8, fontSize: 12, letterSpacing: 1 }}>
-                     TAILORING...
-                   </Text>
-                 </View>
-               )}
+              <Image
+                source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000&auto=format&fit=crop' }}
+                style={styles.mainAvatarImg}
+              />
+
+              {/* Tailoring Loading State overlay */}
+              {isTailoring && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }]}>
+                  <ActivityIndicator size="large" color="#FFFC00" />
+                  <Text style={{ color: '#FFFC00', fontWeight: 'bold', marginTop: 8, fontSize: 12, letterSpacing: 1 }}>
+                    TAILORING...
+                  </Text>
+                </View>
+              )}
             </View>
-            
-            {/* Status Badge */}
-            <View style={[styles.statusBadge, { backgroundColor: '#fac129' }]}>
-               <MaterialIcons name="bolt" size={18} color="#3d2b00" />
-               <Text style={[styles.statusBadgeText, { color: '#3d2b00' }]}>
-                 {activePet?.activity_level ? activePet.activity_level.toUpperCase().replace('_', ' ') : 'ENERGETIC'}
-               </Text>
-            </View>
-          </View>
 
-          {/* Floating Progress Rings */}
-          {/* Exercise Ring */}
-          <View style={[styles.floatingRingRight, { borderColor: '#e5e7eb', backgroundColor: '#FFFFFF' }]}>
-             <CircularProgress
-               size={64}
-               strokeWidth={6}
-               progress={walksPercent}
-               color="#FFFC00"
-               trackColor="#f3f4f6"
-             >
-               <MaterialIcons name="directions-run" size={24} color="#2e2f2d" />
-             </CircularProgress>
-             <Text style={[styles.ringLabel, { color: '#5c5b5b', marginTop: 4 }]}>{todayWalks > 0 ? `${todayWalks} WALKS` : 'EXERCISE'}</Text>
-          </View>
-          
-          {/* Water Ring */}
-          <View style={[styles.floatingRingLeft, { borderColor: '#e5e7eb', backgroundColor: '#FFFFFF' }]}>
-             <CircularProgress
-               size={64}
-               strokeWidth={6}
-               progress={waterPercent}
-               color="#3091F9"
-               trackColor="#f3f4f6"
-             >
-               <MaterialIcons name="water-drop" size={24} color="#3091F9" />
-             </CircularProgress>
-             <Text style={[styles.ringLabel, { color: '#5c5b5b', marginTop: 4 }]}>{todayWater > 0 ? `${todayWater}ml` : 'WATER'}</Text>
-             {todayWater > 0 && activePet?.current_weight_kg && (
-               <Text style={[styles.ringLabel, { color: '#94a3b8', fontSize: 9, marginTop: 1 }]}>
-                 {contextualizeWater(todayWater, activePet.current_weight_kg)}
-               </Text>
-             )}
-          </View>
-
-        </View>
-
-        {/* Bento Grid Stats */}
-        <View style={styles.bentoGrid}>
-          {/* Calories Card — LIVE */}
-          <View style={[styles.caloriesCard, { backgroundColor: '#f9fafb', borderColor: '#e5e7eb' }]}>
-            <View>
-              <Text style={[styles.caloriesLabel, { color: '#5b5c5a' }]}>CALORIES</Text>
-              <Text style={[styles.caloriesValue, { color: '#2e2f2d' }]}>{todayCalories}</Text>
-              <Text style={[styles.caloriesSub, { color: '#5b5c5a' }]}>/ {targetCal} kcal</Text>
-              <Text style={[styles.caloriesSub, { color: caloriesRemaining < 0 ? '#ef4444' : '#94a3b8', fontSize: 12, fontWeight: caloriesRemaining < 0 ? '800' : '700' }]}>
-                {caloriesRemaining >= 0 ? `${caloriesRemaining} remaining` : `${Math.abs(caloriesRemaining)} over`}
+            {/* Streak Ring Badge */}
+            <View style={[styles.statusBadge, { backgroundColor: '#FFFFFF', borderWidth: 2, borderColor: currentStreak >= 7 ? '#ef4444' : currentStreak >= 3 ? '#f97316' : '#e5e7eb' }]}>
+              <CircularProgress
+                size={40}
+                strokeWidth={4}
+                progress={Math.min(currentStreak / 7, 1)}
+                color={currentStreak >= 7 ? '#ef4444' : currentStreak >= 3 ? '#f97316' : '#d1d5db'}
+                trackColor={currentStreak >= 1 ? '#fef2f2' : '#f3f4f6'}
+              >
+                <MaterialIcons
+                  name="local-fire-department"
+                  size={16}
+                  color={currentStreak >= 7 ? '#ef4444' : currentStreak >= 3 ? '#f97316' : '#9ca3af'}
+                />
+              </CircularProgress>
+              <Text style={[styles.statusBadgeText, { color: currentStreak >= 7 ? '#dc2626' : currentStreak >= 3 ? '#ea580c' : '#6b7280', fontSize: 10 }]}>
+                {currentStreak > 0 ? `${currentStreak}D` : '0D'}
               </Text>
+            </View>
+          </View>
+        </View>
+        
+        {/* True Masonry Bento Grid */}
+        <View style={{ flexDirection: 'row', paddingHorizontal: 20, gap: 16, marginBottom: 16 }}>
+          {/* Left Column: Nutrition Bento */}
+          <Hotspot 
+            stepKey="home_calories" 
+            title="Nutrition Dashboard" 
+            description="Track your pet's daily calorie intake here. Overfeeding or underfeeding warnings will flag automatically!" 
+            style={{ flex: 1.15 }}
+          >
+            <View style={[styles.nutritionBento, { marginHorizontal: 0, marginTop: 0, marginBottom: 0 }]}>
+            <View style={{ position: 'relative' }}>
+              <View style={[styles.caloriesFlareContainer, { position: 'absolute', right: 0, top: 0 }]}>
+                <LinearGradient
+                  colors={['#FFFC00', '#fac129']}
+                  style={styles.caloriesFlare}
+                />
+              </View>
+
+              <View style={{ marginBottom: 4, zIndex: 10 }}>
+                <Text style={[styles.caloriesLabel, { color: '#5b5c5a' }]}>CALORIES</Text>
+              </View>
+
+              <View style={{ marginTop: -4 }}>
+                <Text style={[styles.caloriesValue, { color: '#2e2f2d' }]}>{todayCalories}</Text>
+                <Text style={[styles.caloriesSub, { color: '#5b5c5a', fontSize: 12, marginTop: -2 }]}>/ {targetCal} kcal</Text>
+              </View>
               {todayCalories > 0 && (
-                <Text style={[styles.caloriesSub, { color: '#94a3b8', fontSize: 10, marginTop: 1 }]}>
+                <Text style={[styles.caloriesSub, { color: '#94a3b8', fontSize: 11, marginTop: 6 }]}>
                   {contextualizeCalories(todayCalories)}
                 </Text>
               )}
               {adjustmentReason && (
                 <Text style={[styles.caloriesSub, {
                   fontSize: 10,
-                  marginTop: 2,
+                  marginTop: 3,
                   color: adjustmentReason.includes('Trending up') || adjustmentReason.includes('dipping') ? '#f59e0b' : '#16a34a',
                   fontWeight: '600',
                 }]}>
@@ -222,77 +269,126 @@ export default function HomeScreen() {
                 </Text>
               )}
               {targetCal > 0 && (
-                <View style={styles.progressBarBg}>
+                <View style={[styles.progressBarBg, { marginTop: 12 }]}>
                   <View style={[styles.progressBarFill, { width: `${Math.min(calPercent, 100)}%`, backgroundColor: calPercent > 90 ? '#ef4444' : '#FFFC00' }]} />
                 </View>
               )}
             </View>
-            <View style={styles.caloriesFlareContainer}>
-               <LinearGradient
-                 colors={['#FFFC00', '#fac129']}
-                 style={styles.caloriesFlare}
-               />
+
+            <View style={{ height: 1, backgroundColor: '#e5e7eb', marginVertical: 14 }} />
+
+            <View style={[styles.nutritionMacroRow, { flexDirection: 'column', alignItems: 'flex-start', gap: 12, paddingTop: 0 }]}>
+              <View style={[styles.nutritionMacroItem, { flexDirection: 'row', width: '100%', justifyContent: 'space-between' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={[styles.nutritionMacroDot, { backgroundColor: '#ef4444', marginBottom: 0 }]} />
+                  <Text style={styles.nutritionMacroLabel}>Protein</Text>
+                </View>
+                <Text style={styles.nutritionMacroVal}>{todayProtein}<Text style={styles.nutritionMacroUnit}>g</Text></Text>
+              </View>
+              <View style={[styles.nutritionMacroItem, { flexDirection: 'row', width: '100%', justifyContent: 'space-between' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={[styles.nutritionMacroDot, { backgroundColor: '#f59e0b', marginBottom: 0 }]} />
+                  <Text style={styles.nutritionMacroLabel}>Carbs</Text>
+                </View>
+                <Text style={styles.nutritionMacroVal}>{todayCarbs}<Text style={styles.nutritionMacroUnit}>g</Text></Text>
+              </View>
+              <View style={[styles.nutritionMacroItem, { flexDirection: 'row', width: '100%', justifyContent: 'space-between' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={[styles.nutritionMacroDot, { backgroundColor: '#3091F9', marginBottom: 0 }]} />
+                  <Text style={styles.nutritionMacroLabel}>Fats</Text>
+                </View>
+                <Text style={styles.nutritionMacroVal}>{todayFats}<Text style={styles.nutritionMacroUnit}>g</Text></Text>
+              </View>
             </View>
-            <MaterialIcons name="restaurant" size={36} color="rgba(91,92,90,0.2)" style={styles.caloriesIcon} />
           </View>
-          
-          {/* Reward Card — Live Streak */}
-          <View style={[styles.rewardCard, { backgroundColor: currentStreak >= 7 ? '#fac129' : currentStreak >= 3 ? '#fef3c7' : '#f3f4f6' }]}>
-            <MaterialIcons 
-              name={currentStreak >= 7 ? 'local-fire-department' : currentStreak >= 3 ? 'workspace-premium' : 'emoji-events'} 
-              size={48} 
-              color={currentStreak >= 7 ? '#553e00' : currentStreak >= 3 ? '#92400e' : '#6b7280'} 
-              style={{ marginBottom: 16 }} 
-            />
-            <Text style={[styles.rewardValue, { color: currentStreak >= 3 ? '#553e00' : '#374151' }]}>
-              {currentStreak > 0 ? `${currentStreak} Day Streak!` : 'Start a Streak!'}
-            </Text>
-            <Text style={[styles.rewardSub, { color: currentStreak >= 3 ? 'rgba(85,62,0,0.7)' : '#9ca3af' }]}>
-              {currentStreak >= 30 ? 'LEGENDARY 🏆' : currentStreak >= 14 ? 'UNSTOPPABLE 🔥🔥🔥' : currentStreak >= 7 ? 'ON FIRE 🔥🔥' : currentStreak >= 3 ? 'BUILDING MOMENTUM 🔥' : 'LOG DAILY TO BUILD'}
-            </Text>
+          </Hotspot>
+
+          {/* Right Column: Square Ring Cards */}
+          <View style={{ flex: 1, gap: 16 }}>
+            {/* Exercise Fill Card */}
+            {/* Exercise Fill Card */}
+            <Hotspot 
+              stepKey="home_exercise" 
+              title="Daily Activity" 
+              description="Monitor active minutes and steps here. Closing this ring means a healthy pet!"
+              style={{ flex: 1 }}
+              position="top-right"
+            >
+              <LiquidFillCard
+                progress={exercisePercent}
+                fillColor="#FFFC00"
+                backgroundColor="#f1f5f9"
+              >
+                <View style={{ backgroundColor: 'rgba(255,255,255,0.7)', padding: 12, borderRadius: 30 }}>
+                  <MaterialIcons name="directions-run" size={24} color="#2e2f2d" />
+                </View>
+                <Text style={[styles.ringLabel, { color: '#2e2f2d', marginTop: 12, fontWeight: '800' }]}>{todayActivityMinutes > 0 ? `${todayActivityMinutes} MIN` : 'EXERCISE'}</Text>
+              </LiquidFillCard>
+            </Hotspot>
+
+            {/* Water Fill Card */}
+            <LiquidFillCard
+              progress={waterPercent}
+              fillColor="#3091F9"
+              backgroundColor="#f1f5f9"
+            >
+              <View style={{ backgroundColor: 'rgba(255,255,255,0.7)', padding: 12, borderRadius: 30 }}>
+                <MaterialIcons name="water-drop" size={24} color={waterPercent > 0.5 ? '#1e40af' : '#3091F9'} />
+              </View>
+              <Text style={[styles.ringLabel, { color: waterPercent > 0.5 ? '#ffffff' : '#2e2f2d', marginTop: 12, fontWeight: '800' }]}>{todayWater > 0 ? `${todayWater}ml` : 'WATER'}</Text>
+              {todayWater > 0 && activePet?.current_weight_kg && (
+                <Text style={[styles.ringLabel, { color: waterPercent > 0.5 ? 'rgba(255,255,255,0.8)' : '#64748b', fontSize: 10, marginTop: 2 }]}>
+                  {contextualizeWater(todayWater, activePet.current_weight_kg)}
+                </Text>
+              )}
+            </LiquidFillCard>
           </View>
         </View>
 
-        {/* Treat Budget Pill */}
+        {/* Full-width Treat Banner */}
         {targetCal > 0 && (() => {
           const overLimit = caloriesRemaining < 0;
           const treatBudgetLeft = Math.max(0, treatBudget - treatCaloriesConsumed);
           const treatWarning = overLimit || treatBudgetLeft === 0;
-          const dinnerReduction = treatCaloriesConsumed > 0 ? treatCaloriesConsumed : 0;
           return (
             <TouchableOpacity
-              style={[styles.treatPill, {
+              onPress={() => router.push('/(tabs)/meal')}
+              activeOpacity={0.8}
+              style={{
+                marginHorizontal: 20,
+                marginBottom: 16,
                 backgroundColor: treatWarning ? '#fef2f2' : '#f0fdf4',
-                borderColor: treatWarning ? '#fecaca' : '#bbf7d0',
-              }]}
-              onPress={() => router.push('/(tabs)/log')}
-              activeOpacity={0.85}
+                borderRadius: 20,
+                padding: 16,
+                flexDirection: 'row', alignItems: 'center', gap: 12,
+                borderWidth: 1, borderColor: treatWarning ? '#fecaca' : '#bbf7d0',
+                shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
+              }}
             >
-              <Text style={{ fontSize: 16 }}>{treatWarning ? '⚠️' : '🦴'}</Text>
-              <Text style={[styles.treatPillText, {
-                color: treatWarning ? '#dc2626' : '#16a34a',
-              }]}>
-                {overLimit
-                  ? `No treat budget — ${Math.abs(caloriesRemaining)} kcal over daily limit`
-                  : treatsConsumed > 0
-                    ? `${treatsConsumed} treat${treatsConsumed !== 1 ? 's' : ''} (${treatCaloriesConsumed} kcal) · Reduce dinner by ${dinnerReduction} kcal`
-                    : `Treat budget: ${treatBudget} kcal available`
-                }
-              </Text>
+              <Text style={{ fontSize: 24 }}>{treatWarning ? '⚠️' : '🦴'}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: treatWarning ? '#dc2626' : '#16a34a' }}>
+                  {overLimit ? 'Treat limit reached' : treatsConsumed > 0 ? `${treatsConsumed} treat${treatsConsumed !== 1 ? 's' : ''} enjoyed` : 'Treat budget'}
+                </Text>
+                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 11, color: treatWarning ? '#ef4444' : '#86efac', marginTop: 2 }}>
+                  {overLimit ? `${Math.abs(caloriesRemaining)} kcal over daily budget` : `${treatBudgetLeft} kcal left for treats`}
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={treatWarning ? '#fca5a5' : '#86efac'} />
             </TouchableOpacity>
           );
         })()}
 
         {/* Streak Break Encouragement — Loss Aversion Nudge */}
         {currentStreak === 0 && longestStreak > 0 && (
-          <TouchableOpacity 
+          <TouchableOpacity
             style={{
               marginHorizontal: 20, marginTop: 16,
               backgroundColor: '#fef3c7', borderRadius: 20,
               padding: 20, flexDirection: 'row', alignItems: 'center', gap: 16,
               borderWidth: 1, borderColor: '#fde68a',
             }}
-            onPress={() => router.push('/(tabs)/log')}
+            onPress={() => router.push('/(tabs)/meal')}
             activeOpacity={0.85}
           >
             <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: '#fac129', justifyContent: 'center', alignItems: 'center' }}>
@@ -312,7 +408,7 @@ export default function HomeScreen() {
 
         {/* Suggested for Today Widget */}
         {nextActivity && (
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.suggestedCard}
             onPress={() => router.push('/(tabs)/activity')}
             activeOpacity={0.9}
@@ -331,23 +427,23 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <View style={styles.suggestedBody}>
-                <View style={[styles.suggestedIconBg, { 
-                  backgroundColor: nextActivity.activity_type === 'walk' ? 'rgba(255,252,0,0.15)' 
+                <View style={[styles.suggestedIconBg, {
+                  backgroundColor: nextActivity.activity_type === 'walk' ? 'rgba(255,252,0,0.15)'
                     : nextActivity.activity_type === 'play' ? 'rgba(254,248,195,0.2)'
-                    : nextActivity.activity_type === 'water' ? 'rgba(59,130,246,0.15)'
-                    : 'rgba(255,255,255,0.1)'
+                      : nextActivity.activity_type === 'water' ? 'rgba(59,130,246,0.15)'
+                        : 'rgba(255,255,255,0.1)'
                 }]}>
-                  <MaterialIcons 
+                  <MaterialIcons
                     name={
-                      nextActivity.activity_type === 'walk' ? 'directions-walk' 
-                      : nextActivity.activity_type === 'play' ? 'sports-baseball'
-                      : nextActivity.activity_type === 'water' ? 'water-drop'
-                      : nextActivity.activity_type === 'training' ? 'school'
-                      : nextActivity.activity_type === 'grooming' ? 'content-cut'
-                      : 'star'
-                    } 
-                    size={28} 
-                    color={nextActivity.activity_type === 'water' ? '#60a5fa' : '#FFFC00'} 
+                      nextActivity.activity_type === 'walk' ? 'directions-walk'
+                        : nextActivity.activity_type === 'play' ? 'sports-baseball'
+                          : nextActivity.activity_type === 'water' ? 'water-drop'
+                            : nextActivity.activity_type === 'training' ? 'school'
+                              : nextActivity.activity_type === 'grooming' ? 'content-cut'
+                                : 'star'
+                    }
+                    size={28}
+                    color={nextActivity.activity_type === 'water' ? '#60a5fa' : '#FFFC00'}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
@@ -385,22 +481,30 @@ export default function HomeScreen() {
         )}
 
         {/* Primary Action */}
-        <TouchableOpacity 
-          style={[styles.primaryBtn, { backgroundColor: isProfileComplete ? '#FFFC00' : '#e5e7eb' }]}
-          onPress={() => {
-            if (!isProfileComplete) {
-              router.push('/medical');
-            } else {
-              router.push('/(tabs)/log');
-            }
-          }}
-          activeOpacity={0.9}
+        <Hotspot 
+          stepKey="log_action" 
+          title="Log Your First Meal" 
+          description="Everything your pet eats should go here. It will automatically update the calories tracking!"
+          style={{ marginHorizontal: 20 }}
+          position="top-right"
         >
-          <MaterialIcons name={isProfileComplete ? "add-circle" : "lock"} size={32} color={isProfileComplete ? "#000000" : "#9ca3af"} />
-          <Text style={[styles.primaryBtnText, { color: isProfileComplete ? '#000000' : '#9ca3af', fontSize: isProfileComplete ? 20 : 16 }]}>
-            {isProfileComplete ? "LOG ACTIVITY" : "COMPLETE PROFILE TO UNLOCK"}
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.primaryBtn, { backgroundColor: isProfileComplete ? '#FFFC00' : '#e5e7eb', marginHorizontal: 0 }]}
+            onPress={() => {
+              if (!isProfileComplete) {
+                router.push('/medical');
+              } else {
+                router.push('/(tabs)/meal');
+              }
+            }}
+            activeOpacity={0.9}
+          >
+            <Ionicons name="add" size={24} color={isProfileComplete ? '#1A1A1A' : '#9ca3af'} />
+            <Text style={[styles.primaryBtnText, { color: isProfileComplete ? '#1A1A1A' : '#9ca3af' }]}>
+              {isProfileComplete ? 'Log Meal or Activity' : 'Complete Profile First'}
+            </Text>
+          </TouchableOpacity>
+        </Hotspot>
 
         {/* Today's Food Log — LIVE */}
         <View style={styles.checklistSection}>
@@ -408,39 +512,65 @@ export default function HomeScreen() {
             <Text style={[styles.checklistTitle, { color: '#2e2f2d', marginBottom: 0 }]}>Today&apos;s Meals</Text>
             <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8' }}>{todayScans.length} logged</Text>
           </View>
-          <View style={styles.checklistItemContainer}>
+          <View style={{ paddingHorizontal: 24, paddingBottom: 24, gap: 24 }}>
             {todayScans.length === 0 ? (
-              <View style={[styles.taskCard, { backgroundColor: '#f9fafb', borderColor: '#e5e7eb', justifyContent: 'center', paddingVertical: 32 }]}>
-                <View style={{ alignItems: 'center', gap: 8 }}>
-                  <MaterialIcons name="no-food" size={32} color="#d1d5db" />
-                  <Text style={[styles.taskSub, { color: '#94a3b8', textAlign: 'center' }]}>No meals logged yet today.{"\n"}Scan a food label to get started!</Text>
+              <View style={[styles.taskCard, { width: '100%', backgroundColor: '#f9fafb', borderColor: '#e5e7eb', flexDirection: 'column', paddingVertical: 40 }]}>
+                <View style={{ alignItems: 'center', gap: 12, width: '100%' }}>
+                  <MaterialIcons name="no-food" size={40} color="#d1d5db" />
+                  <Text style={[styles.taskSub, { color: '#94a3b8', textAlign: 'center', fontSize: 13 }]}>No meals{"\n"}logged yet.</Text>
                 </View>
               </View>
             ) : (
               todayScans.map((scan) => {
                 const time = new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 return (
-                  <View key={scan.id} style={[styles.taskCard, { backgroundColor: '#FFFFFF', borderColor: '#e5e7eb' }]}>
-                    <View style={styles.taskCardLeft}>
-                      <View style={[styles.taskIconBg, { backgroundColor: '#FFF9DB' }]}>
-                        <MaterialIcons name="restaurant" size={22} color="#605e00" />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.taskTitle, { color: '#2e2f2d' }]} numberOfLines={1}>{scan.ai_identified_food || 'Food'}</Text>
-                        <Text style={[styles.taskSub, { color: '#5c5b5b' }]}>{time} • {scan.ai_estimated_calories} kcal</Text>
+                  <TouchableOpacity
+                    key={scan.id}
+                    activeOpacity={0.9}
+                    onPress={() => router.push(`/scan/${scan.id}`)}
+                    style={styles.feedCard}
+                  >
+                    <View style={styles.feedImageContainer}>
+                      {scan.image_url ? (
+                        <Image source={{ uri: scan.image_url }} style={styles.feedImage} />
+                      ) : (
+                        <View style={{ flex: 1, backgroundColor: '#e5e7eb', justifyContent: 'center', alignItems: 'center' }}>
+                          <MaterialIcons name="restaurant" size={48} color="#9ca3af" />
+                        </View>
+                      )}
+                      <View style={styles.feedMealPill}>
+                        <Text style={styles.feedMealPillText}>{scan.is_treat ? 'Treat' : 'Meal'}</Text>
                       </View>
                     </View>
-                    <View style={[styles.checkCircle, { backgroundColor: '#FFFC00' }]}>
-                      <MaterialIcons name="check" size={16} color="#000000" />
+                    <View style={styles.feedContent}>
+                      <View style={styles.feedHeaderRow}>
+                        <Text style={styles.feedTitle} numberOfLines={2}>{scan.ai_identified_food || 'Unidentified Food'}</Text>
+                        <Text style={styles.feedTime}>{time}</Text>
+                      </View>
+                      <Text style={styles.feedDesc} numberOfLines={2}>{scan.ai_estimated_calories} kcal • Extracted from {scan.is_user_confirmed ? 'verified log' : 'camera scan.'}</Text>
+                      <View style={styles.feedMacroContainer}>
+                        <View style={styles.feedMacroPill}>
+                          <View style={[styles.feedMacroDot, { backgroundColor: '#ef4444' }]} />
+                          <Text style={styles.feedMacroText}>PRO: {scan.protein_g}g</Text>
+                        </View>
+                        <View style={styles.feedMacroPill}>
+                          <View style={[styles.feedMacroDot, { backgroundColor: '#f59e0b' }]} />
+                          <Text style={styles.feedMacroText}>FAT: {scan.fat_g}g</Text>
+                        </View>
+                        <View style={styles.feedMacroPill}>
+                          <View style={[styles.feedMacroDot, { backgroundColor: '#3b82f6' }]} />
+                          <Text style={styles.feedMacroText}>CARB: {scan.carbs_g}g</Text>
+                        </View>
+                      </View>
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 );
               })
             )}
           </View>
         </View>
 
-      </ScrollView>
+      </Animated.ScrollView>
     </View>
   );
 }
@@ -578,6 +708,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14,
   },
+  ringCardBase: {
+    backgroundColor: '#FFFFFF',
+    padding: 16,
+    borderRadius: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    justifyContent: 'center',
+  },
+
   floatingRingRight: {
     position: 'absolute',
     top: 16,
@@ -869,5 +1009,227 @@ const styles = StyleSheet.create({
   suggestedNote: {
     fontFamily: 'Plus Jakarta Sans', fontSize: 13, color: '#64748b', marginTop: 16,
     fontStyle: 'italic',
+  },
+  macroRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginHorizontal: 20,
+    marginTop: 16,
+  },
+  macroCard: {
+    flex: 1,
+    backgroundColor: '#f9fafb',
+    borderRadius: 20,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1.5,
+  },
+  macroValue: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 22,
+    color: '#2e2f2d',
+    marginBottom: 4,
+  },
+  macroUnit: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 14,
+    color: '#94a3b8',
+  },
+  macroLabel: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 12,
+    color: '#5c5b5b',
+    marginBottom: 8,
+  },
+  macroDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  nutritionBento: {
+    marginHorizontal: 20,
+    marginTop: 16,
+    marginBottom: 16,
+    backgroundColor: '#f9fafb',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    padding: 20,
+    overflow: 'hidden',
+  },
+  nutritionCalRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    position: 'relative',
+  },
+  nutritionMacroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingTop: 12,
+  },
+  nutritionMacroItem: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  nutritionMacroDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginBottom: 2,
+  },
+  nutritionMacroVal: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 20,
+    color: '#2e2f2d',
+  },
+  nutritionMacroUnit: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 13,
+    color: '#94a3b8',
+  },
+  nutritionMacroLabel: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 11,
+    color: '#5c5b5b',
+    letterSpacing: 0.5,
+  },
+  nutritionMacroDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: '#e5e7eb',
+  },
+  streakCard: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    marginBottom: 4,
+    borderRadius: 20,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  streakIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  streakTitle: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 17,
+    marginBottom: 2,
+  },
+  streakSub: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+  feedCard: {
+    backgroundColor: '#041015',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  feedImageContainer: {
+    width: '100%',
+    height: 192,
+    position: 'relative',
+    backgroundColor: '#333333',
+  },
+  feedImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  feedMealPill: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    backgroundColor: '#FFFC00',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  feedMealPillText: {
+    color: '#041015',
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '900',
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: -0.2,
+  },
+  feedContent: {
+    padding: 24,
+  },
+  feedHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  feedTitle: {
+    color: '#FFFFFF',
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 20,
+    flex: 1,
+    marginRight: 16,
+  },
+  feedTime: {
+    color: 'rgba(255,255,255,0.4)',
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  feedDesc: {
+    color: 'rgba(255,255,255,0.6)',
+    fontFamily: 'Plus Jakarta Sans',
+    fontSize: 14,
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  feedMacroContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  feedMacroPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  feedMacroDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  feedMacroText: {
+    color: '#FFFFFF',
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 12,
   },
 });

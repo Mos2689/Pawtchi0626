@@ -38,7 +38,8 @@ export default function GoalScreen() {
   const [estimating, setEstimating] = useState(true);
 
   // Life stage computation
-  const breedDefaults = getBreedDefaults(petData.species, petData.breed);
+  const weightKg = parseFloat(petData.weight) || null;
+  const breedDefaults = getBreedDefaults(petData.species, petData.breed, weightKg);
   const ageYearsNum = parseInt(petData.ageYears) || 0;
   const ageMonthsNum = parseInt(petData.ageMonths) || 0;
   const speciesVal = (petData.species === 'cat') ? 'cat' as const : 'dog' as const;
@@ -164,10 +165,11 @@ export default function GoalScreen() {
       Alert.alert('Error creating profile', error.message);
     } else {
       // Await fetching the newly created pet to hydrate the store
+      // BEFORE routing to the brands step
       await useActivePetStore.getState().fetchPet(user.id);
 
-      petData.resetForm();
-      router.replace('/(tabs)');
+      // Navigate to brands step — form reset happens there
+      router.push('/onboarding/brands');
     }
   };
 
@@ -192,7 +194,7 @@ export default function GoalScreen() {
             <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 32 }]} />
             <View style={[styles.progressPill, { backgroundColor: '#E5E7EB', width: 48 }]} />
           </View>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 4 OF 4</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 4 OF 5</Text>
         </View>
 
         {/* Hero Section */}
@@ -300,22 +302,22 @@ export default function GoalScreen() {
 
           {/* Functional React Native Slider */}
           <View style={styles.sliderContainer}>
-             <Slider
-               style={{ width: '100%', height: 40 }}
-               minimumValue={Math.max(1, currentWeight - 10)}
-               maximumValue={currentWeight + 10}
-               step={0.5}
-               value={targetWeight}
-               onValueChange={setTargetWeight}
-               minimumTrackTintColor="#FFFC00"
-               maximumTrackTintColor="#E5E7EB"
-               thumbTintColor="#243036"
-             />
-             <View style={styles.sliderMarkers}>
-               <Text style={styles.markerText}>{Math.max(1, currentWeight - 10)} kg</Text>
-               <Text style={styles.markerText}>{(currentWeight).toFixed(1)} kg</Text>
-               <Text style={styles.markerText}>{currentWeight + 10} kg</Text>
-             </View>
+            <Slider
+              style={{ width: '100%', height: 40 }}
+              minimumValue={Math.max(1, currentWeight - 10)}
+              maximumValue={currentWeight + 10}
+              step={0.5}
+              value={targetWeight}
+              onValueChange={setTargetWeight}
+              minimumTrackTintColor="#FFFC00"
+              maximumTrackTintColor="#E5E7EB"
+              thumbTintColor="#243036"
+            />
+            <View style={styles.sliderMarkers}>
+              <Text style={styles.markerText}>{Math.max(1, currentWeight - 10)} kg</Text>
+              <Text style={styles.markerText}>{(currentWeight).toFixed(1)} kg</Text>
+              <Text style={styles.markerText}>{currentWeight + 10} kg</Text>
+            </View>
           </View>
 
           {/* Bento Stats Grid */}

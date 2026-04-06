@@ -21,10 +21,12 @@ export function getMERFactor(
 
   if (species === 'dog') {
     factor = isNeutered ? 1.6 : 1.8; // Baseline for adult maintenance
-    
-    // Puppies
-    if (ageMonths && ageMonths < 4) return 3.0;
-    if (ageMonths && ageMonths >= 4 && ageMonths < 12) return 2.0;
+
+    // Puppies — gradual taper instead of cliff
+    if (ageMonths !== undefined && ageMonths < 2) return 3.0;
+    if (ageMonths !== undefined && ageMonths >= 2 && ageMonths < 4) return 2.5;
+    if (ageMonths !== undefined && ageMonths >= 4 && ageMonths < 8) return 2.0;
+    if (ageMonths !== undefined && ageMonths >= 8 && ageMonths < 12) return 1.5;
 
     // Activity adjustments
     switch (activityLevel) {
@@ -49,8 +51,10 @@ export function getMERFactor(
   } else if (species === 'cat') {
     factor = isNeutered ? 1.2 : 1.4;
 
-    // Kittens
-    if (ageMonths && ageMonths < 12) return 2.5;
+    // Kittens — gradual taper
+    if (ageMonths !== undefined && ageMonths < 4) return 2.5;
+    if (ageMonths !== undefined && ageMonths >= 4 && ageMonths < 8) return 2.0;
+    if (ageMonths !== undefined && ageMonths >= 8 && ageMonths < 12) return 1.5;
 
     // Activity adjustments
     switch (activityLevel) {

@@ -22,7 +22,7 @@ Deno.serve(async (req) => {
     const weightKg = parseFloat(petProfile?.current_weight_kg || '10');
     const weightGap = weightKg - targetWeightKg;
     let weightRule = "";
-    
+
     if (weightGap > 0.5) {
       weightRule = `WEIGHT LOSS WARNING: The pet is ${weightGap.toFixed(1)}kg overweight (Target: ${targetWeightKg}kg). If this food/treat is high in calories or carbs, you MUST explicitly warn the user and suggest strict portion limits in the recommendation.`;
     } else if (weightGap < -0.5) {
@@ -49,12 +49,18 @@ ${weightRule}
 - Medical Conditions: ${petProfile?.medical_conditions?.join(', ') || 'None reported'}
 - Current Diet: ${petProfile?.diet_type?.join(', ') || 'Unknown'}
 - Daily Calorie Target: ${petProfile?.target_daily_calories || '?'} kcal
+- Regular Food Brands: ${petProfile?.food_brands ? `Kibble: [${(petProfile.food_brands.kibble || []).join(', ') || 'Not set'}], Treats: [${(petProfile.food_brands.treats || []).join(', ') || 'Not set'}], Wet Food: [${(petProfile.food_brands.wet_food || []).join(', ') || 'Not set'}]` : 'Not set'}
+- Typical Bowl Size: ${petProfile?.bowl_size || 'Unknown'}
 
 IMPORTANT RULES:
 1. Extract the food name, calorie content per serving, and serving size from the image.
 2. Cross-reference the ingredient list against the pet's known allergies. Flag ANY match.
 3. Identify ingredients of concern for the pet's species and medical conditions.
 4. Provide a short recommendation (1-2 sentences).
+5. ALWAYS PROVIDE A CALORIE ESTIMATE: If the label is missing or it is just "unknown kibble", use generic averages (e.g., standard dry food is ~350 kcal/cup). NEVER return null or 0 for calories_per_serving.
+6. BRAND AWARENESS & UNLABELED ITEMS: If the image shows generic, unlabeled food OR a loose treat/chew WITH NO clearly visible brand name, you MUST ASSUME it matches one of the pet's listed "Regular Food Brands" (use the Kibble/Wet Food brand for main meals, or the Treat brand for snacks). Use that brand's name in the title (e.g. "{name}'s Regular Treat ([Brand Name])") and use its brand-specific nutritional data.
+7. NEW FOOD DETECTION: Only note "New food detected" if the image clearly shows a specific brand label that is DIFFERENT from the ones in their profile, OR if it is human food.
+8. Factor the typical bowl size into serving estimates when label portion data is ambiguous or missing.
 
 You MUST respond with ONLY valid JSON in this exact format, no markdown, no extra text:
 {
@@ -94,7 +100,7 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
       contents: [{ parts }],
       generationConfig: {
         temperature: 0.2, // Low temp for clinical accuracy
-        maxOutputTokens: 1024,
+        maxOutputTokens: 8192,
       }
     };
 
@@ -115,9 +121,17 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
       // Strip markdown code fences if present
       const cleaned = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       analysis = JSON.parse(cleaned);
+
+      // Failsafe: if the AI still returned null/0, provide a generic sensible default
+      if (!analysis.calories_per_serving || typeof analysis.calories_per_serving !== 'number') {
+        analysis.calories_per_serving = analysis.is_treat ? 35 : 350;
+        if (analysis.food_name === 'Unknown' || analysis.food_name === 'string') {
+          analysis.food_name = 'Generic Pet Food Estimate';
+        }
+      }
     } catch {
-      analysis = { 
-        raw_response: rawText, 
+      analysis = {
+        raw_response: rawText,
         parse_error: true,
         food_name: 'Unknown',
         calories_per_serving: 0,

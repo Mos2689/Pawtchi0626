@@ -10,10 +10,12 @@
     "newArchEnabled": true,
     "owner": "hey_mousami",
     "ios": {
+      "bundleIdentifier": "com.heymousami.myapp",
       "supportsTablet": true
     },
     "android": {
       "package": "com.pawtchi.app",
+      "versionCode": 3,
       "permissions": [
         "INTERNET"
       ],
@@ -43,7 +45,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true,

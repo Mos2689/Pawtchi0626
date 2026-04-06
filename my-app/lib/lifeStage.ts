@@ -47,8 +47,8 @@ export function deriveLifeStage(
   if (size === 'large') {
     if (totalMonths < 8) return 'puppy';
     if (totalMonths < 15) return 'junior';
-    if (totalMonths < 60) return 'adult';     // < 5yr
-    if (totalMonths < 84) return 'mature';    // < 7yr
+    if (totalMonths < 72) return 'adult';     // < 6yr
+    if (totalMonths < 96) return 'mature';    // < 8yr
     if (totalMonths < 120) return 'senior';   // < 10yr
     return 'geriatric';
   }
@@ -57,7 +57,7 @@ export function deriveLifeStage(
   if (totalMonths < 8) return 'puppy';
   if (totalMonths < 18) return 'junior';
   if (totalMonths < 60) return 'adult';     // < 5yr
-  if (totalMonths < 72) return 'mature';    // < 6yr
+  if (totalMonths < 84) return 'mature';    // < 7yr
   if (totalMonths < 108) return 'senior';   // < 9yr
   return 'geriatric';
 }
@@ -70,8 +70,8 @@ export function deriveLifeStage(
 export function getLifeStageCalorieMultiplier(lifeStage: LifeStage): number {
   switch (lifeStage) {
     case 'mature': return 0.95;
-    case 'senior': return 0.80;
-    case 'geriatric': return 0.75;
+    case 'senior': return 0.90;
+    case 'geriatric': return 0.80;
     default: return 1.0;
   }
 }

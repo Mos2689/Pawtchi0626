@@ -39,19 +39,23 @@ Pet Profile:
 
 EXTRACT the following if visible in the document:
 1. weight_kg - The pet's recorded weight
-2. diagnoses - Array of diagnosed conditions
-3. medications - Array of {name, dosage, frequency}
-4. vaccinations - Array of {name, date, next_due}
-5. vitals - {temperature, heart_rate, respiratory_rate}
-6. lab_results - Any blood work or urinalysis findings
-7. vet_notes - Summary of veterinarian's notes/recommendations
-8. next_appointment - Next scheduled visit date
-9. report_date - Date of the report
+2. body_condition_score - Integer from 1-9 representing BCS
+3. diagnoses - Array of diagnosed conditions
+4. allergies - Array of identified allergens/allergies
+5. medications - Array of {name, dosage, frequency}
+6. vaccinations - Array of {name, date, next_due}
+7. vitals - {temperature, heart_rate, respiratory_rate}
+8. lab_results - Any blood work or urinalysis findings
+9. vet_notes - Summary of veterinarian's notes/recommendations
+10. next_appointment - Next scheduled visit date
+11. report_date - Date of the report
 
 RESPOND in STRICT JSON format only. Use null for missing fields:
 {
   "weight_kg": number | null,
+  "body_condition_score": number | null,
   "diagnoses": ["string"] | null,
+  "allergies": ["string"] | null,
   "medications": [{"name": "string", "dosage": "string", "frequency": "string"}] | null,
   "vaccinations": [{"name": "string", "date": "string", "next_due": "string"}] | null,
   "vitals": {"temperature": "string", "heart_rate": "string", "respiratory_rate": "string"} | null,
@@ -93,12 +97,24 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
 
     const geminiData = await geminiRes.json()
     const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
-    
+
+    // Clean markdown code blocks if present
+    let cleanText = rawText.trim();
+    if (cleanText.startsWith('```json')) {
+      cleanText = cleanText.substring(7);
+    } else if (cleanText.startsWith('```')) {
+      cleanText = cleanText.substring(3);
+    }
+    if (cleanText.endsWith('```')) {
+      cleanText = cleanText.substring(0, cleanText.length - 3);
+    }
+    cleanText = cleanText.trim();
+
     let extractedData: any
     try {
-      extractedData = JSON.parse(rawText)
+      extractedData = JSON.parse(cleanText)
     } catch {
-      extractedData = { vet_notes: rawText }
+      extractedData = { vet_notes: cleanText }
     }
 
     // Store in Supabase
@@ -131,12 +147,36 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
       await sb.from('pets').update({ current_weight_kg: extractedData.weight_kg }).eq('id', petId)
     }
 
-    // If diagnoses found, merge into medical conditions
-    if (extractedData.diagnoses && extractedData.diagnoses.length > 0) {
-      const { data: pet } = await sb.from('pets').select('medical_conditions').eq('id', petId).single()
-      const existing = pet?.medical_conditions || []
-      const merged = [...new Set([...existing, ...extractedData.diagnoses])]
-      await sb.from('pets').update({ medical_conditions: merged }).eq('id', petId)
+    // Prepare pet profile updates
+    const updates: any = {};
+    let shouldUpdatePet = false;
+
+    if (extractedData.body_condition_score) {
+      updates.body_condition_score = extractedData.body_condition_score;
+      shouldUpdatePet = true;
+    }
+
+    // Check if we need to fetch existing arrays from DB
+    if ((extractedData.diagnoses && extractedData.diagnoses.length > 0) ||
+      (extractedData.allergies && extractedData.allergies.length > 0)) {
+
+      const { data: pet } = await sb.from('pets').select('medical_conditions, allergies').eq('id', petId).single()
+
+      if (extractedData.diagnoses && extractedData.diagnoses.length > 0) {
+        const existing = pet?.medical_conditions || []
+        updates.medical_conditions = [...new Set([...existing, ...extractedData.diagnoses])]
+        shouldUpdatePet = true;
+      }
+
+      if (extractedData.allergies && extractedData.allergies.length > 0) {
+        const existing = pet?.allergies || []
+        updates.allergies = [...new Set([...existing, ...extractedData.allergies])]
+        shouldUpdatePet = true;
+      }
+    }
+
+    if (shouldUpdatePet) {
+      await sb.from('pets').update(updates).eq('id', petId)
     }
 
     return new Response(

@@ -11,7 +11,7 @@ export default function SpeciesScreen() {
   const router = useRouter();
   const theme = Colors.light;
   const insets = useSafeAreaInsets();
-  
+
   const { species, setSpecies } = usePetStore();
 
   return (
@@ -26,11 +26,11 @@ export default function SpeciesScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
+
         {/* Progress Indicator */}
         <View style={styles.progressSection}>
           <View style={styles.progressTextRow}>
-            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 2 OF 4</Text>
+            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 2 OF 5</Text>
             <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>SPECIES</Text>
           </View>
           <View style={[styles.progressBarBg, { backgroundColor: '#F1F3F5' }]}>
@@ -51,9 +51,9 @@ export default function SpeciesScreen() {
         {/* Selection Cards */}
         <View style={styles.cardsContainer}>
           {/* Dog Card */}
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
-              styles.card, 
+              styles.card,
               species === 'dog' ? styles.cardSelected : { backgroundColor: '#F8F9FA', borderColor: '#DEE2E6' }
             ]}
             onPress={() => setSpecies('dog')}
@@ -74,9 +74,9 @@ export default function SpeciesScreen() {
           </TouchableOpacity>
 
           {/* Cat Card */}
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
-              styles.card, 
+              styles.card,
               species === 'cat' ? styles.cardSelected : { backgroundColor: '#F8F9FA', borderColor: '#DEE2E6' }
             ]}
             onPress={() => setSpecies('cat')}
@@ -99,7 +99,7 @@ export default function SpeciesScreen() {
 
         {/* Footer Actions */}
         <View style={styles.footerSection}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.continueBtn, { backgroundColor: '#FFFC00' }]}
             onPress={() => router.push('/onboarding/vitals')}
             activeOpacity={0.9}

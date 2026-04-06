@@ -128,7 +128,7 @@ Comparison vs Last Week:
 - Exercise: ${exerciseDelta !== null ? `${exerciseDelta > 0 ? '+' : ''}${exerciseDelta}%` : 'No data'}
 - Water: ${waterDelta !== null ? `${waterDelta > 0 ? '+' : ''}${waterDelta}%` : 'No data'}
 
-IMPORTANT: You MUST respond with ONLY valid JSON in this exact format, no markdown, no extra text:
+IMPORTANT: You MUST respond with a valid JSON block enclosed in \`\`\`json fences, using this exact structure:
 {
   "headline": "One-sentence summary of the week (warm, specific to the pet by name)",
   "wins": ["Array of 1-3 positive things from this week — be specific with numbers"],
@@ -157,8 +157,7 @@ Rules:
         contents: [{ parts: [{ text: dataPrompt }] }],
         generationConfig: {
           temperature: 0.5,
-          maxOutputTokens: 1024,
-          responseMimeType: 'application/json',
+          maxOutputTokens: 8192,
         },
       }),
     })

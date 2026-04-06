@@ -20,10 +20,10 @@ const iconMap: Record<string, { name: keyof typeof MaterialIcons.glyphMap; color
 
 const routeMap: Record<string, string> = {
   suggest_walk: '/(tabs)/activity',
-  remind_log: '/(tabs)/log',
+  remind_log: '/(tabs)/meal',
   remind_water: '/(tabs)/activity',
-  treat_ok: '/(tabs)/log',
-  reduce_dinner: '/(tabs)/log',
+  treat_ok: '/(tabs)/meal',
+  reduce_dinner: '/(tabs)/meal',
 };
 
 export function NudgeCard({ isProfileComplete, onProfilePress }: NudgeCardProps) {

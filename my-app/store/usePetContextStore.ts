@@ -12,6 +12,11 @@ interface FoodScanSummary {
   ai_estimated_calories: number;
   created_at: string;
   is_treat?: boolean;
+  protein_g?: number;
+  carbs_g?: number;
+  fat_g?: number;
+  image_url?: string;
+  is_user_confirmed?: boolean;
 }
 
 interface ActivitySummary {
@@ -36,6 +41,9 @@ interface TodayData {
   nextActivity: ActivitySummary | null;
   todayActivityMinutes: number;
   activityCompletionRate: number;
+  todayProtein: number;
+  todayCarbs: number;
+  todayFats: number;
 }
 
 interface DerivedToday {
@@ -95,6 +103,9 @@ const initialTodayData: TodayData = {
   nextActivity: null,
   todayActivityMinutes: 0,
   activityCompletionRate: 0,
+  todayProtein: 0,
+  todayCarbs: 0,
+  todayFats: 0,
 };
 
 const initialDerived: DerivedToday = {
@@ -255,7 +266,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
           .single(),
         supabase
           .from('food_scans')
-          .select('id, ai_identified_food, ai_estimated_calories, created_at, is_treat')
+          .select('id, ai_identified_food, ai_estimated_calories, created_at, is_treat, protein_g, carbs_g, fat_g, image_url')
           .eq('pet_id', petId)
           .gte('created_at', `${today}T00:00:00`)
           .order('created_at', { ascending: false })
@@ -293,6 +304,11 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         .filter((s) => s.is_treat === true)
         .reduce((sum, s) => sum + (s.ai_estimated_calories || 0), 0);
 
+      // Aggregate macronutrients from all scans today
+      const todayProtein = Math.round(scans.reduce((sum, s) => sum + (s.protein_g || 0), 0));
+      const todayCarbs = Math.round(scans.reduce((sum, s) => sum + (s.carbs_g || 0), 0));
+      const todayFats = Math.round(scans.reduce((sum, s) => sum + (s.fat_g || 0), 0));
+
       const todayData: TodayData = {
         todayCalories: logRes.data?.calories_consumed || 0,
         todayWater: logRes.data?.water_ml || 0,
@@ -303,6 +319,9 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         nextActivity: (activityRes.data as ActivitySummary) || null,
         todayActivityMinutes,
         activityCompletionRate,
+        todayProtein,
+        todayCarbs,
+        todayFats,
       };
 
       const derived = computeDerived(todayData, pet, get().weightTrend);
