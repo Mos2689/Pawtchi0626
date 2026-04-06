@@ -30,11 +30,11 @@ export default function SpeciesScreen() {
         {/* Progress Indicator */}
         <View style={styles.progressSection}>
           <View style={styles.progressTextRow}>
-            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 2 OF 5</Text>
+            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 1 OF 6</Text>
             <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>SPECIES</Text>
           </View>
           <View style={[styles.progressBarBg, { backgroundColor: '#F1F3F5' }]}>
-            <View style={[styles.progressBarFill, { backgroundColor: '#FFFC00', width: '50%' }]} />
+            <View style={[styles.progressBarFill, { backgroundColor: '#FFFC00', width: '17%' }]} />
           </View>
         </View>
 
@@ -101,7 +101,7 @@ export default function SpeciesScreen() {
         <View style={styles.footerSection}>
           <TouchableOpacity
             style={[styles.continueBtn, { backgroundColor: '#FFFC00' }]}
-            onPress={() => router.push('/onboarding/vitals')}
+            onPress={() => router.push('/onboarding/scan-choice')}
             activeOpacity={0.9}
           >
             <Text style={[styles.continueText, { color: '#000000' }]}>Continue</Text>

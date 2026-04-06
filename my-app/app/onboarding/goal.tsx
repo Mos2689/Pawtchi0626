@@ -189,12 +189,13 @@ export default function GoalScreen() {
         {/* Progress Indicator */}
         <View style={styles.progressSection}>
           <View style={styles.progressBars}>
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 32 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 32 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 32 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E5E7EB', width: 48 }]} />
+            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
+            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
+            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
+            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
+            <View style={[styles.progressPill, { backgroundColor: '#E5E7EB', width: 40 }]} />
           </View>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 4 OF 5</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 5 OF 6</Text>
         </View>
 
         {/* Hero Section */}

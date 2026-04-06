@@ -97,7 +97,7 @@ export default function VitalsScreen() {
           <Text style={[styles.headerTitle, { color: theme['on-surface'] }]}>Pet Journey</Text>
         </View>
         <View style={[styles.stepBadge, { backgroundColor: '#F1F5F9' }]}>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 2 of 4</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 3 of 6</Text>
         </View>
       </View>
 
