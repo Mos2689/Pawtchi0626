@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Switch, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Switch, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -23,7 +24,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
 
   const { user } = useAuth();
-  const { activePet, clearPet } = useActivePetStore();
+  const { activePet, clearPet, foodPantry, addPantryItem, fetchPantry } = useActivePetStore();
   const { clearStreak } = useStreakStore();
   const { clearContext } = usePetContextStore();
   const { status: subStatus, daysLeft: subDaysLeft } = useSubscription();
@@ -37,6 +38,9 @@ export default function ProfileScreen() {
   const [mealTime, setMealTime] = useState<Date>(new Date(new Date().setHours(18, 0, 0, 0))); // 6 PM
   const [walkTime, setWalkTime] = useState<Date>(new Date(new Date().setHours(7, 0, 0, 0))); // 7 AM
   const [showPickerFor, setShowPickerFor] = useState<'meal' | 'walk' | null>(null);
+
+  // Pantry scan state
+  const [isScanningLabel, setIsScanningLabel] = useState(false);
 
   // Sync with DB
   useEffect(() => {
@@ -93,6 +97,106 @@ export default function ProfileScreen() {
   const handleWalkToggle = (val: boolean) => {
     setWalkToggle(val);
     updateSchedule('walk', walkTime, val);
+  };
+
+  const handleScanFoodLabel = async (useCamera: boolean) => {
+    setIsScanningLabel(true);
+    try {
+      let result;
+      if (useCamera) {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          Alert.alert('Permission Required', 'Camera access is needed to scan food labels.');
+          setIsScanningLabel(false);
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7, allowsEditing: true });
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.7, allowsEditing: true, mediaTypes: ['images'] });
+      }
+
+      if (result.canceled || !result.assets[0]) {
+        setIsScanningLabel(false);
+        return;
+      }
+
+      const asset = result.assets[0];
+      const { data, error } = await supabase.functions.invoke('gemini-proxy', {
+        body: {
+          imageBase64: asset.base64!,
+          mimeType: asset.mimeType || 'image/jpeg',
+          petProfile: { ...activePet, food_pantry: foodPantry },
+        },
+      });
+
+      if (error || !data?.success || !data.analysis) {
+        Alert.alert('Scan Failed', data?.error || 'Could not analyze the food label.');
+        setIsScanningLabel(false);
+        return;
+      }
+
+      const a = data.analysis;
+      if (!a.brand && !a.product_name && !a.food_name) {
+        Alert.alert('No Label Found', 'Could not identify a food product. Try scanning the label on the packaging.');
+        setIsScanningLabel(false);
+        return;
+      }
+
+      const foodType = a.food_type || (a.is_treat ? 'treat' : 'kibble');
+      const existingForType = foodPantry.filter(p => p.food_type === foodType);
+      const isPrimary = existingForType.length === 0;
+
+      const petAllergies = (activePet?.allergies || []).map((al: string) => al.toLowerCase());
+      const ingredients = a.key_ingredients || [];
+      const allergyFlags = ingredients.filter((ing: string) =>
+        petAllergies.some((al: string) => ing.toLowerCase().includes(al))
+      );
+
+      await addPantryItem({
+        pet_id: activePet!.id,
+        brand: a.brand || a.food_name || 'Unknown',
+        product_name: a.product_name || a.food_name || '',
+        food_type: foodType,
+        kcal_per_serving: a.calories_per_serving || null,
+        serving_unit: a.serving_unit || null,
+        protein_pct: a.protein_pct || null,
+        fat_pct: a.fat_pct || null,
+        fibre_pct: a.fibre_pct || null,
+        key_ingredients: a.key_ingredients || null,
+        allergy_flags: allergyFlags.length > 0 ? allergyFlags : null,
+        is_primary: isPrimary,
+      });
+
+      if (allergyFlags.length > 0) {
+        Alert.alert('Added with Warning', `${a.brand || a.food_name} saved to pantry.\n\nAllergy alert: contains ${allergyFlags.join(', ')}.`);
+      } else {
+        Alert.alert('Added to Pantry', `${a.brand || a.food_name} has been saved.`);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      Alert.alert('Error', message);
+    } finally {
+      setIsScanningLabel(false);
+    }
+  };
+
+  const handleDeletePantryItem = async (itemId: string, itemName: string) => {
+    Alert.alert('Remove Food', `Remove ${itemName} from the pantry?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove', style: 'destructive', onPress: async () => {
+          await supabase.from('food_pantry').delete().eq('id', itemId);
+          fetchPantry(activePet!.id);
+        }
+      },
+    ]);
+  };
+
+  const handleTogglePrimary = async (itemId: string, foodType: string) => {
+    // Unset all other primaries for this food_type, then set this one
+    await supabase.from('food_pantry').update({ is_primary: false }).eq('pet_id', activePet!.id).eq('food_type', foodType);
+    await supabase.from('food_pantry').update({ is_primary: true }).eq('id', itemId);
+    fetchPantry(activePet!.id);
   };
 
   const handleSignOut = async () => {
@@ -199,6 +303,99 @@ export default function ProfileScreen() {
             {activePet?.activity_level ? activePet.activity_level.replace('_', ' ') : 'N/A'}
           </Text>
           <Text style={[styles.bentoLabel, { color: '#862400' }]}>ENERGY LEVEL</Text>
+        </View>
+
+        {/* Food Pantry Section */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeader}>
+            <MaterialIcons name="kitchen" size={24} color="#0f172a" />
+            <Text style={[styles.sectionTitle, { color: '#0f172a' }]}>Food Pantry</Text>
+          </View>
+
+          <View style={[styles.pantryContainer, { backgroundColor: '#f8fafc', borderColor: '#f1f5f9' }]}>
+            {foodPantry.length === 0 ? (
+              <View style={styles.pantryEmpty}>
+                <MaterialIcons name="no-food" size={40} color="#cbd5e1" />
+                <Text style={styles.pantryEmptyTitle}>No foods saved yet</Text>
+                <Text style={styles.pantryEmptyDesc}>
+                  Scan food labels to build {activePet?.name}'s pantry — this helps the AI give more accurate results.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.pantryList}>
+                {foodPantry.map((item) => (
+                  <View key={item.id} style={styles.pantryItem}>
+                    <View style={styles.pantryItemLeft}>
+                      <View style={[styles.pantryItemIcon, {
+                        backgroundColor: item.food_type === 'treat' ? '#fef3c7' :
+                          item.food_type === 'wet_food' ? '#dbeafe' : '#f0fdf4'
+                      }]}>
+                        <MaterialIcons
+                          name={item.food_type === 'treat' ? 'cookie' :
+                            item.food_type === 'wet_food' ? 'water-drop' : 'grass'}
+                          size={20}
+                          color={item.food_type === 'treat' ? '#92400e' :
+                            item.food_type === 'wet_food' ? '#1d4ed8' : '#166534'}
+                        />
+                      </View>
+                      <View style={styles.pantryItemInfo}>
+                        <View style={styles.pantryItemNameRow}>
+                          <Text style={styles.pantryItemName} numberOfLines={1}>{item.brand}</Text>
+                          {item.is_primary && (
+                            <View style={styles.primaryBadge}>
+                              <Text style={styles.primaryBadgeText}>Primary</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.pantryItemSub} numberOfLines={1}>
+                          {item.product_name}{item.kcal_per_serving ? ` • ${item.kcal_per_serving} kcal/${item.serving_unit || 'serving'}` : ''}
+                        </Text>
+                        {item.allergy_flags && item.allergy_flags.length > 0 && (
+                          <View style={styles.pantryAllergyRow}>
+                            <MaterialIcons name="warning" size={12} color="#dc2626" />
+                            <Text style={styles.pantryAllergyText}>{item.allergy_flags.join(', ')}</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                    <View style={styles.pantryItemActions}>
+                      {!item.is_primary && (
+                        <TouchableOpacity onPress={() => handleTogglePrimary(item.id, item.food_type)} activeOpacity={0.7}>
+                          <MaterialIcons name="star-outline" size={22} color="#94a3b8" />
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity onPress={() => handleDeletePantryItem(item.id, item.brand)} activeOpacity={0.7}>
+                        <MaterialIcons name="delete-outline" size={22} color="#94a3b8" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Add Food Button */}
+            <TouchableOpacity
+              style={styles.pantryAddBtn}
+              activeOpacity={0.8}
+              disabled={isScanningLabel}
+              onPress={() => {
+                Alert.alert('Add Food', 'Scan a food label to add it to the pantry.', [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Photo Library', onPress: () => handleScanFoodLabel(false) },
+                  { text: 'Camera', onPress: () => handleScanFoodLabel(true) },
+                ]);
+              }}
+            >
+              {isScanningLabel ? (
+                <ActivityIndicator size="small" color="#041015" />
+              ) : (
+                <>
+                  <MaterialIcons name="add-a-photo" size={20} color="#041015" />
+                  <Text style={styles.pantryAddBtnText}>Scan Food Label</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Advanced Medical Nudge */}
@@ -719,5 +916,125 @@ const styles = StyleSheet.create({
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '600',
     fontSize: 16,
-  }
+  },
+  // Pantry styles
+  pantryContainer: {
+    borderRadius: 24,
+    borderWidth: 1,
+    padding: 16,
+  },
+  pantryEmpty: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    gap: 8,
+  },
+  pantryEmptyTitle: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 16,
+    color: '#64748b',
+  },
+  pantryEmptyDesc: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontSize: 14,
+    color: '#94a3b8',
+    textAlign: 'center',
+    paddingHorizontal: 16,
+    lineHeight: 20,
+  },
+  pantryList: {
+    gap: 8,
+    marginBottom: 12,
+  },
+  pantryItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+  },
+  pantryItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  pantryItemIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pantryItemInfo: {
+    flex: 1,
+  },
+  pantryItemNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pantryItemName: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 15,
+    color: '#0f172a',
+    flexShrink: 1,
+  },
+  primaryBadge: {
+    backgroundColor: '#FFFC00',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  primaryBadgeText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 10,
+    color: '#1a1a00',
+    letterSpacing: 0.5,
+  },
+  pantryItemSub: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontSize: 13,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  pantryAllergyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  pantryAllergyText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 11,
+    color: '#dc2626',
+  },
+  pantryItemActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginLeft: 8,
+  },
+  pantryAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#FFFC00',
+    borderRadius: 16,
+    paddingVertical: 14,
+    marginTop: 4,
+  },
+  pantryAddBtnText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 15,
+    color: '#041015',
+  },
 });

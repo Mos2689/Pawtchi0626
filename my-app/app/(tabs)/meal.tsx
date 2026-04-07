@@ -5,7 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
-import { useActivePetStore, PantryItem } from '../../store/useActivePetStore';
+import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
@@ -40,7 +40,7 @@ interface ScanResult {
 export default function MealScreen() {
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState('');
-  const { activePet, foodPantry, addPantryItem, incrementPantryScan } = useActivePetStore();
+  const { activePet, foodPantry } = useActivePetStore();
   const { pawCoins, awardCoins } = useStreakStore();
   const { user } = useAuth();
 
@@ -50,12 +50,6 @@ export default function MealScreen() {
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [isLogging, setIsLogging] = useState(false);
   const [recentScans, setRecentScans] = useState<{ id: string, ai_identified_food: string, ai_estimated_calories: number, created_at: string }[]>([]);
-
-  // Pantry state
-  const [pantryPromptVisible, setPantryPromptVisible] = useState(false);
-  const [labelNudgeVisible, setLabelNudgeVisible] = useState(false);
-  const [matchedPantryItem, setMatchedPantryItem] = useState<PantryItem | null>(null);
-  const [savingToPantry, setSavingToPantry] = useState(false);
 
   const fetchRecentScans = useCallback(() => {
     if (!activePet?.id) return;
@@ -102,23 +96,8 @@ export default function MealScreen() {
     }
   };
 
-  // Check if a scan result matches an existing pantry item
-  const findPantryMatch = (result: ScanResult): PantryItem | null => {
-    if (!result.brand) return null;
-    const brandLower = result.brand.toLowerCase();
-    const productLower = (result.product_name || '').toLowerCase();
-    return foodPantry.find(p => {
-      const pBrand = p.brand.toLowerCase();
-      const pProduct = p.product_name.toLowerCase();
-      return pBrand === brandLower && (productLower === '' || pProduct.includes(productLower) || productLower.includes(pProduct));
-    }) || null;
-  };
-
   const analyzeWithGemini = async (base64: string, mimeType: string) => {
     setIsAnalyzing(true);
-    setPantryPromptVisible(false);
-    setLabelNudgeVisible(false);
-    setMatchedPantryItem(null);
 
     try {
       // Pass pantry data alongside pet profile
@@ -154,20 +133,6 @@ export default function MealScreen() {
           carbs_g: data.analysis.carbs_g ?? 0,
         };
         setScanResult(normalized);
-
-        // Pantry logic: check if this product is already known
-        const match = findPantryMatch(normalized);
-        if (match) {
-          // Known product — silently increment scan count
-          setMatchedPantryItem(match);
-          incrementPantryScan(match.id);
-        } else if (normalized.is_labeled_product && normalized.brand && normalized.confidence > 0.7) {
-          // New labeled product with high confidence — offer to save
-          setPantryPromptVisible(true);
-        } else if (!normalized.is_labeled_product && normalized.confidence < 0.7 && foodPantry.length === 0) {
-          // Unlabeled scan with no pantry — nudge to scan the label
-          setLabelNudgeVisible(true);
-        }
       } else {
         Alert.alert('Analysis Failed', data?.error || JSON.stringify(data) || 'Could not analyze image.');
       }
@@ -297,49 +262,6 @@ export default function MealScreen() {
     }
   };
 
-  const handleSaveToPantry = async () => {
-    if (!scanResult || !activePet) return;
-    setSavingToPantry(true);
-
-    // Check if this is the first item for this food_type → auto-set primary
-    const foodType = scanResult.food_type || (scanResult.is_treat ? 'treat' : 'kibble');
-    const existingForType = foodPantry.filter(p => p.food_type === foodType);
-    const isPrimary = existingForType.length === 0;
-
-    // Check ingredients against pet allergies
-    const petAllergies = (activePet.allergies || []).map(a => a.toLowerCase());
-    const ingredients = scanResult.key_ingredients || [];
-    const allergyFlags = ingredients.filter(ing =>
-      petAllergies.some(a => ing.toLowerCase().includes(a))
-    );
-
-    await addPantryItem({
-      pet_id: activePet.id,
-      brand: scanResult.brand || scanResult.food_name,
-      product_name: scanResult.product_name || '',
-      food_type: foodType,
-      kcal_per_serving: scanResult.calories_per_serving,
-      serving_unit: scanResult.serving_unit || null,
-      protein_pct: scanResult.protein_pct || null,
-      fat_pct: scanResult.fat_pct || null,
-      fibre_pct: scanResult.fibre_pct || null,
-      key_ingredients: scanResult.key_ingredients || null,
-      allergy_flags: allergyFlags.length > 0 ? allergyFlags : null,
-      is_primary: isPrimary,
-    });
-
-    setSavingToPantry(false);
-    setPantryPromptVisible(false);
-  };
-
-  const handleScanLabel = () => {
-    setLabelNudgeVisible(false);
-    setScanResult(null);
-    setCapturedImage(null);
-    // Open camera for label scan
-    pickImage(true);
-  };
-
   // When scan result is ready, show the full Stitch-designed result view
   if (scanResult && !isAnalyzing) {
     const healthScore = scanResult.health_score ?? Math.min(10, Math.max(1, Math.round(scanResult.confidence * 10)));
@@ -457,80 +379,6 @@ export default function MealScreen() {
               </Text>
             </View>
           </View>
-
-          {/* Pantry Prompt — new labeled product */}
-          {pantryPromptVisible && scanResult?.brand && (
-            <View style={styles.pantryCard}>
-              <View style={styles.pantryCardHeader}>
-                <MaterialIcons name="playlist-add" size={22} color="#041015" />
-                <Text style={styles.pantryCardTitle}>Add to {activePet?.name}'s food pantry?</Text>
-              </View>
-              <Text style={styles.pantryCardDesc}>
-                We'll use this info for more accurate tracking next time.
-              </Text>
-              <View style={styles.pantryCardActions}>
-                <TouchableOpacity
-                  style={styles.pantryBtnPrimary}
-                  onPress={handleSaveToPantry}
-                  disabled={savingToPantry}
-                  activeOpacity={0.8}
-                >
-                  {savingToPantry ? (
-                    <ActivityIndicator size="small" color="#041015" />
-                  ) : (
-                    <Text style={styles.pantryBtnPrimaryText}>Yes, regular food</Text>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.pantryBtnSecondary}
-                  onPress={() => setPantryPromptVisible(false)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.pantryBtnSecondaryText}>Just this once</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          {/* Matched pantry item indicator */}
-          {matchedPantryItem && (
-            <View style={styles.pantryMatchBadge}>
-              <MaterialIcons name="check-circle" size={16} color="#16a34a" />
-              <Text style={styles.pantryMatchText}>
-                Matched from pantry — using exact nutrition data
-              </Text>
-            </View>
-          )}
-
-          {/* Label Nudge — unlabeled scan with empty pantry */}
-          {labelNudgeVisible && (
-            <View style={styles.labelNudgeCard}>
-              <View style={styles.pantryCardHeader}>
-                <MaterialIcons name="tips-and-updates" size={22} color="#755700" />
-                <Text style={styles.labelNudgeTitle}>Want more accurate results?</Text>
-              </View>
-              <Text style={styles.pantryCardDesc}>
-                Scan the food label on the bag or can — we'll remember it for next time.
-              </Text>
-              <View style={styles.pantryCardActions}>
-                <TouchableOpacity
-                  style={styles.pantryBtnPrimary}
-                  onPress={handleScanLabel}
-                  activeOpacity={0.8}
-                >
-                  <MaterialIcons name="photo-camera" size={16} color="#041015" />
-                  <Text style={styles.pantryBtnPrimaryText}>Scan Label Now</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.pantryBtnSecondary}
-                  onPress={() => setLabelNudgeVisible(false)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.pantryBtnSecondaryText}>Maybe Later</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
 
           {/* Add to Bowl — at end of scrollable content */}
           <View style={styles.srBottomBar}>
@@ -1323,102 +1171,4 @@ const styles = StyleSheet.create({
     color: '#041015',
   },
 
-  // Pantry prompt & label nudge styles
-  pantryCard: {
-    marginHorizontal: 20,
-    marginBottom: 16,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: '#FFFC00',
-    borderRadius: 20,
-    padding: 20,
-  },
-  pantryCardHeader: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 10,
-    marginBottom: 8,
-  },
-  pantryCardTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 16,
-    color: '#041015',
-    flex: 1,
-  },
-  pantryCardDesc: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 14,
-    color: '#64748b',
-    lineHeight: 20,
-    marginBottom: 16,
-  },
-  pantryCardActions: {
-    flexDirection: 'row' as const,
-    gap: 10,
-  },
-  pantryBtnPrimary: {
-    flex: 1,
-    flexDirection: 'row' as const,
-    backgroundColor: '#FFFC00',
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-    gap: 6,
-  },
-  pantryBtnPrimaryText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 14,
-    color: '#041015',
-  },
-  pantryBtnSecondary: {
-    flex: 1,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 14,
-    paddingVertical: 12,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-  },
-  pantryBtnSecondaryText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600' as const,
-    fontSize: 14,
-    color: '#64748b',
-  },
-  pantryMatchBadge: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 8,
-    marginHorizontal: 20,
-    marginBottom: 16,
-    backgroundColor: '#f0fdf4',
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-  },
-  pantryMatchText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600' as const,
-    fontSize: 13,
-    color: '#166534',
-    flex: 1,
-  },
-  labelNudgeCard: {
-    marginHorizontal: 20,
-    marginBottom: 16,
-    backgroundColor: '#FFF9DB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 20,
-    padding: 20,
-  },
-  labelNudgeTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 16,
-    color: '#553e00',
-    flex: 1,
-  },
 });
