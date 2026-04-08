@@ -1,15 +1,18 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
+import EmptyPantryNudge from '../../components/EmptyPantryNudge';
+import PantryPillSelector from '../../components/PantryPillSelector';
 
 interface ScanResult {
   food_name: string;
@@ -40,9 +43,20 @@ interface ScanResult {
 export default function MealScreen() {
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState('');
-  const { activePet, foodPantry } = useActivePetStore();
+  const router = useRouter();
+  const { activePet, foodPantry, incrementPantryScan } = useActivePetStore();
   const { pawCoins, awardCoins } = useStreakStore();
   const { user } = useAuth();
+
+  // Pantry awareness state
+  const [selectedPantryId, setSelectedPantryId] = useState<string | null>(null);
+  const [showPantryNudge, setShowPantryNudge] = useState(true);
+
+  // Reset pantry selection when pet changes
+  useEffect(() => {
+    setSelectedPantryId(null);
+    setShowPantryNudge(true);
+  }, [activePet?.id]);
 
   // Scanner state
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
@@ -111,6 +125,7 @@ export default function MealScreen() {
           imageBase64: base64,
           mimeType,
           petProfile: profileWithPantry,
+          selectedPantryItemId: selectedPantryId,
         },
       });
 
@@ -210,8 +225,13 @@ export default function MealScreen() {
         carbs_g: scanResult.carbs_g ?? 0,
         fat_g: scanResult.fat_g ?? 0,
         health_score: scanResult.health_score ?? 5,
-        ingredients: scanResult.ingredients ?? [],
+        ingredients: scanResult.key_ingredients || scanResult.ingredients || [],
       });
+
+      // 1b. Bump scan count for selected pantry item
+      if (selectedPantryId) {
+        incrementPantryScan(selectedPantryId);
+      }
 
       // 2. Upsert today's daily_log (with treat tracking)
       const isTreat = scanResult.is_treat === true;
@@ -445,6 +465,17 @@ export default function MealScreen() {
           return null;
         })()}
 
+        {/* Empty Pantry Nudge */}
+        {foodPantry.length === 0 && showPantryNudge && activePet && (
+          <EmptyPantryNudge
+            petId={activePet.id}
+            petName={activePet.name}
+            petAvatarUrl={(activePet as any).current_avatar_url}
+            onUpdatePantry={() => router.push('/(tabs)/profile')}
+            onDismiss={() => setShowPantryNudge(false)}
+          />
+        )}
+
         {/* Search Section */}
         <View style={styles.searchContainer}>
           <MaterialIcons name="search" size={24} color="#5b5c5a" style={styles.searchIcon} />
@@ -476,6 +507,15 @@ export default function MealScreen() {
                 <Text style={styles.analyzingText}>GEMINI AI ANALYZING...</Text>
               </View>
             </View>
+          )}
+
+          {/* Pantry Item Pills */}
+          {foodPantry.length > 0 && (
+            <PantryPillSelector
+              pantryItems={foodPantry}
+              selectedId={selectedPantryId}
+              onSelect={setSelectedPantryId}
+            />
           )}
 
           {/* Scanner Action Buttons */}

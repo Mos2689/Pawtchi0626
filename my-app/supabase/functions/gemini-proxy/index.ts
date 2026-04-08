@@ -9,7 +9,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { imageBase64, mimeType, petProfile } = await req.json()
+    const { imageBase64, mimeType, petProfile, selectedPantryItemId } = await req.json()
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
@@ -49,7 +49,13 @@ ${weightRule}
 - Medical Conditions: ${petProfile?.medical_conditions?.join(', ') || 'None reported'}
 - Current Diet: ${petProfile?.diet_type?.join(', ') || 'Unknown'}
 - Daily Calorie Target: ${petProfile?.target_daily_calories || '?'} kcal
-- Known Food Pantry: ${petProfile?.food_pantry && petProfile.food_pantry.length > 0 ? petProfile.food_pantry.map((p: any) => `${p.brand} ${p.product_name} (${p.food_type}${p.is_primary ? ', primary' : ''}): ${p.kcal_per_serving || '?'} kcal/${p.serving_unit || 'serving'}`).join('; ') : 'No foods registered yet'}
+- Known Food Pantry: ${petProfile?.food_pantry && petProfile.food_pantry.length > 0 ? petProfile.food_pantry.map((p: any) => `[${p.brand} ${p.product_name} (${p.food_type}${p.is_primary ? ', PRIMARY' : ''})] Density: ${p.kcal_per_serving || 350} kcal/${p.serving_unit || 'cup'}. Macros: ${p.protein_pct || 0}% Protein, ${p.fat_pct || 0}% Fat, ${p.fibre_pct || 0}% Fibre. Ingredients: ${p.key_ingredients?.join(', ') || 'Unknown'}`).join(' | ') : 'No foods registered yet'}
+${(() => {
+  if (!selectedPantryItemId || !petProfile?.food_pantry) return '';
+  const sel = petProfile.food_pantry.find((p: any) => p.id === selectedPantryItemId);
+  if (!sel) return '';
+  return `\nSELECTED FOOD CONTEXT: The user confirms they are scanning "${sel.brand} ${sel.product_name}" (${sel.food_type}). Use this item's known nutritional data with HIGH confidence: ${sel.kcal_per_serving || '?'} kcal/${sel.serving_unit || 'serving'}, ${sel.protein_pct || '?'}% Protein, ${sel.fat_pct || '?'}% Fat, ${sel.fibre_pct || '?'}% Fibre. Key ingredients: ${sel.key_ingredients?.join(', ') || 'Unknown'}. Match the image to this food and estimate portion/serving count from the visual. Do NOT re-identify the brand — trust the user's selection.`;
+})()}
 
 IMPORTANT RULES:
 1. Extract the food name, calorie content per serving, and serving size from the image.
@@ -57,9 +63,14 @@ IMPORTANT RULES:
 3. Identify ingredients of concern for the pet's species and medical conditions.
 4. Provide a short recommendation (1-2 sentences).
 5. ALWAYS PROVIDE A CALORIE ESTIMATE: If the label is missing or it is just "unknown kibble", use generic averages (e.g., standard dry food is ~350 kcal/cup). NEVER return null or 0 for calories_per_serving.
-6. PANTRY MATCHING: If the image shows generic, unlabeled food (e.g. a bowl of kibble, a loose treat), match it against the pet's Known Food Pantry. Use the PRIMARY item for that food_type. Apply its exact kcal_per_serving for the calorie estimate and use its brand name in the title (e.g. "{pet name}'s Regular Kibble (Royal Canin Maxi Adult)").
-7. NEW FOOD DETECTION: Only note "New food detected" if the image clearly shows a specific brand label that is DIFFERENT from the pantry items, OR if it is human food.
-8. LABEL EXTRACTION: If a clear product label or packaging is visible, extract brand and product_name as separate fields. Also extract protein_pct, fat_pct, fibre_pct, and key_ingredients from the guaranteed analysis / ingredient list if visible.
+   - FATAL ERROR PREVENTION: NEVER return calorie values > 5000. If your math results in a number like "196000", you incorrectly converted kcal into single calories. You MUST divide by 1000 and return the kcal value (e.g., 196) instead. The required unit is ALWAYS kilocalories (kcal).
+6. PANTRY MATCHING & SERVING MATH: If scanning a generic unlabelled bowl/food, MATCH it to the pet's Known Food Pantry (use the PRIMARY item for that type). 
+   - Estimate the physical weight/volume of the food in the image (e.g., 1 cup ≈ 100g).
+   - Use the Pantry Item's kcal density to estimate total calories. 
+   - CRITICAL: Calculate absolute grams for macros based on your weight estimate. If the Pantry item says 26% Protein, and you estimate 100g of food, then "protein_g" MUST be 26.
+   - COPY the exact "Ingredients" from the matched Pantry Item into "key_ingredients". Do NOT output null.
+7. NEW FOOD DETECTION (Labels): Only output "is_labeled_product: true" if a brand label is visible. If the label DOES NOT explicitly print its calorie count, calculate it safely (e.g., Protein% * 3.5 + Fat% * 8.5 + Carbs% * 3.5 = kcal per 100g) and base the calories_per_serving on a standard serving. DO NOT hallucinate extreme numbers. Default to standard veterinary averages (350 kcal/cup for kibble, 30 kcal/piece for treats).
+8. LABEL EXTRACTION: If a clear product label or packaging is visible, extract brand and product_name as separate fields. Also extract protein_pct, fat_pct, fibre_pct, and key_ingredients from the guaranteed analysis/ingredient list.
 
 You MUST respond with ONLY valid JSON in this exact format, no markdown, no extra text:
 {
@@ -67,7 +78,7 @@ You MUST respond with ONLY valid JSON in this exact format, no markdown, no extr
   "brand": "string or null if not identifiable",
   "product_name": "string or null if not identifiable",
   "food_type": "kibble | wet_food | treat | raw | supplement | human_food",
-  "calories_per_serving": number,
+  "calories_per_serving": "number (MUST be in kcal and realistically between 10 and 2000)",
   "serving_size": "string (e.g. '1 cup / 240g')",
   "serving_unit": "cup | pouch | piece | gram | can | null",
   "protein_pct": number or null,
@@ -140,6 +151,9 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
         if (analysis.food_name === 'Unknown' || analysis.food_name === 'string') {
           analysis.food_name = 'Generic Pet Food Estimate';
         }
+      } else if (analysis.calories_per_serving > 5000) {
+        // Fallback: Gemini likely multiplied kcal by 1000 to get pure calories. Revert to kcal.
+        analysis.calories_per_serving = Math.round(analysis.calories_per_serving / 1000);
       }
     } catch {
       analysis = {
