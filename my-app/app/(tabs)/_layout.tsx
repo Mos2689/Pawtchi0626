@@ -49,13 +49,6 @@ export default function TabLayout() {
     }
   }, [activePet?.id]);
 
-  // Subscription gating: redirect expired users to the paywall
-  useEffect(() => {
-    if (subStatus === 'expired') {
-      router.replace('/paywall' as any);
-    }
-  }, [subStatus]);
-
   // Block rendering while loading or redirecting to prevent flickering
   if (authLoading || (session && (petLoading || streakLoading)) || redirectingToOnboarding) {
     return (

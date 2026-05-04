@@ -64,6 +64,14 @@ interface TrendData {
   weightTrend: { latest: number; previous: number; direction: 'up' | 'down' | 'stable' } | null;
   avgTreatsPerDay: number | null;
   weeklyTreatCalPercent: number | null; // what % of weekly calories came from treats
+  daysSinceLastWeighIn: number | null;
+  hasWeightGoal: boolean;
+  // Rolling 7-day calorie balance (consumed − target × 7). Positive = surplus.
+  weeklyCaloriesConsumed: number | null;
+  weeklyTarget: number | null;
+  weeklyDelta: number | null;
+  // Days in the last 3 where consumption was below 70% of target (chronic under-eating signal)
+  daysUnderTarget: number | null;
 }
 
 interface ClinicalContext {
@@ -81,13 +89,17 @@ interface PetContextState extends TodayData, DerivedToday, TrendData {
   nudge: Nudge | null;
   isTodayLoading: boolean;
   isTrendsLoading: boolean;
+  isFreemiumActive?: boolean;
+  daysSinceCreation?: number;
 
   fetchContext: (petId: string) => Promise<void>;
+  injectSubscriptionData: (isFreemiumActive: boolean, daysSinceCreation: number) => void;
   refreshToday: (petId: string) => Promise<void>;
   refreshTrends: (petId: string) => Promise<void>;
   updateCalories: (newTotal: number) => void;
   updateWater: (newTotal: number) => void;
   updateWalks: (newCount: number) => void;
+  dismissNudge: () => void;
   clearContext: () => void;
 }
 
@@ -126,6 +138,12 @@ const initialTrends: TrendData = {
   weightTrend: null,
   avgTreatsPerDay: null,
   weeklyTreatCalPercent: null,
+  daysSinceLastWeighIn: null,
+  hasWeightGoal: false,
+  weeklyCaloriesConsumed: null,
+  weeklyTarget: null,
+  weeklyDelta: null,
+  daysUnderTarget: null,
 };
 
 const initialClinical: ClinicalContext = {
@@ -179,12 +197,13 @@ function computeDerived(
   today: TodayData,
   pet: Pet | null,
   weightTrend: TrendData['weightTrend'] | null = null,
+  weeklyDelta: number | null = null,
 ): DerivedToday {
   const baseTarget = pet?.target_daily_calories || 0;
   const weightKg = pet?.current_weight_kg || 0;
   const waterTarget = Math.round(weightKg * 50);
 
-  // Dynamic daily budget: adjust base target based on activity + weight trends
+  // Dynamic daily budget: adjust base target based on activity + weight trends + weekly balance
   const goal = deriveGoal(
     pet?.current_weight_kg || 0,
     pet?.target_weight_kg,
@@ -194,6 +213,7 @@ function computeDerived(
     today.todayActivityMinutes,
     weightTrend?.direction ?? null,
     goal,
+    weeklyDelta,
   );
 
   const target = adjustedTarget || baseTarget; // fallback to base if adjustment returns 0
@@ -211,6 +231,20 @@ function computeDerived(
 }
 
 function buildNudgeInput(state: PetContextState) {
+  // Today's biggest single calorie contributor (used by nudges to name the offender)
+  let topContributorScan: { food_name: string; calories: number } | null = null;
+  if (state.todayScans && state.todayScans.length > 0) {
+    const top = state.todayScans.reduce((max, s) =>
+      (s.ai_estimated_calories || 0) > (max.ai_estimated_calories || 0) ? s : max
+    );
+    if ((top.ai_estimated_calories || 0) > 0) {
+      topContributorScan = {
+        food_name: top.ai_identified_food,
+        calories: Math.round(top.ai_estimated_calories || 0),
+      };
+    }
+  }
+
   return {
     todayCalories: state.todayCalories,
     calPercent: state.calPercent,
@@ -229,6 +263,13 @@ function buildNudgeInput(state: PetContextState) {
     },
     avgTreatsPerDay: state.avgTreatsPerDay,
     weeklyTreatCalPercent: state.weeklyTreatCalPercent,
+    daysSinceLastWeighIn: state.daysSinceLastWeighIn,
+    hasWeightGoal: state.hasWeightGoal,
+    weeklyDelta: state.weeklyDelta,
+    daysUnderTarget: state.daysUnderTarget,
+    topContributorScan,
+    isFreemiumActive: state.isFreemiumActive,
+    daysSinceCreation: state.daysSinceCreation,
   };
 }
 
@@ -249,6 +290,13 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       state.refreshToday(petId),
       state.refreshTrends(petId),
     ]);
+  },
+
+  injectSubscriptionData: (isFreemiumActive: boolean, daysSinceCreation: number) => {
+    set({ isFreemiumActive, daysSinceCreation });
+    // Recompute nudge with new sub data
+    const nudge = computeNudge(buildNudgeInput(get()));
+    set({ nudge });
   },
 
   refreshToday: async (petId: string) => {
@@ -324,7 +372,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         todayFats,
       };
 
-      const derived = computeDerived(todayData, pet, get().weightTrend);
+      const derived = computeDerived(todayData, pet, get().weightTrend, get().weeklyDelta);
       const clinical = deriveClinical(pet);
 
       set({
@@ -445,6 +493,18 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         weightTrend = { latest, previous: latest, direction: 'stable' };
       }
 
+      // Days since last weigh-in (for nudge engine)
+      let daysSinceLastWeighIn: number | null = null;
+      if (wData.length > 0 && wData[0].logged_at) {
+        const lastLogDate = new Date(wData[0].logged_at);
+        const msDiff = now.getTime() - lastLogDate.getTime();
+        daysSinceLastWeighIn = Math.floor(msDiff / (1000 * 60 * 60 * 24));
+      }
+
+      // Has weight goal (target differs from current by >0.5kg)
+      const hasWeightGoal = !!(pet?.target_weight_kg && pet?.current_weight_kg &&
+        Math.abs(pet.target_weight_kg - pet.current_weight_kg) > 0.5);
+
       // Average treats per day over 7 days
       const treatsData = treats7Res.data || [];
       const totalTreats = treatsData.reduce((s: number, l: any) => s + (l.treats_consumed || 0), 0);
@@ -461,6 +521,31 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         ? Math.round((weeklyTreatCals / weeklyTotalCals) * 100)
         : null;
 
+      // Rolling 7-day calorie balance (consumed − target × 7)
+      const baseTarget = pet?.target_daily_calories || 0;
+      const weeklyTarget = baseTarget > 0 ? baseTarget * 7 : null;
+      const weeklyCaloriesConsumed = (logs7Res.data?.length || 0) > 0 ? weeklyTotalCals : null;
+      const weeklyDelta = weeklyTarget !== null && weeklyCaloriesConsumed !== null
+        ? weeklyCaloriesConsumed - weeklyTarget
+        : null;
+
+      // Days under target in the last 3 days (chronic under-eating signal).
+      // Counts only days with actual log data; missing days are not assumed under.
+      let daysUnderTarget: number | null = null;
+      if (baseTarget > 0 && logs7Res.data) {
+        const last3Dates = [0, 1, 2].map(i => {
+          const d = new Date(now);
+          d.setDate(d.getDate() - i);
+          return getLocalYMD(d);
+        });
+        const last3Logs = logs7Res.data.filter((l: any) => last3Dates.includes(l.log_date));
+        if (last3Logs.length > 0) {
+          daysUnderTarget = last3Logs.filter((l: any) =>
+            (l.calories_consumed || 0) < baseTarget * 0.7
+          ).length;
+        }
+      }
+
       set({
         nutritionScore,
         activityScore,
@@ -468,10 +553,33 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         weightTrend,
         avgTreatsPerDay,
         weeklyTreatCalPercent,
+        daysSinceLastWeighIn,
+        hasWeightGoal,
+        weeklyCaloriesConsumed,
+        weeklyTarget,
+        weeklyDelta,
+        daysUnderTarget,
         isTrendsLoading: false,
       });
 
-      // Recompute nudge with fresh trends
+      // Recompute derived (now includes weekly delta correction) and nudge
+      const stateAfterTrends = get();
+      const todayDataNow: TodayData = {
+        todayCalories: stateAfterTrends.todayCalories,
+        todayWater: stateAfterTrends.todayWater,
+        todayWalks: stateAfterTrends.todayWalks,
+        treatsConsumed: stateAfterTrends.treatsConsumed,
+        treatCaloriesConsumed: stateAfterTrends.treatCaloriesConsumed,
+        todayScans: stateAfterTrends.todayScans,
+        nextActivity: stateAfterTrends.nextActivity,
+        todayActivityMinutes: stateAfterTrends.todayActivityMinutes,
+        activityCompletionRate: stateAfterTrends.activityCompletionRate,
+        todayProtein: stateAfterTrends.todayProtein,
+        todayCarbs: stateAfterTrends.todayCarbs,
+        todayFats: stateAfterTrends.todayFats,
+      };
+      const derivedAfterTrends = computeDerived(todayDataNow, pet, weightTrend, weeklyDelta);
+      set({ ...derivedAfterTrends });
       const nudge = computeNudge(buildNudgeInput(get()));
       set({ nudge });
     } catch (err) {
@@ -486,7 +594,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const pet = useActivePetStore.getState().activePet;
     const current = get();
     const todayData: TodayData = { ...current, todayCalories: newTotal };
-    const derived = computeDerived(todayData, pet, current.weightTrend);
+    const derived = computeDerived(todayData, pet, current.weightTrend, current.weeklyDelta);
     const nudge = computeNudge(buildNudgeInput({ ...current, todayCalories: newTotal, ...derived }));
     set({ todayCalories: newTotal, ...derived, nudge });
   },
@@ -495,12 +603,16 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const pet = useActivePetStore.getState().activePet;
     const current = get();
     const todayData: TodayData = { ...current, todayWater: newTotal };
-    const derived = computeDerived(todayData, pet, current.weightTrend);
+    const derived = computeDerived(todayData, pet, current.weightTrend, current.weeklyDelta);
     set({ todayWater: newTotal, ...derived });
   },
 
   updateWalks: (newCount: number) => {
     set({ todayWalks: newCount });
+  },
+
+  dismissNudge: () => {
+    set({ nudge: null });
   },
 
   clearContext: () => set({

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Modal, Tex
 import Svg, { Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../lib/supabase';
@@ -10,7 +11,9 @@ import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { contextualizeWalk } from '../../lib/contextualizer';
+import { regenerateSchedule } from '../../lib/scheduleAdjuster';
 import { useAuth } from '../../providers/AuthProvider';
+import { useSubscription } from '../../hooks/useSubscription';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
 
@@ -32,9 +35,19 @@ const ACTIVITY_TYPES = [
 
 export default function ActivityScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { activePet } = useActivePetStore();
   const { awardCoins } = useStreakStore();
   const { user } = useAuth();
+  const { hasFullAccess } = useSubscription();
+
+  const checkAccess = () => {
+    if (!hasFullAccess) {
+      router.push('/paywall' as any);
+      return false;
+    }
+    return true;
+  };
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [activities, setActivities] = useState<any[]>([]);
@@ -179,6 +192,7 @@ export default function ActivityScreen() {
 
   // Handle tap on the check circle
   const handleCheckTap = (item: any) => {
+    if (!checkAccess()) return;
     if (TIME_BASED_TYPES.includes(item.activity_type)) {
       // Show inline duration confirmation
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -270,7 +284,7 @@ export default function ActivityScreen() {
 
   // Generate AI Schedule
   const generateSchedule = async () => {
-    if (!activePet) return;
+    if (!activePet || !checkAccess()) return;
     setIsGenerating(true);
 
     try {
@@ -299,83 +313,28 @@ export default function ActivityScreen() {
     }
   };
 
-  // Auto-Adjustment: delete future pending + regenerate with performance context
+  // Auto-Adjustment: delegate to shared scheduleAdjuster lib
   const adjustSchedule = async () => {
-    if (!activePet) return;
+    if (!activePet || !checkAccess()) return;
     setIsAdjusting(true);
 
     try {
-      // Delete all future pending AI-generated activities
-      const todayStr = getLocalYMD(new Date());
-      await supabase
-        .from('activities')
-        .delete()
-        .eq('pet_id', activePet.id)
-        .eq('is_ai_generated', true)
-        .eq('status', 'pending')
-        .gt('scheduled_date', todayStr);
-
-      // Build performance context from weekly stats + context store
       const contextStore = usePetContextStore.getState();
-      const completionRate = weeklyStats && weeklyStats.total > 0
-        ? weeklyStats.completed / weeklyStats.total
-        : 1;
-      const skippedCount = weeklyStats?.skipped ?? 0;
-
-      // Fetch average completed duration from last 7 days
-      const sevenAgo = new Date();
-      sevenAgo.setDate(sevenAgo.getDate() - 7);
-      const { data: completedActs } = await supabase
-        .from('activities')
-        .select('duration_minutes')
-        .eq('pet_id', activePet.id)
-        .eq('status', 'completed')
-        .in('activity_type', ['walk', 'play', 'training'])
-        .gte('scheduled_date', getLocalYMD(sevenAgo))
-        .lte('scheduled_date', todayStr);
-
-      const durations = (completedActs || [])
-        .map((a: any) => a.duration_minutes)
-        .filter((d: number | null) => d !== null && d > 0);
-      const avgCompletedDurationMins = durations.length > 0
-        ? Math.round(durations.reduce((s: number, d: number) => s + d, 0) / durations.length)
-        : null;
-
-      // Fatigue detection: more skipped than completed AND meaningful sample size
-      const fatigueDetected = weeklyStats
-        ? weeklyStats.skipped > weeklyStats.completed && weeklyStats.total >= 5
-        : false;
-
-      const performanceContext = {
-        lastWeekCompletionRate: completionRate,
-        lastWeekSkippedCount: skippedCount,
-        avgCompletedDurationMins,
+      const result = await regenerateSchedule({
+        pet: activePet,
+        weeklyStats,
         todayCalPercent: contextStore.calPercent,
         weightTrendDirection: contextStore.weightTrend?.direction ?? null,
-        fatigueDetected,
-      };
-
-      // Regenerate with performance-aware context
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      const res = await fetch(`${supabaseUrl}/functions/v1/generate-schedule`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          petProfile: activePet,
-          daysToGenerate: 7,
-          performanceContext,
-        }),
       });
 
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Adjustment failed.');
+      if (!result.success) throw new Error(result.error || 'Adjustment failed.');
 
       setShowAdjustBanner(false);
       setAdjustDismissed(true);
 
-      const adjustMsg = fatigueDetected
+      const adjustMsg = result.fatigueDetected
         ? 'A gentler, enrichment-focused plan has been created. Small steps count!'
-        : `A lighter, more achievable plan has been generated across ${data.days_generated} days.`;
+        : `A lighter, more achievable plan has been generated across ${result.days_generated} days.`;
 
       Alert.alert(
         'Schedule Adjusted! ✨',
@@ -390,7 +349,7 @@ export default function ActivityScreen() {
   };
 
   const handleLogActivity = async () => {
-    if (!activePet || !selectedType) return;
+    if (!activePet || !selectedType || !checkAccess()) return;
     setIsSubmitting(true);
 
     let titleToSave = formTitle.trim();
@@ -537,7 +496,7 @@ export default function ActivityScreen() {
           </View>
           <Text style={styles.headerTitle}>Pawtchi</Text>
         </View>
-        <TouchableOpacity style={styles.bellBtn}>
+        <TouchableOpacity style={styles.bellBtn} onPress={() => router.push('/(tabs)/profile' as any)}>
           <MaterialIcons name="settings" size={24} color="#243036" />
         </TouchableOpacity>
       </View>
@@ -752,12 +711,12 @@ export default function ActivityScreen() {
 
                 return (
                   <View key={`act-${item.id}`} style={[styles.tlItem, isSkipped && { opacity: 0.4 }]}>
-                    {/* Timeline dot */}
+                    {/* Timeline dot — visual indicator only */}
                     <View style={styles.tlDotCol}>
                       {isPending ? (
-                        <TouchableOpacity style={[styles.tlDot, styles.tlDotPending]} onPress={() => handleCheckTap(item)} activeOpacity={0.7}>
-                          <MaterialIcons name="schedule" size={12} color="#041015" />
-                        </TouchableOpacity>
+                        <View style={[styles.tlDot, styles.tlDotPending]}>
+                          <View style={styles.tlDotPendingInner} />
+                        </View>
                       ) : (
                         <View style={[styles.tlDot, isCompleted ? styles.tlDotCompleted : styles.tlDotSkipped]}>
                           <MaterialIcons name={isCompleted ? "check" : "close"} size={12} color={isCompleted ? "#041015" : "#9ca3af"} />
@@ -788,6 +747,18 @@ export default function ActivityScreen() {
                             </View>
                           )}
                         </View>
+
+                        {/* Mark as Done CTA — only on pending items, before confirmation */}
+                        {isPending && confirmingTaskId !== item.id && (
+                          <TouchableOpacity
+                            style={styles.markDoneBtn}
+                            onPress={() => handleCheckTap(item)}
+                            activeOpacity={0.85}
+                          >
+                            <MaterialIcons name="check-circle-outline" size={18} color="#041015" />
+                            <Text style={styles.markDoneBtnText}>Mark as Done</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
 
                       {/* Watermark icon */}
@@ -1162,7 +1133,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFC00', borderColor: '#FFFC00',
   },
   tlDotPending: {
-    backgroundColor: '#f8fafc', borderColor: '#cbd5e1',
+    backgroundColor: '#FFFC00', borderColor: '#FFFC00',
+    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6, shadowRadius: 6, elevation: 4,
+  },
+  tlDotPendingInner: {
+    width: 8, height: 8, borderRadius: 4, backgroundColor: '#041015',
   },
   tlDotSkipped: {
     backgroundColor: '#f1f5f9', borderColor: '#e2e8f0',
@@ -1201,6 +1177,20 @@ const styles = StyleSheet.create({
   },
   tlWatermark: {
     position: 'absolute', bottom: -10, right: -10,
+  },
+
+  // Mark as Done CTA
+  markDoneBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, marginTop: 16,
+    backgroundColor: '#FFFC00', borderRadius: 14,
+    paddingVertical: 12, paddingHorizontal: 20,
+    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  },
+  markDoneBtnText: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 14,
+    color: '#041015', letterSpacing: 0.3,
   },
 
   // FAB

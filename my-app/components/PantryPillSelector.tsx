@@ -15,6 +15,7 @@ interface Props {
   pantryItems: PantryItem[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  onAddNew?: () => void;
 }
 
 const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
@@ -26,7 +27,7 @@ const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
   human_food: 'restaurant',
 };
 
-export default function PantryPillSelector({ pantryItems, selectedId, onSelect }: Props) {
+export default function PantryPillSelector({ pantryItems, selectedId, onSelect, onAddNew }: Props) {
   // Auto-select when there's exactly 1 pantry item
   useEffect(() => {
     if (pantryItems.length === 1 && selectedId === null) {
@@ -36,21 +37,20 @@ export default function PantryPillSelector({ pantryItems, selectedId, onSelect }
 
   return (
     <View style={styles.container}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
+      <View style={styles.wrapContent}>
         {/* Default "None / New Food" pill */}
         <TouchableOpacity
           style={[styles.pill, selectedId === null ? styles.pillSelected : styles.pillUnselected]}
           activeOpacity={0.7}
-          onPress={() => onSelect(null)}
+          onPress={() => {
+            onSelect(null);
+            onAddNew?.();
+          }}
         >
           <MaterialIcons
             name={selectedId === null ? 'check-circle' : 'add-circle-outline'}
             size={16}
-            color={selectedId === null ? '#041015' : '#FFFFFF'}
+            color={selectedId === null ? '#041015' : '#475569'}
           />
           <Text style={[styles.pillText, selectedId === null ? styles.pillTextSelected : styles.pillTextUnselected]}>
             New Food
@@ -73,7 +73,7 @@ export default function PantryPillSelector({ pantryItems, selectedId, onSelect }
               <MaterialIcons
                 name={isSelected ? 'check-circle' : icon}
                 size={16}
-                color={isSelected ? '#041015' : '#FFFFFF'}
+                color={isSelected ? '#041015' : '#475569'}
               />
               <Text
                 style={[styles.pillText, isSelected ? styles.pillTextSelected : styles.pillTextUnselected]}
@@ -84,54 +84,53 @@ export default function PantryPillSelector({ pantryItems, selectedId, onSelect }
             </TouchableOpacity>
           );
         })}
-      </ScrollView>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    bottom: 72,
-    left: 0,
-    right: 0,
-    zIndex: 5,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    paddingVertical: 8,
+    width: '100%',
+    paddingVertical: 12,
   },
-  scrollContent: {
-    paddingHorizontal: 12,
-    gap: 8,
+  wrapContent: {
     flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-start',
+    gap: 10,
   },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    gap: 8,
+    borderWidth: 1.5,
+    marginBottom: 4,
   },
   pillUnselected: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
   },
   pillSelected: {
     backgroundColor: '#FFFC00',
-    borderWidth: 1,
     borderColor: '#FFFC00',
+    shadowColor: '#FFFC00',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   pillText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans-SemiBold',
+    fontSize: 14,
+    fontFamily: 'PlusJakartaSans-Bold',
   },
   pillTextUnselected: {
-    color: '#FFFFFF',
+    color: '#475569',
   },
   pillTextSelected: {
     color: '#041015',
-    fontWeight: '700',
   },
 });

@@ -5,10 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { usePetContextStore } from '../store/usePetContextStore';
 
-interface NudgeCardProps {
-  isProfileComplete: boolean;
-  onProfilePress: () => void;
-}
+interface NudgeCardProps {}
 
 const iconMap: Record<string, { name: keyof typeof MaterialIcons.glyphMap; color: string }> = {
   suggest_walk: { name: 'directions-walk', color: '#FFFC00' },
@@ -16,6 +13,7 @@ const iconMap: Record<string, { name: keyof typeof MaterialIcons.glyphMap; color
   remind_water: { name: 'water-drop', color: '#3091F9' },
   treat_ok: { name: 'celebration', color: '#4ade80' },
   reduce_dinner: { name: 'restaurant-menu', color: '#fb923c' },
+  start_trial: { name: 'star', color: '#FFFC00' },
 };
 
 const routeMap: Record<string, string> = {
@@ -24,17 +22,19 @@ const routeMap: Record<string, string> = {
   remind_water: '/(tabs)/activity',
   treat_ok: '/(tabs)/meal',
   reduce_dinner: '/(tabs)/meal',
+  start_trial: '/paywall',
 };
 
-export function NudgeCard({ isProfileComplete, onProfilePress }: NudgeCardProps) {
+export function NudgeCard({}: NudgeCardProps) {
   const nudge = usePetContextStore(s => s.nudge);
+  const dismissNudge = usePetContextStore(s => s.dismissNudge);
   const router = useRouter();
 
   // Dynamic nudge from the context engine
   if (nudge) {
     const isAction = nudge.priority === 'action';
-    const icon = nudge.actionType ? iconMap[nudge.actionType] : { name: 'info-outline' as const, color: '#FFFC00' };
-    const route = nudge.actionType ? routeMap[nudge.actionType] : null;
+    const icon = (nudge.actionType && iconMap[nudge.actionType]) ? iconMap[nudge.actionType] : { name: 'info-outline' as const, color: '#FFFC00' };
+    const route = (nudge.actionType && routeMap[nudge.actionType]) ? routeMap[nudge.actionType] : null;
 
     const card = (
       <LinearGradient
@@ -58,7 +58,10 @@ export function NudgeCard({ isProfileComplete, onProfilePress }: NudgeCardProps)
       return (
         <TouchableOpacity
           style={[styles.container, { marginBottom: 32 }]}
-          onPress={() => router.push(route as any)}
+          onPress={() => {
+            dismissNudge();
+            router.push(route as any);
+          }}
           activeOpacity={0.9}
         >
           {card}
@@ -67,28 +70,6 @@ export function NudgeCard({ isProfileComplete, onProfilePress }: NudgeCardProps)
     }
 
     return <View style={[styles.container, { marginBottom: 32 }]}>{card}</View>;
-  }
-
-  // Fallback: incomplete profile nudge
-  if (!isProfileComplete) {
-    return (
-      <TouchableOpacity
-        style={[styles.container, { marginBottom: 32 }]}
-        onPress={onProfilePress}
-        activeOpacity={0.9}
-      >
-        <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.gradient}>
-          <View style={styles.left}>
-            <MaterialIcons name="health-and-safety" size={32} color="#FFFC00" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.title}>Clinical Profile Setup</Text>
-              <Text style={styles.sub}>Gemini AI needs this data to start.</Text>
-            </View>
-          </View>
-          <MaterialIcons name="arrow-forward-ios" size={16} color="#94a3b8" />
-        </LinearGradient>
-      </TouchableOpacity>
-    );
   }
 
   return null;

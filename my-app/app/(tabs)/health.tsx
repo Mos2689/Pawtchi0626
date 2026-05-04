@@ -17,6 +17,8 @@ import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
+import { regenerateSchedule } from '../../lib/scheduleAdjuster';
+import { getReportFreshness } from '../../lib/vetReportFreshness';
 import WeeklyNutritionChart, { DayMacro } from '../../components/WeeklyNutritionChart';
 
 // Screen 10: Health Hub — Data-Driven
@@ -26,6 +28,10 @@ export default function HealthScreen() {
   const { awardCoins, pawCoins } = useStreakStore();
   const { user } = useAuth();
   const router = useRouter();
+
+  // Pull rolling weekly balance from central store (computed in refreshTrends)
+  const weeklyDelta = usePetContextStore((s) => s.weeklyDelta);
+  const weeklyTarget = usePetContextStore((s) => s.weeklyTarget);
 
   // Live data states
   const [weightLogs, setWeightLogs] = useState<any[]>([]);
@@ -281,6 +287,10 @@ export default function HealthScreen() {
     setIsSavingWeight(true);
 
     try {
+      // Snapshot prior state so we can detect a meaningful change after the log.
+      const prevWeight = activePet.current_weight_kg ?? null;
+      const prevGoal = deriveGoal(prevWeight ?? weight, activePet.target_weight_kg);
+
       await supabase.from('weight_logs').insert({
         pet_id: activePet.id,
         weight_kg: weight,
@@ -296,6 +306,9 @@ export default function HealthScreen() {
         activePet.is_neutered,
         activePet.activity_level,
         goal,
+        undefined,
+        1.0,
+        activePet.target_weight_kg,
       );
 
       // Update pet's current weight and recalculated calorie target
@@ -315,11 +328,32 @@ export default function HealthScreen() {
         usePetContextStore.getState().refreshToday(activePet.id);
       }
 
+      // Auto-regenerate activity schedule when the weight change is meaningful:
+      // either ≥0.3kg movement OR the goal direction has flipped (e.g. lose → maintain).
+      // Otherwise the user is stuck with a schedule designed for last week's pet.
+      const weightDeltaKg = prevWeight !== null ? Math.abs(weight - prevWeight) : 0;
+      const goalFlipped = prevGoal !== goal;
+      let scheduleRegenerated = false;
+      if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
+        const ctx = usePetContextStore.getState();
+        const refreshed = useActivePetStore.getState().activePet ?? activePet;
+        const result = await regenerateSchedule({
+          pet: refreshed,
+          weeklyStats: null, // no per-week stats accessible here; lib handles defaults
+          todayCalPercent: ctx.calPercent,
+          weightTrendDirection: ctx.weightTrend?.direction ?? null,
+        });
+        scheduleRegenerated = result.success;
+      }
+
       setShowWeightModal(false);
       setWeightInput('');
       setWeightNotes('');
       fetchHealthData();
-      Alert.alert('Weight Logged! ✅', `Recorded ${weight} kg for ${activePet.name}.`);
+      const successSuffix = scheduleRegenerated
+        ? `\n\nActivity schedule has been refreshed for the new weight.`
+        : '';
+      Alert.alert('Weight Logged! ✅', `Recorded ${weight} kg for ${activePet.name}.${successSuffix}`);
 
       // Award coins for weight log
       if (user?.id) {
@@ -518,7 +552,42 @@ export default function HealthScreen() {
 
         {/* Weekly Nutrition Chart */}
         {weeklyMacros.length > 0 && (
-          <WeeklyNutritionChart data={weeklyMacros} />
+          <>
+            {weeklyDelta !== null && weeklyTarget !== null && (
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8, marginBottom: 4, paddingHorizontal: 4 }}>
+                <View style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 999,
+                  backgroundColor: Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#dcfce7'
+                    : weeklyDelta > 0 ? '#fee2e2' : '#fef3c7',
+                }}>
+                  <MaterialIcons
+                    name={Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? 'check-circle'
+                      : weeklyDelta > 0 ? 'trending-up' : 'trending-down'}
+                    size={13}
+                    color={Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#15803d'
+                      : weeklyDelta > 0 ? '#b91c1c' : '#a16207'}
+                  />
+                  <Text style={{
+                    fontFamily: 'Plus Jakarta Sans',
+                    fontSize: 11,
+                    fontWeight: '700',
+                    color: Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#15803d'
+                      : weeklyDelta > 0 ? '#b91c1c' : '#a16207',
+                  }}>
+                    {Math.abs(weeklyDelta) < weeklyTarget * 0.05
+                      ? 'Week on track'
+                      : `Week ${weeklyDelta > 0 ? '+' : ''}${Math.round(weeklyDelta)} kcal`}
+                  </Text>
+                </View>
+              </View>
+            )}
+            <WeeklyNutritionChart data={weeklyMacros} />
+          </>
         )}
 
         {/* Bento Grid — Live Vitals */}
@@ -695,6 +764,7 @@ export default function HealthScreen() {
             <View style={{ gap: 12 }}>
               {vetReports.map(report => {
                 const d = report.ai_extracted_data || {};
+                const freshness = getReportFreshness(report.report_date);
                 return (
                   <View key={report.id} style={[styles.vetRecordCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
                     <View style={styles.vetRecordTop}>
@@ -715,6 +785,36 @@ export default function HealthScreen() {
                         </View>
                       )}
                     </View>
+                    {freshness.message && (
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                          backgroundColor: freshness.requiresReconfirm ? '#FEE2E2' : '#FEF3C7',
+                          borderRadius: 8,
+                          paddingHorizontal: 10,
+                          paddingVertical: 8,
+                          marginTop: 8,
+                        }}
+                      >
+                        <MaterialIcons
+                          name={freshness.requiresReconfirm ? 'warning' : 'schedule'}
+                          size={16}
+                          color={freshness.requiresReconfirm ? '#991b1b' : '#92400e'}
+                        />
+                        <Text
+                          style={{
+                            flex: 1,
+                            fontSize: 12,
+                            color: freshness.requiresReconfirm ? '#991b1b' : '#92400e',
+                            fontWeight: '600',
+                          }}
+                        >
+                          {freshness.message}
+                        </Text>
+                      </View>
+                    )}
                     {d.diagnoses?.length > 0 && (
                       <Text style={[styles.vetRecordDetail, { color: '#5b5c5a' }]}>
                         <Text style={{ fontWeight: '800' }}>Diagnoses: </Text>{d.diagnoses.join(', ')}
@@ -858,7 +958,7 @@ const styles = StyleSheet.create({
   bentoRow: { flexDirection: 'row', gap: 16, marginBottom: 16 },
 
   // Weight Card
-  weightCard: { flex: 2, borderRadius: 24, padding: 24, borderWidth: 1, justifyContent: 'space-between', minHeight: 260 },
+  weightCard: { flex: 3, borderRadius: 24, padding: 20, borderWidth: 1, justifyContent: 'space-between', minHeight: 260 },
   weightHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
   weightLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, letterSpacing: 1 },
   weightBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
@@ -876,8 +976,8 @@ const styles = StyleSheet.create({
   logWeightText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 11, letterSpacing: 1, color: '#1A1A1A' },
 
   // Metric Cards
-  metricsColumn: { flex: 1, gap: 16 },
-  squareCard: { flex: 1, borderRadius: 24, padding: 20, borderWidth: 1, justifyContent: 'space-between' },
+  metricsColumn: { flex: 2, gap: 16 },
+  squareCard: { flex: 1, borderRadius: 24, padding: 16, borderWidth: 1, justifyContent: 'space-between' },
   metricValue: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, marginBottom: 2 },
   metricLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 10, letterSpacing: 1 },
 

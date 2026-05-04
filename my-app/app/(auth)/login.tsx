@@ -30,6 +30,22 @@ export default function LoginScreen() {
     }
   }
 
+  async function handleForgotPassword() {
+    const emailTrimmed = email.trim();
+    if (!emailTrimmed) {
+      Alert.alert('Enter your email', 'Type your email address above, then tap Forgot Password.');
+      return;
+    }
+    setLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(emailTrimmed);
+    setLoading(false);
+    if (error) {
+      Alert.alert('Error', error.message);
+    } else {
+      Alert.alert('Check your inbox', `A password reset link has been sent to ${emailTrimmed}.`);
+    }
+  }
+
   async function signUpWithEmail() {
     setLoading(true);
     const { data, error } = await supabase.auth.signUp({
@@ -122,6 +138,16 @@ export default function LoginScreen() {
               </Text>
             </TouchableOpacity>
           </View>
+
+          {!isSignUp && (
+            <TouchableOpacity
+              onPress={handleForgotPassword}
+              disabled={loading}
+              style={styles.forgotBtn}
+            >
+              <Text style={styles.forgotText}>Forgot password?</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
       </KeyboardAvoidingView>
@@ -227,5 +253,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14,
     color: '#000',
-  }
+  },
+  forgotBtn: {
+    alignItems: 'center',
+    marginTop: 8,
+    paddingVertical: 8,
+  },
+  forgotText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6C757D',
+    textDecorationLine: 'underline',
+  },
 });

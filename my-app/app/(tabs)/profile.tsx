@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Switch, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Switch, Alert, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -12,6 +12,7 @@ import { Colors } from '../../constants/Theme';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { BOWL_SIZES } from '../../constants/brandData';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useSubscription } from '../../hooks/useSubscription';
@@ -27,7 +28,7 @@ export default function ProfileScreen() {
   const { activePet, clearPet, foodPantry, addPantryItem, fetchPantry } = useActivePetStore();
   const { clearStreak } = useStreakStore();
   const { clearContext } = usePetContextStore();
-  const { status: subStatus, daysLeft: subDaysLeft } = useSubscription();
+  const { status: subStatus, daysLeft: subDaysLeft, hasFullAccess } = useSubscription();
   const { replayWalkthrough } = useWalkthrough();
 
 
@@ -41,6 +42,23 @@ export default function ProfileScreen() {
 
   // Pantry scan state
   const [isScanningLabel, setIsScanningLabel] = useState(false);
+
+  // Edit Profile State
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editImageUri, setEditImageUri] = useState<string | null>(null);
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
+
+  // Inline Edit State
+  const [inlineEditVisible, setInlineEditVisible] = useState(false);
+  const [inlineEditField, setInlineEditField] = useState<{
+    dbColumn: string;
+    label: string;
+    value: string;
+    placeholder: string;
+    keyboardType: 'default' | 'numeric' | 'email-address';
+  } | null>(null);
+  const [inlineEditValue, setInlineEditValue] = useState('');
 
   // Sync with DB
   useEffect(() => {
@@ -61,13 +79,19 @@ export default function ProfileScreen() {
           setWalkTime(d);
           setWalkToggle(walk.is_active);
         }
+        const hydration = data.find(d => d.event_type === 'hydration');
+        if (hydration) {
+          setHydrationToggle(hydration.is_active);
+        }
       }
     });
   }, [activePet?.id]);
 
-  const updateSchedule = async (type: 'meal' | 'walk', time: Date, isActive: boolean) => {
+  const updateSchedule = async (type: 'meal' | 'walk' | 'hydration', time: Date | null, isActive: boolean) => {
     if (!activePet) return;
-    const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:00`;
+    const timeStr = time
+      ? `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:00`
+      : '08:00:00';
     await supabase.from('schedules').upsert({
       pet_id: activePet.id,
       event_type: type,
@@ -98,8 +122,21 @@ export default function ProfileScreen() {
     setWalkToggle(val);
     updateSchedule('walk', walkTime, val);
   };
+  const handleHydrationToggle = (val: boolean) => {
+    setHydrationToggle(val);
+    updateSchedule('hydration', null, val);
+  };
+
+  const checkAccess = () => {
+    if (!hasFullAccess) {
+      router.push('/paywall' as any);
+      return false;
+    }
+    return true;
+  };
 
   const handleScanFoodLabel = async (useCamera: boolean) => {
+    if (!checkAccess()) return;
     setIsScanningLabel(true);
     try {
       let result;
@@ -158,6 +195,8 @@ export default function ProfileScreen() {
         product_name: a.product_name || a.food_name || '',
         food_type: foodType,
         kcal_per_serving: a.calories_per_serving || null,
+        kcal_per_100g_as_fed: a.kcal_per_100g_as_fed || null,
+        moisture_pct: a.moisture_pct || null,
         serving_unit: a.serving_unit || null,
         protein_pct: a.protein_pct || null,
         fat_pct: a.fat_pct || null,
@@ -165,6 +204,7 @@ export default function ProfileScreen() {
         key_ingredients: a.key_ingredients || null,
         allergy_flags: allergyFlags.length > 0 ? allergyFlags : null,
         is_primary: isPrimary,
+        image_url: asset.uri || undefined,
       });
 
       if (allergyFlags.length > 0) {
@@ -181,6 +221,7 @@ export default function ProfileScreen() {
   };
 
   const handleDeletePantryItem = async (itemId: string, itemName: string) => {
+    if (!checkAccess()) return;
     Alert.alert('Remove Food', `Remove ${itemName} from the pantry?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -193,6 +234,7 @@ export default function ProfileScreen() {
   };
 
   const handleTogglePrimary = async (itemId: string, foodType: string) => {
+    if (!checkAccess()) return;
     // Unset all other primaries for this food_type, then set this one
     await supabase.from('food_pantry').update({ is_primary: false }).eq('pet_id', activePet!.id).eq('food_type', foodType);
     await supabase.from('food_pantry').update({ is_primary: true }).eq('id', itemId);
@@ -208,8 +250,38 @@ export default function ProfileScreen() {
     // Wait for the auth listener in `_layout` to kick us out
   };
 
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account, your pet, and all data. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Forever',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { data: { session } } = await supabase.auth.getSession();
+              if (!session) return;
+              const { error } = await supabase.functions.invoke('delete-account', {});
+              if (error) throw error;
+              // Clear local state
+              clearPet();
+              clearStreak();
+              clearContext();
+              await AsyncStorage.removeItem('walkthrough_completed');
+              await supabase.auth.signOut();
+            } catch (e: any) {
+              Alert.alert('Error', e.message || 'Account deletion failed. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const updateParentTitle = async (title: string) => {
-    if (!activePet) return;
+    if (!activePet || !checkAccess()) return;
 
     // Optistic update
     useActivePetStore.setState({
@@ -228,6 +300,130 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleUpdateBowlSize = async (size: string) => {
+    if (!activePet || !checkAccess()) return;
+    
+    // Optimistic update
+    useActivePetStore.setState({
+      activePet: { ...activePet, bowl_size: size as any }
+    });
+
+    const { error } = await supabase
+      .from('pets')
+      .update({ bowl_size: size })
+      .eq('id', activePet.id);
+
+    if (error) {
+      console.error('Failed to update bowl size:', error);
+      useActivePetStore.setState({ activePet });
+    }
+  };
+
+  const openEditModal = () => {
+    if (!activePet || !checkAccess()) return;
+    setEditName(activePet.name || '');
+    setEditImageUri(activePet.image_url || null);
+    setEditModalVisible(true);
+  };
+
+  const pickEditImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      setEditImageUri(result.assets[0].uri);
+    }
+  };
+
+  const handleUpdateProfile = async () => {
+    if (!user || !activePet || !editName.trim()) return;
+    setIsUpdatingProfile(true);
+    let publicAvatarUrl = activePet.image_url;
+
+    if (editImageUri && editImageUri !== activePet.image_url) {
+      try {
+        const ext = editImageUri.substring(editImageUri.lastIndexOf('.') + 1) || 'jpg';
+        const fileName = `${user.id}_${Date.now()}.${ext}`;
+
+        const formData = new FormData();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        formData.append('file', {
+          uri: editImageUri,
+          name: fileName,
+          type: `image/${ext === 'jpeg' ? 'jpeg' : 'jpeg'}`
+        } as any);
+
+        const { data, error } = await supabase.storage.from('avatars').upload(fileName, formData);
+        if (!error && data) {
+          const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
+          publicAvatarUrl = urlData.publicUrl;
+        }
+      } catch (err) {
+        console.error("Avatar update failed:", err);
+      }
+    }
+
+    const { error } = await supabase
+      .from('pets')
+      .update({ name: editName.trim(), image_url: publicAvatarUrl })
+      .eq('id', activePet.id);
+
+    setIsUpdatingProfile(false);
+
+    if (error) {
+      Alert.alert('Error', error.message);
+    } else {
+      setEditModalVisible(false);
+      useActivePetStore.getState().fetchPet(user.id);
+    }
+  };
+
+  const openInlineEdit = (dbColumn: string, label: string, value: string, placeholder: string, keyboardType: 'default' | 'numeric' | 'email-address' = 'default') => {
+    if (!checkAccess()) return;
+    setInlineEditField({ dbColumn, label, value, placeholder, keyboardType });
+    setInlineEditValue(value.toString());
+    setInlineEditVisible(true);
+  };
+
+  const handleInlineSave = async () => {
+    if (!activePet || !inlineEditField || !user) return;
+    setIsUpdatingProfile(true);
+
+    let parsedValue: any = inlineEditValue.trim();
+    if (inlineEditField.keyboardType === 'numeric') {
+      parsedValue = parseFloat(inlineEditValue) || 0;
+    }
+
+    if (inlineEditField.dbColumn === 'allergies' || inlineEditField.dbColumn === 'medical_conditions') {
+        const arr = inlineEditValue.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        parsedValue = arr;
+    }
+
+    // Optimistic Update
+    useActivePetStore.setState({
+      activePet: { ...activePet, [inlineEditField.dbColumn]: parsedValue }
+    });
+
+    const { error } = await supabase
+      .from('pets')
+      .update({ [inlineEditField.dbColumn]: parsedValue })
+      .eq('id', activePet.id);
+
+    setIsUpdatingProfile(false);
+
+    if (error) {
+      Alert.alert('Error', error.message);
+      useActivePetStore.getState().fetchPet(user.id); // rollback
+    } else {
+      setInlineEditVisible(false);
+      useActivePetStore.getState().fetchPet(user.id);
+    }
+  };
+
+
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
 
@@ -242,7 +438,7 @@ export default function ProfileScreen() {
           </View>
           <Text style={[styles.headerTitle, { color: '#1a1a00' }]}>PAWTCHI</Text>
         </View>
-        <TouchableOpacity style={styles.bellBtn}>
+        <TouchableOpacity style={styles.bellBtn} onPress={() => router.push('/profile' as any)}>
           <MaterialIcons name="notifications" size={28} color="#1a1a00" />
         </TouchableOpacity>
       </View>
@@ -263,10 +459,17 @@ export default function ProfileScreen() {
                 />
               </View>
               <View style={styles.heroInfo}>
-                <Text style={[styles.heroName, { color: '#1a1a00' }]}>{activePet?.name || 'My Pet'}</Text>
-                <Text style={[styles.heroDesc, { color: '#4d4d00', textTransform: 'capitalize' }]}>
-                  {activePet?.breed || activePet?.species} • {activePet?.age_years ? `${activePet.age_years} Years Old` : 'Age Unknown'}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={[styles.heroName, { color: '#1a1a00' }]}>{activePet?.name || 'My Pet'}</Text>
+                  <TouchableOpacity onPress={openEditModal} style={{ padding: 6, backgroundColor: 'rgba(255,255,255,0.4)', borderRadius: 12, marginLeft: 12 }}>
+                    <MaterialIcons name="edit" size={18} color="#1a1a00" />
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity onPress={() => openInlineEdit('breed', 'Breed', activePet?.breed || '', 'e.g. Golden Retriever', 'default')}>
+                  <Text style={[styles.heroDesc, { color: '#4d4d00', textTransform: 'capitalize', textDecorationLine: 'underline' }]}>
+                    {activePet?.breed || activePet?.species} • {activePet?.age_years ? `${activePet.age_years} Years Old` : 'Age Unknown'}
+                  </Text>
+                </TouchableOpacity>
 
                 <View style={styles.tagsRow}>
                   <View style={[styles.tagPill, { backgroundColor: 'rgba(255,255,255,0.3)', borderColor: 'rgba(255,255,255,0.2)' }]}>
@@ -284,27 +487,18 @@ export default function ProfileScreen() {
         {/* Bento Grid: Pet Details */}
         <View style={styles.bentoGrid}>
           {/* Weight */}
-          <View style={[styles.bentoCard, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => openInlineEdit('current_weight_kg', 'Weight (kg)', activePet?.current_weight_kg?.toString() || '0', 'e.g. 15.5', 'numeric')} style={[styles.bentoCard, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
             <MaterialIcons name="monitor-weight" size={32} color="#1a1a00" />
             <Text style={[styles.bentoValue, { color: '#0f172a' }]}>{activePet?.current_weight_kg || 0} kg</Text>
             <Text style={[styles.bentoLabel, { color: '#64748b' }]}>WEIGHT</Text>
-          </View>
+          </TouchableOpacity>
           {/* Age */}
-          <View style={[styles.bentoCard, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => openInlineEdit('age_years', 'Age (years)', activePet?.age_years?.toString() || '', 'e.g. 3', 'numeric')} style={[styles.bentoCard, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
             <MaterialIcons name="cake" size={32} color="#1a1a00" />
             <Text style={[styles.bentoValue, { color: '#0f172a' }]}>{activePet?.age_years || '?'} yrs</Text>
             <Text style={[styles.bentoLabel, { color: '#64748b' }]}>AGE</Text>
-          </View>
+          </TouchableOpacity>
         </View>
-        {/* Energy Level Span */}
-        <View style={[styles.bentoSpanCard, { backgroundColor: '#ffe4dc', marginBottom: 24 }]}>
-          <MaterialIcons name="bolt" size={32} color="#a83206" />
-          <Text style={[styles.bentoValue, { color: '#862400', textTransform: 'capitalize' }]}>
-            {activePet?.activity_level ? activePet.activity_level.replace('_', ' ') : 'N/A'}
-          </Text>
-          <Text style={[styles.bentoLabel, { color: '#862400' }]}>ENERGY LEVEL</Text>
-        </View>
-
         {/* Food Pantry Section */}
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeader}>
@@ -313,6 +507,7 @@ export default function ProfileScreen() {
           </View>
 
           <View style={[styles.pantryContainer, { backgroundColor: '#f8fafc', borderColor: '#f1f5f9' }]}>
+            <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>Saved Foods</Text>
             {foodPantry.length === 0 ? (
               <View style={styles.pantryEmpty}>
                 <MaterialIcons name="no-food" size={40} color="#cbd5e1" />
@@ -322,51 +517,70 @@ export default function ProfileScreen() {
                 </Text>
               </View>
             ) : (
-              <View style={styles.pantryList}>
+              <View style={styles.pantryBentoGrid}>
                 {foodPantry.map((item) => (
-                  <View key={item.id} style={styles.pantryItem}>
-                    <View style={styles.pantryItemLeft}>
-                      <View style={[styles.pantryItemIcon, {
-                        backgroundColor: item.food_type === 'treat' ? '#fef3c7' :
-                          item.food_type === 'wet_food' ? '#dbeafe' : '#f0fdf4'
-                      }]}>
-                        <MaterialIcons
-                          name={item.food_type === 'treat' ? 'cookie' :
-                            item.food_type === 'wet_food' ? 'water-drop' : 'grass'}
-                          size={20}
-                          color={item.food_type === 'treat' ? '#92400e' :
-                            item.food_type === 'wet_food' ? '#1d4ed8' : '#166534'}
-                        />
-                      </View>
-                      <View style={styles.pantryItemInfo}>
-                        <View style={styles.pantryItemNameRow}>
-                          <Text style={styles.pantryItemName} numberOfLines={1}>{item.brand}</Text>
-                          {item.is_primary && (
-                            <View style={styles.primaryBadge}>
-                              <Text style={styles.primaryBadgeText}>Primary</Text>
-                            </View>
-                          )}
-                        </View>
-                        <Text style={styles.pantryItemSub} numberOfLines={1}>
-                          {item.product_name}{item.kcal_per_serving ? ` • ${item.kcal_per_serving} kcal/${item.serving_unit || 'serving'}` : ''}
-                        </Text>
-                        {item.allergy_flags && item.allergy_flags.length > 0 && (
-                          <View style={styles.pantryAllergyRow}>
-                            <MaterialIcons name="warning" size={12} color="#dc2626" />
-                            <Text style={styles.pantryAllergyText}>{item.allergy_flags.join(', ')}</Text>
+                  <View key={item.id} style={styles.pantryBentoCard}>
+                    {/* Image Hero Section */}
+                    <View style={styles.pantryBentoImageContainer}>
+                      <Image 
+                        source={{ uri: item.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?auto=format&fit=crop&q=80&w=400' }} 
+                        style={styles.pantryBentoImage} 
+                      />
+                      <LinearGradient colors={['transparent', 'rgba(0,0,0,0.8)']} style={styles.pantryBentoGradient} />
+                      
+                      {/* Top Badges overlay */}
+                      <View style={styles.pantryBentoTopRow}>
+                        {item.is_primary ? (
+                          <View style={styles.pantryBentoPrimaryBadge}>
+                              <Text style={styles.pantryBentoPrimaryText}>Primary</Text>
                           </View>
-                        )}
+                        ) : <View />}
+                        <View style={styles.pantryBentoActionRow}>
+                          {!item.is_primary && (
+                            <TouchableOpacity onPress={() => handleTogglePrimary(item.id, item.food_type)} style={styles.pantryBentoGlassBtn}>
+                              <MaterialIcons name="star-outline" size={16} color="#FFF" />
+                            </TouchableOpacity>
+                          )}
+                          <TouchableOpacity onPress={() => handleDeletePantryItem(item.id, item.brand)} style={styles.pantryBentoGlassBtn}>
+                            <MaterialIcons name="delete-outline" size={16} color="#FFF" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+
+                      {/* Brand Info overlay */}
+                      <View style={styles.pantryBentoBrandOverlay}>
+                        <Text style={styles.pantryBentoBrandName} numberOfLines={1}>{item.brand}</Text>
+                        <Text style={styles.pantryBentoProductName} numberOfLines={1}>{item.product_name}</Text>
                       </View>
                     </View>
-                    <View style={styles.pantryItemActions}>
-                      {!item.is_primary && (
-                        <TouchableOpacity onPress={() => handleTogglePrimary(item.id, item.food_type)} activeOpacity={0.7}>
-                          <MaterialIcons name="star-outline" size={22} color="#94a3b8" />
-                        </TouchableOpacity>
+
+                    {/* Details Section */}
+                    <View style={styles.pantryBentoDetails}>
+                      <View style={styles.pantryBentoMacroRow}>
+                         <View style={styles.pantryBentoMacroPill}>
+                           <MaterialIcons name="local-fire-department" size={14} color="#FFFC00" />
+                           <Text style={styles.pantryBentoMacroText}>{item.kcal_per_serving || '--'} kcal</Text>
+                         </View>
+                         {item.protein_pct && (
+                           <View style={styles.pantryBentoMacroPill}>
+                             <MaterialIcons name="fitness-center" size={14} color="#FFFC00" />
+                             <Text style={styles.pantryBentoMacroText}>{item.protein_pct}% P</Text>
+                           </View>
+                         )}
+                         {item.fat_pct && (
+                           <View style={styles.pantryBentoMacroPill}>
+                             <MaterialIcons name="opacity" size={14} color="#FFFC00" />
+                             <Text style={styles.pantryBentoMacroText}>{item.fat_pct}% F</Text>
+                           </View>
+                         )}
+                      </View>
+
+                      {item.allergy_flags && item.allergy_flags.length > 0 && (
+                        <View style={styles.pantryBentoAllergyRow}>
+                           <MaterialIcons name="warning" size={12} color="#dc2626" />
+                           <Text style={styles.pantryBentoAllergyText} numberOfLines={1}>{item.allergy_flags.join(', ')}</Text>
+                        </View>
                       )}
-                      <TouchableOpacity onPress={() => handleDeletePantryItem(item.id, item.brand)} activeOpacity={0.7}>
-                        <MaterialIcons name="delete-outline" size={22} color="#94a3b8" />
-                      </TouchableOpacity>
                     </View>
                   </View>
                 ))}
@@ -395,35 +609,96 @@ export default function ProfileScreen() {
                 </>
               )}
             </TouchableOpacity>
+
+            {/* Bowl Size Integrations */}
+            <View style={{ marginBottom: 24, marginTop: 16 }}>
+              <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#64748b', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Standard Bowl Size</Text>
+              <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 13, color: '#94a3b8', marginBottom: 12 }}>Helps AI estimate portions more accurately</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {BOWL_SIZES.map(s => {
+                  const isSelected = activePet?.bowl_size === s.value;
+                  return (
+                    <TouchableOpacity
+                      key={s.value}
+                      style={[{ 
+                        backgroundColor: isSelected ? '#FFFC00' : '#FFFFFF',
+                        borderWidth: 1,
+                        borderColor: isSelected ? '#e6e300' : '#e2e8f0',
+                        borderRadius: 16,
+                        paddingVertical: 12,
+                        paddingHorizontal: 16,
+                        flexGrow: 1,
+                        alignItems: 'center',
+                      }]}
+                      onPress={() => handleUpdateBowlSize(s.value)}
+                    >
+                      <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: isSelected ? '800' : '600', fontSize: 14, color: '#0f172a' }}>
+                        {s.label}
+                      </Text>
+                      <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 11, color: isSelected ? '#a1a1aa' : '#94a3b8', marginTop: 2 }}>
+                        {s.description}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
           </View>
         </View>
 
-        {/* Advanced Medical Nudge */}
-        <TouchableOpacity
-          style={styles.medicalNudgeCard}
-          onPress={() => router.push('/medical')}
-          activeOpacity={0.9}
-        >
-          <LinearGradient
-            colors={['#0f172a', '#1e293b']}
-            style={styles.medicalGradient}
-          >
-            <View style={styles.medicalLeft}>
-              <MaterialIcons name="health-and-safety" size={32} color="#FFFC00" />
-              <View>
-                <Text style={styles.medicalTitle}>Clinical Profile</Text>
-                <Text style={styles.medicalSub}>Unlock precise AI health tracking.</Text>
+        {/* Health Context */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeader}>
+            <MaterialIcons name="health-and-safety" size={24} color="#0f172a" />
+            <Text style={[styles.sectionTitle, { color: '#0f172a' }]}>Health & Allergies</Text>
+          </View>
+
+          <View style={[styles.settingsGroup, { backgroundColor: '#f8fafc', borderColor: '#f1f5f9' }]}>
+            <TouchableOpacity
+              style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}
+              activeOpacity={0.7}
+              onPress={() => openInlineEdit('allergies', 'Allergies (comma separated)', (activePet?.allergies || []).join(', '), 'e.g. Chicken, Beef', 'default')}
+            >
+              <View style={styles.settingRowLeft}>
+                <View style={[styles.settingIconBg, { backgroundColor: '#fee2e2' }]}>
+                  <MaterialIcons name="coronavirus" size={24} color="#ef4444" />
+                </View>
+                <View style={{ flex: 1, paddingRight: 16 }}>
+                  <Text style={[styles.settingName, { color: '#0f172a' }]}>Known Allergies</Text>
+                  <Text style={[styles.settingSub, { color: '#64748b' }]} numberOfLines={2}>
+                    {activePet?.allergies && activePet.allergies.length > 0 ? activePet.allergies.join(', ') : 'None specified'}
+                  </Text>
+                </View>
               </View>
-            </View>
-            <MaterialIcons name="arrow-forward-ios" size={16} color="#94a3b8" />
-          </LinearGradient>
-        </TouchableOpacity>
+              <MaterialIcons name="edit" size={20} color="#94a3b8" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9', borderBottomWidth: 0 }]}
+              activeOpacity={0.7}
+              onPress={() => openInlineEdit('medical_conditions', 'Medical Conditions', (activePet?.medical_conditions || []).join(', '), 'e.g. Arthritis, Diabetes', 'default')}
+            >
+              <View style={styles.settingRowLeft}>
+                <View style={[styles.settingIconBg, { backgroundColor: '#e0e7ff' }]}>
+                  <MaterialIcons name="local-hospital" size={24} color="#4f46e5" />
+                </View>
+                <View style={{ flex: 1, paddingRight: 16 }}>
+                  <Text style={[styles.settingName, { color: '#0f172a' }]}>Medical Conditions</Text>
+                  <Text style={[styles.settingSub, { color: '#64748b' }]} numberOfLines={2}>
+                    {activePet?.medical_conditions && activePet.medical_conditions.length > 0 ? activePet.medical_conditions.join(', ') : 'None specified'}
+                  </Text>
+                </View>
+              </View>
+              <MaterialIcons name="edit" size={20} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Notification Settings Section */}
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeader}>
             <MaterialIcons name="notifications-active" size={24} color="#0f172a" />
-            <Text style={[styles.sectionTitle, { color: '#0f172a' }]}>Reminders & Alerts</Text>
+            <Text style={[styles.sectionTitle, { color: '#0f172a' }]}>Preferences</Text>
           </View>
 
           <View style={[styles.settingsGroup, { backgroundColor: '#f8fafc', borderColor: '#f1f5f9' }]}>
@@ -453,29 +728,6 @@ export default function ProfileScreen() {
               <MaterialIcons name="edit" size={20} color="#94a3b8" />
             </TouchableOpacity>
 
-            {/* Test Notification Button */}
-            <TouchableOpacity
-              style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}
-              activeOpacity={0.7}
-              onPress={async () => {
-                Alert.alert('Sending...', 'Testing the Pet Persona notification pipeline. (Swipe up to leave the app now)');
-                await supabase.functions.invoke('pet-reminders', {
-                  body: { test_mode: true, user_id: user?.id }
-                });
-              }}
-            >
-              <View style={styles.settingRowLeft}>
-                <View style={[styles.settingIconBg, { backgroundColor: '#dcfce3' }]}>
-                  <MaterialIcons name="send" size={24} color="#166534" />
-                </View>
-                <View>
-                  <Text style={[styles.settingName, { color: '#0f172a' }]}>Test Notification</Text>
-                  <Text style={[styles.settingSub, { color: '#64748b' }]}>Send a fake reminder now</Text>
-                </View>
-              </View>
-              <MaterialIcons name="chevron-right" size={20} color="#94a3b8" />
-            </TouchableOpacity>
-
             {/* Billing & Subscription */}
             <TouchableOpacity
               style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}
@@ -496,7 +748,7 @@ export default function ProfileScreen() {
               <MaterialIcons name="chevron-right" size={20} color="#94a3b8" />
             </TouchableOpacity>
 
-            {/* Feeding Times */}
+            {/* Feeding Times - HIDDEN TEMPORARILY
             <View style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
               <View style={styles.settingRowLeft}>
                 <View style={[styles.settingIconBg, { backgroundColor: '#fef8c3' }]}>
@@ -519,7 +771,6 @@ export default function ProfileScreen() {
               />
             </View>
 
-            {/* Walk Schedule */}
             <View style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
               <View style={styles.settingRowLeft}>
                 <View style={[styles.settingIconBg, { backgroundColor: 'rgba(255,252,0,0.2)' }]}>
@@ -542,7 +793,6 @@ export default function ProfileScreen() {
               />
             </View>
 
-            {/* Hydration Tracker */}
             <View style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
               <View style={styles.settingRowLeft}>
                 <View style={[styles.settingIconBg, { backgroundColor: '#f1f5f9' }]}>
@@ -555,11 +805,12 @@ export default function ProfileScreen() {
               </View>
               <Switch
                 value={hydrationToggle}
-                onValueChange={setHydrationToggle}
+                onValueChange={handleHydrationToggle}
                 trackColor={{ false: '#e2e8f0', true: '#FFFC00' }}
                 thumbColor={hydrationToggle ? '#FFFFFF' : '#FFFFFF'}
               />
             </View>
+            */}
 
           </View>
         </View>
@@ -588,18 +839,7 @@ export default function ProfileScreen() {
               <MaterialIcons name="chevron-right" size={24} color="#94a3b8" />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.accountRow} activeOpacity={0.7} onPress={() => {
-              router.push('/(tabs)/index' as any);
-              setTimeout(() => {
-                replayWalkthrough();
-              }, 500);
-            }}>
-              <View style={styles.accountRowLeft}>
-                <MaterialIcons name="help-center" size={24} color="#94a3b8" />
-                <Text style={[styles.accountName, { color: '#0f172a' }]}>Replay Walkthrough</Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={24} color="#94a3b8" />
-            </TouchableOpacity>
+
 
             <TouchableOpacity style={styles.accountRow} activeOpacity={0.7} onPress={() => router.push('/privacy' as any)}>
               <View style={styles.accountRowLeft}>
@@ -620,18 +860,152 @@ export default function ProfileScreen() {
                 <Text style={[styles.accountName, { color: '#b02500' }]}>Logout</Text>
               </View>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.accountRow, { borderBottomWidth: 0, borderTopWidth: 1, borderTopColor: '#fee2e2', marginTop: 8 }]}
+              activeOpacity={0.7}
+              onPress={handleDeleteAccount}
+            >
+              <View style={styles.accountRowLeft}>
+                <MaterialIcons name="delete-forever" size={24} color="#dc2626" />
+                <View>
+                  <Text style={[styles.accountName, { color: '#dc2626' }]}>Delete Account</Text>
+                  <Text style={[styles.settingSub, { color: '#ef4444', fontSize: 11 }]}>Permanently removes all your data</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
           </View>
         </View>
 
       </ScrollView>
 
+      {/* Edit Profile Modal */}
+      <Modal visible={editModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.editModalOverlay}>
+          <View style={styles.editModalContent}>
+            <View style={styles.editModalHeader}>
+              <Text style={styles.editModalTitle}>Edit Profile</Text>
+              <TouchableOpacity onPress={() => setEditModalVisible(false)} style={styles.modalCloseBtn}>
+                <MaterialIcons name="close" size={24} color="#0f172a" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.editModalBody}>
+              <View style={{ alignItems: 'center', marginBottom: 24 }}>
+                <TouchableOpacity onPress={pickEditImage} style={styles.editAvatarPicker} activeOpacity={0.8}>
+                  {editImageUri ? (
+                    <Image source={{ uri: editImageUri }} style={styles.editAvatarImg} />
+                  ) : (
+                    <View style={styles.editAvatarPlaceholder}>
+                      <MaterialIcons name="add-a-photo" size={32} color="#adadab" />
+                    </View>
+                  )}
+                  <View style={styles.editAvatarBadge}>
+                    <MaterialIcons name="edit" size={14} color="#000" />
+                  </View>
+                </TouchableOpacity>
+                <Text style={{ fontFamily: 'Plus Jakarta Sans', color: '#64748b', fontSize: 13, marginTop: 12 }}>Tap to change photo</Text>
+              </View>
+
+              <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#334155', marginBottom: 8, marginLeft: 4 }}>Pet Name</Text>
+              <TextInput
+                style={styles.editInput}
+                placeholder="Pet Name"
+                placeholderTextColor="#94a3b8"
+                value={editName}
+                onChangeText={setEditName}
+              />
+
+              <TouchableOpacity
+                style={[styles.editSaveBtn, { opacity: isUpdatingProfile ? 0.7 : 1 }]}
+                onPress={handleUpdateProfile}
+                disabled={isUpdatingProfile}
+              >
+                {isUpdatingProfile ? (
+                  <ActivityIndicator color="#0f172a" />
+                ) : (
+                  <Text style={styles.editSaveBtnText}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Inline Edit Modal */}
+      <Modal visible={inlineEditVisible} animationType="slide" transparent={true}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.editModalOverlay}>
+          <View style={styles.editModalContent}>
+            <View style={styles.editModalHeader}>
+              <Text style={styles.editModalTitle}>Edit {inlineEditField?.label}</Text>
+              <TouchableOpacity onPress={() => setInlineEditVisible(false)} style={styles.modalCloseBtn}>
+                <MaterialIcons name="close" size={24} color="#0f172a" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.editModalBody}>
+              <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#334155', marginBottom: 8, marginLeft: 4 }}>{inlineEditField?.label}</Text>
+              <TextInput
+                style={styles.editInput}
+                placeholder={inlineEditField?.placeholder}
+                placeholderTextColor="#94a3b8"
+                value={inlineEditValue}
+                onChangeText={setInlineEditValue}
+                keyboardType={inlineEditField?.keyboardType || 'default'}
+                autoFocus
+              />
+
+              <TouchableOpacity
+                style={[styles.editSaveBtn, { opacity: isUpdatingProfile ? 0.7 : 1 }]}
+                onPress={handleInlineSave}
+                disabled={isUpdatingProfile}
+              >
+                {isUpdatingProfile ? (
+                  <ActivityIndicator color="#0f172a" />
+                ) : (
+                  <Text style={styles.editSaveBtnText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {showPickerFor && (
-        <DateTimePicker
-          value={showPickerFor === 'meal' ? mealTime : walkTime}
-          mode="time"
-          display="default"
-          onChange={onChangeTime}
-        />
+        Platform.OS === 'ios' ? (
+          <Modal transparent animationType="fade" visible={!!showPickerFor}>
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <View style={{ backgroundColor: '#FFFFFF', padding: 24, borderRadius: 24, width: '80%', alignItems: 'center' }}>
+                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 18, color: '#0f172a', marginBottom: 16 }}>
+                  {showPickerFor === 'meal' ? 'Feeding Time' : 'Walk Time'}
+                </Text>
+                <DateTimePicker
+                  value={showPickerFor === 'meal' ? mealTime : walkTime}
+                  mode="time"
+                  display="spinner"
+                  onChange={(event, date) => {
+                     if (date) {
+                        if (showPickerFor === 'meal') setMealTime(date);
+                        else setWalkTime(date);
+                     }
+                  }}
+                  textColor="#0f172a"
+                />
+                <TouchableOpacity 
+                  onPress={() => onChangeTime(null as any, showPickerFor === 'meal' ? mealTime : walkTime)} 
+                  style={{ marginTop: 24, backgroundColor: '#FFFC00', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 16, width: '100%', alignItems: 'center' }}
+                >
+                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 16, color: '#041015' }}>Done</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+        ) : (
+          <DateTimePicker
+            value={showPickerFor === 'meal' ? mealTime : walkTime}
+            mode="time"
+            display="default"
+            onChange={onChangeTime}
+          />
+        )
       )}
     </View>
   );
@@ -942,84 +1316,136 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     lineHeight: 20,
   },
-  pantryList: {
-    gap: 8,
-    marginBottom: 12,
-  },
-  pantryItem: {
+  pantryBentoGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
+    rowGap: 16,
+    marginBottom: 16,
     justifyContent: 'space-between',
+  },
+  pantryBentoCard: {
+    width: '48%',
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-  },
-  pantryItemLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  pantryItemIcon: {
-    width: 40,
-    height: 40,
     borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  pantryItemInfo: {
-    flex: 1,
+  pantryBentoImageContainer: {
+    height: 120,
+    position: 'relative',
+    backgroundColor: '#f1f5f9',
   },
-  pantryItemNameRow: {
+  pantryBentoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  pantryBentoGradient: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 60,
+  },
+  pantryBentoTopRow: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    right: 8,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
   },
-  pantryItemName: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 15,
-    color: '#0f172a',
-    flexShrink: 1,
-  },
-  primaryBadge: {
+  pantryBentoPrimaryBadge: {
     backgroundColor: '#FFFC00',
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 4,
     borderRadius: 8,
+    alignSelf: 'flex-start',
   },
-  primaryBadgeText: {
+  pantryBentoPrimaryText: {
     fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 10,
+    fontWeight: '800',
+    fontSize: 9,
     color: '#1a1a00',
     letterSpacing: 0.5,
   },
-  pantryItemSub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 13,
-    color: '#64748b',
-    marginTop: 2,
+  pantryBentoActionRow: {
+    flexDirection: 'column',
+    gap: 6,
   },
-  pantryAllergyRow: {
+  pantryBentoGlassBtn: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pantryBentoBrandOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    left: 8,
+    right: 8,
+  },
+  pantryBentoBrandName: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 13,
+    color: '#FFFFFF',
+  },
+  pantryBentoProductName: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '500',
+    fontSize: 11,
+    color: '#e2e8f0',
+  },
+  pantryBentoDetails: {
+    padding: 10,
+    gap: 8,
+  },
+  pantryBentoMacroRow: {
+    flexDirection: 'row',
+    gap: 4,
+    flexWrap: 'wrap',
+  },
+  pantryBentoMacroPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 6,
+    gap: 4,
+  },
+  pantryBentoMacroText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '700',
+    fontSize: 10,
+    color: '#f8fafc',
+  },
+  pantryBentoAllergyRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginTop: 4,
+    backgroundColor: '#fef2f2',
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#fecaca',
   },
-  pantryAllergyText: {
+  pantryBentoAllergyText: {
     fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 11,
+    fontWeight: '700',
+    fontSize: 9,
     color: '#dc2626',
-  },
-  pantryItemActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginLeft: 8,
+    flexShrink: 1,
   },
   pantryAddBtn: {
     flexDirection: 'row',
@@ -1037,4 +1463,96 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#041015',
   },
+  editModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  editModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    paddingBottom: 40,
+  },
+  editModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  editModalTitle: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 20,
+    color: '#0f172a',
+  },
+  modalCloseBtn: {
+    padding: 8,
+    backgroundColor: '#f8fafc',
+    borderRadius: 20,
+  },
+  editModalBody: {
+    padding: 24,
+  },
+  editAvatarPicker: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: '#F9F9F9',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  editAvatarImg: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 60,
+  },
+  editAvatarPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  editAvatarBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: '#FFFC00',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  editInput: {
+    width: '100%',
+    height: 64,
+    borderWidth: 1,
+    borderColor: 'rgba(209,213,225,0.7)',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '600',
+    fontSize: 16,
+    backgroundColor: '#f8fafc',
+    marginBottom: 32,
+  },
+  editSaveBtn: {
+    backgroundColor: '#FFFC00',
+    paddingVertical: 20,
+    borderRadius: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editSaveBtnText: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 16,
+    color: '#0f172a',
+  }
 });

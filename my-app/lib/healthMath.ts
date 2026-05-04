@@ -45,7 +45,10 @@ export function getMERFactor(
     }
 
     // Goal adjustments (Weight loss/gain)
-    if (goal === 'lose') factor = 1.0; // Restrict calories for weight loss
+    // NOTE: For 'lose', calculateDailyKcal short-circuits and applies the factor
+    // against RER(targetWeight) instead of RER(currentWeight). This branch only
+    // runs if a caller invokes getMERFactor directly without target weight.
+    if (goal === 'lose') factor = 1.0;
     if (goal === 'gain') factor *= 1.2;
 
   } else if (species === 'cat') {
@@ -89,7 +92,17 @@ export function calculateDailyKcal(
   goal: 'lose' | 'maintain' | 'gain' = 'maintain',
   ageMonths?: number,
   lifeStageMultiplier: number = 1.0,
+  targetWeightKg?: number | null,
 ): number {
+  // For weight loss, RER must be computed from target weight. Using current
+  // weight inflates the daily target by the pet's excess mass and prevents
+  // weight loss from happening.
+  if (goal === 'lose' && targetWeightKg && targetWeightKg > 0) {
+    const rer = calculateRER(targetWeightKg);
+    const factor = species === 'cat' ? 0.8 : 1.0;
+    return Math.round(rer * factor * lifeStageMultiplier);
+  }
+
   const rer = calculateRER(weightKg);
   const factor = getMERFactor(species, isNeutered, activityLevel, goal, ageMonths, lifeStageMultiplier);
   return Math.round(rer * factor);
@@ -100,6 +113,11 @@ export function calculateDailyKcal(
  * The base target (from onboarding/weight-log) is nudged ±5-10% to make each day feel
  * personalized rather than robotic.
  *
+ * `weeklyDelta` is the rolling 7-day calorie balance (consumed − target × 7). When
+ * non-trivial, it applies a soft correction stacked on top of the trend adjustment,
+ * with the combined multiplier capped at ±10%. Vets advise against aggressive
+ * day-to-day correction, so we never exceed that cap.
+ *
  * Returns the adjusted target and a human-readable reason string (null if no adjustment).
  */
 export function adjustDailyTarget(
@@ -107,6 +125,7 @@ export function adjustDailyTarget(
   todayActivityMinutes: number,
   weightTrendDirection: 'up' | 'down' | 'stable' | null,
   goal: 'lose' | 'maintain' | 'gain',
+  weeklyDelta: number | null = null,
 ): { adjustedTarget: number; reason: string | null } {
   if (baseTarget <= 0) return { adjustedTarget: 0, reason: null };
 
@@ -133,6 +152,23 @@ export function adjustDailyTarget(
     const boost = Math.round(baseTarget * 0.05);
     reason = `Weight dipping: +${boost} kcal`;
   }
+
+  // Rolling 7-day balance correction. Threshold = ~half a day's target (avoids
+  // chasing daily noise). Each ~3.5x-baseTarget surplus/deficit shifts ~3%.
+  if (weeklyDelta !== null && Math.abs(weeklyDelta) >= baseTarget * 0.5) {
+    const weeklyShift = -Math.max(-0.07, Math.min(0.07, weeklyDelta / (baseTarget * 33))); // surplus → negative shift
+    multiplier += weeklyShift;
+    const shiftKcal = Math.round(baseTarget * weeklyShift);
+    if (shiftKcal !== 0) {
+      const direction = weeklyDelta > 0 ? 'over' : 'under';
+      reason = reason
+        ? `${reason}; week ${direction} by ${Math.abs(Math.round(weeklyDelta))} kcal`
+        : `Week ${direction} by ${Math.abs(Math.round(weeklyDelta))} kcal: ${shiftKcal > 0 ? '+' : ''}${shiftKcal} kcal`;
+    }
+  }
+
+  // Hard cap at ±10% — never let cumulative adjustments push a single day too far.
+  multiplier = Math.max(0.9, Math.min(1.1, multiplier));
 
   return {
     adjustedTarget: Math.round(baseTarget * multiplier),

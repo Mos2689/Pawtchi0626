@@ -1,0 +1,96 @@
+{
+  "version": "AAFCO_CAT_2014_v1",
+  "source": "AAFCO 2014 Cat Food Nutrient Profiles — Adult Maintenance and Growth/Reproduction. Values expressed per 1000 kcal metabolizable energy (ME), dry-matter basis.",
+  "disclaimer": "Reference values only. Not a regulatory claim or compliance certification. Pawtchi compares foods against these references; the user interprets results with their vet.",
+  "profiles": {
+    "adult_maintenance": {
+      "crude_protein": {
+        "min_g_per_1000kcal": 65,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~26% DM. Cats are obligate carnivores — protein floor is higher than dogs."
+      },
+      "crude_fat": {
+        "min_g_per_1000kcal": 22.5,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~9% DM"
+      },
+      "crude_fiber": {
+        "min_g_per_1000kcal": null,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "calcium": {
+        "min_g_per_1000kcal": 1.5,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "AAFCO 2014 does not set an upper bound for adult-maintenance calcium in cats"
+      },
+      "phosphorus": {
+        "min_g_per_1000kcal": 1.25,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "ca_p_ratio": {
+        "min": 1.0,
+        "max": 2.0,
+        "unit": "ratio"
+      },
+      "taurine_dry": {
+        "min_g_per_1000kcal": 1.0,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "0.10% DM for extruded (dry) cat food"
+      },
+      "taurine_wet": {
+        "min_g_per_1000kcal": 2.0,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "0.20% DM for canned (wet) cat food — taurine is degraded more in canning"
+      }
+    },
+    "growth_and_reproduction": {
+      "crude_protein": {
+        "min_g_per_1000kcal": 75,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~30% DM"
+      },
+      "crude_fat": {
+        "min_g_per_1000kcal": 22.5,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "crude_fiber": {
+        "min_g_per_1000kcal": null,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "calcium": {
+        "min_g_per_1000kcal": 2.5,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "phosphorus": {
+        "min_g_per_1000kcal": 2.0,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "ca_p_ratio": {
+        "min": 1.0,
+        "max": 1.5,
+        "unit": "ratio"
+      }
+    }
+  },
+  "_todo_remaining_nutrients": [
+    "vitamin_a", "vitamin_d", "vitamin_e", "vitamin_k", "thiamine", "riboflavin",
+    "pantothenic_acid", "niacin", "pyridoxine", "folic_acid", "biotin", "vitamin_b12", "choline",
+    "iron", "copper", "manganese", "zinc", "iodine", "selenium",
+    "linoleic_acid", "arachidonic_acid", "omega_3",
+    "arginine", "histidine", "isoleucine", "leucine", "lysine",
+    "methionine", "methionine_cystine", "phenylalanine", "phenylalanine_tyrosine",
+    "threonine", "tryptophan", "valine"
+  ]
+}

@@ -12,6 +12,7 @@ import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { usePushNotifications } from '../../hooks/usePushNotifications';
+import { useSubscription } from '../../hooks/useSubscription';
 import CircularProgress from '../../components/CircularProgress';
 import { LiquidFillCard } from '../../components/LiquidFillCard';
 import { NudgeCard } from '../../components/NudgeCard';
@@ -29,6 +30,8 @@ export default function HomeScreen() {
   const { currentStreak, longestStreak, pawCoins, fetchStreak } = useStreakStore();
   const { user } = useAuth();
   const { expoPushToken } = usePushNotifications();
+  const { isFreemiumActive, daysSinceCreation } = useSubscription();
+  const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
 
   // Sync push token silently
   React.useEffect(() => {
@@ -40,6 +43,11 @@ export default function HomeScreen() {
       });
     }
   }, [user?.id, expoPushToken]);
+
+  // Sync subscription status into Nudge Engine
+  React.useEffect(() => {
+    injectSubscriptionData(isFreemiumActive, daysSinceCreation);
+  }, [isFreemiumActive, daysSinceCreation, injectSubscriptionData]);
 
   const todayCalories = usePetContextStore(s => s.todayCalories);
   const todayWater = usePetContextStore(s => s.todayWater);
@@ -60,14 +68,6 @@ export default function HomeScreen() {
   const adjustmentReason = usePetContextStore(s => s.adjustmentReason);
   const refreshToday = usePetContextStore(s => s.refreshToday);
 
-  const isProfileComplete = !!(
-    activePet?.gender &&
-    activePet?.body_condition_score &&
-    activePet?.allergies &&
-    activePet?.diet_type &&
-    activePet.diet_type.length > 0 &&
-    activePet?.medical_conditions
-  );
 
   const baseTargetCal = activePet?.target_daily_calories || 0;
   const targetCal = adjustedTarget || baseTargetCal; // dynamic target (may differ from base)
@@ -124,19 +124,6 @@ export default function HomeScreen() {
             />
           </View>
           <Text style={[styles.headerTitle, { color: '#2e2f2d' }]}>PAWTCHI</Text>
-          {/* DEV: Reset Pet Data Button */}
-          <TouchableOpacity
-            onPress={async () => {
-              if (activePet?.id) {
-                await supabase.from('pets').delete().eq('id', activePet.id);
-                useActivePetStore.getState().clearPet();
-                router.replace('/onboarding/species');
-              }
-            }}
-            style={{ marginLeft: 8, padding: 4, backgroundColor: '#fee2e2', borderRadius: 8 }}
-          >
-            <MaterialIcons name="delete-outline" size={16} color="#ef4444" />
-          </TouchableOpacity>
         </View>
         <View style={[styles.coinPill, { backgroundColor: '#f9fafb', borderColor: '#e5e7eb' }]}>
           <MaterialIcons name="generating-tokens" size={20} color="#fac129" />
@@ -155,10 +142,7 @@ export default function HomeScreen() {
       >
 
         {/* Contextual Nudge Card */}
-        <NudgeCard
-          isProfileComplete={isProfileComplete}
-          onProfilePress={() => router.push('/medical')}
-        />
+        <NudgeCard />
 
         {/* Greeting Section */}
         <View style={styles.greetingSection}>
@@ -250,7 +234,9 @@ export default function HomeScreen() {
 
               <View style={{ marginTop: -4 }}>
                 <Text style={[styles.caloriesValue, { color: '#2e2f2d' }]}>{todayCalories}</Text>
-                <Text style={[styles.caloriesSub, { color: '#5b5c5a', fontSize: 12, marginTop: -2 }]}>/ {targetCal} kcal</Text>
+                <Text style={[styles.caloriesSub, { color: '#5b5c5a', fontSize: 12, marginTop: -2 }]}>
+                  / {targetCal} kcal{targetCal > 0 ? ` (${Math.round(calPercent)}%)` : ''}
+                </Text>
               </View>
               {todayCalories > 0 && (
                 <Text style={[styles.caloriesSub, { color: '#94a3b8', fontSize: 11, marginTop: 6 }]}>
@@ -287,7 +273,7 @@ export default function HomeScreen() {
               <View style={[styles.nutritionMacroItem, { flexDirection: 'row', width: '100%', justifyContent: 'space-between' }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <View style={[styles.nutritionMacroDot, { backgroundColor: '#f59e0b', marginBottom: 0 }]} />
-                  <Text style={styles.nutritionMacroLabel}>Carbs</Text>
+                  <Text style={styles.nutritionMacroLabel}>Carbs<Text style={{ fontSize: 9, color: '#94a3b8' }}> · est.</Text></Text>
                 </View>
                 <Text style={styles.nutritionMacroVal}>{todayCarbs}<Text style={styles.nutritionMacroUnit}>g</Text></Text>
               </View>
@@ -356,24 +342,24 @@ export default function HomeScreen() {
               style={{
                 marginHorizontal: 20,
                 marginBottom: 16,
-                backgroundColor: treatWarning ? '#fef2f2' : '#f0fdf4',
+                backgroundColor: '#FFFFFF',
                 borderRadius: 20,
                 padding: 16,
                 flexDirection: 'row', alignItems: 'center', gap: 12,
-                borderWidth: 1, borderColor: treatWarning ? '#fecaca' : '#bbf7d0',
+                borderWidth: 1, borderColor: treatWarning ? '#ef4444' : '#e2e8f0',
                 shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
               }}
             >
               <Text style={{ fontSize: 24 }}>{treatWarning ? '⚠️' : '🦴'}</Text>
               <View style={{ flex: 1 }}>
-                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: treatWarning ? '#dc2626' : '#16a34a' }}>
-                  {overLimit ? 'Treat limit reached' : treatsConsumed > 0 ? `${treatsConsumed} treat${treatsConsumed !== 1 ? 's' : ''} enjoyed` : 'Treat budget'}
+                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 14, color: treatWarning ? '#ef4444' : '#16a34a' }}>
+                  {overLimit ? 'Treat limit reached' : treatsConsumed > 0 ? `${treatsConsumed} treat${treatsConsumed !== 1 ? 's' : ''} enjoyed` : 'Treat Intake'}
                 </Text>
-                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 11, color: treatWarning ? '#ef4444' : '#86efac', marginTop: 2 }}>
+                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, color: treatWarning ? '#ef4444' : '#15803d', marginTop: 2 }}>
                   {overLimit ? `${Math.abs(caloriesRemaining)} kcal over daily budget` : `${treatBudgetLeft} kcal left for treats`}
                 </Text>
               </View>
-              <MaterialIcons name="chevron-right" size={20} color={treatWarning ? '#fca5a5' : '#86efac'} />
+              <MaterialIcons name="chevron-right" size={24} color={treatWarning ? '#ef4444' : '#16a34a'} />
             </TouchableOpacity>
           );
         })()}
@@ -488,19 +474,13 @@ export default function HomeScreen() {
           position="top-right"
         >
           <TouchableOpacity
-            style={[styles.primaryBtn, { backgroundColor: isProfileComplete ? '#FFFC00' : '#e5e7eb', marginHorizontal: 0 }]}
-            onPress={() => {
-              if (!isProfileComplete) {
-                router.push('/medical');
-              } else {
-                router.push('/(tabs)/meal');
-              }
-            }}
+            style={[styles.primaryBtn, { backgroundColor: '#FFFC00', marginHorizontal: 0 }]}
+            onPress={() => router.push('/(tabs)/meal')}
             activeOpacity={0.9}
           >
-            <Ionicons name="add" size={24} color={isProfileComplete ? '#1A1A1A' : '#9ca3af'} />
-            <Text style={[styles.primaryBtnText, { color: isProfileComplete ? '#1A1A1A' : '#9ca3af' }]}>
-              {isProfileComplete ? 'Log Meal or Activity' : 'Complete Profile First'}
+            <Ionicons name="add" size={24} color="#1A1A1A" />
+            <Text style={[styles.primaryBtnText, { color: '#1A1A1A' }]}>
+              Log Meal or Activity
             </Text>
           </TouchableOpacity>
         </Hotspot>

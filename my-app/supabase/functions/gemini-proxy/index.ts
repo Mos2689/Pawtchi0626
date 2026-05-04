@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders } from '../_shared/cors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 30_000; // 30 second timeout
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -9,14 +10,15 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { imageBase64, mimeType, petProfile, selectedPantryItemId } = await req.json()
+    const { imageBase64, mimeType, petProfile, selectedPantryItemId, todayState } = await req.json()
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
       throw new Error('GEMINI_API_KEY is not configured in Edge Function secrets.')
     }
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`
+    // Use header-based auth instead of query parameter (security best practice)
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
     const targetWeightKg = parseFloat(petProfile?.target_weight_kg || petProfile?.current_weight_kg || '10');
     const weightKg = parseFloat(petProfile?.current_weight_kg || '10');
@@ -27,6 +29,21 @@ Deno.serve(async (req) => {
       weightRule = `WEIGHT LOSS WARNING: The pet is ${weightGap.toFixed(1)}kg overweight (Target: ${targetWeightKg}kg). If this food/treat is high in calories or carbs, you MUST explicitly warn the user and suggest strict portion limits in the recommendation.`;
     } else if (weightGap < -0.5) {
       weightRule = `WEIGHT GAIN GOAL: The pet is ${Math.abs(weightGap).toFixed(1)}kg underweight. If this food is nutrient-dense, highlight that it helps build healthy mass towards their ${targetWeightKg}kg goal.`;
+    }
+
+    // Today's live context — lets Gemini judge against the *remaining* budget
+    // instead of the static daily ceiling.
+    let todayRule = "";
+    if (todayState && typeof todayState.today_calories_remaining === 'number') {
+      const consumed = todayState.today_calories_consumed ?? 0;
+      const remaining = todayState.today_calories_remaining;
+      const treatConsumed = todayState.today_treat_calories_consumed ?? 0;
+      const treatBudget = todayState.treat_budget ?? 0;
+      const trend = todayState.weight_trend_direction;
+      const trendNote = trend === 'up' ? ' Weight is also trending UP recently — be stricter.'
+                      : trend === 'down' ? ' Weight is trending DOWN — progress is on track.'
+                      : '';
+      todayRule = `TODAY'S LIVE BUDGET: ${consumed} kcal consumed, ${remaining} kcal remaining today. Treats so far: ${treatConsumed}/${treatBudget} kcal.${trendNote}`;
     }
 
     // Build the clinical system prompt using the pet's medical profile
@@ -43,6 +60,7 @@ Pet Profile:
 - Weight: ${weightKg} kg
 
 ${weightRule}
+${todayRule}
 
 - Body Condition Score: ${petProfile?.body_condition_score || '?'}/9
 - Known Allergies: ${petProfile?.allergies?.join(', ') || 'None reported'}
@@ -54,7 +72,7 @@ ${(() => {
   if (!selectedPantryItemId || !petProfile?.food_pantry) return '';
   const sel = petProfile.food_pantry.find((p: any) => p.id === selectedPantryItemId);
   if (!sel) return '';
-  return `\nSELECTED FOOD CONTEXT: The user confirms they are scanning "${sel.brand} ${sel.product_name}" (${sel.food_type}). Use this item's known nutritional data with HIGH confidence: ${sel.kcal_per_serving || '?'} kcal/${sel.serving_unit || 'serving'}, ${sel.protein_pct || '?'}% Protein, ${sel.fat_pct || '?'}% Fat, ${sel.fibre_pct || '?'}% Fibre. Key ingredients: ${sel.key_ingredients?.join(', ') || 'Unknown'}. Match the image to this food and estimate portion/serving count from the visual. Do NOT re-identify the brand — trust the user's selection.`;
+  return `\nSELECTED FOOD CONTEXT: The user confirms they are scanning "${sel.brand} ${sel.product_name}" (${sel.food_type}). Use this item's known nutritional data with HIGH confidence: ${sel.kcal_per_serving || '?'} kcal/${sel.serving_unit || 'serving'}, ${sel.protein_pct || '?'}% Protein, ${sel.fat_pct || '?'}% Fat, ${sel.fibre_pct || '?'}% Fibre${sel.moisture_pct ? `, ${sel.moisture_pct}% Moisture` : ''}. Key ingredients: ${sel.key_ingredients?.join(', ') || 'Unknown'}. Match the image to this food and estimate portion/serving count from the visual. Do NOT re-identify the brand — trust the user's selection.`;
 })()}
 
 IMPORTANT RULES:
@@ -71,6 +89,11 @@ IMPORTANT RULES:
    - COPY the exact "Ingredients" from the matched Pantry Item into "key_ingredients". Do NOT output null.
 7. NEW FOOD DETECTION (Labels): Only output "is_labeled_product: true" if a brand label is visible. If the label DOES NOT explicitly print its calorie count, calculate it safely (e.g., Protein% * 3.5 + Fat% * 8.5 + Carbs% * 3.5 = kcal per 100g) and base the calories_per_serving on a standard serving. DO NOT hallucinate extreme numbers. Default to standard veterinary averages (350 kcal/cup for kibble, 30 kcal/piece for treats).
 8. LABEL EXTRACTION: If a clear product label or packaging is visible, extract brand and product_name as separate fields. Also extract protein_pct, fat_pct, fibre_pct, and key_ingredients from the guaranteed analysis/ingredient list.
+9. MOISTURE EXTRACTION: If the guaranteed analysis lists "Moisture" (often shown as "Moisture (max.) X%"), extract the numeric value into "moisture_pct". This is critical for wet food and broths. If the label does not state moisture, return null — DO NOT guess.
+10. CALORIE DENSITY EXTRACTION: If the label states a calorie content per kg (e.g. "1080 kcal ME/kg" or "3650 kcal/kg") OR per 100g (e.g. "365 kcal per 100g"), convert to per-100g (divide kcal/kg by 10) and return in "kcal_per_100g_as_fed". This is a separate field from the per-serving calories. If the label does not state any per-mass calorie figure, return null — DO NOT guess and DO NOT compute it from macros.
+11. EXTRACTION ONLY — DO NOT SCORE OR RATE: Your job is to extract what is on the label and what is in the image. Do NOT rate, judge, or score this food. Health scoring happens deterministically client-side from the data you extract.
+12. MACRO SANITY: protein_g, carbs_g, and fats_g must represent the absolute grams in ONE serving. A single serving can NEVER have more than 200g of any single macro. If your calculation produces a higher number, you have a math error. When a selected pantry item provides protein_pct / fat_pct / moisture_pct, the macro grams MUST be derived from that pantry item's label values using: meal_grams × nutrient_pct / 100.
+13. TIME-OF-DAY JUDGMENT (use TODAY'S LIVE BUDGET if provided): Judge this scan against today's REMAINING budget, not just the static daily ceiling. If this food's calories_per_serving would push consumption over today_calories_remaining, the recommendation MUST advise to defer this food, split it across days, or reduce portion. If it's a treat and today_treat_calories_consumed already exceeds treat_budget, the recommendation MUST say to skip it today. When today's remaining budget is healthy (>30% of daily ceiling), DO NOT artificially scold — the food can be appropriate today even if it would be too rich on a tighter day. Be specific: cite remaining-kcal numbers in the recommendation when they drive the verdict.
 
 You MUST respond with ONLY valid JSON in this exact format, no markdown, no extra text:
 {
@@ -84,9 +107,11 @@ You MUST respond with ONLY valid JSON in this exact format, no markdown, no extr
   "protein_pct": number or null,
   "fat_pct": number or null,
   "fibre_pct": number or null,
-  "protein_g": number or null,
-  "carbs_g": number or null,
-  "fats_g": number or null,
+  "moisture_pct": number or null,
+  "kcal_per_100g_as_fed": number or null,
+  "protein_g": number,
+  "carbs_g": number,
+  "fats_g": number,
   "key_ingredients": ["top 5-10 ingredients from label"] or null,
   "is_treat": boolean,
   "is_allergy_trigger": boolean,
@@ -124,14 +149,52 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
       generationConfig: {
         temperature: 0.2, // Low temp for clinical accuracy
         maxOutputTokens: 8192,
+        responseMimeType: "application/json", // Enforce structured JSON output
       }
     };
 
-    const geminiRes = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(geminiPayload)
-    });
+    // Fetch with timeout + 1 retry
+    let geminiRes: Response | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+
+      try {
+        geminiRes = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': GEMINI_API_KEY,
+          },
+          body: JSON.stringify(geminiPayload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        // Retry on server errors (503, 429, 500)
+        if (geminiRes.status >= 500 || geminiRes.status === 429) {
+          console.warn(`[gemini-proxy] Attempt ${attempt + 1} got ${geminiRes.status}, retrying...`);
+          if (attempt === 0) {
+            await new Promise(r => setTimeout(r, 1500)); // Wait 1.5s before retry
+            continue;
+          }
+        }
+        break; // Success or client error — don't retry
+      } catch (fetchErr: unknown) {
+        clearTimeout(timeout);
+        if (attempt === 0) {
+          console.warn('[gemini-proxy] First attempt failed, retrying...', fetchErr);
+          await new Promise(r => setTimeout(r, 1500));
+          continue;
+        }
+        throw new Error('Gemini API request timed out or failed after 2 attempts.');
+      }
+    }
+
+    if (!geminiRes || !geminiRes.ok) {
+      const errorBody = geminiRes ? await geminiRes.text() : 'No response';
+      throw new Error(`Gemini API error (${geminiRes?.status || 'timeout'}): ${errorBody.substring(0, 300)}`);
+    }
 
     const data = await geminiRes.json();
 
@@ -141,11 +204,13 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
     // Try to parse the JSON from the response
     let analysis = null;
     try {
-      // Strip markdown code fences if present
+      // Strip markdown code fences if present (shouldn't happen with JSON mode, but defensive)
       const cleaned = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       analysis = JSON.parse(cleaned);
 
-      // Failsafe: if the AI still returned null/0, provide a generic sensible default
+      // ---- Server-side validation & sanitization ----
+
+      // 1. Calorie guardrails
       if (!analysis.calories_per_serving || typeof analysis.calories_per_serving !== 'number') {
         analysis.calories_per_serving = analysis.is_treat ? 35 : 350;
         if (analysis.food_name === 'Unknown' || analysis.food_name === 'string') {
@@ -155,6 +220,37 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
         // Fallback: Gemini likely multiplied kcal by 1000 to get pure calories. Revert to kcal.
         analysis.calories_per_serving = Math.round(analysis.calories_per_serving / 1000);
       }
+      // Floor: no food item has negative or near-zero calories
+      if (analysis.calories_per_serving < 1) {
+        analysis.calories_per_serving = analysis.is_treat ? 35 : 350;
+      }
+
+      // 2. Normalize fat field naming (Gemini may return fats_g or fat_g)
+      analysis.fat_g = analysis.fats_g ?? analysis.fat_g ?? 0;
+      delete analysis.fats_g;
+
+      // 3. Macro sanity: cap at 200g per serving, fix negatives
+      for (const key of ['protein_g', 'carbs_g', 'fat_g'] as const) {
+        const val = analysis[key];
+        if (typeof val !== 'number' || val < 0) {
+          analysis[key] = 0;
+        } else if (val > 200) {
+          // Likely a percentage misread as grams — scale down
+          analysis[key] = Math.round(val / 10);
+        }
+      }
+
+      // 4. Health score is now computed client-side (lib/healthScore.ts).
+      //    Strip any health_score the model emits — the client recomputes it.
+      delete analysis.health_score;
+
+      // 5. Confidence: ensure 0-1 range
+      if (typeof analysis.confidence !== 'number' || analysis.confidence < 0) {
+        analysis.confidence = 0.5;
+      } else if (analysis.confidence > 1) {
+        analysis.confidence = analysis.confidence > 100 ? 0.5 : analysis.confidence / 100;
+      }
+
     } catch {
       analysis = {
         raw_response: rawText,

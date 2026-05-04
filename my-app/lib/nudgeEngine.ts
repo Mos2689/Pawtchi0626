@@ -2,7 +2,7 @@ export interface Nudge {
   priority: 'info' | 'action';
   title: string;
   message: string;
-  actionType?: 'suggest_walk' | 'remind_log' | 'remind_water' | 'treat_ok' | 'reduce_dinner';
+  actionType?: 'suggest_walk' | 'remind_log' | 'remind_water' | 'remind_weight' | 'treat_ok' | 'reduce_dinner' | 'start_trial';
 }
 
 export interface NudgeInput {
@@ -21,7 +21,17 @@ export interface NudgeInput {
   // Trend-level fields (from refreshTrends)
   avgTreatsPerDay: number | null;
   weeklyTreatCalPercent: number | null;
-  profileCompleteness?: number; // 0-1, fraction of profile fields filled
+  // Weight management fields
+  daysSinceLastWeighIn?: number | null;
+  hasWeightGoal?: boolean;
+  // Rolling balance + chronic-under-eating signals
+  weeklyDelta?: number | null;
+  daysUnderTarget?: number | null;
+  // Today's biggest single contributor — used to make nudges name the offender
+  topContributorScan?: { food_name: string; calories: number } | null;
+  // Subscription fields
+  isFreemiumActive?: boolean;
+  daysSinceCreation?: number;
 }
 
 /**
@@ -44,6 +54,20 @@ export interface NudgeInput {
 export function computeNudge(input: NudgeInput): Nudge | null {
   const hour = new Date().getHours();
   const hasRestrictions = input.clinical.activityRestrictions.length > 0;
+
+  // ── P0: Freemium Trial Nudge ──
+  // Show it on odd days to prevent spam.
+  if (input.isFreemiumActive && input.daysSinceCreation !== undefined) {
+    if (input.daysSinceCreation % 2 !== 0 && input.daysSinceCreation < 30) {
+      const daysLeft = 30 - input.daysSinceCreation;
+      return {
+        priority: 'action',
+        title: 'Unlock Pawtchi Premium',
+        message: `You have ${daysLeft} days of free access remaining! Start your 30-Day Native Trial now to lock in your progress and keep access to AI features.`,
+        actionType: 'start_trial',
+      };
+    }
+  }
 
   // ── P1: Over-calorie — suggest activity or portion control ──
   // Before 6pm: fires at 90%+. After 6pm: only fires when actually over limit (100%+)
@@ -70,10 +94,14 @@ export function computeNudge(input: NudgeInput): Nudge | null {
     if (input.treatCaloriesConsumed > input.treatBudget) {
       const reduceBy = input.treatCaloriesConsumed;
       const tbsp = Math.max(1, Math.round(reduceBy / 30));
+      const top = input.topContributorScan;
+      const offender = top && top.calories >= 50
+        ? ` Biggest hit: ${top.food_name} (${top.calories} kcal).`
+        : '';
       return {
         priority: 'action',
         title: 'Reduce Dinner Tonight',
-        message: `${input.treatsConsumed} treat${input.treatsConsumed !== 1 ? 's' : ''} today = ${input.treatCaloriesConsumed} kcal (exceeds ${input.treatBudget} kcal treat budget). Reduce dinner by ~${reduceBy} kcal (${tbsp} tbsp less kibble).`,
+        message: `${input.treatsConsumed} treat${input.treatsConsumed !== 1 ? 's' : ''} today = ${input.treatCaloriesConsumed} kcal (exceeds ${input.treatBudget} kcal treat intake).${offender} Reduce dinner by ~${reduceBy} kcal (${tbsp} tbsp less kibble).`,
         actionType: 'reduce_dinner',
       };
     }
@@ -99,13 +127,34 @@ export function computeNudge(input: NudgeInput): Nudge | null {
     };
   }
 
+  // ── P4.5: Chronic under-eating — 2+ of last 3 days below 70% of target ──
+  // Cats are at risk of hepatic lipidosis after even brief under-eating; this
+  // covers dogs on overly aggressive weight-loss plans too. Skip if today is
+  // already on track to fix it (calPercent ≥ 60).
+  if (
+    input.daysUnderTarget != null &&
+    input.daysUnderTarget >= 2 &&
+    input.calPercent < 60
+  ) {
+    return {
+      priority: 'action',
+      title: 'Eating Less Than Plan',
+      message: `${input.daysUnderTarget} of the last 3 days under 70% of target. If this isn't intentional, consider revisiting the plan with your vet — chronic under-eating can mask illness.`,
+      actionType: 'remind_log',
+    };
+  }
+
   // ── P5: Weight trending up + high calories — stricter composite warning ──
   if (input.weightTrend?.direction === 'up' && input.calPercent >= 75) {
     const diff = (input.weightTrend.latest - input.weightTrend.previous).toFixed(1);
+    const top = input.topContributorScan;
+    const offender = top && top.calories >= 100
+      ? ` Today's biggest hit: ${top.food_name} (${top.calories} kcal).`
+      : '';
     return {
       priority: 'action',
       title: 'Watch Portions Today',
-      message: `Weight is up ${diff}kg and calories are at ${input.calPercent}%. Smaller portions will help get back on track.`,
+      message: `Weight is up ${diff}kg and calories are at ${input.calPercent}%.${offender} Smaller portions will help get back on track.`,
       actionType: hasRestrictions ? undefined : 'suggest_walk',
     };
   }
@@ -176,16 +225,18 @@ export function computeNudge(input: NudgeInput): Nudge | null {
     };
   }
 
-  // ── P11.5: Incomplete profile — gentle prompt during daytime ──
+
+  // ── P11.5: Weight log reminder — proactive weigh-in prompt ──
   if (
-    input.profileCompleteness !== undefined &&
-    input.profileCompleteness < 0.8 &&
-    hour >= 10 && hour <= 20
+    input.hasWeightGoal &&
+    input.daysSinceLastWeighIn != null &&
+    input.daysSinceLastWeighIn >= 7
   ) {
     return {
-      priority: 'info',
-      title: 'Complete Your Profile',
-      message: 'Adding allergies and medical info helps us give better food recommendations.',
+      priority: 'action',
+      title: 'Time for a Weigh-In',
+      message: `It's been ${input.daysSinceLastWeighIn} days since the last weigh-in. Log weight to keep the plan on track.`,
+      actionType: 'remind_weight',
     };
   }
 

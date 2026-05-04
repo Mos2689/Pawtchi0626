@@ -130,8 +130,18 @@ CREATE TABLE food_scans (
   ai_estimated_calories INTEGER,
   ai_confidence_score NUMERIC(5,2),
   is_user_confirmed BOOLEAN DEFAULT FALSE,
+  is_treat BOOLEAN DEFAULT FALSE,
+  protein_g NUMERIC(8,2),
+  carbs_g NUMERIC(8,2),
+  fat_g NUMERIC(8,2),
+  health_score SMALLINT CHECK (health_score BETWEEN 1 AND 10),
+  ingredients JSONB DEFAULT '[]'::jsonb,
+  food_analysis JSONB,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
+
+CREATE INDEX food_scans_pet_treat_created_idx
+  ON food_scans (pet_id, is_treat, created_at DESC);
 
 -- Enable RLS
 ALTER TABLE food_scans ENABLE ROW LEVEL SECURITY;

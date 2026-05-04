@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 /**
  * Extracted colors from Stitch HTML Tailwind config.
  */
@@ -110,6 +112,11 @@ export const Colors = {
     "surface-bright": "#404040",
     "inverse-primary": "#FFFC00"
   }
+};
+
+export const Fonts = {
+  rounded: 'Plus Jakarta Sans',
+  mono: Platform.OS === 'ios' ? 'Courier' : 'monospace',
 };
 
 export const Typography = {

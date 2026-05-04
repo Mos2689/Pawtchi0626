@@ -1,0 +1,83 @@
+{
+  "version": "AAFCO_DOG_2014_v1",
+  "source": "AAFCO 2014 Dog Food Nutrient Profiles — Adult Maintenance and Growth/Reproduction. Values expressed per 1000 kcal metabolizable energy (ME), dry-matter basis.",
+  "disclaimer": "Reference values only. Not a regulatory claim or compliance certification. Pawtchi compares foods against these references; the user interprets results with their vet.",
+  "profiles": {
+    "adult_maintenance": {
+      "crude_protein": {
+        "min_g_per_1000kcal": 45,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~18% DM at 4000 kcal/kg DM"
+      },
+      "crude_fat": {
+        "min_g_per_1000kcal": 13.8,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~5.5% DM at 4000 kcal/kg DM"
+      },
+      "crude_fiber": {
+        "min_g_per_1000kcal": null,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "AAFCO 2014 does not set a fiber min/max for adult maintenance"
+      },
+      "calcium": {
+        "min_g_per_1000kcal": 1.25,
+        "max_g_per_1000kcal": 6.25,
+        "unit": "g"
+      },
+      "phosphorus": {
+        "min_g_per_1000kcal": 1.0,
+        "max_g_per_1000kcal": 4.0,
+        "unit": "g"
+      },
+      "ca_p_ratio": {
+        "min": 1.0,
+        "max": 2.0,
+        "unit": "ratio"
+      }
+    },
+    "growth_and_reproduction": {
+      "crude_protein": {
+        "min_g_per_1000kcal": 56.3,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~22.5% DM"
+      },
+      "crude_fat": {
+        "min_g_per_1000kcal": 21.3,
+        "max_g_per_1000kcal": null,
+        "unit": "g",
+        "note": "Equivalent to ~8.5% DM"
+      },
+      "crude_fiber": {
+        "min_g_per_1000kcal": null,
+        "max_g_per_1000kcal": null,
+        "unit": "g"
+      },
+      "calcium": {
+        "min_g_per_1000kcal": 3.0,
+        "max_g_per_1000kcal": 4.5,
+        "unit": "g"
+      },
+      "phosphorus": {
+        "min_g_per_1000kcal": 2.5,
+        "max_g_per_1000kcal": 4.0,
+        "unit": "g"
+      },
+      "ca_p_ratio": {
+        "min": 1.0,
+        "max": 1.8,
+        "unit": "ratio"
+      }
+    }
+  },
+  "_todo_remaining_nutrients": [
+    "vitamin_a", "vitamin_d", "vitamin_e", "thiamine", "riboflavin",
+    "pantothenic_acid", "niacin", "pyridoxine", "folic_acid", "vitamin_b12", "choline",
+    "iron", "copper", "manganese", "zinc", "iodine", "selenium",
+    "linoleic_acid", "omega_3", "arginine", "histidine", "isoleucine", "leucine",
+    "lysine", "methionine_cystine", "phenylalanine_tyrosine", "threonine", "tryptophan", "valine"
+  ]
+}

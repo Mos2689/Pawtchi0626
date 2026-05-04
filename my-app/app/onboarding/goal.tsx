@@ -111,6 +111,7 @@ export default function GoalScreen() {
       deriveGoal(weightVal, targetWeight),
       totalAgeMonths || undefined,
       lifeStageMultiplier,
+      targetWeight,
     );
 
     let publicAvatarUrl = null;
@@ -168,8 +169,11 @@ export default function GoalScreen() {
       await useActivePetStore.getState().fetchPet(user.id);
       usePetStore.getState().resetForm();
 
-      // Navigate to main app — food data captured via scan pantry, not onboarding
+      // Navigate to main app and instantly overlay the paywall
       router.replace('/(tabs)');
+      setTimeout(() => {
+        router.push('/paywall' as any);
+      }, 100);
     }
   };
 

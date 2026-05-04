@@ -1,0 +1,54 @@
+{
+  "version": "PAWTCHI_CLINICAL_ADJUSTMENTS_v1",
+  "disclaimer": "These adjustments reflect general veterinary nutrition guidance and are NOT personalized medical advice. Individual pets may require different targets. Always confirm with your vet. Pawtchi makes no medical claim.",
+  "user_confirmation_required": true,
+  "_design_note": "Launch scope is intentionally narrow — only conditions with broadly-accepted nutritional guidance and low risk of harm from a moderate restriction are included. Disease-specific conditions (CKD, diabetes, urolithiasis) are deferred until each can be gated behind explicit per-condition vet confirmation.",
+  "conditions": {
+    "obesity": {
+      "label": "Obesity / Active weight-loss program",
+      "auto_apply_when_goal_is_weight_loss": true,
+      "nutrient_adjustments": {
+        "crude_fat": {
+          "target_max_g_per_1000kcal": 25,
+          "rationale": "Lower-fat diet supports calorie restriction without sacrificing protein. WSAVA Body Condition guidelines recommend 9% DM fat ceiling on weight-loss diets, ≈25 g/1000 kcal at typical kibble energy density."
+        }
+      },
+      "mer_override": {
+        "use_target_weight": true,
+        "multiplier": 1.0,
+        "note": "Weight-loss MER uses RER(target weight) rather than RER(current weight). Already implemented in lib/healthMath.ts calculateDailyKcal."
+      },
+      "source": "WSAVA Global Nutrition Guidelines; AAHA 2014 Weight Management Guidelines"
+    },
+    "pancreatitis_history": {
+      "label": "Pancreatitis (history of)",
+      "auto_apply_when_goal_is_weight_loss": false,
+      "nutrient_adjustments": {
+        "crude_fat": {
+          "target_max_g_per_1000kcal": 30,
+          "rationale": "Lower-fat diet reduces pancreatic stimulation. ACVIM consensus on canine pancreatitis recommends fat restriction in dogs with a pancreatitis history; commonly implemented as ≤12% DM fat, ≈30 g/1000 kcal."
+        }
+      },
+      "source": "ACVIM Consensus Statement on Pancreatitis in Dogs (2021); AAHA Nutritional Assessment Guidelines"
+    }
+  },
+  "_deferred_conditions": {
+    "_note": "Schema is preserved here for the day each is gated behind explicit vet confirmation in-app. Do NOT auto-apply.",
+    "ckd_stage_2": {
+      "requires_vet_review": true,
+      "deferred_reason": "Phosphorus and protein restrictions for CKD require IRIS staging and ongoing lab monitoring; safer to surface a 'consult your vet' nudge than to auto-adjust"
+    },
+    "ckd_stage_3": {
+      "requires_vet_review": true,
+      "deferred_reason": "Same as ckd_stage_2 with stricter targets"
+    },
+    "diabetes": {
+      "requires_vet_review": true,
+      "deferred_reason": "Fiber and carbohydrate guidance for diabetic pets is dose-dependent on insulin therapy; needs vet collaboration"
+    },
+    "urolithiasis_oxalate": {
+      "requires_vet_review": true,
+      "deferred_reason": "Stone type drives diet (oxalate vs struvite need opposite mineral profiles); requires confirmed urinalysis"
+    }
+  }
+}

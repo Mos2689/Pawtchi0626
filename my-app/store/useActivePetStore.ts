@@ -8,6 +8,8 @@ export interface PantryItem {
     product_name: string;
     food_type: 'kibble' | 'wet_food' | 'treat' | 'raw' | 'supplement' | 'human_food';
     kcal_per_serving: number | null;
+    kcal_per_100g_as_fed: number | null;   // from label's "X kcal ME/kg" ÷ 10; null if label doesn't state
+    moisture_pct: number | null;             // from label's "Moisture (max.) X%"; null if label doesn't state
     serving_unit: string | null;
     protein_pct: number | null;
     fat_pct: number | null;
@@ -15,6 +17,7 @@ export interface PantryItem {
     key_ingredients: string[] | null;
     allergy_flags: string[] | null;
     is_primary: boolean;
+    image_url?: string;
     scan_count: number;
     first_scanned_at: string;
     last_scanned_at: string;
@@ -113,6 +116,8 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
                 product_name: item.product_name,
                 food_type: item.food_type,
                 kcal_per_serving: item.kcal_per_serving,
+                kcal_per_100g_as_fed: item.kcal_per_100g_as_fed,
+                moisture_pct: item.moisture_pct,
                 serving_unit: item.serving_unit,
                 protein_pct: item.protein_pct,
                 fat_pct: item.fat_pct,
@@ -120,6 +125,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
                 key_ingredients: item.key_ingredients,
                 allergy_flags: item.allergy_flags,
                 is_primary: item.is_primary,
+                image_url: item.image_url,
             })
             .select()
             .single();
@@ -202,7 +208,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
         set({ isTailoring: true });
         try {
             const { data, error: fnError } = await supabase.functions.invoke('generate-wearable-avatar', {
-                body: { petId: activePet.id, items: newEquipped, apiKey: process.env.EXPO_PUBLIC_GEMINI_API_KEY || 'development_mock_key' }
+                body: { petId: activePet.id, items: newEquipped }
             });
 
             if (fnError) throw fnError;

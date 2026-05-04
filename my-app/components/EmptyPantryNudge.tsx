@@ -34,20 +34,9 @@ export default function EmptyPantryNudge({ petId, petName, petAvatarUrl, onUpdat
 
   return (
     <View style={styles.card}>
-      <View style={styles.bubbleRow}>
-        {petAvatarUrl ? (
-          <Image source={{ uri: petAvatarUrl }} style={styles.avatar} />
-        ) : (
-          <View style={styles.avatarFallback}>
-            <MaterialIcons name="pets" size={24} color="#FFFC00" />
-          </View>
-        )}
-        <View style={styles.bubble}>
-          <Text style={styles.bubbleText}>
-            Woof! My pantry is empty! Tell me what I'm eating so I can give you the best advice when scanning!
-          </Text>
-        </View>
-      </View>
+      <Text style={styles.bubbleText}>
+        Woof! My pantry is empty! Tell me what I'm eating so I could get best advise!
+      </Text>
       <View style={styles.actions}>
         <TouchableOpacity style={styles.primaryBtn} activeOpacity={0.8} onPress={onUpdatePantry}>
           <MaterialIcons name="inventory-2" size={16} color="#041015" />
@@ -64,49 +53,24 @@ export default function EmptyPantryNudge({ petId, petName, petAvatarUrl, onUpdat
 const styles = StyleSheet.create({
   card: {
     marginHorizontal: 24,
-    marginBottom: 16,
-    marginTop: 4,
+    marginBottom: 24,
+    marginTop: 0,
     backgroundColor: '#0f172a',
-    borderRadius: 20,
-    padding: 16,
+    borderRadius: 24,
+    padding: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 6,
-  },
-  bubbleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 14,
-  },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#1e293b',
-  },
-  avatarFallback: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#1e293b',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bubble: {
-    flex: 1,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    borderTopLeftRadius: 4,
-    padding: 12,
+    shadowRadius: 16,
+    elevation: 8,
   },
   bubbleText: {
     color: '#e2e8f0',
     fontSize: 14,
     lineHeight: 20,
     fontFamily: 'PlusJakartaSans-Medium',
+    marginBottom: 16,
+    textAlign: 'center',
   },
   actions: {
     flexDirection: 'row',
