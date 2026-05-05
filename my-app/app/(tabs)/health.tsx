@@ -210,9 +210,15 @@ export default function HealthScreen() {
     setIsScanning(true);
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
       const res = await fetch(`${supabaseUrl}/functions/v1/scan-vet-report`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
         body: JSON.stringify({
           imageBase64: result.assets[0].base64,
           mimeType: 'image/jpeg',
@@ -259,9 +265,15 @@ export default function HealthScreen() {
 
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
       const res = await fetch(`${supabaseUrl}/functions/v1/generate-health-insight`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
         body: JSON.stringify({ petId: activePet.id }),
       });
 

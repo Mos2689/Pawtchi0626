@@ -2,7 +2,7 @@ export interface Nudge {
   priority: 'info' | 'action';
   title: string;
   message: string;
-  actionType?: 'suggest_walk' | 'remind_log' | 'remind_water' | 'remind_weight' | 'treat_ok' | 'reduce_dinner' | 'start_trial';
+  actionType?: 'suggest_walk' | 'remind_log' | 'remind_water' | 'remind_weight' | 'remind_activity' | 'treat_ok' | 'reduce_dinner' | 'start_trial';
 }
 
 export interface NudgeInput {
@@ -251,6 +251,52 @@ export function computeNudge(input: NudgeInput): Nudge | null {
       priority: 'info',
       title: 'Great Day!',
       message: 'Balanced calories, good hydration, and exercise — keep it up!',
+    };
+  }
+
+  // ── P12.5: Activity completed after high-calorie meal — encouraging walk confirmation ──
+  // Fires when: a walk has been logged today AND calories are elevated (≥80%)
+  // This nudge celebrates the walk and contextualizes it against the calorie intake
+  if (
+    input.todayWalks >= 1 &&
+    input.calPercent >= 80 &&
+    input.calPercent < 100
+  ) {
+    return {
+      priority: 'info',
+      title: 'Walk Complete!',
+      message: 'Great timing — that walk helps balance the calories logged today. Keep it up!',
+      actionType: 'remind_activity',
+    };
+  }
+
+  // ── P12.6: Active day with treat offset — positive reinforcement ──
+  // Fires when: ≥20 min activity, treats were consumed, calories are reasonable
+  if (
+    input.todayActivityMinutes >= 20 &&
+    input.treatsConsumed >= 1 &&
+    input.calPercent <= 90
+  ) {
+    return {
+      priority: 'info',
+      title: 'Active & Treat-Earned!',
+      message: `${input.todayActivityMinutes} minutes of activity today — treats are balanced out!`,
+      actionType: 'remind_activity',
+    };
+  }
+
+  // ── P12.7: Weight trending up + activity completed — encouraging message ──
+  // Fires when: weight is up AND user just completed a walk
+  if (
+    input.weightTrend?.direction === 'up' &&
+    input.todayWalks >= 1
+  ) {
+    const diff = (input.weightTrend.latest - input.weightTrend.previous).toFixed(1);
+    return {
+      priority: 'info',
+      title: 'Great Walk!',
+      message: `That walk helps counter the recent ${diff}kg upward trend. Consistent activity makes a difference!`,
+      actionType: 'remind_activity',
     };
   }
 

@@ -186,22 +186,22 @@ Respond ONLY with valid JSON matching this schema:
       }
     }
 
-    // Helper to get a random archetype
-    const getRandomArchetype = () => archetypes[Math.floor(Math.random() * archetypes.length)];
-
+    
     // ==========================================
     // LAYER 3: SYNTHESIS (Schedule Builder)
+    // Generates TODAY + (numDays - 1) future days for a total of numDays days
     // ==========================================
     const rows: Record<string, unknown>[] = [];
-    
-    let currentDate = new Date();
-    currentDate.setDate(currentDate.getDate() + 1); // Start tomorrow
 
-    for (let day = 0; day < numDays; day++) {
-      const dateStr = currentDate.toISOString().split('T')[0];
+    // Helper to get date string in YYYY-MM-DD format
+    const getDateStr = (d: Date) => d.toISOString().split('T')[0];
+
+    // Build one day's worth of activities (water + activity slots)
+    const buildDayRows = (dateStr: string, archetypes: ActivityArchetype[], hasMedicalConditions: boolean, dayIndex: number): Record<string, unknown>[] => {
+      const dayRows: Record<string, unknown>[] = [];
 
       // 1. Morning Routine
-      rows.push({
+      dayRows.push({
         pet_id: petId,
         activity_type: 'water',
         title: 'Morning Hydration',
@@ -217,8 +217,8 @@ Respond ONLY with valid JSON matching this schema:
         created_at: new Date().toISOString(),
       });
 
-      const morningArc = getRandomArchetype();
-      rows.push({
+      const morningArc = archetypes[Math.floor(Math.random() * archetypes.length)];
+      dayRows.push({
         pet_id: petId,
         activity_type: morningArc.activity_type,
         title: morningArc.title,
@@ -235,7 +235,7 @@ Respond ONLY with valid JSON matching this schema:
       });
 
       // 2. Midday Routine
-      rows.push({
+      dayRows.push({
         pet_id: petId,
         activity_type: 'water',
         title: 'Midday Refresh',
@@ -251,8 +251,8 @@ Respond ONLY with valid JSON matching this schema:
         created_at: new Date().toISOString(),
       });
 
-      const middayArc = getRandomArchetype();
-      rows.push({
+      const middayArc = archetypes[Math.floor(Math.random() * archetypes.length)];
+      dayRows.push({
         pet_id: petId,
         activity_type: middayArc.activity_type,
         title: middayArc.title,
@@ -269,7 +269,7 @@ Respond ONLY with valid JSON matching this schema:
       });
 
       // 3. Evening Routine
-      rows.push({
+      dayRows.push({
         pet_id: petId,
         activity_type: 'water',
         title: 'Evening Hydration',
@@ -285,9 +285,9 @@ Respond ONLY with valid JSON matching this schema:
         created_at: new Date().toISOString(),
       });
 
-      if (hasMedicalConditions && day % 2 === 0) {
+      if (hasMedicalConditions && dayIndex % 2 === 0) {
         // Schedule medicine every other day (or daily) if they have conditions
-        rows.push({
+        dayRows.push({
           pet_id: petId,
           activity_type: 'medicine',
           title: 'Health Check & Meds',
@@ -303,8 +303,8 @@ Respond ONLY with valid JSON matching this schema:
           created_at: new Date().toISOString(),
         });
       } else {
-        const eveningArc = getRandomArchetype();
-        rows.push({
+        const eveningArc = archetypes[Math.floor(Math.random() * archetypes.length)];
+        dayRows.push({
           pet_id: petId,
           activity_type: eveningArc.activity_type,
           title: eveningArc.title,
@@ -321,7 +321,19 @@ Respond ONLY with valid JSON matching this schema:
         });
       }
 
-      // Advance to next day
+      return dayRows;
+    };
+
+    // Day 0 = TODAY (so user immediately sees activities after generation)
+    const todayStr = getDateStr(new Date());
+    rows.push(...buildDayRows(todayStr, archetypes, hasMedicalConditions, 0));
+
+    // Days 1 through numDays-1 = tomorrow onward
+    let currentDate = new Date();
+    currentDate.setDate(currentDate.getDate() + 1);
+    for (let day = 0; day < numDays - 1; day++) {
+      const dateStr = currentDate.toISOString().split('T')[0];
+      rows.push(...buildDayRows(dateStr, archetypes, hasMedicalConditions, day + 1));
       currentDate.setDate(currentDate.getDate() + 1);
     }
 

@@ -289,9 +289,15 @@ export default function ActivityScreen() {
 
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
       const res = await fetch(`${supabaseUrl}/functions/v1/generate-schedule`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
         body: JSON.stringify({
           petProfile: activePet,
           daysToGenerate: 7,
@@ -303,11 +309,20 @@ export default function ActivityScreen() {
 
       Alert.alert(
         'Schedule Created! 🎉',
-        `${data.activities_created} activities planned across ${data.days_generated} days.\n\nNavigate forward to see your schedule!`,
+        `${data.activities_created} activities planned across ${data.days_generated} days — starting today! Let's get moving!`,
         [{ text: 'Awesome!', onPress: () => fetchData() }]
       );
     } catch (e: any) {
-      Alert.alert('Generation Failed', e.message);
+      let msg = e?.message || 'Schedule generation failed.';
+
+      // Surface common Supabase Edge Function errors with actionable guidance
+      if (msg.includes('is not configured') || msg.includes('not found') || msg.includes('function not found')) {
+        msg = `Edge function not deployed or missing environment variables. Deploy with: npx supabase functions deploy generate-schedule`;
+      } else if (msg.includes('GEMINI_API_KEY')) {
+        msg = `AI API key not configured. Set GEMINI_API_KEY in Supabase Edge Function settings.`;
+      }
+
+      Alert.alert('Generation Failed', msg);
     } finally {
       setIsGenerating(false);
     }
@@ -637,7 +652,7 @@ export default function ActivityScreen() {
 
           {isLoading ? (
             <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#FFFC00" />
-          ) : timeline.length === 0 ? (
+          ) : activities.length === 0 ? (
             <View style={styles.emptyState}>
               <MaterialIcons name="auto-awesome" size={48} color="#FFFC00" style={{ marginBottom: 16 }} />
               <Text style={styles.emptyTitle}>No Schedule Yet</Text>
