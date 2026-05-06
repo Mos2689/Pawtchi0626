@@ -49,14 +49,16 @@ export async function regenerateSchedule({
   try {
     const todayStr = getLocalYMD(new Date());
 
-    // Wipe future pending AI-generated activities — keep user-created ones.
+    // Wipe ALL pending AI-generated activities (today + future) so regeneration
+    // produces one clean set without duplicating today's schedule.
+    // Completed activities are preserved (excluded by status: 'pending').
     await supabase
       .from('activities')
       .delete()
       .eq('pet_id', pet.id)
       .eq('is_ai_generated', true)
       .eq('status', 'pending')
-      .gt('scheduled_date', todayStr);
+      .gte('scheduled_date', todayStr);
 
     const completionRate = weeklyStats && weeklyStats.total > 0
       ? weeklyStats.completed / weeklyStats.total

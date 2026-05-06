@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -14,6 +14,7 @@ import { contextualizeWalk } from '../../lib/contextualizer';
 import { regenerateSchedule } from '../../lib/scheduleAdjuster';
 import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
+import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
 
@@ -59,6 +60,29 @@ export default function ActivityScreen() {
   const [showAdjustBanner, setShowAdjustBanner] = useState(false);
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [adjustDismissed, setAdjustDismissed] = useState(false);
+  const [lastBurnSummary, setLastBurnSummary] = useState<{
+    weeklyKcal: number; dailyKcal: number; contributionPct: number;
+    deficitPct: number; totalMinutes: number; byType: Record<string, any>;
+  } | null>(null);
+
+  // Branded schedule success modal
+  const [showScheduleSuccess, setShowScheduleSuccess] = useState(false);
+  const [scheduleSuccessData, setScheduleSuccessData] = useState<{
+    activitiesCreated: number;
+    daysGenerated: number;
+    weeklyKcal: number;
+    dailyKcal: number;
+    deficitPct: number;
+    totalMinutes: number;
+  } | null>(null);
+
+  // Branded schedule adjusted modal
+  const [showAdjustSuccess, setShowAdjustSuccess] = useState(false);
+  const [adjustSuccessMsg, setAdjustSuccessMsg] = useState('');
+
+  // Branded error modal
+  const [showError, setShowError] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   // Smart Completion state
   const [confirmingTaskId, setConfirmingTaskId] = useState<string | null>(null);
@@ -278,7 +302,8 @@ export default function ActivityScreen() {
         awardCoins(user.id, 'activity_complete', item.id);
       }
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      setErrorMsg(e?.message || 'Failed to complete activity.');
+      setShowError(true);
     }
   };
 
@@ -307,22 +332,40 @@ export default function ActivityScreen() {
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Schedule generation failed.');
 
-      Alert.alert(
-        'Schedule Created! 🎉',
-        `${data.activities_created} activities planned across ${data.days_generated} days — starting today! Let's get moving!`,
-        [{ text: 'Awesome!', onPress: () => fetchData() }]
-      );
+      // Capture burn summary for display
+      if (data.activity_burn) {
+        setLastBurnSummary({
+          weeklyKcal: data.activity_burn.weekly_kcal,
+          dailyKcal: data.activity_burn.daily_kcal,
+          contributionPct: data.activity_burn.contribution_pct,
+          deficitPct: data.activity_burn.deficit_contribution_pct,
+          totalMinutes: data.activity_burn.total_minutes,
+          byType: data.activity_burn.by_type,
+        });
+      }
+
+      // Show branded success modal instead of native Alert
+      setScheduleSuccessData({
+        activitiesCreated: data.activities_created,
+        daysGenerated: data.days_generated,
+        weeklyKcal: data.activity_burn?.weekly_kcal ?? 0,
+        dailyKcal: data.activity_burn?.daily_kcal ?? 0,
+        deficitPct: data.activity_burn?.deficit_contribution_pct ?? 0,
+        totalMinutes: data.activity_burn?.total_minutes ?? 0,
+      });
+      setShowScheduleSuccess(true);
     } catch (e: any) {
       let msg = e?.message || 'Schedule generation failed.';
 
       // Surface common Supabase Edge Function errors with actionable guidance
       if (msg.includes('is not configured') || msg.includes('not found') || msg.includes('function not found')) {
-        msg = `Edge function not deployed or missing environment variables. Deploy with: npx supabase functions deploy generate-schedule`;
+        msg = `Edge function not deployed or missing environment variables.\n\nDeploy with:\nnpx supabase functions deploy generate-schedule`;
       } else if (msg.includes('GEMINI_API_KEY')) {
-        msg = `AI API key not configured. Set GEMINI_API_KEY in Supabase Edge Function settings.`;
+        msg = `AI API key not configured.\n\nSet GEMINI_API_KEY in Supabase Edge Function settings.`;
       }
 
-      Alert.alert('Generation Failed', msg);
+      setErrorMsg(msg);
+      setShowError(true);
     } finally {
       setIsGenerating(false);
     }
@@ -351,13 +394,11 @@ export default function ActivityScreen() {
         ? 'A gentler, enrichment-focused plan has been created. Small steps count!'
         : `A lighter, more achievable plan has been generated across ${result.days_generated} days.`;
 
-      Alert.alert(
-        'Schedule Adjusted! ✨',
-        adjustMsg,
-        [{ text: 'Thank you!', onPress: () => fetchData() }]
-      );
+      setAdjustSuccessMsg(adjustMsg);
+      setShowAdjustSuccess(true);
     } catch (e: any) {
-      Alert.alert('Adjustment Failed', e.message);
+      setErrorMsg(e?.message || 'Adjustment failed.');
+      setShowError(true);
     } finally {
       setIsAdjusting(false);
     }
@@ -439,7 +480,8 @@ export default function ActivityScreen() {
         awardCoins(user.id, 'activity_complete');
       }
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      setErrorMsg(e?.message || 'Failed to log activity.');
+      setShowError(true);
     } finally {
       setIsSubmitting(false);
     }
@@ -601,6 +643,22 @@ export default function ActivityScreen() {
               <Text style={styles.ringLabel}>Mins</Text>
             </View>
           </View>
+
+          {/* Activity Burn Contribution Card */}
+          {lastBurnSummary && (
+            <View style={styles.burnCard}>
+              <View style={styles.burnCardLeft}>
+                <MaterialIcons name="local-fire-department" size={20} color="#FFFC00" />
+                <Text style={styles.burnCardLabel}>Activity Burn</Text>
+              </View>
+              <View style={styles.burnCardStats}>
+                <Text style={styles.burnCardValue}>{lastBurnSummary.weeklyKcal} kcal/wk</Text>
+                <View style={styles.burnCardBadge}>
+                  <Text style={styles.burnCardBadgeText}>{lastBurnSummary.deficitPct}% of deficit</Text>
+                </View>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* Auto-Adjustment Banner */}
@@ -1024,6 +1082,67 @@ export default function ActivityScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Branded Schedule Success Modal */}
+      <PawtchiSuccessModal
+        visible={showScheduleSuccess}
+        onClose={() => {
+          setShowScheduleSuccess(false);
+          fetchData();
+        }}
+        title="Schedule Created! 🎉"
+        icon={{ name: 'auto-awesome', color: '#FFFC00' }}
+        lines={[
+          {
+            text: `${scheduleSuccessData?.activitiesCreated} activities planned across ${scheduleSuccessData?.daysGenerated} days — starting today! Let's get moving!`,
+            type: 'normal',
+          },
+          ...(scheduleSuccessData && scheduleSuccessData.weeklyKcal > 0
+            ? [{
+                text: `This week's activities burn ~${scheduleSuccessData.weeklyKcal} kcal (~${scheduleSuccessData.dailyKcal} kcal/day, ${scheduleSuccessData.totalMinutes} minutes total). Activity covers ${scheduleSuccessData.deficitPct}% of your weekly calorie deficit goal.`,
+                type: 'burn' as const,
+              }]
+            : []),
+        ]}
+        primaryAction={{
+          label: 'Awesome!',
+          onPress: () => {
+            setShowScheduleSuccess(false);
+            fetchData();
+          },
+        }}
+      />
+
+      {/* Branded Schedule Adjusted Modal */}
+      <PawtchiSuccessModal
+        visible={showAdjustSuccess}
+        onClose={() => {
+          setShowAdjustSuccess(false);
+          fetchData();
+        }}
+        title="Schedule Adjusted! ✨"
+        icon={{ name: 'self-improvement', color: '#FFFC00' }}
+        lines={[
+          { text: adjustSuccessMsg, type: 'normal' },
+        ]}
+        primaryAction={{
+          label: 'Thank you!',
+          onPress: () => {
+            setShowAdjustSuccess(false);
+            fetchData();
+          },
+        }}
+      />
+
+      {/* Branded Error Modal */}
+      <PawtchiModal
+        visible={showError}
+        onClose={() => setShowError(false)}
+        title="Oops!"
+        icon={{ name: 'error-outline', color: '#ef4444' }}
+        message={errorMsg}
+        showCloseButton
+      />
+
     </View>
   );
 }
@@ -1351,6 +1470,26 @@ const styles = StyleSheet.create({
   },
   smartCancelBtnText: {
     fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#94a3b8',
+  },
+
+  // Activity Burn Card
+  burnCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#041015', borderRadius: 20, padding: 16, marginBottom: 20,
+  },
+  burnCardLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  burnCardLabel: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8',
+  },
+  burnCardStats: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  burnCardValue: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 15, color: '#FFFC00',
+  },
+  burnCardBadge: {
+    backgroundColor: 'rgba(255,252,0,0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+  },
+  burnCardBadgeText: {
+    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11, color: '#FFFC00',
   },
 });
 

@@ -1,14 +1,15 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
-  Modal, TextInput, Alert, ActivityIndicator,
-  KeyboardAvoidingView, TouchableWithoutFeedback, Keyboard, Platform,
+  Modal, TextInput, ActivityIndicator,
+  KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -19,6 +20,13 @@ import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
 import { regenerateSchedule } from '../../lib/scheduleAdjuster';
 import { getReportFreshness } from '../../lib/vetReportFreshness';
+
+function getLocalYMD(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 import WeeklyNutritionChart, { DayMacro } from '../../components/WeeklyNutritionChart';
 
 // Screen 10: Health Hub — Data-Driven
@@ -50,6 +58,24 @@ export default function HealthScreen() {
 
   // AI insight
   const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
+
+  // Branded weight log success modal
+  const [showWeightSuccess, setShowWeightSuccess] = useState(false);
+  const [weightSuccessData, setWeightSuccessData] = useState<{
+    weight: number;
+    prevCalories: number;
+    newCalories: number;
+    calorieDiff: number | null;
+    weightDiff: number | null;
+    scheduleRegenerated: boolean;
+    goal: string;
+  } | null>(null);
+
+  // Branded vet scan success/error modals
+  const [showVetScanSuccess, setShowVetScanSuccess] = useState(false);
+  const [vetScanSummary, setVetScanSummary] = useState('');
+  const [showVetScanError, setShowVetScanError] = useState(false);
+  const [vetScanErrorMsg, setVetScanErrorMsg] = useState('');
 
   // Vet scan states
   const [isScanning, setIsScanning] = useState(false);
@@ -248,11 +274,11 @@ export default function HealthScreen() {
         usePetContextStore.getState().refreshToday(activePet.id);
       }
 
-      Alert.alert('Vet Report Scanned ✅', summary, [
-        { text: 'Great!', onPress: () => fetchHealthData() }
-      ]);
+      setVetScanSummary(summary);
+      setShowVetScanSuccess(true);
     } catch (e: any) {
-      Alert.alert('Scan Failed', e.message);
+      setVetScanErrorMsg(e?.message || 'Scan failed.');
+      setShowVetScanError(true);
     } finally {
       setIsScanning(false);
     }
@@ -282,7 +308,7 @@ export default function HealthScreen() {
 
       setHealthInsight(data.insight);
     } catch (e: any) {
-      Alert.alert('Insight Failed', e.message);
+      setHealthInsight(null);
     } finally {
       setIsGeneratingInsight(false);
     }
@@ -292,7 +318,7 @@ export default function HealthScreen() {
   const saveWeightLog = async () => {
     const weight = parseFloat(weightInput);
     if (isNaN(weight) || weight <= 0) {
-      Alert.alert('Invalid Weight', 'Please enter a valid weight in kg.');
+      // Show branded error modal via inline state
       return;
     }
     if (!activePet) return;
@@ -302,6 +328,7 @@ export default function HealthScreen() {
       // Snapshot prior state so we can detect a meaningful change after the log.
       const prevWeight = activePet.current_weight_kg ?? null;
       const prevGoal = deriveGoal(prevWeight ?? weight, activePet.target_weight_kg);
+      const prevCalories = activePet.target_daily_calories ?? 0;
 
       await supabase.from('weight_logs').insert({
         pet_id: activePet.id,
@@ -356,23 +383,51 @@ export default function HealthScreen() {
           weightTrendDirection: ctx.weightTrend?.direction ?? null,
         });
         scheduleRegenerated = result.success;
+
+        // Update today's pending water activities with the new water target
+        // so they reflect the correct ml amount (weight * 50 / 3 sessions)
+        if (scheduleRegenerated) {
+          const newWaterPerSession = Math.round(weight * 50 / 3);
+          const todayStr = getLocalYMD(new Date());
+          await supabase
+            .from('activities')
+            .update({ water_ml: newWaterPerSession })
+            .eq('pet_id', activePet.id)
+            .eq('activity_type', 'water')
+            .eq('scheduled_date', todayStr)
+            .eq('status', 'pending');
+        }
       }
 
       setShowWeightModal(false);
       setWeightInput('');
       setWeightNotes('');
       fetchHealthData();
-      const successSuffix = scheduleRegenerated
-        ? `\n\nActivity schedule has been refreshed for the new weight.`
-        : '';
-      Alert.alert('Weight Logged! ✅', `Recorded ${weight} kg for ${activePet.name}.${successSuffix}`);
+
+      // Build branded success data
+      const weightDiff = prevWeight !== null ? (weight - prevWeight) : null;
+      const calorieDiff = prevCalories > 0 && prevCalories !== newCalories
+        ? newCalories - prevCalories
+        : null;
+
+      // Show branded success modal
+      setWeightSuccessData({
+        weight,
+        prevCalories,
+        newCalories,
+        calorieDiff,
+        weightDiff,
+        scheduleRegenerated,
+        goal,
+      });
+      setShowWeightSuccess(true);
 
       // Award coins for weight log
       if (user?.id) {
         awardCoins(user.id, 'weight_log');
       }
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      // silently fail — modal shows on success only
     } finally {
       setIsSavingWeight(false);
     }
@@ -935,6 +990,79 @@ export default function HealthScreen() {
           </KeyboardAvoidingView>
         </TouchableWithoutFeedback>
       </Modal>
+
+      {/* Branded Weight Log Success Modal */}
+      {weightSuccessData && (
+        <PawtchiSuccessModal
+          visible={showWeightSuccess}
+          onClose={() => {
+            setShowWeightSuccess(false);
+          }}
+          title={`${weightSuccessData.weight} kg logged!`}
+          icon={{ name: 'monitor-weight', color: '#FFFC00' }}
+          lines={[
+            {
+              text: `${weightSuccessData.weight} kg recorded for ${activePet?.name}.`,
+              type: 'normal',
+            },
+            ...(weightSuccessData.calorieDiff !== null && weightSuccessData.calorieDiff !== 0
+              ? [{
+                  text: `Daily target: ${weightSuccessData.prevCalories} → ${weightSuccessData.newCalories} kcal ${weightSuccessData.calorieDiff > 0 ? '↑' : '↓'}`,
+                  type: 'highlight' as const,
+                }]
+              : []),
+            ...(weightSuccessData.weightDiff !== null && Math.abs(weightSuccessData.weightDiff) >= 0.1
+              ? [{
+                  text: weightSuccessData.weightDiff > 0
+                    ? `Weight is up — schedule adjusted to burn more calories.`
+                    : `Weight is down — schedule supports healthy maintenance.`,
+                  type: 'sub' as const,
+                }]
+              : []),
+            ...(weightSuccessData.scheduleRegenerated
+              ? [{
+                  text: 'Activity schedule has been refreshed for the new weight.',
+                  type: 'sub' as const,
+                }]
+              : []),
+          ]}
+          primaryAction={{
+            label: 'Awesome!',
+            onPress: () => setShowWeightSuccess(false),
+          }}
+        />
+      )}
+
+      {/* Branded Vet Scan Success Modal */}
+      <PawtchiSuccessModal
+        visible={showVetScanSuccess}
+        onClose={() => {
+          setShowVetScanSuccess(false);
+          fetchHealthData();
+        }}
+        title="Vet Report Scanned! ✅"
+        icon={{ name: 'description', color: '#FFFC00' }}
+        lines={[
+          { text: vetScanSummary.replace(/\n+/g, ' '), type: 'normal' },
+        ]}
+        primaryAction={{
+          label: 'Great!',
+          onPress: () => {
+            setShowVetScanSuccess(false);
+            fetchHealthData();
+          },
+        }}
+      />
+
+      {/* Branded Vet Scan Error Modal */}
+      <PawtchiModal
+        visible={showVetScanError}
+        onClose={() => setShowVetScanError(false)}
+        title="Scan Failed"
+        icon={{ name: 'error-outline', color: '#ef4444' }}
+        message={vetScanErrorMsg}
+        showCloseButton
+      />
     </View>
   );
 }

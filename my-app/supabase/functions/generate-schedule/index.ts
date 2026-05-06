@@ -13,6 +13,94 @@ interface ActivityArchetype {
   duration_minutes: number;
 }
 
+// Activity calorie burn rates (kcal/kg per hour) — veterinary exercise science
+// Source: NRC Nutrient Requirements of Dogs and Cats, Pendlebury et al.
+// Swimming is highest because water removes body heat = highest thermogenic effect
+const BURN_RATES: Record<string, Record<string, number>> = {
+  walk:     { low: 1.5,   moderate: 3.0,   high: 5.0 },   // kcal/kg/hr at each intensity
+  play:     { low: 2.0,   moderate: 4.0,   high: 6.0 },
+  training: { low: 1.8,   moderate: 3.5,   high: 5.5 },
+  grooming: { low: 0.3,   moderate: 0.5,   high: 0.8 },  // light touch/handling
+  other:    { low: 1.0,   moderate: 2.0,   high: 3.0 },
+  water:    { low: 0,     moderate: 0,     high: 0 },     // water activities don't burn — they're hydration
+  medicine: { low: 0,     moderate: 0,     high: 0 },      // medicine doesn't burn
+};
+
+/**
+ * Estimate kcal burned for a single activity based on type, intensity, and pet weight.
+ * Uses per-hour burn rate scaled to activity duration.
+ */
+function estimateActivityBurn(
+  activityType: string,
+  intensity: string,
+  durationMinutes: number | null,
+  weightKg: number
+): number {
+  if (!durationMinutes || durationMinutes <= 0) return 0;
+  const rates = BURN_RATES[activityType] || BURN_RATES['other'];
+  const rate = rates[intensity as keyof typeof rates] ?? rates.moderate;
+  const hours = durationMinutes / 60;
+  return Math.round(rate * weightKg * hours * 10) / 10; // 1 decimal precision
+}
+
+/**
+ * Compute weekly activity burn summary from generated activity rows.
+ */
+function computeBurnSummary(
+  rows: Record<string, unknown>[],
+  weightKg: number,
+  targetDailyCalories: number
+): {
+  weeklyBurnKcal: number;
+  dailyBurnKcal: number;
+  activityContributionPercent: number;  // % of daily target contributed by activity
+  deficitContributionPercent: number;   // % of weekly calorie deficit from activity
+  activityDays: number;
+  totalMinutes: number;
+  byType: Record<string, { count: number; totalKcal: number; totalMinutes: number }>;
+} {
+  const byType: Record<string, { count: number; totalKcal: number; totalMinutes: number }> = {};
+  let totalKcal = 0;
+  let totalMinutes = 0;
+
+  for (const row of rows) {
+    const type = row.activity_type as string;
+    const intensity = (row.intensity as string) || 'moderate';
+    const duration = row.duration_minutes as number | null;
+    const kcal = estimateActivityBurn(type, intensity, duration, weightKg);
+
+    if (!byType[type]) {
+      byType[type] = { count: 0, totalKcal: 0, totalMinutes: 0 };
+    }
+    byType[type].count++;
+    byType[type].totalKcal += kcal;
+    byType[type].totalMinutes += duration || 0;
+    totalKcal += kcal;
+    totalMinutes += duration || 0;
+  }
+
+  const activityDays = new Set(rows.map(r => r.scheduled_date as string)).size || 1;
+  const weeklyBurnKcal = Math.round(totalKcal * 10) / 10;
+  const dailyBurnKcal = Math.round(weeklyBurnKcal / activityDays);
+  const targetDeficitPerWeek = targetDailyCalories > 0 ? targetDailyCalories * 7 * 0.20 : 0; // ~20% deficit for weight loss
+  const activityContributionPercent = targetDailyCalories > 0
+    ? Math.round((dailyBurnKcal / targetDailyCalories) * 100)
+    : 0;
+  const deficitContributionPercent = targetDeficitPerWeek > 0
+    ? Math.round((weeklyBurnKcal / targetDeficitPerWeek) * 100)
+    : 0;
+
+  return {
+    weeklyBurnKcal,
+    dailyBurnKcal,
+    activityContributionPercent,
+    deficitContributionPercent,
+    activityDays,
+    totalMinutes,
+    byType,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -38,6 +126,56 @@ Deno.serve(async (req) => {
     const waterPerSession = Math.round(totalWaterDaily / 3);
 
     const hasMedicalConditions = petProfile?.medical_conditions && petProfile.medical_conditions.length > 0;
+    const isNeutered = petProfile?.is_neutered ?? true;
+    const bcs = petProfile?.body_condition_score ?? 5; // 1-9 scale, default to ideal
+    const ageYears = petProfile?.age_years ?? 3;
+    const targetDailyCalories = petProfile?.target_daily_calories ?? 0;
+    const species = petProfile?.species || 'dog';
+
+    // ── BCS-based intensity modifier (Purina Body Condition System) ──
+    // Direct fat reserve signal — more accurate than weight-gap heuristic
+    let bcsRule = '';
+    if (bcs >= 7) {
+      bcsRule = `BODY CONDITION (BCS ${bcs}/9 — OVERWEIGHT): Prioritize LOW-IMPACT fat-burning activities. Max session length ${Math.min(20 + (9 - bcs) * 3, 35)} minutes to protect joints. Prefer flat terrain, sniffing, nose-work. Avoid jumping, stairs, or high-impact movements. Every activity should mention joint protection in "why_its_good".`;
+    } else if (bcs <= 4) {
+      bcsRule = `BODY CONDITION (BCS ${bcs}/9 — UNDERWEIGHT): Focus on gentle, joint-safe conditioning. Moderate intensity OK, but prioritize enrichment and mental engagement over exhausting physical exercise. Avoid activities that burn excessive calories. Support healthy muscle building with low-impact play.`;
+    } else {
+      bcsRule = `BODY CONDITION (BCS ${bcs}/9 — IDEAL): Full activity programming. Maintain healthy baseline with varied activities. No restrictions needed.`;
+    }
+
+    // ── Age-based exercise limits (WSAVA/AAHA guidelines) ──
+    let ageRule = '';
+    if (ageYears < 1) {
+      const maxMin = Math.round(ageYears * 12 * 5);
+      ageRule = `AGE: Puppy (${ageYears}yr old) — max ${maxMin} min per session. Focus on mental + physical development. Enforced rest periods required. No long-distance running.`;
+    } else if (ageYears >= 8) {
+      ageRule = `AGE: Senior (${ageYears}yr old) — LOW-IMPACT preferred. Max 20-30 min per session. Prioritize joint health and mobility over intensity. Prefer sniffing, slow walks, gentle play over brisk running.`;
+    } else {
+      ageRule = `AGE: Adult (${ageYears}yr old) — full programming allowed. 30-90 min/day structured activity is appropriate.`;
+    }
+
+    // ── Neutered metabolism context ──
+    const neuteredNote = isNeutered
+      ? `Metabolic note: Pet is neutered — baseline RER is reduced by ~10%. This means fewer calories burned at rest, making consistent activity even more important for weight management.`
+      : '';
+
+    // ── Activity calorie budget context ──
+    let calorieBudgetNote = '';
+    if (targetDailyCalories > 0) {
+      const targetActivityBurn = Math.round(targetDailyCalories * 0.12); // ~12% of daily target as activity burn target
+      const weeklyBurn = targetActivityBurn * 7;
+      calorieBudgetNote = `ACTIVITY CALORIE TARGET: Daily target is ${targetDailyCalories} kcal. Activity plan should target burning ~${targetActivityBurn} kcal/day (~${weeklyBurn} kcal/week) through exercise. This contributes ~12% of the daily energy budget. Schedule activities that include this context in the notes.`;
+    }
+
+    // ── Recovery cycle rule ──
+    const recoveryRule = `RECOVERY RULE: Do NOT schedule "high" intensity activities on 3+ consecutive days. Alternate physical activities with mental enrichment (sniff walks, puzzle games, training sessions). After every intense session, include a "gentle" or "enrichment" day. This is based on veterinary exercise science for joint/muscle recovery.`;
+
+    // ── Mental vs Physical balance ──
+    const mentalPhysicalBalance = `DAILY SLOT STRUCTURE: Design activities to fit this balance across the day:
+    - MORNING slot: Physical activity (brisk walk, fetch, active play)
+    - MIDDAY slot: Mental enrichment (sniff walk, puzzle feeder, obedience training, nose-work)
+    - EVENING slot: Social/gentle (bonding, grooming, calm play, enrichment)
+    For each archetype, specify which slot it belongs to via the "why_its_good" field (e.g., "Mental enrichment — great for midday").`;
 
     // ==========================================
     // LAYER 2: GENERATIVE AI (Archetype Pool)
@@ -113,20 +251,31 @@ Pet Profile:
 - Breed: ${petProfile?.breed || 'Mixed'}
 - Age: ${petProfile?.age_years || '?'} years
 - Weight: ${weightKg} kg
+- Activity Level: ${petProfile?.activity_level || 'normal'}
+${petProfile?.body_condition_score ? `\n- Body Condition Score: ${petProfile.body_condition_score}/9 (Purina 9-point scale)` : ''}
+${isNeutered ? '\n- Neutered: Yes (RER reduced ~10% — activity is extra important)' : ''}
 
 ${weightRule}
+${bcsRule}
+${ageRule}
+${neuteredNote}
+${calorieBudgetNote}
+${recoveryRule}
+${mentalPhysicalBalance}
 
 - Medical Conditions: ${petProfile?.medical_conditions?.join(', ') || 'None'}
 - Allergies: ${petProfile?.allergies?.join(', ') || 'None'}
-- Activity Level: ${petProfile?.activity_level || 'moderate'}
 ${performanceRules}
 
 RULES (CRITICAL):
 1. Focus on Practical Personalization. Do not use pretentious buzzwords. Suggest actionable mini-games, indoor puzzles, or specific types of walks.
-2. Tailor explicitly to breed, age, and medical conditions (e.g., Joint-friendly games for seniors; problem-solving for working breeds, indoor AC tasks for flat-faced dogs).
+2. Tailor explicitly to breed, age, BCS, and medical conditions (e.g., Joint-friendly games for seniors; problem-solving for working breeds, BCS-aware intensity).
 3. The "how_to_do_it" field must be a 1-2 sentence actionable instruction.
-4. The "why_its_good" field must be a plain-English empathetic explanation of why it fits this specific pet's profile.
+4. The "why_its_good" field must be a plain-English empathetic explanation that references the pet's specific profile (BCS, age, weight goal, medical conditions).
 5. activity_type MUST be one of: walk, play, grooming, training, other. (Do NOT generate water or medicine, code handles that).
+6. Duration MUST respect the age rule (puppies: 5 min/month age max; seniors: max 30 min). Never exceed the age-based cap.
+7. For BCS 7+ pets, every activity MUST be explicitly LOW-IMPACT with joint protection mentioned.
+8. Use the "why_its_good" field to indicate which daily slot this activity suits (morning=physical, midday=mental, evening=social).
 
 Respond ONLY with valid JSON matching this schema:
 {
@@ -340,6 +489,13 @@ Respond ONLY with valid JSON matching this schema:
     console.log(`[generate-schedule] Built ${rows.length} total activities from Archetypes & Math`);
 
     // ==========================================
+    // LAYER 3.5: ACTIVITY BURN FEEDBACK LOOP
+    // Compute estimated calorie burn so user sees activity's contribution
+    // ==========================================
+    const burnSummary = computeBurnSummary(rows, weightKg, targetDailyCalories);
+    console.log(`[generate-schedule] Burn summary: ${burnSummary.weeklyBurnKcal} kcal/wk, ${burnSummary.dailyBurnKcal} kcal/day, ${burnSummary.deficitContributionPercent}% of deficit`);
+
+    // ==========================================
     // LAYER 4: DATABASE INSERT
     // ==========================================
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -365,11 +521,21 @@ Respond ONLY with valid JSON matching this schema:
     console.log('[generate-schedule] Schedule created successfully!');
 
     return new Response(
-      JSON.stringify({ 
-        success: true, 
+      JSON.stringify({
+        success: true,
         days_generated: numDays,
         activities_created: rows.length,
-        archetypes_used: archetypes.length
+        archetypes_used: archetypes.length,
+        activity_burn: {
+          weekly_kcal: burnSummary.weeklyBurnKcal,
+          daily_kcal: burnSummary.dailyBurnKcal,
+          contribution_pct: burnSummary.activityContributionPercent,
+          deficit_contribution_pct: burnSummary.deficitContributionPercent,
+          total_minutes: burnSummary.totalMinutes,
+          by_type: burnSummary.byType,
+        },
+        weight_kg: weightKg,
+        target_daily_calories: targetDailyCalories,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
