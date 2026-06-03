@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Image, TouchableOpacity, Animated, ActivityIndi
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
+import { PawtchiButton } from '../components/PawtchiButton';
 import { Colors } from '../constants/Theme';
 import { useAuth } from '../providers/AuthProvider';
 
@@ -81,22 +82,19 @@ export default function WelcomeScreen() {
 
         {/* Call to Action */}
         <View style={styles.ctaContainer}>
-          <TouchableOpacity 
-            style={[styles.primaryBtn, { backgroundColor: '#FFFC00' }]} 
-            activeOpacity={0.8}
+          <PawtchiButton 
+            title="Get Started"
+            variant="primary"
+            iconName="arrow-forward"
+            iconPosition="right"
             onPress={() => router.push({ pathname: '/(auth)/login', params: { mode: 'signup' } } as any)}
-          >
-            <Text style={[styles.primaryBtnText, { color: '#1C1C00' }]}>Get Started</Text>
-            <MaterialIcons name="arrow-forward" size={24} color="#1C1C00" />
-          </TouchableOpacity>
+          />
           
-          <TouchableOpacity 
-            style={styles.secondaryBtn} 
-            activeOpacity={0.6}
+          <PawtchiButton 
+            title="I already have an account"
+            variant="ghost"
             onPress={() => router.push({ pathname: '/(auth)/login', params: { mode: 'signin' } } as any)}
-          >
-            <Text style={[styles.secondaryBtnText, { color: theme['on-surface'] }]}>I already have an account</Text>
-          </TouchableOpacity>
+          />
         </View>
       </View>
 

@@ -12,8 +12,8 @@ export default function BestMatesScreen() {
 
   const mates = [
     { id: 1, name: 'Buddy & Luna', action: 'completed a 2 mile walk together', time: '1h ago', likes: 12, comments: 3 },
-    { id: 2, name: 'Charlie', action: 'earned "Good Boy" badge', time: '3h ago', likes: 24, comments: 1 },
-    { id: 3, name: 'Bella', action: 'is looking for a playdate this weekend!', time: '5h ago', likes: 8, comments: 12 },
+    { id: 2, name: 'Charlie', action: 'completed a training session', time: '3h ago', likes: 24, comments: 1 },
+    { id: 3, name: 'Bella', action: 'is looking for a playdate this weekend', time: '5h ago', likes: 8, comments: 12 },
   ];
 
   return (

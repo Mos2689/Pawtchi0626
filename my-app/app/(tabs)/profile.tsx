@@ -17,6 +17,7 @@ import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useSubscription } from '../../hooks/useSubscription';
 import { useWalkthrough } from '../../providers/WalkthroughContext';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 // Screen 6: Profile & Settings
 export default function ProfileScreen() {
@@ -490,13 +491,13 @@ export default function ProfileScreen() {
           <TouchableOpacity activeOpacity={0.8} onPress={() => openInlineEdit('current_weight_kg', 'Weight (kg)', activePet?.current_weight_kg?.toString() || '0', 'e.g. 15.5', 'numeric')} style={[styles.bentoCard, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
             <MaterialIcons name="monitor-weight" size={32} color="#1a1a00" />
             <Text style={[styles.bentoValue, { color: '#0f172a' }]}>{activePet?.current_weight_kg || 0} kg</Text>
-            <Text style={[styles.bentoLabel, { color: '#64748b' }]}>WEIGHT</Text>
+            <Text style={[styles.bentoLabel, { color: '#64748b' }]}>Weight</Text>
           </TouchableOpacity>
           {/* Age */}
           <TouchableOpacity activeOpacity={0.8} onPress={() => openInlineEdit('age_years', 'Age (years)', activePet?.age_years?.toString() || '', 'e.g. 3', 'numeric')} style={[styles.bentoCard, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}>
             <MaterialIcons name="cake" size={32} color="#1a1a00" />
             <Text style={[styles.bentoValue, { color: '#0f172a' }]}>{activePet?.age_years || '?'} yrs</Text>
-            <Text style={[styles.bentoLabel, { color: '#64748b' }]}>AGE</Text>
+            <Text style={[styles.bentoLabel, { color: '#64748b' }]}>Age</Text>
           </TouchableOpacity>
         </View>
         {/* Food Pantry Section */}
@@ -507,7 +508,7 @@ export default function ProfileScreen() {
           </View>
 
           <View style={[styles.pantryContainer, { backgroundColor: '#f8fafc', borderColor: '#f1f5f9' }]}>
-            <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>Saved Foods</Text>
+            <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#64748b', marginBottom: 16 }}>Saved foods</Text>
             {foodPantry.length === 0 ? (
               <View style={styles.pantryEmpty}>
                 <MaterialIcons name="no-food" size={40} color="#cbd5e1" />
@@ -588,10 +589,9 @@ export default function ProfileScreen() {
             )}
 
             {/* Add Food Button */}
-            <TouchableOpacity
-              style={styles.pantryAddBtn}
-              activeOpacity={0.8}
-              disabled={isScanningLabel}
+            <PawtchiButton
+              title="Scan Food Label"
+              iconName="add-a-photo"
               onPress={() => {
                 Alert.alert('Add Food', 'Scan a food label to add it to the pantry.', [
                   { text: 'Cancel', style: 'cancel' },
@@ -599,20 +599,13 @@ export default function ProfileScreen() {
                   { text: 'Camera', onPress: () => handleScanFoodLabel(true) },
                 ]);
               }}
-            >
-              {isScanningLabel ? (
-                <ActivityIndicator size="small" color="#041015" />
-              ) : (
-                <>
-                  <MaterialIcons name="add-a-photo" size={20} color="#041015" />
-                  <Text style={styles.pantryAddBtnText}>Scan Food Label</Text>
-                </>
-              )}
-            </TouchableOpacity>
+              loading={isScanningLabel}
+              style={{ marginBottom: 16 }}
+            />
 
             {/* Bowl Size Integrations */}
             <View style={{ marginBottom: 24, marginTop: 16 }}>
-              <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#64748b', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Standard Bowl Size</Text>
+              <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#64748b', marginBottom: 8 }}>Standard bowl size</Text>
               <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 13, color: '#94a3b8', marginBottom: 12 }}>Helps AI estimate portions more accurately</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                 {BOWL_SIZES.map(s => {
@@ -915,17 +908,12 @@ export default function ProfileScreen() {
                 onChangeText={setEditName}
               />
 
-              <TouchableOpacity
-                style={[styles.editSaveBtn, { opacity: isUpdatingProfile ? 0.7 : 1 }]}
+              <PawtchiButton
+                title="Save Changes"
+                variant="primary"
+                loading={isUpdatingProfile}
                 onPress={handleUpdateProfile}
-                disabled={isUpdatingProfile}
-              >
-                {isUpdatingProfile ? (
-                  <ActivityIndicator color="#0f172a" />
-                ) : (
-                  <Text style={styles.editSaveBtnText}>Save Changes</Text>
-                )}
-              </TouchableOpacity>
+              />
             </View>
           </View>
         </View>
@@ -953,17 +941,12 @@ export default function ProfileScreen() {
                 autoFocus
               />
 
-              <TouchableOpacity
-                style={[styles.editSaveBtn, { opacity: isUpdatingProfile ? 0.7 : 1 }]}
+              <PawtchiButton
+                title="Save"
+                variant="primary"
+                loading={isUpdatingProfile}
                 onPress={handleInlineSave}
-                disabled={isUpdatingProfile}
-              >
-                {isUpdatingProfile ? (
-                  <ActivityIndicator color="#0f172a" />
-                ) : (
-                  <Text style={styles.editSaveBtnText}>Save</Text>
-                )}
-              </TouchableOpacity>
+              />
             </View>
           </View>
         </KeyboardAvoidingView>

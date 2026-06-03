@@ -267,6 +267,14 @@ ${mentalPhysicalBalance}
 - Allergies: ${petProfile?.allergies?.join(', ') || 'None'}
 ${performanceRules}
 
+VOICE RULES — apply to all generated text:
+- Maximum 3 sentences for any field (why_its_good, title, how_to_do_it)
+- Use the animal's name, never "your dog/cat/pet"
+- Use correct pronouns (his/her based on profile sex, never "their" for a known individual)
+- Never use: exclamation marks, "immediately", "urgent", "ensure", "incredible", "amazing"
+- Tone: calm, specific, direct, plainspoken Australian English
+- Never speak as the animal — Pawtchi narrates in third person
+
 RULES (CRITICAL):
 1. Focus on Practical Personalization. Do not use pretentious buzzwords. Suggest actionable mini-games, indoor puzzles, or specific types of walks.
 2. Tailor explicitly to breed, age, BCS, and medical conditions (e.g., Joint-friendly games for seniors; problem-solving for working breeds, BCS-aware intensity).
@@ -326,6 +334,30 @@ Respond ONLY with valid JSON matching this schema:
 
     const archetypes = parsedArchetypes.archetypes || [];
     if (archetypes.length === 0) throw new Error('AI returned 0 archetypes.');
+
+    // ── Duration sanity check: enforce age-based limits ──
+    // Puppies: 5 min/month of age (e.g., 6mo puppy = 30 min max)
+    // Seniors: max 30 min per session (joint protection)
+    // All others: capped at 90 min to prevent unrealistic suggestions
+    let maxDuration: number;
+    if (ageYears < 1) {
+      maxDuration = Math.round(ageYears * 12 * 5);
+    } else if (ageYears >= 8) {
+      maxDuration = 30;
+    } else {
+      maxDuration = 90;
+    }
+    for (const arch of archetypes) {
+      if (arch.duration_minutes > maxDuration) {
+        const original = arch.duration_minutes;
+        arch.duration_minutes = maxDuration;
+        console.log(`[generate-schedule] Capped "${arch.title}" from ${original}min to ${maxDuration}min (age=${ageYears}yr)`);
+      }
+      // Sanity floor: never go below 5 min
+      if (arch.duration_minutes < 5) {
+        arch.duration_minutes = 5;
+      }
+    }
 
     // Apply duration multiplier from performance context
     if (durationMultiplier !== 1.0) {

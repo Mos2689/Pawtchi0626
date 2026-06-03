@@ -2,7 +2,7 @@
   "expo": {
     "name": "Pawtchi",
     "slug": "pawtchi",
-    "version": "1.0.4",
+    "version": "1.0.8",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "pawtchi",
@@ -11,6 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
+      "buildNumber": "1.0.8",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Pawtchi uses your camera to scan your pet's food and analyse its nutritional content.",
@@ -27,7 +28,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 5,
+      "versionCode": 19,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.RECORD_AUDIO"

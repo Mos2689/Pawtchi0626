@@ -32,6 +32,10 @@ export interface NudgeInput {
   // Subscription fields
   isFreemiumActive?: boolean;
   daysSinceCreation?: number;
+  // Blind spot detection fields
+  consecutiveHighIntensityDays?: number;
+  daysSinceLastFoodLog?: number | null;
+  exerciseCalorieRatio?: number | null;
 }
 
 /**
@@ -122,7 +126,7 @@ export function computeNudge(input: NudgeInput): Nudge | null {
     return {
       priority: 'action',
       title: 'Meals Missing',
-      message: `Only ${input.calPercent}% of daily goal logged. Don't forget to log meals!`,
+      message: `Only ${input.calPercent}% of daily goal logged. Log meals to keep the record current.`,
       actionType: 'remind_log',
     };
   }
@@ -297,6 +301,82 @@ export function computeNudge(input: NudgeInput): Nudge | null {
       title: 'Great Walk!',
       message: `That walk helps counter the recent ${diff}kg upward trend. Consistent activity makes a difference!`,
       actionType: 'remind_activity',
+    };
+  }
+
+  // ── P13: Recovery warning — consecutive high-intensity days ──
+  // Dogs: >3 days high-intensity without a rest day risks joint strain and burnout.
+  // Cats: same concern for sustained play. Fires from day 3 onward.
+  if (
+    input.consecutiveHighIntensityDays != null &&
+    input.consecutiveHighIntensityDays >= 3
+  ) {
+    return {
+      priority: 'action',
+      title: 'Rest Day Needed',
+      message: `${input.consecutiveHighIntensityDays} consecutive days of high-intensity activity. Consider a rest day or light walk — recovery matters for joints and muscles.`,
+      actionType: 'remind_activity',
+    };
+  }
+
+  // ── P14: Stale weight — no weigh-in in 14+ days ──
+  // Weight goals require regular check-ins to stay on track.
+  if (
+    input.hasWeightGoal &&
+    input.daysSinceLastWeighIn != null &&
+    input.daysSinceLastWeighIn >= 14
+  ) {
+    return {
+      priority: 'action',
+      title: 'Weigh-In Overdue',
+      message: `It's been ${input.daysSinceLastWeighIn} days since the last weigh-in. Log weight to check progress toward the goal.`,
+      actionType: 'remind_weight',
+    };
+  }
+
+  // ── P15: Engagement churn — 3+ days since last food log ──
+  // User may have dropped off. Gentle re-engagement nudge.
+  if (
+    input.daysSinceLastFoodLog != null &&
+    input.daysSinceLastFoodLog >= 3 &&
+    input.calPercent < 30
+  ) {
+    return {
+      priority: 'action',
+      title: 'We Miss You!',
+      message: `No food logged in ${input.daysSinceLastFoodLog} days. A quick scan or manual log keeps your pet's record current.`,
+      actionType: 'remind_log',
+    };
+  }
+
+  // ── P16: Exercise-calorie balance — high burn, low intake ──
+  // ratio > 0.5: burning more than half of consumed calories through exercise alone.
+  // Could indicate under-eating relative to activity level.
+  if (
+    input.exerciseCalorieRatio != null &&
+    input.exerciseCalorieRatio > 0.5 &&
+    input.calPercent < 70
+  ) {
+    return {
+      priority: 'info',
+      title: 'High Burn Day',
+      message: `Activity is burning ~${Math.round(input.exerciseCalorieRatio * 100)}% of today's calories. Make sure there's enough fuel to sustain energy levels.`,
+      actionType: 'remind_log',
+    };
+  }
+
+  // ── P16.5: Inverse — low burn, high intake ──
+  // ratio < 0.2: exercising little but eating a lot. Weight management concern.
+  if (
+    input.exerciseCalorieRatio != null &&
+    input.exerciseCalorieRatio < 0.2 &&
+    input.calPercent >= 85
+  ) {
+    return {
+      priority: 'action',
+      title: 'Move More Today',
+      message: `Low activity burn but calories are at ${input.calPercent}%. A short walk or play session would help balance the intake.`,
+      actionType: 'suggest_walk',
     };
   }
 

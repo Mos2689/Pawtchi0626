@@ -95,6 +95,13 @@ IMPORTANT RULES:
 12. MACRO SANITY: protein_g, carbs_g, and fats_g must represent the absolute grams in ONE serving. A single serving can NEVER have more than 200g of any single macro. If your calculation produces a higher number, you have a math error. When a selected pantry item provides protein_pct / fat_pct / moisture_pct, the macro grams MUST be derived from that pantry item's label values using: meal_grams × nutrient_pct / 100.
 13. TIME-OF-DAY JUDGMENT (use TODAY'S LIVE BUDGET if provided): Judge this scan against today's REMAINING budget, not just the static daily ceiling. If this food's calories_per_serving would push consumption over today_calories_remaining, the recommendation MUST advise to defer this food, split it across days, or reduce portion. If it's a treat and today_treat_calories_consumed already exceeds treat_budget, the recommendation MUST say to skip it today. When today's remaining budget is healthy (>30% of daily ceiling), DO NOT artificially scold — the food can be appropriate today even if it would be too rich on a tighter day. Be specific: cite remaining-kcal numbers in the recommendation when they drive the verdict.
 
+VOICE RULES for recommendation field:
+- Maximum 3 sentences
+- Never use: exclamation marks, "immediately", "urgent", "ensure", "incredible", "amazing"
+- Use the animal's name, never "your dog/cat/pet"
+- Tone: calm, specific, plainspoken
+- End with a calm action or note, never an emotional exclamation
+
 You MUST respond with ONLY valid JSON in this exact format, no markdown, no extra text:
 {
   "food_name": "string (brand + product combined for display)",

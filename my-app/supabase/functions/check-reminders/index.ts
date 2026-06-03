@@ -74,7 +74,7 @@ serve(async (req) => {
         notifications.push({
           to: token,
           sound: 'default',
-          title: `Did ${pet.name} eat yet? 🥩`,
+          title: `Did ${pet.name} eat yet?`,
           body: `Log ${pet.name}'s meal to keep your health streak going!`,
           data: { action: 'meal', petId: pet.id },
         });

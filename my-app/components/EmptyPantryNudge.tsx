@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PawtchiButton } from './PawtchiButton';
 
 interface Props {
   petId: string;
@@ -35,16 +36,23 @@ export default function EmptyPantryNudge({ petId, petName, petAvatarUrl, onUpdat
   return (
     <View style={styles.card}>
       <Text style={styles.bubbleText}>
-        Woof! My pantry is empty! Tell me what I'm eating so I could get best advise!
+        No foods added yet. Add items to the pantry so meal logging is faster next time.
       </Text>
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.primaryBtn} activeOpacity={0.8} onPress={onUpdatePantry}>
-          <MaterialIcons name="inventory-2" size={16} color="#041015" />
-          <Text style={styles.primaryBtnText}>Update Pantry</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.ghostBtn} activeOpacity={0.7} onPress={handleDismiss}>
-          <Text style={styles.ghostBtnText}>Later</Text>
-        </TouchableOpacity>
+        <PawtchiButton
+          title="Update Pantry"
+          iconName="inventory-2"
+          onPress={onUpdatePantry}
+          size="medium"
+          style={{ flex: 1 }}
+        />
+        <PawtchiButton
+          title="Later"
+          variant="ghost"
+          onPress={handleDismiss}
+          size="medium"
+          textStyle={{ color: 'rgba(255,255,255,0.5)' }}
+        />
       </View>
     </View>
   );

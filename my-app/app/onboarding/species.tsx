@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Theme';
 import { usePetStore } from '../../store/usePetStore';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 // Screen 1: Select Species
 export default function SpeciesScreen() {
@@ -30,8 +31,8 @@ export default function SpeciesScreen() {
         {/* Progress Indicator */}
         <View style={styles.progressSection}>
           <View style={styles.progressTextRow}>
-            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 1 OF 5</Text>
-            <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>SPECIES</Text>
+            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 1 of 5</Text>
+            <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>Species</Text>
           </View>
           <View style={[styles.progressBarBg, { backgroundColor: '#F1F3F5' }]}>
             <View style={[styles.progressBarFill, { backgroundColor: '#FFFC00', width: '17%' }]} />
@@ -99,14 +100,14 @@ export default function SpeciesScreen() {
 
         {/* Footer Actions */}
         <View style={styles.footerSection}>
-          <TouchableOpacity
-            style={[styles.continueBtn, { backgroundColor: '#FFFC00' }]}
+          <PawtchiButton
+            title="Continue"
+            variant="primary"
+            iconName="arrow-forward"
+            iconPosition="right"
             onPress={() => router.push('/onboarding/scan-choice')}
-            activeOpacity={0.9}
-          >
-            <Text style={[styles.continueText, { color: '#000000' }]}>Continue</Text>
-            <MaterialIcons name="arrow-forward" size={24} color="#000000" />
-          </TouchableOpacity>
+            style={{ shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.5, shadowRadius: 24, elevation: 8 }}
+          />
           <Text style={[styles.footerNote, { color: theme['on-surface-variant'] }]}>
             Don't worry, you can add more pets later in your profile settings.
           </Text>

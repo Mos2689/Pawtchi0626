@@ -8,6 +8,8 @@ import {
     ScrollView,
     ActivityIndicator,
     Alert,
+    Platform,
+    Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -16,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { PurchasesPackage } from 'react-native-purchases';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useSubscription } from '../hooks/useSubscription';
+import { PawtchiButton } from '../components/PawtchiButton';
 
 // ─── Paywall Modes ───
 // welcome  → Post-onboarding, first encounter. Warm, generous, gift-like.
@@ -42,10 +45,9 @@ function deriveMode(
 
 // ─── Mode-specific content ───
 interface ModeContent {
-    emoji: string;
     title: (petName: string, parentTitle: string) => string;
     subtitle: (petName: string, daysLeft: number) => string;
-    ctaLabel: (price: string) => string;
+    ctaLabel: (price: string, plan: 'monthly' | 'yearly') => string;
     dismissLabel: string;
     showDismiss: boolean;
     heroColors: [string, string, string];
@@ -53,31 +55,28 @@ interface ModeContent {
 
 const MODE_CONFIG: Record<PaywallMode, ModeContent> = {
     welcome: {
-        emoji: '🎉',
         title: (_pet, _parent) => 'Welcome to\nPawtchi Premium!',
         subtitle: (petName, _daysLeft) =>
             `Enjoy 30 days of full access — free, on us.\nWe want you and ${petName} to fall in love with the experience first.`,
-        ctaLabel: (price) => `Start Free Month — then ${price}`,
+        ctaLabel: (price, plan) => `Start Free Trial — then ${price}/${plan === 'yearly' ? 'year' : 'month'}`,
         dismissLabel: 'Maybe Later',
         showDismiss: true,
         heroColors: ['#041015', '#0c2a1a', '#041015'],
     },
     upgrade: {
-        emoji: '✨',
         title: (petName, _parent) => `Loving Pawtchi,\n${petName}?`,
         subtitle: (_petName, daysLeft) =>
             `${daysLeft} day${daysLeft !== 1 ? 's' : ''} of free access remaining.\nSubscribe now to keep everything unlocked — your data, your streaks, your AI insights.`,
-        ctaLabel: (price) => `Continue with Premium — ${price}`,
+        ctaLabel: (price, plan) => `Continue with Premium — ${price}/${plan === 'yearly' ? 'year' : 'month'}`,
         dismissLabel: 'Not Yet',
         showDismiss: true,
         heroColors: ['#041015', '#1a1a2e', '#041015'],
     },
     renewal: {
-        emoji: '🥺',
         title: (_pet, parentTitle) => `I'll miss you,\n${parentTitle}...`,
         subtitle: (petName, _daysLeft) =>
             `${petName}'s data is safe, but premium features are paused.\nSubscribe to pick up where you left off.`,
-        ctaLabel: (price) => `Reactivate Premium — ${price}`,
+        ctaLabel: (price, plan) => `Reactivate Premium — ${price}/${plan === 'yearly' ? 'year' : 'month'}`,
         dismissLabel: '',
         showDismiss: false,
         heroColors: ['#041015', '#0a1a22', '#041015'],
@@ -122,8 +121,8 @@ export default function PaywallScreen() {
     // Package helpers
     const yearlyPkg = packages.find((p) => p.packageType === 'ANNUAL');
     const monthlyPkg = packages.find((p) => p.packageType === 'MONTHLY');
-    const yearlyPrice = yearlyPkg?.product.priceString ?? 'AUD $49.99';
-    const monthlyPrice = monthlyPkg?.product.priceString ?? 'AUD $4.99';
+    const yearlyPrice = yearlyPkg?.product.priceString ?? 'AUD $89';
+    const monthlyPrice = monthlyPkg?.product.priceString ?? 'AUD $9.99';
     const selectedPkg = selectedPlan === 'yearly' ? yearlyPkg : monthlyPkg;
     const selectedPrice = selectedPlan === 'yearly' ? yearlyPrice : monthlyPrice;
 
@@ -202,8 +201,14 @@ export default function PaywallScreen() {
                             <Image source={{ uri: petImage }} style={styles.petImage} />
                         </View>
 
-                        {/* Emoji */}
-                        <Text style={styles.emoji}>{config.emoji}</Text>
+                        {/* Icon */}
+                        <View style={styles.emojiWrapper}>
+                            <MaterialIcons
+                                name={mode === 'welcome' ? 'celebration' : mode === 'upgrade' ? 'workspace-premium' : 'favorite'}
+                                size={48}
+                                color="#FFFC00"
+                            />
+                        </View>
 
                         {/* Title */}
                         <Text style={[
@@ -280,7 +285,7 @@ export default function PaywallScreen() {
                         </View>
                         <View style={styles.savingsRow}>
                             <MaterialIcons name="local-offer" size={14} color="#166534" />
-                            <Text style={styles.savingsText}>Save 16% — just $4.17/mo</Text>
+                            <Text style={styles.savingsText}>Save 26% — just $7.42/mo</Text>
                         </View>
                     </TouchableOpacity>
 
@@ -323,34 +328,24 @@ export default function PaywallScreen() {
 
                 {/* ═══ CTA Section ═══ */}
                 <View style={styles.ctaSection}>
-                    <TouchableOpacity
-                        activeOpacity={0.9}
+                    <PawtchiButton
+                        title={config.ctaLabel(selectedPrice, selectedPlan)}
+                        variant="primary"
+                        loading={purchasing}
                         onPress={handlePurchase}
-                        disabled={purchasing}
-                        style={styles.ctaButton}
-                    >
-                        <LinearGradient
-                            colors={
-                                mode === 'welcome'
-                                    ? ['#4ade80', '#22c55e']
-                                    : ['#FFFC00', '#E6E300']
-                            }
-                            style={styles.ctaGradient}
-                        >
-                            {purchasing ? (
-                                <ActivityIndicator color="#041015" />
-                            ) : (
-                                <Text style={styles.ctaText}>
-                                    {config.ctaLabel(selectedPrice)}
-                                </Text>
-                            )}
-                        </LinearGradient>
-                    </TouchableOpacity>
+                        style={{ width: '100%', shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6 }}
+                    />
 
                     <Text style={styles.trialNote}>
                         {mode === 'welcome'
-                            ? '30 days free • No charge until trial ends • Cancel anytime'
-                            : '1 month free trial included • Cancel anytime'}
+                            ? `30-day free trial. After trial ends, you will be charged ${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}. Subscription auto-renews until cancelled.`
+                            : `Includes 1-month free trial. After trial, ${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}. Auto-renews until cancelled.`}
+                    </Text>
+
+                    <Text style={styles.cancelNote}>
+                        {Platform.OS === 'android'
+                            ? 'Cancel anytime in Google Play Store → Subscriptions.'
+                            : 'Cancel anytime in Settings → Apple ID → Subscriptions.'}
                     </Text>
 
                     {/* Maybe Later / Not Yet — only for welcome & upgrade */}
@@ -371,10 +366,21 @@ export default function PaywallScreen() {
 
                 {/* Legal */}
                 <Text style={styles.legalText}>
-                    Payment will be charged to your App Store account at confirmation of purchase.
-                    Subscription automatically renews unless auto-renew is turned off at least 24
-                    hours before the end of the current period.
+                    {Platform.OS === 'android'
+                        ? `Payment will be charged to your Google Play account at confirmation of purchase. Your subscription (${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}) automatically renews unless cancelled at least 24 hours before the end of the current billing period. You can manage or cancel your subscription anytime through Google Play Store → Payments & subscriptions → Subscriptions.`
+                        : `Payment will be charged to your Apple ID account at confirmation of purchase. Your subscription (${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}) automatically renews unless auto-renew is turned off at least 24 hours before the end of the current period. Manage subscriptions in Settings → Apple ID → Subscriptions.`}
                 </Text>
+
+                {/* Terms & Privacy Links */}
+                <View style={styles.legalLinks}>
+                    <TouchableOpacity onPress={() => router.push('/privacy')}>
+                        <Text style={styles.legalLinkText}>Privacy Policy</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.legalDot}>•</Text>
+                    <TouchableOpacity onPress={() => Linking.openURL('https://pawtchi.com/terms')}>
+                        <Text style={styles.legalLinkText}>Terms of Use</Text>
+                    </TouchableOpacity>
+                </View>
 
                 <View style={{ height: insets.bottom + 20 }} />
             </ScrollView>
@@ -444,9 +450,14 @@ const styles = StyleSheet.create({
         width: '100%',
         height: '100%',
     },
-    emoji: {
-        fontSize: 32,
-        marginBottom: 12,
+    emojiWrapper: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: 'rgba(255,252,0,0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 16,
     },
     heroTitle: {
         fontFamily: 'Plus Jakarta Sans',
@@ -680,6 +691,16 @@ const styles = StyleSheet.create({
         color: '#64748b',
         marginTop: 12,
         textAlign: 'center',
+        lineHeight: 17,
+        paddingHorizontal: 8,
+    },
+    cancelNote: {
+        fontFamily: 'Plus Jakarta Sans',
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#475569',
+        marginTop: 6,
+        textAlign: 'center',
     },
     dismissBtn: {
         marginTop: 16,
@@ -713,5 +734,23 @@ const styles = StyleSheet.create({
         lineHeight: 16,
         paddingHorizontal: 30,
         marginTop: 20,
+    },
+    legalLinks: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 12,
+    },
+    legalLinkText: {
+        fontFamily: 'Plus Jakarta Sans',
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#041015',
+        textDecorationLine: 'underline',
+    },
+    legalDot: {
+        fontSize: 10,
+        color: '#94a3b8',
     },
 });

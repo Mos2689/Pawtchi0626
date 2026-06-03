@@ -9,6 +9,7 @@ import { useAuth } from '../../providers/AuthProvider';
 import { usePetStore } from '../../store/usePetStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import Slider from '@react-native-community/slider';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
 import { getBreedDefaults } from '../../lib/breedData';
@@ -199,7 +200,7 @@ export default function GoalScreen() {
             <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
             <View style={[styles.progressPill, { backgroundColor: '#E5E7EB', width: 40 }]} />
           </View>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 5 OF 5</Text>
+          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 5 of 5</Text>
         </View>
 
         {/* Hero Section */}
@@ -211,14 +212,14 @@ export default function GoalScreen() {
           {/* Life Stage Badge */}
           {petData.breed && petData.breed !== 'Mixed Breed' && petData.breed !== 'Other' ? (
             <View style={styles.lifeStageBadge}>
-              <MaterialIcons name="auto-awesome" size={14} color="#92400e" />
+              <MaterialIcons name="pets" size={14} color="#92400e" />
               <Text style={styles.lifeStageBadgeText}>
                 {petData.name || 'Your pet'} is a {lifeStageLabel} {petData.breed}
               </Text>
             </View>
           ) : (
             <View style={styles.lifeStageBadge}>
-              <MaterialIcons name="auto-awesome" size={14} color="#92400e" />
+              <MaterialIcons name="pets" size={14} color="#92400e" />
               <Text style={styles.lifeStageBadgeText}>
                 {petData.name || 'Your pet'} is a {lifeStageLabel} {speciesVal === 'cat' ? 'Cat' : 'Dog'}
               </Text>
@@ -234,8 +235,8 @@ export default function GoalScreen() {
                 style={styles.avatarImg}
               />
               <View style={[styles.floatingReward, { backgroundColor: '#ffc4b3' }]}>
-                <MaterialIcons name="auto-awesome" size={14} color="#862400" />
-                <Text style={[styles.rewardText, { color: '#862400' }]}>PEAK HEALTH</Text>
+                <MaterialIcons name="emoji-events" size={14} color="#862400" />
+                <Text style={[styles.rewardText, { color: '#862400' }]}>Peak health</Text>
               </View>
             </View>
             <View style={[styles.overlapBadge, { backgroundColor: '#FFFC00', borderColor: '#FFFFFF' }]}>
@@ -284,7 +285,7 @@ export default function GoalScreen() {
         {/* Target Weight Controls */}
         <View style={[styles.controlsCard, { backgroundColor: '#F8F9FA', borderColor: '#E5E7EB' }]}>
           <View style={styles.weightHeader}>
-            <Text style={[styles.weightLabel, { color: theme['on-surface-variant'] }]}>TARGET WEIGHT</Text>
+            <Text style={[styles.weightLabel, { color: theme['on-surface-variant'] }]}>Target weight</Text>
             <View style={styles.weightValueRow}>
               {estimating ? (
                 <ActivityIndicator size="small" color="#FFFC00" style={{ transform: [{ scale: 1.5 }], marginVertical: 12 }} />
@@ -328,11 +329,11 @@ export default function GoalScreen() {
           {/* Bento Stats Grid */}
           <View style={styles.bentoGrid}>
             <View style={[styles.bentoCard, { borderColor: 'rgba(229,231,235,0.5)' }]}>
-              <Text style={[styles.bentoLabel, { color: theme['on-surface-variant'] }]}>CURRENT</Text>
+              <Text style={[styles.bentoLabel, { color: theme['on-surface-variant'] }]}>Current</Text>
               <Text style={[styles.bentoValue, { color: theme['on-surface'] }]}>{currentWeight.toFixed(1)}<Text style={{ fontSize: 14 }}>kg</Text></Text>
             </View>
             <View style={[styles.bentoCard, { borderColor: 'rgba(229,231,235,0.5)' }]}>
-              <Text style={[styles.bentoLabel, { color: theme['on-surface-variant'] }]}>DIFFERENCE</Text>
+              <Text style={[styles.bentoLabel, { color: theme['on-surface-variant'] }]}>Difference</Text>
               <Text style={[styles.bentoValue, { color: (targetWeight - currentWeight) < 0 ? '#a83206' : (targetWeight - currentWeight) > 0 ? '#0ea5e9' : '#10b981' }]}>
                 {targetWeight - currentWeight > 0 ? '+' : ''}{(targetWeight - currentWeight).toFixed(1)}<Text style={{ fontSize: 14 }}>kg</Text>
               </Text>
@@ -343,21 +344,15 @@ export default function GoalScreen() {
 
         {/* Final Confirmation Area */}
         <View style={styles.confirmationArea}>
-          <TouchableOpacity
-            style={[styles.completeBtn, { backgroundColor: '#FFFC00', opacity: loading ? 0.7 : 1 }]}
+          <PawtchiButton
+            title="Complete Profile"
+            variant="primary"
+            iconName="check-circle"
+            iconPosition="right"
             onPress={handleComplete}
-            activeOpacity={0.9}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#243036" />
-            ) : (
-              <>
-                <Text style={[styles.completeBtnText, { color: '#243036' }]}>Complete Profile</Text>
-                <MaterialIcons name="check-circle" size={24} color="#243036" />
-              </>
-            )}
-          </TouchableOpacity>
+            loading={loading}
+            style={{ paddingVertical: 24, shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.3, shadowRadius: 24, elevation: 8 }}
+          />
 
           <Text style={[styles.disclaimer, { color: theme['on-surface-variant'] }]}>
             By completing your profile, you agree to our <Text style={[styles.link, { color: theme['on-surface'], textDecorationColor: '#FFFC00' }]}>Health Guidelines</Text> and <Text style={[styles.link, { color: theme['on-surface'], textDecorationColor: '#FFFC00' }]}>Privacy Policy</Text>.

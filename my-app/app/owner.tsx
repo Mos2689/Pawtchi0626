@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../providers/AuthProvider';
+import { PawtchiButton } from '../components/PawtchiButton';
 
 export default function OwnerProfileScreen() {
     const insets = useSafeAreaInsets();
@@ -39,9 +40,12 @@ export default function OwnerProfileScreen() {
                         </View>
                     </View>
 
-                    <TouchableOpacity style={styles.manageBtn} activeOpacity={0.8}>
-                        <Text style={styles.manageBtnText}>Manage Account Details</Text>
-                    </TouchableOpacity>
+                    <PawtchiButton
+                        title="Manage Account Details"
+                        variant="primary"
+                        onPress={() => {}}
+                        style={{ width: '100%' }}
+                    />
                 </View>
             </ScrollView>
         </View>

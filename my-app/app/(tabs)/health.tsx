@@ -6,15 +6,16 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import Svg, { Path, Defs, LinearGradient as SvgLinearGradient, Stop, Circle } from 'react-native-svg';
 import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
+import { PawtchiButton } from '../../components/PawtchiButton';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
-import { usePetContextStore } from '../../store/usePetContextStore';
+import { usePetContextStore, computeDerived } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
@@ -35,7 +36,6 @@ export default function HealthScreen() {
   const { activePet } = useActivePetStore();
   const { awardCoins, pawCoins } = useStreakStore();
   const { user } = useAuth();
-  const router = useRouter();
 
   // Pull rolling weekly balance from central store (computed in refreshTrends)
   const weeklyDelta = usePetContextStore((s) => s.weeklyDelta);
@@ -48,6 +48,8 @@ export default function HealthScreen() {
   const [recentAllergyScans, setRecentAllergyScans] = useState<any[]>([]);
   const [healthInsight, setHealthInsight] = useState<any>(null);
   const [weeklyMacros, setWeeklyMacros] = useState<DayMacro[]>([]);
+  const [weeklyActivity, setWeeklyActivity] = useState<{ day: string; minutes: number; isToday: boolean }[]>([]);
+  const [weeklyHydration, setWeeklyHydration] = useState<{ day: string; ml: number; targetMl: number; isToday: boolean }[]>([]);
   // Loading state for health data fetch
 
   // Weight log modal
@@ -162,10 +164,26 @@ export default function HealthScreen() {
       const lastWeekMins = (actsLastWeek || []).reduce((s, a) => s + (a.duration_minutes || 0), 0);
       setActivityScore({ thisWeek: thisWeekMins, lastWeek: lastWeekMins });
 
+      // Build per-day activity for last 7 days
+      const actDaysArr: { day: string; minutes: number; isToday: boolean }[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        const dayActs = (actsThisWeek || []).filter((a: any) => a.scheduled_date === dateStr);
+        const dayMins = dayActs.reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
+        actDaysArr.push({
+          day: d.toLocaleDateString('en-US', { weekday: 'narrow' }),
+          minutes: dayMins,
+          isToday: i === 0,
+        });
+      }
+      setWeeklyActivity(actDaysArr);
+
       // 4. Hydration: last 7 days average vs target (~50ml/kg)
       const { data: waterLogs } = await supabase
         .from('daily_logs')
-        .select('water_ml')
+        .select('water_ml, log_date')
         .eq('pet_id', activePet.id)
         .gte('log_date', sevenStr)
         .lte('log_date', todayStr);
@@ -175,6 +193,22 @@ export default function HealthScreen() {
       const avgMl = Math.round(totalWater / daysWithData);
       const targetMl = Math.round((activePet.current_weight_kg || 10) * 50);
       setHydrationScore({ avgMl, targetMl });
+
+      // Build per-day hydration for last 7 days
+      const hydDaysArr: { day: string; ml: number; targetMl: number; isToday: boolean }[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        const dayLog = (waterLogs || []).find((l: any) => l.log_date === dateStr);
+        hydDaysArr.push({
+          day: d.toLocaleDateString('en-US', { weekday: 'narrow' }),
+          ml: dayLog?.water_ml || 0,
+          targetMl,
+          isToday: i === 0,
+        });
+      }
+      setWeeklyHydration(hydDaysArr);
 
       // 5. Latest AI insight
       const { data: insight } = await supabase
@@ -318,7 +352,6 @@ export default function HealthScreen() {
   const saveWeightLog = async () => {
     const weight = parseFloat(weightInput);
     if (isNaN(weight) || weight <= 0) {
-      // Show branded error modal via inline state
       return;
     }
     if (!activePet) return;
@@ -329,13 +362,6 @@ export default function HealthScreen() {
       const prevWeight = activePet.current_weight_kg ?? null;
       const prevGoal = deriveGoal(prevWeight ?? weight, activePet.target_weight_kg);
       const prevCalories = activePet.target_daily_calories ?? 0;
-
-      await supabase.from('weight_logs').insert({
-        pet_id: activePet.id,
-        weight_kg: weight,
-        notes: weightNotes || null,
-        source: 'manual',
-      });
 
       // Recalculate daily calorie target based on new weight
       const goal = deriveGoal(weight, activePet.target_weight_kg);
@@ -350,59 +376,27 @@ export default function HealthScreen() {
         activePet.target_weight_kg,
       );
 
-      // Update pet's current weight and recalculated calorie target
+      // ---- HOT RELOAD: Optimistic UI update (instant, no flicker) ----
+      // Update pet store immediately so home tab and all listeners see new weight + calories
+      useActivePetStore.getState().updatePetWeight(weight, newCalories);
+
+      // Persist weight log to DB
+      await supabase.from('weight_logs').insert({
+        pet_id: activePet.id,
+        weight_kg: weight,
+        notes: weightNotes || null,
+        source: 'manual',
+      });
+
+      // Persist pet profile update to DB
       await supabase.from('pets').update({
         current_weight_kg: weight,
         target_daily_calories: newCalories,
       }).eq('id', activePet.id);
 
-      // Refresh pet store so home screen sees updated target
-      if (user?.id) {
-        await useActivePetStore.getState().fetchPet(user.id);
-      }
-
-      // Refresh context store so dynamic budget recalculates with new weight trend
-      if (activePet.id) {
-        usePetContextStore.getState().refreshTrends(activePet.id);
-        usePetContextStore.getState().refreshToday(activePet.id);
-      }
-
-      // Auto-regenerate activity schedule when the weight change is meaningful:
-      // either ≥0.3kg movement OR the goal direction has flipped (e.g. lose → maintain).
-      // Otherwise the user is stuck with a schedule designed for last week's pet.
-      const weightDeltaKg = prevWeight !== null ? Math.abs(weight - prevWeight) : 0;
-      const goalFlipped = prevGoal !== goal;
-      let scheduleRegenerated = false;
-      if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
-        const ctx = usePetContextStore.getState();
-        const refreshed = useActivePetStore.getState().activePet ?? activePet;
-        const result = await regenerateSchedule({
-          pet: refreshed,
-          weeklyStats: null, // no per-week stats accessible here; lib handles defaults
-          todayCalPercent: ctx.calPercent,
-          weightTrendDirection: ctx.weightTrend?.direction ?? null,
-        });
-        scheduleRegenerated = result.success;
-
-        // Update today's pending water activities with the new water target
-        // so they reflect the correct ml amount (weight * 50 / 3 sessions)
-        if (scheduleRegenerated) {
-          const newWaterPerSession = Math.round(weight * 50 / 3);
-          const todayStr = getLocalYMD(new Date());
-          await supabase
-            .from('activities')
-            .update({ water_ml: newWaterPerSession })
-            .eq('pet_id', activePet.id)
-            .eq('activity_type', 'water')
-            .eq('scheduled_date', todayStr)
-            .eq('status', 'pending');
-        }
-      }
-
       setShowWeightModal(false);
       setWeightInput('');
       setWeightNotes('');
-      fetchHealthData();
 
       // Build branded success data
       const weightDiff = prevWeight !== null ? (weight - prevWeight) : null;
@@ -417,7 +411,7 @@ export default function HealthScreen() {
         newCalories,
         calorieDiff,
         weightDiff,
-        scheduleRegenerated,
+        scheduleRegenerated: false,
         goal,
       });
       setShowWeightSuccess(true);
@@ -426,15 +420,86 @@ export default function HealthScreen() {
       if (user?.id) {
         awardCoins(user.id, 'weight_log');
       }
+
+      // ---- BACKGROUND SYNC: Update weight logs UI without full refresh ----
+      const newLog = {
+        id: `temp-${Date.now()}`,
+        pet_id: activePet.id,
+        weight_kg: weight,
+        notes: weightNotes || null,
+        logged_at: new Date().toISOString(),
+        source: 'manual',
+      };
+      setWeightLogs(prev => [newLog, ...prev]);
+
+      // Recalculate derived data in context store without triggering loading states
+      const ctx = usePetContextStore.getState();
+      const todayDataNow = {
+        todayCalories: ctx.todayCalories,
+        todayWater: ctx.todayWater,
+        todayWalks: ctx.todayWalks,
+        treatsConsumed: ctx.treatsConsumed,
+        treatCaloriesConsumed: ctx.treatCaloriesConsumed,
+        todayScans: ctx.todayScans,
+        nextActivity: ctx.nextActivity,
+        todayActivityMinutes: ctx.todayActivityMinutes,
+        activityCompletionRate: ctx.activityCompletionRate,
+        todayProtein: ctx.todayProtein,
+        todayCarbs: ctx.todayCarbs,
+        todayFats: ctx.todayFats,
+      };
+      const petWithNewWeight = { ...activePet, current_weight_kg: weight, target_daily_calories: newCalories };
+      const derived = computeDerived(
+        todayDataNow,
+        petWithNewWeight,
+        ctx.weightTrend,
+        ctx.weeklyDelta,
+      );
+      usePetContextStore.setState({ ...derived });
+
+      // ---- SCHEDULE REGENERATION: When weight change is meaningful ----
+      // Either ≥0.3kg movement OR the goal direction has flipped (e.g. lose → maintain).
+      const weightDeltaKg = prevWeight !== null ? Math.abs(weight - prevWeight) : 0;
+      const goalFlipped = prevGoal !== goal;
+      let scheduleRegenerated = false;
+      if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
+        const refreshed = useActivePetStore.getState().activePet ?? activePet;
+        const result = await regenerateSchedule({
+          pet: refreshed,
+          weeklyStats: null,
+          todayCalPercent: derived.calPercent,
+          weightTrendDirection: ctx.weightTrend?.direction ?? null,
+        });
+        scheduleRegenerated = result.success;
+
+        if (scheduleRegenerated) {
+          const newWaterPerSession = Math.round(weight * 50 / 3);
+          const todayStr = getLocalYMD(new Date());
+          await supabase
+            .from('activities')
+            .update({ water_ml: newWaterPerSession })
+            .eq('pet_id', activePet.id)
+            .eq('activity_type', 'water')
+            .eq('scheduled_date', todayStr)
+            .eq('status', 'pending');
+
+          // Update success data to reflect schedule regeneration
+          setWeightSuccessData(prev => prev ? { ...prev, scheduleRegenerated: true } : null);
+        }
+      }
     } catch (e: any) {
-      // silently fail — modal shows on success only
+      // Revert optimistic update on failure
+      if (user?.id) {
+        await useActivePetStore.getState().fetchPet(user.id);
+      }
     } finally {
       setIsSavingWeight(false);
     }
   };
 
   // Computed values
-  const currentWeight = weightLogs.length > 0 ? weightLogs[0].weight_kg : activePet?.current_weight_kg || 0;
+  const currentWeight = weightLogs.length > 0 ? weightLogs[0].weight_kg : null;
+  const hasWeightData = currentWeight !== null;
   const weightDelta = weightLogs.length >= 2
     ? (weightLogs[0].weight_kg - weightLogs[weightLogs.length - 1].weight_kg).toFixed(1)
     : null;
@@ -451,9 +516,9 @@ export default function HealthScreen() {
 
   // Weight goal progress
   const hasWeightGoal = activePet?.target_weight_kg && activePet.target_weight_kg !== activePet.current_weight_kg;
-  const weightGoalPct = hasWeightGoal
+  const weightGoalPct = hasWeightGoal && hasWeightData
     ? Math.min(Math.round(
-      Math.abs(1 - (Math.abs(currentWeight - activePet!.target_weight_kg!) /
+      Math.abs(1 - (Math.abs((currentWeight ?? activePet!.current_weight_kg!) - activePet!.target_weight_kg!) /
         Math.abs((weightLogs[weightLogs.length - 1]?.weight_kg || activePet!.current_weight_kg) - activePet!.target_weight_kg!))) * 100
     ), 100)
     : 0;
@@ -473,7 +538,7 @@ export default function HealthScreen() {
           <Text style={[styles.headerTitle, { color: '#000000' }]}>PAWTCHI</Text>
         </View>
         <View style={[styles.coinPill, { backgroundColor: '#f5f5f5' }]}>
-          <MaterialIcons name="stars" size={16} color="#755700" />
+          <MaterialIcons name="workspace-premium" size={16} color="#755700" />
           <Text style={[styles.coinText, { color: '#2e2f2d' }]}>{pawCoins.toLocaleString()} PawCoins</Text>
         </View>
       </View>
@@ -482,426 +547,356 @@ export default function HealthScreen() {
 
         {/* Hero Section */}
         <View style={styles.heroSection}>
-          <Text style={[styles.heroTitle, { color: '#2e2f2d' }]}>Health Hub</Text>
-          <Text style={[styles.heroSub, { color: '#5b5c5a' }]}>
-            Monitoring {activePet?.name || 'your pet'}&apos;s vitals.
+          <Text style={[styles.heroTitle, { color: '#000407' }]}>Health Overview</Text>
+          <Text style={[styles.heroSub, { color: '#42474b' }]}>
+            Tracking {activePet?.name || 'your pet'}&apos;s vitals and nutrition.
           </Text>
         </View>
 
-        {/* AI Health Insight Card */}
-        <TouchableOpacity
-          style={styles.insightCard}
-          onPress={!healthInsight ? generateHealthInsight : undefined}
-          activeOpacity={healthInsight ? 1 : 0.9}
-        >
-          <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.insightGradient}>
-            <View style={styles.insightTop}>
-              <View style={styles.insightBadge}>
-                <MaterialIcons name="auto-awesome" size={14} color="#fac129" />
-                <Text style={styles.insightBadgeText}>WEEKLY REFLECTION</Text>
-              </View>
-              {healthInsight ? (
-                <TouchableOpacity onPress={generateHealthInsight} disabled={isGeneratingInsight}>
-                  <MaterialIcons name="refresh" size={20} color={isGeneratingInsight ? '#475569' : '#94a3b8'} />
-                </TouchableOpacity>
-              ) : null}
+        {/* Target Weight Goal (Moved up) */}
+        {hasWeightGoal && (
+          <View style={[styles.card, { marginBottom: 24 }]}>
+            <Text style={styles.cardEyebrow}>TARGET WEIGHT GOAL</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Text style={[styles.bodyText, { color: '#000407' }]}>
+                Current: {Number(activePet?.current_weight_kg || 0).toFixed(1)} kg
+              </Text>
+              <Text style={[styles.bodyText, { color: '#000407', fontWeight: '700' }]}>
+                Goal: {Number(activePet?.target_weight_kg || 0).toFixed(1)} kg
+              </Text>
             </View>
-            {isGeneratingInsight ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
-                <ActivityIndicator color="#fac129" />
-                <Text style={styles.insightText}>Analyzing {activePet?.name || 'your pet'}&apos;s health data...</Text>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${Math.max(weightGoalPct, 5)}%`, backgroundColor: '#000407' }]}>
+                <View style={styles.progressIndicator} />
               </View>
-            ) : healthInsight?.insight_data ? (
-              <>
-                {/* Structured Insight */}
-                <Text style={[styles.insightText, { fontSize: 17, fontWeight: '800', marginBottom: 16 }]}>
-                  {healthInsight.insight_data.headline}
-                </Text>
-
-                {/* Wins */}
-                {healthInsight.insight_data.wins?.length > 0 && (
-                  <View style={{ marginBottom: 12 }}>
-                    {healthInsight.insight_data.wins.map((win: string, i: number) => (
-                      <View key={`win-${i}`} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                        <Text style={{ fontSize: 14, marginTop: 1 }}>✅</Text>
-                        <Text style={[styles.insightText, { flex: 1, fontSize: 14 }]}>{win}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Concerns */}
-                {healthInsight.insight_data.concerns?.length > 0 && (
-                  <View style={{ marginBottom: 12 }}>
-                    {healthInsight.insight_data.concerns.map((concern: string, i: number) => (
-                      <View key={`concern-${i}`} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                        <Text style={{ fontSize: 14, marginTop: 1 }}>⚠️</Text>
-                        <Text style={[styles.insightText, { flex: 1, fontSize: 14, color: '#fbbf24' }]}>{concern}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Actionable Tip */}
-                {healthInsight.insight_data.tip && (
-                  <View style={{
-                    backgroundColor: 'rgba(250,193,41,0.1)',
-                    borderRadius: 14,
-                    padding: 14,
-                    marginBottom: 12,
-                    borderLeftWidth: 3,
-                    borderLeftColor: '#fac129',
-                  }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                      <MaterialIcons name="lightbulb" size={16} color="#fac129" />
-                      <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 12, color: '#fac129', letterSpacing: 0.5 }}>
-                        THIS WEEK&apos;S TIP
-                      </Text>
-                    </View>
-                    <Text style={[styles.insightText, { fontSize: 14 }]}>{healthInsight.insight_data.tip}</Text>
-                  </View>
-                )}
-
-                {/* Comparison Chips */}
-                {healthInsight.insight_data.comparison && (
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-                    {[
-                      { label: 'Calories', value: healthInsight.insight_data.comparison.caloriesVsLastWeek, icon: 'restaurant' },
-                      { label: 'Activity', value: healthInsight.insight_data.comparison.activityVsLastWeek, icon: 'directions-run' },
-                      { label: 'Water', value: healthInsight.insight_data.comparison.waterVsLastWeek, icon: 'water-drop' },
-                    ].filter(c => c.value && c.value !== 'N/A').map((chip) => {
-                      const isPositive = chip.label === 'Calories'
-                        ? chip.value.startsWith('-') // less calories = good (if trying to lose)
-                        : chip.value.startsWith('+') || !chip.value.startsWith('-'); // more activity/water = good
-                      return (
-                        <View key={chip.label} style={{
-                          flexDirection: 'row', alignItems: 'center', gap: 6,
-                          backgroundColor: 'rgba(255,255,255,0.08)',
-                          paddingHorizontal: 12, paddingVertical: 6,
-                          borderRadius: 12,
-                        }}>
-                          <MaterialIcons name={chip.icon as any} size={14} color="#94a3b8" />
-                          <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, color: '#94a3b8' }}>
-                            {chip.label}
-                          </Text>
-                          <Text style={{
-                            fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 12,
-                            color: chip.value === '0%' || chip.value === '+0%' ? '#94a3b8' : isPositive ? '#4ade80' : '#fb923c',
-                          }}>
-                            {chip.value}
-                          </Text>
-                        </View>
-                      );
-                    })}
-                  </View>
-                )}
-
-                <Text style={[styles.insightTime, { marginTop: 4 }]}>
-                  Generated {new Date(healthInsight.generated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-                </Text>
-              </>
-            ) : healthInsight ? (
-              <>
-                {/* Fallback: plain text insight (backward compatible) */}
-                <Text style={styles.insightText}>{healthInsight.insight_text}</Text>
-                <Text style={[styles.insightTime, { marginTop: 12 }]}>
-                  Generated {new Date(healthInsight.generated_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-                </Text>
-              </>
-            ) : (
-              <View style={{ alignItems: 'center', paddingVertical: 12 }}>
-                <MaterialIcons name="psychology" size={32} color="#475569" />
-                <Text style={[styles.insightText, { textAlign: 'center', marginTop: 8 }]}>Tap to generate your first weekly reflection</Text>
-              </View>
-            )}
-          </LinearGradient>
-        </TouchableOpacity>
+            </View>
+            <Text style={[styles.smallText, { textAlign: 'right', marginTop: 4, color: '#42474b' }]}>
+              {Math.abs((activePet?.current_weight_kg || 0) - (activePet?.target_weight_kg || 0)).toFixed(1)} kg remaining
+            </Text>
+          </View>
+        )}
 
         {/* Weekly Nutrition Chart */}
         {weeklyMacros.length > 0 && (
-          <>
+          <View style={{ marginBottom: 24, position: 'relative' }}>
             {weeklyDelta !== null && weeklyTarget !== null && (
-              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 8, marginBottom: 4, paddingHorizontal: 4 }}>
-                <View style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 999,
-                  backgroundColor: Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#dcfce7'
-                    : weeklyDelta > 0 ? '#fee2e2' : '#fef3c7',
+              <View style={{
+                position: 'absolute', top: 20, right: 20, zIndex: 10,
+                flexDirection: 'row', alignItems: 'center', gap: 4,
+                paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12,
+                backgroundColor: Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#dcfce7'
+                  : weeklyDelta > 0 ? '#fee2e2' : '#fef3c7',
+              }}>
+                <MaterialIcons
+                  name={Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? 'check-circle'
+                    : weeklyDelta > 0 ? 'trending-up' : 'trending-down'}
+                  size={12}
+                  color={Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#15803d'
+                    : weeklyDelta > 0 ? '#b91c1c' : '#a16207'}
+                />
+                <Text style={{
+                  fontFamily: 'Plus Jakarta Sans', fontSize: 10, fontWeight: '700',
+                  color: Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#15803d'
+                    : weeklyDelta > 0 ? '#b91c1c' : '#a16207',
                 }}>
-                  <MaterialIcons
-                    name={Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? 'check-circle'
-                      : weeklyDelta > 0 ? 'trending-up' : 'trending-down'}
-                    size={13}
-                    color={Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#15803d'
-                      : weeklyDelta > 0 ? '#b91c1c' : '#a16207'}
-                  />
-                  <Text style={{
-                    fontFamily: 'Plus Jakarta Sans',
-                    fontSize: 11,
-                    fontWeight: '700',
-                    color: Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? '#15803d'
-                      : weeklyDelta > 0 ? '#b91c1c' : '#a16207',
-                  }}>
-                    {Math.abs(weeklyDelta) < weeklyTarget * 0.05
-                      ? 'Week on track'
-                      : `Week ${weeklyDelta > 0 ? '+' : ''}${Math.round(weeklyDelta)} kcal`}
-                  </Text>
-                </View>
+                  {Math.abs(weeklyDelta) < weeklyTarget * 0.05 ? 'On track' : `${weeklyDelta > 0 ? '+' : ''}${Math.round(weeklyDelta)} kcal`}
+                </Text>
               </View>
             )}
             <WeeklyNutritionChart data={weeklyMacros} />
-          </>
+          </View>
         )}
 
-        {/* Bento Grid — Live Vitals */}
+        {/* Bento Grid */}
         <View style={styles.bentoGrid}>
-          <View style={styles.bentoRow}>
-
-            {/* Weight Card — LIVE */}
-            <View style={[styles.weightCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
+          {/* Weight Trend */}
+          <View style={[styles.card, styles.bentoCard]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <View>
-                <View style={styles.weightHeader}>
-                  <Text style={[styles.weightLabel, { color: '#5b5c5a' }]}>WEIGHT</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <Text style={styles.cardEyebrow}>WEIGHT</Text>
                   {weightDelta !== null && (
                     <View style={[styles.weightBadge, {
-                      backgroundColor: parseFloat(weightDelta) <= 0 ? '#FFFC00' : '#fee2e2'
+                      backgroundColor: parseFloat(weightDelta) <= 0 ? '#e5eeff' : '#fee2e2'
                     }]}>
                       <Text style={[styles.weightBadgeText, {
-                        color: parseFloat(weightDelta) <= 0 ? '#5b5a00' : '#b91c1c'
+                        color: parseFloat(weightDelta) <= 0 ? '#000407' : '#b91c1c'
                       }]}>
                         {parseFloat(weightDelta) > 0 ? '+' : ''}{weightDelta}kg
                       </Text>
                     </View>
                   )}
                 </View>
-                <View style={styles.weightValueRow}>
-                  <Text style={[styles.weightValue, { color: '#2e2f2d' }]}>{Number(currentWeight).toFixed(1)}</Text>
-                  <Text style={[styles.weightUnit, { color: '#5b5c5a' }]}>kg</Text>
-                </View>
-              </View>
-
-              {/* Sparkline from weight logs */}
-              <View style={styles.chartContainer}>
-                {weightLogs.length > 0 ? (
-                  [...weightLogs].reverse().map((log, i) => {
-                    const maxW = Math.max(...weightLogs.map(l => l.weight_kg));
-                    const minW = Math.min(...weightLogs.map(l => l.weight_kg));
-                    const range = maxW - minW || 1;
-                    const pct = ((log.weight_kg - minW) / range) * 70 + 30;
-                    const isLast = i === weightLogs.length - 1;
-                    return isLast ? (
-                      <LinearGradient key={i} colors={['#FFFC00', '#fac129']} style={[styles.barGradient, { height: `${pct}%` }]} />
-                    ) : (
-                      <View key={i} style={[styles.bar, { height: `${pct}%`, backgroundColor: '#ddddd9' }]} />
-                    );
-                  })
+                {hasWeightData ? (
+                  <Text style={[styles.metricValue, { color: '#000407' }]}>
+                    {Number(currentWeight).toFixed(1)} <Text style={styles.metricUnit}>kg</Text>
+                  </Text>
                 ) : (
-                  <>
-                    <View style={[styles.bar, { height: '50%', backgroundColor: '#ddddd9' }]} />
-                    <LinearGradient colors={['#FFFC00', '#fac129']} style={[styles.barGradient, { height: '100%' }]} />
-                  </>
+                  <Text style={[styles.metricValue, { color: '#94a3b8', fontSize: 16 }]}>No data</Text>
                 )}
               </View>
-
-              {/* Log Weight Button */}
               <TouchableOpacity
-                style={styles.logWeightBtn}
-                onPress={() => { setWeightInput(String(currentWeight)); setShowWeightModal(true); }}
-                activeOpacity={0.8}
+                style={styles.logBtnBlack}
+                onPress={() => {
+                  const defaultWeight = activePet?.current_weight_kg || undefined;
+                  setWeightInput(defaultWeight ? String(defaultWeight) : '');
+                  setShowWeightModal(true);
+                }}
               >
-                <MaterialIcons name="add" size={16} color="#1A1A1A" />
-                <Text style={styles.logWeightText}>LOG WEIGHT</Text>
+                <Text style={styles.logBtnTextYellow}>+ Log Weight</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Right Column: Active Navigation Card */}
-            <View style={styles.metricsColumn}>
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => router.push('/routine' as any)}
-                style={[styles.squareCard, { backgroundColor: '#f1f5f9', borderColor: 'rgba(0,0,0,0.05)', flex: 1, justifyContent: 'space-between', minHeight: 260 }]}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                  <View style={{ backgroundColor: '#e2e8f0', padding: 8, borderRadius: 12 }}>
-                    <MaterialIcons name="directions-run" size={24} color="#0f172a" />
-                  </View>
-                  <MaterialIcons
-                    name={activityTrend === 'up' ? 'trending-up' : activityTrend === 'down' ? 'trending-down' : 'trending-flat'}
-                    size={22}
-                    color={activityTrend === 'up' ? '#16a34a' : activityTrend === 'down' ? '#dc2626' : '#94a3b8'}
-                  />
+            <View style={[styles.chartContainer, { width: '100%', marginTop: 24, paddingHorizontal: 0, height: 80, position: 'relative' }]}>
+              {hasWeightData ? (
+                <>{(() => {
+                const logs = [...weightLogs].reverse();
+                if (logs.length === 1) logs.push({...logs[0]}); // Need at least 2 points
+                const maxW = Math.max(...logs.map(l => l.weight_kg));
+                const minW = Math.min(...logs.map(l => l.weight_kg));
+                const range = maxW - minW || 1;
+                const pts = logs.map((log, i) => {
+                  const pctX = i / (logs.length - 1);
+                  const x = 20 + pctX * 260;
+                  const y = 55 - (((log.weight_kg - minW) / range) * 25);
+                  const dateObj = new Date(log.logged_at || new Date());
+                  const dateStr = `${dateObj.getDate()} ${dateObj.toLocaleString('en-US', { month: 'short' })}`;
+                  return { x, y, pctX, weight: log.weight_kg, dateStr };
+                });
+                const dLine = `M ${pts.map(p => `${p.x},${p.y}`).join(' L ')}`;
+                const dFill = `${dLine} L 280,60 L 20,60 Z`;
+                return (
+                  <>
+                    <Svg width="100%" height="80" viewBox="0 0 300 80" preserveAspectRatio="none" style={{ position: 'absolute', top: 0, left: 0 }}>
+                      <Defs>
+                        <SvgLinearGradient id="riverGrad" x1="0" y1="0" x2="0" y2="1">
+                          <Stop offset="0" stopColor="#000407" stopOpacity="0.15" />
+                          <Stop offset="1" stopColor="#000407" stopOpacity="0" />
+                        </SvgLinearGradient>
+                      </Defs>
+                      <Path d={dFill} fill="url(#riverGrad)" />
+                      <Path d={dLine} stroke="#000407" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      {pts.map((p, i) => (
+                        <Circle
+                          key={i}
+                          cx={p.x}
+                          cy={p.y}
+                          r={i === pts.length - 1 ? 4 : 2}
+                          fill={i === pts.length - 1 ? '#FFFC00' : '#000407'}
+                          stroke="#000407"
+                          strokeWidth={i === pts.length - 1 ? 2 : 0}
+                        />
+                      ))}
+                    </Svg>
+                    {pts.map((p, i) => (
+                      <View
+                        key={`label-${i}`}
+                        style={{
+                          position: 'absolute',
+                          left: `${(20 / 300) * 100 + p.pctX * ((260 / 300) * 100)}%`,
+                          top: 0,
+                          bottom: 0,
+                          width: 40,
+                          marginLeft: -20,
+                          alignItems: 'center'
+                        }}
+                      >
+                        <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 10, color: '#000407', position: 'absolute', top: p.y - 18 }}>
+                          {p.weight}
+                        </Text>
+                        <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 9, color: '#42474b', position: 'absolute', bottom: 4 }}>
+                          {p.dateStr}
+                        </Text>
+                      </View>
+                    ))}
+                  </>
+                );
+              })()}</>
+              ) : (
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 12, color: '#94a3b8', textAlign: 'center' }}>
+                    Log your first weight to see trends
+                  </Text>
                 </View>
-
-                <View>
-                  <Text style={[styles.metricValue, { color: '#0f172a', fontSize: 32 }]}>{activityHrs}h</Text>
-                  <Text style={[styles.metricLabel, { color: '#64748b', fontSize: 13 }]}>ACTIVE THIS WEEK</Text>
-                </View>
-
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ffffff', alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 }}>
-                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 12, fontWeight: '700', color: '#0f172a' }}>View Routines</Text>
-                  <MaterialIcons name="arrow-forward" size={14} color="#0f172a" />
-                </View>
-              </TouchableOpacity>
+              )}
             </View>
           </View>
 
-          {/* Hydration Card */}
-          <View style={[styles.hydrationCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
-            <View style={styles.hydrationLeft}>
-              <LinearGradient colors={['#3b82f6', '#60a5fa']} style={styles.hydrationIconBg}>
-                <MaterialIcons name="water-drop" size={24} color="#FFFFFF" />
-              </LinearGradient>
+          {/* Activity Progress */}
+          <View style={[styles.card, styles.bentoCard]}>
+            <Text style={styles.cardEyebrow}>ACTIVITY</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 12 }}>
               <View>
-                <Text style={[styles.hydrationTitle, { color: '#2e2f2d' }]}>Hydration</Text>
-                <Text style={[styles.hydrationSub, { color: '#5b5c5a' }]}>
-                  Avg {hydrationScore?.avgMl || 0}ml / {hydrationScore?.targetMl || 0}ml target
+                <Text style={[styles.metricValue, { color: '#000407' }]}>
+                  {Math.round(activityScore ? activityScore.thisWeek / 7 : 0)} <Text style={styles.metricUnit}>min</Text>
                 </Text>
+                <Text style={styles.activitySub}>avg / day this week</Text>
+              </View>
+              <View style={styles.circularIndicator}>
+                <MaterialIcons name="pets" size={24} color="#000407" />
               </View>
             </View>
-            <View style={styles.hydrationRight}>
-              <Text style={[styles.hydrationPct, { color: hydrationPct >= 80 ? '#16a34a' : hydrationPct >= 50 ? '#ca8a04' : '#dc2626' }]}>
-                {hydrationPct}%
-              </Text>
+            {/* 7-day bar chart */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 48, marginTop: 8 }}>
+              {weeklyActivity.map((d, i) => {
+                const maxMins = Math.max(...weeklyActivity.map(x => x.minutes), 60);
+                const heightPct = maxMins > 0 ? (d.minutes / maxMins) * 40 : 0;
+                return (
+                  <View key={i} style={{ alignItems: 'center', flex: 1 }}>
+                    <View style={{
+                      width: 20,
+                      height: Math.max(heightPct, 2),
+                      backgroundColor: d.isToday ? '#FFFC00' : '#e5e7eb',
+                      borderRadius: 4,
+                      marginBottom: 4,
+                    }} />
+                    <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 9, fontWeight: d.isToday ? '800' : '500', color: d.isToday ? '#000407' : '#94a3b8' }}>
+                      {d.day}
+                    </Text>
+                  </View>
+                );
+              })}
             </View>
           </View>
         </View>
 
-        {/* Weight Goal Progress */}
-        {hasWeightGoal && (
-          <View style={styles.goalSection}>
-            <Text style={[styles.sectionTitle, { color: '#2e2f2d' }]}>Weight Goal</Text>
-            <View style={[styles.goalCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
-              <View style={styles.goalRow}>
-                <View style={{ alignItems: 'center' }}>
-                  <Text style={[styles.goalWeight, { color: '#5b5c5a' }]}>{Number(activePet?.current_weight_kg || 0).toFixed(1)}</Text>
-                  <Text style={[styles.goalLabel, { color: '#94a3b8' }]}>Current</Text>
-                </View>
-                <View style={styles.goalBarContainer}>
-                  <View style={styles.goalBarBg}>
-                    <LinearGradient
-                      colors={['#FFFC00', '#fac129']}
-                      style={[styles.goalBarFill, { width: `${Math.max(weightGoalPct, 5)}%` }]}
-                    />
-                  </View>
-                  <Text style={[styles.goalPctText, { color: '#5b5c5a' }]}>{weightGoalPct}%</Text>
-                </View>
-                <View style={{ alignItems: 'center' }}>
-                  <Text style={[styles.goalWeight, { color: '#2e2f2d' }]}>{Number(activePet?.target_weight_kg || 0).toFixed(1)}</Text>
-                  <Text style={[styles.goalLabel, { color: '#94a3b8' }]}>Target</Text>
-                </View>
-              </View>
-            </View>
+        {/* Weekly Reflection */}
+        <TouchableOpacity
+          style={[styles.card, { backgroundColor: '#eff4ff', marginBottom: 24 }]}
+          onPress={!healthInsight ? generateHealthInsight : undefined}
+          activeOpacity={healthInsight ? 1 : 0.9}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <MaterialIcons name="auto-awesome" size={20} color="#000407" />
+            <Text style={[styles.cardTitle, { color: '#000407', flex: 1 }]}>Weekly Reflection</Text>
+            {healthInsight && (
+              <TouchableOpacity onPress={generateHealthInsight} disabled={isGeneratingInsight}>
+                <MaterialIcons name="refresh" size={20} color={isGeneratingInsight ? '#94a3b8' : '#000407'} />
+              </TouchableOpacity>
+            )}
           </View>
-        )}
+          
+          {isGeneratingInsight ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
+              <ActivityIndicator color="#000407" />
+              <Text style={[styles.bodyText, { color: '#42474b' }]}>Analyzing {activePet?.name || 'your pet'}&apos;s data...</Text>
+            </View>
+          ) : healthInsight?.insight_data ? (
+            <>
+              <Text style={[styles.bodyText, { color: '#42474b', marginBottom: 16, lineHeight: 22 }]}>
+                {healthInsight.insight_data.headline}
+              </Text>
+              <View style={{ borderTopWidth: 1, borderTopColor: 'rgba(0,4,7,0.1)', paddingTop: 12, marginTop: 4 }}>
+                <Text style={[styles.cardEyebrow, { color: '#000407' }]}>RECOMMENDATION</Text>
+                <Text style={[styles.smallText, { color: '#42474b', marginTop: 4, lineHeight: 18 }]}>
+                   {healthInsight.insight_data.tip || "Maintain current routine based on this week's data."}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <View style={{ alignItems: 'center', paddingVertical: 12 }}>
+              <Text style={[styles.bodyText, { textAlign: 'center', color: '#42474b' }]}>Tap to generate reflection</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
+        {/* Hydration */}
+        <View style={[styles.card, { marginBottom: 24 }]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <Text style={styles.cardEyebrow}>HYDRATION</Text>
+            <MaterialIcons name="water-drop" size={20} color="#b2cad7" />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+            <Text style={[styles.metricValue, { color: '#000407' }]}>{((hydrationScore?.avgMl || 0) / 1000).toFixed(1)}</Text>
+            <Text style={[styles.bodyText, { color: '#42474b' }]}>/ {((hydrationScore?.targetMl || 0) / 1000).toFixed(1)} Litres</Text>
+          </View>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${hydrationPct}%`, backgroundColor: '#b2cad7' }]} />
+          </View>
+          {/* 7-day bar chart */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 48, marginTop: 16 }}>
+            {weeklyHydration.map((d, i) => {
+              const maxMl = d.targetMl > 0 ? d.targetMl : 1000;
+              const heightPct = maxMl > 0 ? (d.ml / maxMl) * 40 : 0;
+              const metTarget = d.ml >= d.targetMl * 0.9;
+              return (
+                <View key={i} style={{ alignItems: 'center', flex: 1 }}>
+                  <View style={{
+                    width: 20,
+                    height: Math.max(heightPct, 2),
+                    backgroundColor: d.isToday ? '#FFFC00' : metTarget ? '#b2cad7' : '#e5e7eb',
+                    borderRadius: 4,
+                    marginBottom: 4,
+                  }} />
+                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 9, fontWeight: d.isToday ? '800' : '500', color: d.isToday ? '#000407' : '#94a3b8' }}>
+                    {d.day}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
 
         {/* Allergy Watchdog */}
         {recentAllergyScans.length > 0 && (
-          <View style={styles.allergySection}>
-            <View style={styles.allergyHeader}>
-              <MaterialIcons name="warning" size={20} color="#dc2626" />
-              <Text style={[styles.sectionTitle, { color: '#2e2f2d', marginBottom: 0 }]}>Allergy Watchdog</Text>
-            </View>
-            <View style={styles.allergyList}>
-              {recentAllergyScans.map(scan => (
-                <View key={scan.id} style={[styles.allergyItem, { backgroundColor: '#fef2f2', borderColor: '#fecaca' }]}>
-                  <View style={styles.allergyItemLeft}>
-                    <MaterialIcons name="no-food" size={20} color="#dc2626" />
-                    <View>
-                      <Text style={[styles.allergyFood, { color: '#991b1b' }]}>{scan.ai_identified_food}</Text>
-                      <Text style={[styles.allergyDate, { color: '#b91c1c' }]}>
-                        {new Date(scan.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={[styles.allergyCal, { color: '#991b1b' }]}>{scan.ai_estimated_calories} kcal</Text>
-                </View>
-              ))}
+          <View style={[styles.card, { backgroundColor: '#fee2e2', borderColor: '#fca5a5', marginBottom: 24 }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+              <MaterialIcons name="warning" size={24} color="#b91c1c" style={{ marginTop: 2 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.cardTitle, { color: '#7f1d1d', marginBottom: 4 }]}>Allergy Watchdog</Text>
+                <Text style={[styles.bodyText, { color: '#991b1b', lineHeight: 20 }]}>
+                  Allergen detected in recent foods: {recentAllergyScans.map(s => s.ai_identified_food).join(', ')}.
+                </Text>
+              </View>
             </View>
           </View>
         )}
 
         {/* Vet Records */}
         {vetReports.length > 0 && (
-          <View style={styles.vetRecordsSection}>
-            <Text style={[styles.sectionTitle, { color: '#2e2f2d' }]}>Vet Records</Text>
+          <View style={{ marginBottom: 24 }}>
+            <Text style={[styles.sectionTitle, { color: '#000407', marginBottom: 12 }]}>Vet Records</Text>
             <View style={{ gap: 12 }}>
               {vetReports.map(report => {
                 const d = report.ai_extracted_data || {};
                 const freshness = getReportFreshness(report.report_date);
                 return (
-                  <View key={report.id} style={[styles.vetRecordCard, { backgroundColor: '#f5f5f5', borderColor: 'rgba(0,0,0,0.05)' }]}>
-                    <View style={styles.vetRecordTop}>
-                      <View style={styles.vetRecordTopLeft}>
-                        <MaterialIcons name="description" size={24} color="#fac129" />
+                  <View key={report.id} style={styles.card}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                        <View style={{ backgroundColor: '#eff4ff', padding: 8, borderRadius: 12 }}>
+                          <MaterialIcons name="description" size={20} color="#000407" />
+                        </View>
                         <View>
-                          <Text style={[styles.vetRecordDate, { color: '#2e2f2d' }]}>
+                          <Text style={[styles.bodyText, { color: '#000407', fontWeight: '700' }]}>
                             {new Date(report.report_date).toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' })}
                           </Text>
-                          <Text style={[styles.vetRecordSource, { color: '#94a3b8' }]}>
+                          <Text style={[styles.smallText, { color: '#42474b' }]}>
                             {report.image_url === 'uploaded_scan' ? 'AI Scanned' : 'Manual'}
                           </Text>
                         </View>
                       </View>
                       {d.weight_kg && (
-                        <View style={[styles.vetWeightChip, { backgroundColor: '#FFFC00' }]}>
-                          <Text style={styles.vetWeightText}>{d.weight_kg} kg</Text>
+                        <View style={[styles.weightBadge, { backgroundColor: '#e5eeff' }]}>
+                          <Text style={[styles.weightBadgeText, { color: '#000407' }]}>{d.weight_kg} kg</Text>
                         </View>
                       )}
                     </View>
                     {freshness.message && (
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 8,
-                          backgroundColor: freshness.requiresReconfirm ? '#FEE2E2' : '#FEF3C7',
-                          borderRadius: 8,
-                          paddingHorizontal: 10,
-                          paddingVertical: 8,
-                          marginTop: 8,
-                        }}
-                      >
-                        <MaterialIcons
-                          name={freshness.requiresReconfirm ? 'warning' : 'schedule'}
-                          size={16}
-                          color={freshness.requiresReconfirm ? '#991b1b' : '#92400e'}
-                        />
-                        <Text
-                          style={{
-                            flex: 1,
-                            fontSize: 12,
-                            color: freshness.requiresReconfirm ? '#991b1b' : '#92400e',
-                            fontWeight: '600',
-                          }}
-                        >
-                          {freshness.message}
-                        </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: freshness.requiresReconfirm ? '#FEE2E2' : '#fef3c7', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 8 }}>
+                        <MaterialIcons name={freshness.requiresReconfirm ? 'warning' : 'schedule'} size={14} color={freshness.requiresReconfirm ? '#991b1b' : '#92400e'} />
+                        <Text style={{ flex: 1, fontSize: 11, fontFamily: 'Plus Jakarta Sans', color: freshness.requiresReconfirm ? '#991b1b' : '#92400e', fontWeight: '600' }}>{freshness.message}</Text>
                       </View>
                     )}
                     {d.diagnoses?.length > 0 && (
-                      <Text style={[styles.vetRecordDetail, { color: '#5b5c5a' }]}>
-                        <Text style={{ fontWeight: '800' }}>Diagnoses: </Text>{d.diagnoses.join(', ')}
+                      <Text style={[styles.smallText, { color: '#42474b', marginTop: 8 }]}>
+                        <Text style={{ fontWeight: '700', color: '#000407' }}>Diagnoses: </Text>{d.diagnoses.join(', ')}
                       </Text>
                     )}
                     {d.medications?.length > 0 && (
-                      <Text style={[styles.vetRecordDetail, { color: '#5b5c5a' }]}>
-                        <Text style={{ fontWeight: '800' }}>Meds: </Text>{d.medications.map((m: any) => `${m.name} (${m.dosage})`).join(', ')}
+                      <Text style={[styles.smallText, { color: '#42474b', marginTop: 4 }]}>
+                        <Text style={{ fontWeight: '700', color: '#000407' }}>Meds: </Text>{d.medications.map((m: any) => `${m.name} (${m.dosage})`).join(', ')}
                       </Text>
-                    )}
-                    {d.vet_notes && (
-                      <Text style={[styles.vetRecordDetail, { color: '#5b5c5a' }]} numberOfLines={2}>
-                        <Text style={{ fontWeight: '800' }}>Notes: </Text>{d.vet_notes}
-                      </Text>
-                    )}
-                    {d.next_appointment && (
-                      <View style={[styles.vetNextAppt, { backgroundColor: '#FEF3C7' }]}>
-                        <MaterialIcons name="event" size={16} color="#92400e" />
-                        <Text style={styles.vetNextApptText}>Next visit: {d.next_appointment}</Text>
-                      </View>
                     )}
                   </View>
                 );
@@ -911,23 +906,19 @@ export default function HealthScreen() {
         )}
 
         {/* Vet Report CTA */}
-        <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.ctaCard}>
-          <Text style={[styles.ctaTitle, { color: '#3d2b00' }]}>Scan Vet Report</Text>
-          <Text style={[styles.ctaDesc, { color: '#3d2b00' }]}>
+        <View style={[styles.card, { backgroundColor: '#000407', borderColor: 'transparent', marginBottom: 24 }]}>
+          <Text style={[styles.cardTitle, { color: '#ffffff', marginBottom: 8 }]}>Scan Vet Report</Text>
+          <Text style={[styles.bodyText, { color: '#b2cad7', marginBottom: 20, lineHeight: 20 }]}>
             Upload your vet&apos;s report and let AI extract vitals, diagnoses, and medication schedules instantly.
           </Text>
-          <TouchableOpacity
-            style={[styles.ctaBtn, { backgroundColor: '#3d2b00' }, isScanning && { opacity: 0.7 }]}
-            activeOpacity={0.9}
+          <PawtchiButton
+            title="Scan report"
+            variant="primary"
             onPress={scanVetReport}
             disabled={isScanning}
-          >
-            {isScanning
-              ? <ActivityIndicator color="#FFFC00" />
-              : <Text style={[styles.ctaBtnText, { color: '#FFFC00' }]}>SCAN REPORT</Text>
-            }
-          </TouchableOpacity>
-        </LinearGradient>
+            loading={isScanning}
+          />
+        </View>
 
       </ScrollView>
 
@@ -975,12 +966,10 @@ export default function HealthScreen() {
                 disabled={isSavingWeight}
                 activeOpacity={0.9}
               >
-                <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.saveBtnGradient}>
-                  {isSavingWeight
-                    ? <ActivityIndicator color="#1A1A1A" />
-                    : <Text style={styles.saveBtnText}>SAVE WEIGHT</Text>
-                  }
-                </LinearGradient>
+                {isSavingWeight
+                  ? <ActivityIndicator color="#000407" />
+                  : <Text style={styles.saveBtnText}>Save weight</Text>
+                }
               </TouchableOpacity>
 
               <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowWeightModal(false); }} style={styles.cancelBtn}>
@@ -998,7 +987,7 @@ export default function HealthScreen() {
           onClose={() => {
             setShowWeightSuccess(false);
           }}
-          title={`${weightSuccessData.weight} kg logged!`}
+          title={`${weightSuccessData.weight} kg logged`}
           icon={{ name: 'monitor-weight', color: '#FFFC00' }}
           lines={[
             {
@@ -1027,7 +1016,7 @@ export default function HealthScreen() {
               : []),
           ]}
           primaryAction={{
-            label: 'Awesome!',
+            label: 'Done',
             onPress: () => setShowWeightSuccess(false),
           }}
         />
@@ -1040,7 +1029,7 @@ export default function HealthScreen() {
           setShowVetScanSuccess(false);
           fetchHealthData();
         }}
-        title="Vet Report Scanned! ✅"
+        title="Vet report scanned"
         icon={{ name: 'description', color: '#FFFC00' }}
         lines={[
           { text: vetScanSummary.replace(/\n+/g, ' '), type: 'normal' },
@@ -1071,121 +1060,62 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 24, paddingBottom: 16, backgroundColor: 'rgba(255,255,255,0.95)', zIndex: 50,
+    paddingHorizontal: 24, paddingBottom: 16, backgroundColor: '#ffffff', zIndex: 50, borderBottomWidth: 1, borderBottomColor: 'rgba(0,4,7,0.05)'
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatarMini: { width: 40, height: 40, borderRadius: 20, overflow: 'hidden', justifyContent: 'center', alignItems: 'center' },
+  avatarMini: { width: 32, height: 32, borderRadius: 16, overflow: 'hidden', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,4,7,0.1)' },
   avatarMiniImg: { width: '100%', height: '100%' },
-  headerTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 20, letterSpacing: -0.5 },
-  coinPill: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
-  coinText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12 },
+  headerTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 18, color: '#000407' },
+  coinPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#000407', backgroundColor: 'transparent' },
+  coinText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 10, color: '#000407' },
+  
   scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 16, paddingBottom: 120 },
-  heroSection: { marginBottom: 32 },
-  heroTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 36, letterSpacing: -1, marginBottom: 8 },
-  heroSub: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 16 },
+  heroSection: { marginBottom: 24 },
+  heroTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 28, letterSpacing: -0.5, marginBottom: 4 },
+  heroSub: { fontFamily: 'Plus Jakarta Sans', fontWeight: '400', fontSize: 14 },
+  sectionTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 20 },
 
-  // AI Insight Card
-  insightCard: { marginBottom: 32, borderRadius: 24, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 24, elevation: 8 },
-  insightGradient: { padding: 24, borderRadius: 24 },
-  insightTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  insightBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(250,193,41,0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  insightBadgeText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11, letterSpacing: 1.5, color: '#fac129' },
-  insightTime: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8' },
-  insightText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 15, lineHeight: 24, color: '#e2e8f0' },
+  // Base theme
+  card: { backgroundColor: '#ffffff', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(0,4,7,0.1)' },
+  cardEyebrow: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 10, color: '#42474b', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 },
+  cardTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 18 },
+  bodyText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 14 },
+  smallText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 12 },
+  
+  progressTrack: { height: 8, width: '100%', backgroundColor: '#e5eeff', borderRadius: 4, overflow: 'hidden' },
+  progressFill: { height: '100%', borderRadius: 4 },
+  progressIndicator: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 4, backgroundColor: '#ebea00' },
+  
+  bentoGrid: { flexDirection: 'column', gap: 16, marginBottom: 24 },
+  bentoCard: { width: '100%' },
+  metricValue: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 24 },
+  metricUnit: { fontSize: 12, fontWeight: '500', color: '#42474b' },
+  
+  weightBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  weightBadgeText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 10 },
+  bentoBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 16 },
+  logBtn: { backgroundColor: '#FFFC00', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#000407' },
+  logBtnBlack: { backgroundColor: '#000407', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16 },
+  logBtnWhite: { backgroundColor: '#FFFC00', paddingHorizontal: 10, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: '#000407' },
+  logBtnText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11, color: '#000407' },
+  logBtnTextYellow: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11, color: '#FFFC00' },
 
-  // Bento Grid
-  bentoGrid: { marginBottom: 32 },
-  bentoRow: { flexDirection: 'row', gap: 16, marginBottom: 16 },
-
-  // Weight Card
-  weightCard: { flex: 3, borderRadius: 24, padding: 20, borderWidth: 1, justifyContent: 'space-between', minHeight: 260 },
-  weightHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
-  weightLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, letterSpacing: 1 },
-  weightBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  weightBadgeText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 10 },
-  weightValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  weightValue: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 44, fontStyle: 'italic' },
-  weightUnit: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 18 },
-  chartContainer: { height: 80, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 6, marginTop: 12 },
-  bar: { flex: 1, borderTopLeftRadius: 12, borderTopRightRadius: 12 },
-  barGradient: { flex: 1, borderTopLeftRadius: 12, borderTopRightRadius: 12 },
-  logWeightBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 12,
-    backgroundColor: '#FFFC00', paddingVertical: 10, borderRadius: 14,
-  },
-  logWeightText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 11, letterSpacing: 1, color: '#1A1A1A' },
-
-  // Metric Cards
-  metricsColumn: { flex: 2, gap: 16 },
-  squareCard: { flex: 1, borderRadius: 24, padding: 16, borderWidth: 1, justifyContent: 'space-between' },
-  metricValue: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, marginBottom: 2 },
-  metricLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 10, letterSpacing: 1 },
-
-  // Hydration Card
-  hydrationCard: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    borderRadius: 24, padding: 20, borderWidth: 1,
-  },
-  hydrationLeft: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  hydrationIconBg: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
-  hydrationTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 16 },
-  hydrationSub: { fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 12, marginTop: 2 },
-  hydrationRight: {},
-  hydrationPct: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 28, fontStyle: 'italic' },
-
-  // Weight Goal
-  goalSection: { marginBottom: 32 },
-  sectionTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, marginBottom: 16, letterSpacing: -0.5 },
-  goalCard: { borderRadius: 24, padding: 24, borderWidth: 1 },
-  goalRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  goalWeight: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18 },
-  goalLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 11, letterSpacing: 0.5 },
-  goalBarContainer: { flex: 1, alignItems: 'center' },
-  goalBarBg: { width: '100%', height: 8, backgroundColor: '#e5e7eb', borderRadius: 4, overflow: 'hidden' },
-  goalBarFill: { height: '100%', borderRadius: 4 },
-  goalPctText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, marginTop: 6 },
-
-  // Allergy Watchdog
-  allergySection: { marginBottom: 32 },
-  allergyHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
-  allergyList: { gap: 12 },
-  allergyItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderRadius: 16, borderWidth: 1 },
-  allergyItemLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  allergyFood: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 15 },
-  allergyDate: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, marginTop: 2 },
-  allergyCal: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14 },
-
-  // CTA
-  ctaCard: { padding: 32, borderRadius: 24, marginBottom: 16 },
-  ctaTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, fontStyle: 'italic', marginBottom: 8 },
-  ctaDesc: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, marginBottom: 24, lineHeight: 20, opacity: 0.8 },
-  ctaBtn: { paddingVertical: 16, paddingHorizontal: 32, borderRadius: 32, alignSelf: 'flex-start', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 8 },
-  ctaBtnText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 12, letterSpacing: 2 },
+  activitySub: { fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 10, color: '#a1a1aa', marginTop: 2 },
+  circularIndicator: { width: 56, height: 56, borderRadius: 28, borderWidth: 4, borderColor: '#FFFC00', borderLeftColor: '#eff4ff', borderBottomColor: '#eff4ff', alignItems: 'center', justifyContent: 'center', transform: [{ rotate: '-45deg' }] },
+  
+  chartContainer: { height: 40, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
 
   // Modal
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
-  modalContent: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingHorizontal: 24, paddingTop: 16, paddingBottom: 40 },
-  modalHandle: { width: 40, height: 5, borderRadius: 3, backgroundColor: '#d1d5db', alignSelf: 'center', marginBottom: 24 },
-  modalTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, color: '#1A1A1A', marginBottom: 24 },
+  modalContent: { backgroundColor: '#ffffff', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 24, paddingTop: 16, paddingBottom: 40 },
+  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#e2e8f0', alignSelf: 'center', marginBottom: 24 },
+  modalTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 20, color: '#000407', marginBottom: 24 },
   inputGroup: { marginBottom: 20 },
-  inputLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#515d64', marginBottom: 8 },
-  input: { backgroundColor: '#F3F4F6', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 14, fontFamily: 'Plus Jakarta Sans', fontSize: 16, color: '#1A1A1A' },
-  saveBtn: { borderRadius: 32, overflow: 'hidden', marginTop: 8 },
-  saveBtnGradient: { paddingVertical: 16, alignItems: 'center' },
-  saveBtnText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 16, color: '#1A1A1A' },
+  inputLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, color: '#42474b', marginBottom: 8 },
+  input: { backgroundColor: '#ffffff', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(0,4,7,0.1)', paddingHorizontal: 16, paddingVertical: 14, fontFamily: 'Plus Jakarta Sans', fontSize: 14, color: '#000407' },
+  saveBtn: { borderRadius: 12, backgroundColor: '#FFFC00', paddingVertical: 16, alignItems: 'center', marginTop: 8, borderWidth: 1, borderColor: '#000407' },
+  saveBtnGradient: { alignItems: 'center' },
+  saveBtnText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#000407' },
   cancelBtn: { paddingVertical: 16, alignItems: 'center', marginTop: 8 },
-  cancelBtnText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 16, color: '#6b7280' },
-
-  // Vet Records
-  vetRecordsSection: { marginBottom: 32 },
-  vetRecordCard: { borderRadius: 20, padding: 20, borderWidth: 1 },
-  vetRecordTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  vetRecordTopLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  vetRecordDate: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 15 },
-  vetRecordSource: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, marginTop: 2 },
-  vetWeightChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 },
-  vetWeightText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 13, color: '#3d2b00' },
-  vetRecordDetail: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 13, lineHeight: 20, marginBottom: 6 },
-  vetNextAppt: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, marginTop: 8 },
-  vetNextApptText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#92400e' },
+  cancelBtnText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 14, color: '#42474b' },
 });

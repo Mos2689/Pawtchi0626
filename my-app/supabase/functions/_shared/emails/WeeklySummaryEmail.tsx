@@ -38,12 +38,12 @@ export const WeeklySummaryEmail = ({
   },
 }: WeeklySummaryProps) => {
   // Simple logic to see if they hit their activity goal
-  const activityStatus = stats.activitiesLogged >= 5 ? "Great job!" : "Needs a bit more running.";
-  
+  const activityStatus = stats.activitiesLogged >= 5 ? "On target" : "Room to improve";
+
   return (
     <Html>
       <Head />
-      <Preview>{petName}'s Weekly Paw-gress Report is ready! 🐾</Preview>
+      <Preview>{petName}'s weekly health summary is ready.</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -77,9 +77,9 @@ export const WeeklySummaryEmail = ({
           </Section>
 
           <Section style={insightSection}>
-            <Text style={insightHeading}>Weekly Insight 💡</Text>
+            <Text style={insightHeading}>What we noticed this week</Text>
             <Text style={insightText}>
-              You are slightly over the weekly caloric goal. Try extending {petName}'s evening walk by 10 minutes next week to balance it out!
+              {petName} is slightly over the weekly calorie goal. Extending the evening walk by 10 minutes would help balance the intake.
             </Text>
           </Section>
 

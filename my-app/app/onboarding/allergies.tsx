@@ -7,6 +7,7 @@ import { Colors } from '../../constants/Theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { usePetStore } from '../../store/usePetStore';
 import { getBreedDefaults } from '../../lib/breedData';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 const COMMON_ALLERGENS = [
   'Chicken', 'Beef', 'Grain/Wheat', 'Dairy', 'Egg',
@@ -112,7 +113,7 @@ export default function AllergiesScreen() {
         {breedAllergens.length > 0 && breed && (
           <View style={styles.breedBanner}>
             <View style={styles.breedBannerHeader}>
-              <MaterialIcons name="auto-awesome" size={18} color="#92400e" />
+              <MaterialIcons name="info-outline" size={18} color="#92400e" />
               <Text style={styles.breedBannerTitle}>
                 Common sensitivities for {breed}
               </Text>
@@ -246,14 +247,14 @@ export default function AllergiesScreen() {
           <TouchableOpacity onPress={handleSkip} activeOpacity={0.7}>
             <Text style={styles.skipText}>Skip for now</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.nextBtn, { backgroundColor: '#FFFC00' }]}
+          <PawtchiButton
+            title="Next"
+            variant="primary"
+            iconName="chevron-right"
+            iconPosition="right"
             onPress={handleNext}
-            activeOpacity={0.9}
-          >
-            <Text style={[styles.nextBtnText, { color: '#243036' }]}>Next</Text>
-            <MaterialIcons name="chevron-right" size={24} color="#243036" />
-          </TouchableOpacity>
+            style={{ width: 250, maxWidth: '100%', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 15, elevation: 8 }}
+          />
         </LinearGradient>
       </View>
     </View>

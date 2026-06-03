@@ -162,9 +162,8 @@ export function PawtchiSuccessModal({
           onPress={onClose}
         >
           <View style={styles.container}>
-            <View style={styles.glow} />
-            <View style={styles.card}>
-              {/* Header */}
+            <View style={[styles.card, styles.successCard]}>
+              {/* Header with close button */}
               <View style={styles.successHeader}>
                 {icon && (
                   <View style={[styles.iconBox, styles.iconBoxSuccess, { backgroundColor: `${icon.color}20` }]}>
@@ -172,6 +171,9 @@ export function PawtchiSuccessModal({
                   </View>
                 )}
                 <Text style={styles.successTitle}>{title}</Text>
+                <TouchableOpacity onPress={onClose} style={styles.successCloseBtn}>
+                  <MaterialIcons name="close" size={20} color="#94a3b8" />
+                </TouchableOpacity>
               </View>
 
               {/* Lines */}
@@ -418,5 +420,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 15,
     color: '#64748b',
+  },
+  successCard: {
+    paddingTop: 20,
+  },
+  successCloseBtn: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    padding: 8,
   },
 });

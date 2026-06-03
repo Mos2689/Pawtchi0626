@@ -30,7 +30,7 @@ export default function CommunityScreen() {
                 Local Meetups
             </Typography>
             <Typography variant="body" size={14} color="on-tertiary-container">
-                Join our weekend pack walk at Riverside Park!
+                Join our weekend walk at Riverside Park!
             </Typography>
             <Button 
                 title="RSVP" 
@@ -75,7 +75,7 @@ export default function CommunityScreen() {
             </View>
             <Typography variant="headline" weight="bold" size={18} style={{ marginBottom: 8 }}>Summer hydration tips</Typography>
             <Typography variant="body" size={14} color="on-surface-variant" style={{ lineHeight: 22 }}>
-                As temperatures rise, it's crucial to keep your furry friends hydrated. Here are 3 signs your dog might need more water...
+                As temperatures rise, it is important to keep pets hydrated. Here are 3 signs your dog might need more water...
             </Typography>
             <View style={styles.postActions}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>

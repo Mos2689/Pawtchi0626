@@ -43,7 +43,7 @@ export default function PrivacyScreen() {
 
                 <Text style={styles.sectionTitle}>3. Subscriptions & Billing</Text>
                 <Text style={styles.paragraph}>
-                    All purchases are processed securely via your Apple ID. Financial data is handled directly by Apple Inc. and is never accessible by Hey Living Club Pty Ltd. You may manage or cancel subscriptions natively through your iOS Device Settings.
+                    All purchases are processed securely via your Apple ID or Google Play account. Financial data is handled directly by Apple Inc. or Google LLC and is never accessible by Hey Living Club Pty Ltd. You may manage or cancel subscriptions through your device's subscription settings (iOS: Settings → Apple ID → Subscriptions; Android: Google Play Store → Payments & subscriptions → Subscriptions).
                 </Text>
 
                 <Text style={styles.sectionTitle}>4. Data Deprovisioning & User Rights</Text>

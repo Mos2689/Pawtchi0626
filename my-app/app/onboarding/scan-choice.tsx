@@ -7,6 +7,7 @@ import { Colors } from '../../constants/Theme';
 import * as ImagePicker from 'expo-image-picker';
 import { usePetStore } from '../../store/usePetStore';
 import { supabase } from '../../lib/supabase';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 export default function ScanChoiceScreen() {
   const router = useRouter();
@@ -139,8 +140,8 @@ export default function ScanChoiceScreen() {
         {/* Progress */}
         <View style={styles.progressSection}>
           <View style={styles.progressTextRow}>
-            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>STEP 2 OF 5</Text>
-            <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>QUICK START</Text>
+            <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 2 of 5</Text>
+            <Text style={[styles.stepTitle, { color: theme['on-surface'] }]}>Quick start</Text>
           </View>
           <View style={[styles.progressBarBg, { backgroundColor: '#F1F3F5' }]}>
             <View style={[styles.progressBarFill, { backgroundColor: '#FFFC00', width: '33%' }]} />
@@ -214,16 +215,13 @@ export default function ScanChoiceScreen() {
 
             {/* Manual Entry */}
             <View style={styles.footerSection}>
-              <TouchableOpacity
-                style={styles.manualBtn}
+              <PawtchiButton
+                title="Enter details manually"
+                variant="outline"
+                iconName="edit"
                 onPress={() => router.push('/onboarding/vitals')}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="edit" size={20} color={theme['on-surface']} />
-                <Text style={[styles.manualText, { color: theme['on-surface'] }]}>
-                  Enter details manually
-                </Text>
-              </TouchableOpacity>
+                style={{ borderColor: '#E5E7EB' }}
+              />
             </View>
 
             {/* Compact Tips */}

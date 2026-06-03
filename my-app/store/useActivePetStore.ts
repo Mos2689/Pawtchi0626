@@ -64,6 +64,7 @@ interface ActivePetState {
     addPantryItem: (item: Omit<PantryItem, 'id' | 'first_scanned_at' | 'last_scanned_at' | 'scan_count'>) => Promise<PantryItem | null>;
     incrementPantryScan: (itemId: string) => Promise<void>;
     clearPet: () => void;
+    updatePetWeight: (weightKg: number, targetCalories: number) => void;
     unlockItem: (itemId: string) => Promise<boolean>;
     toggleEquipItem: (itemId: string) => Promise<boolean>;
     isTailoring: boolean;
@@ -152,6 +153,11 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
         });
     },
     clearPet: () => set({ activePet: null, foodPantry: [], isLoading: true, error: null }),
+    updatePetWeight: (weightKg: number, targetCalories: number) => {
+        const { activePet } = get();
+        if (!activePet) return;
+        set({ activePet: { ...activePet, current_weight_kg: weightKg, target_daily_calories: targetCalories } });
+    },
 
     unlockItem: async (itemId: string) => {
         const { activePet } = get();

@@ -5,10 +5,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStreakStore } from '../store/useStreakStore';
 
 const MILESTONE_MESSAGES: Record<number, string> = {
-  3: '3-Day Streak! 🔥',
-  7: '7-Day Streak! 🔥🔥',
-  14: '2-Week Streak! 🔥🔥🔥',
-  30: 'LEGENDARY 30 Days! 🏆',
+  3: '3-day streak',
+  7: '7-day streak',
+  14: '2-week streak',
+  30: '30-day streak',
 };
 
 export function CoinToast() {
@@ -91,7 +91,7 @@ export function CoinToast() {
 
   const isMilestone = !!lastEarnEvent.milestone;
   const milestoneMsg = lastEarnEvent.milestone 
-    ? MILESTONE_MESSAGES[lastEarnEvent.milestone] || `${lastEarnEvent.milestone}-Day Streak!`
+    ? MILESTONE_MESSAGES[lastEarnEvent.milestone] || `${lastEarnEvent.milestone}-day streak`
     : null;
 
   return (
@@ -129,13 +129,6 @@ export function CoinToast() {
             {isMilestone ? milestoneMsg : lastEarnEvent.label}
           </Text>
         </View>
-
-        {/* Right: streak indicator */}
-        {isMilestone && (
-          <View style={styles.milestoneGlow}>
-            <Text style={styles.milestoneEmoji}>🏆</Text>
-          </View>
-        )}
       </View>
     </Animated.View>
   );

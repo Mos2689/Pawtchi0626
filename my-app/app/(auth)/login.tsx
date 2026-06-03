@@ -5,6 +5,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { Colors } from '../../constants/Theme';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -112,21 +113,15 @@ export default function LoginScreen() {
             />
           </View>
 
-          <TouchableOpacity 
-            style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
-            disabled={loading}
+          <PawtchiButton
+            title={isSignUp ? 'Create Account' : 'Sign In'}
+            variant="primary"
+            iconName="arrow-forward"
+            iconPosition="right"
+            loading={loading}
             onPress={isSignUp ? signUpWithEmail : signInWithEmail}
-            activeOpacity={0.8}
-          >
-            {loading ? (
-              <ActivityIndicator color="#000" />
-            ) : (
-              <>
-                <Text style={styles.primaryBtnText}>{isSignUp ? 'Create Account' : 'Sign In'}</Text>
-                <MaterialIcons name="arrow-forward" size={20} color="#000" />
-              </>
-            )}
-          </TouchableOpacity>
+            style={{ height: 64, marginTop: 8, shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 }}
+          />
 
           <View style={styles.toggleContainer}>
             <Text style={styles.toggleText}>

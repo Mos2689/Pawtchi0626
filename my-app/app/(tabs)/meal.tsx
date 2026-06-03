@@ -21,6 +21,7 @@ import EmptyPantryNudge from '../../components/EmptyPantryNudge';
 import PantryPillSelector from '../../components/PantryPillSelector';
 import NutritionReferencePanel from '../../components/NutritionReferencePanel';
 import QuickLogRail from '../../components/QuickLogRail';
+import { PawtchiButton } from '../../components/PawtchiButton';
 import { pantryItemToScanResult } from '../../lib/pantryToScanResult';
 import type { PantryItem } from '../../store/useActivePetStore';
 
@@ -84,26 +85,26 @@ export default function MealScreen() {
   // Scanner state
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState("AI ANALYZING...");
+  const [loadingMessage, setLoadingMessage] = useState("Ai analysing...");
 
   // Serving count multiplier — lets users adjust portions
   const [servingCount, setServingCount] = useState(1);
 
-  // Rotate cool spinner words during analysis
+  // Rotate spinner words during analysis
   useEffect(() => {
     if (!isAnalyzing) {
-      setLoadingMessage("AI ANALYZING...");
+      setLoadingMessage("Analysing food...");
       return;
     }
-    
+
     const messages = [
-      "SNIFFING OUT CALORIES...",
-      "CONSULTING THE MEAL ORACLE...",
-      "TASTING VIRTUAL KIBBLE...",
-      "CALCULATING PAW-TIONS...",
-      "DECODING PET TREATS...",
-      "SCANNING FOR GOODNESS...",
-      "PET-PROVING THE DATA..."
+      "Reading the label...",
+      "Checking ingredients...",
+      "Counting the macros...",
+      "Calibrating portions...",
+      "Assessing the verdict...",
+      "Matching against pantry...",
+      "Preparing the result..."
     ];
     
     let i = 0;
@@ -116,6 +117,18 @@ export default function MealScreen() {
   }, [isAnalyzing]);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [isLogging, setIsLogging] = useState(false);
+  const [hasLogged, setHasLogged] = useState(false);
+  const [isPendingConfirm, setIsPendingConfirm] = useState(false);
+
+  // Reset hasLogged flag on new scan so Add to Bowl re-enables
+  useEffect(() => {
+    if (scanResult) {
+      setHasLogged(false);
+      setIsPendingConfirm(false);
+    }
+  }, [scanResult]);
+
+  // Branded log success modal state — no longer used (replaced by CoinToast)
 
   // Quick Log: tap a pantry chip → land on the same result screen as a scan,
   // pre-populated from pantry data. Skips the camera + Gemini food-ID call,
@@ -126,7 +139,7 @@ export default function MealScreen() {
     if (!checkAccess() || !activePet) return;
 
     setIsAnalyzing(true);
-    setLoadingMessage('PREPARING MEAL...');
+    setLoadingMessage('Preparing meal...');
     setSelectedPantryId(item.id);
     setServingCount(1);
     setCapturedImage(null);
@@ -758,6 +771,9 @@ export default function MealScreen() {
     const sc = overrides?.servingCount ?? servingCount;
     if (!sr || !activePet) return;
 
+    // Prevent double-taps during async checks
+    setIsPendingConfirm(true);
+
     const today = new Date().toISOString().split('T')[0];
     const targetCal = activePet.target_daily_calories || 0;
 
@@ -775,27 +791,27 @@ export default function MealScreen() {
     const currentCal = (existingLog?.calories_consumed as number) || 0;
     const newTotal = currentCal + totalCalories;
 
-    // ⛔ Hard overage warning
+    // Hard overage warning
     if (targetCal > 0 && newTotal > targetCal) {
       const overBy = newTotal - targetCal;
       Alert.alert(
-        '⚠️ Daily Limit Exceeded',
+        'Daily limit exceeded',
         `${activePet.name} has already consumed ${currentCal} kcal today.\n\nAdding ${totalCalories} kcal from "${sr.food_name}"${sc > 1 ? ` (${sc} servings)` : ''} would bring the total to ${newTotal} kcal — that's ${overBy} kcal over the daily limit of ${targetCal} kcal.\n\nOverfeeding can lead to weight gain and health issues.`,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: 'Cancel', style: 'cancel', onPress: () => setIsPendingConfirm(false) },
           { text: 'Log Anyway', style: 'destructive', onPress: () => executeLog(existingLog, today, overrides) },
         ]
       );
       return;
     }
 
-    // 🟡 Approaching limit warning (90%+)
+    // Approaching limit warning (90%+)
     if (targetCal > 0 && newTotal >= targetCal * 0.9 && currentCal < targetCal * 0.9) {
       Alert.alert(
-        '🟡 Approaching Limit',
+        'Approaching limit',
         `This will bring ${activePet.name} to ${newTotal} of ${targetCal} kcal (${Math.round((newTotal / targetCal) * 100)}%). After this, only light treats are recommended.`,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: 'Cancel', style: 'cancel', onPress: () => setIsPendingConfirm(false) },
           { text: 'Log It', onPress: () => executeLog(existingLog, today, overrides) },
         ]
       );
@@ -813,6 +829,7 @@ export default function MealScreen() {
     const sImage = overrides?.capturedImage ?? capturedImage;
     if (!sr || !activePet) return;
     setIsLogging(true);
+    setIsPendingConfirm(true);
 
     try {
       // When a pantry item is selected, compute macros deterministically from
@@ -1103,28 +1120,24 @@ export default function MealScreen() {
       const newCalTotal = (existingLog?.calories_consumed || 0) + totalCalories;
       usePetContextStore.getState().updateCalories(newCalTotal);
 
-      // Build success message — with dinner reduction guidance for treats
-      const targetCal = activePet.target_daily_calories || 0;
-      const treatKcal = totalCalories;
-      const dinnerReduction = isTreat && targetCal > 0
-        ? `\n\n🍽 Vet tip: Reduce tonight's dinner by ~${treatKcal} kcal (about ${Math.max(1, Math.round(treatKcal / 30))} tablespoon${treatKcal >= 60 ? 's' : ''} less kibble) to keep ${activePet.name} on target.`
-        : '';
-
-      Alert.alert(
-        isTreat ? 'Treat Logged 🦴' : 'Logged Successfully! 🎉',
-        `${treatKcal} kcal from ${sr.food_name}${sCount > 1 ? ` (${sCount} servings)` : ''} has been added to ${activePet.name}'s daily tracker.${dinnerReduction}`,
-        [{ text: 'OK', onPress: () => { setCapturedImage(null); setScanResult(null); setServingCount(1); } }]
-      );
-
-      // Award coins for food log
+      // Award coins for food log (before clearing state)
       if (user?.id) {
         awardCoins(user.id, 'food_log');
       }
+
+      // Immediately kill the scan result screen and return to scanner
+      // User can scan next food or select from pantry
+      setScanResult(null);
+      setCapturedImage(null);
+      setServingCount(1);
+      setHasLogged(false);
+      setIsPendingConfirm(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       Alert.alert('Log Error', message);
     } finally {
       setIsLogging(false);
+      setIsPendingConfirm(false);
     }
   };
 
@@ -1303,22 +1316,22 @@ export default function MealScreen() {
               <View style={styles.srNutritionItem}>
                 <MaterialIcons name="local-fire-department" size={28} color="#FFFC00" />
                 <Text style={styles.srNutritionValue}>{displayCalories}</Text>
-                <Text style={styles.srNutritionLabel}>CALORIES</Text>
+                <Text style={styles.srNutritionLabel}>Calories</Text>
               </View>
               <View style={styles.srNutritionItem}>
                 <MaterialIcons name="egg-alt" size={28} color="#FFFC00" />
                 <Text style={styles.srNutritionValue}>{proteinG}g</Text>
-                <Text style={styles.srNutritionLabel}>PROTEIN</Text>
+                <Text style={styles.srNutritionLabel}>Protein</Text>
               </View>
               <View style={styles.srNutritionItem}>
                 <MaterialIcons name="grass" size={28} color="#FFFC00" />
                 <Text style={styles.srNutritionValue}>{carbsG}g</Text>
-                <Text style={styles.srNutritionLabel}>CARBS</Text>
+                <Text style={styles.srNutritionLabel}>Carbs</Text>
               </View>
               <View style={styles.srNutritionItem}>
                 <MaterialIcons name="opacity" size={28} color="#FFFC00" />
                 <Text style={styles.srNutritionValue}>{fatG}g</Text>
-                <Text style={styles.srNutritionLabel}>FATS</Text>
+                <Text style={styles.srNutritionLabel}>Fats</Text>
               </View>
             </View>
 
@@ -1356,18 +1369,17 @@ export default function MealScreen() {
 
           {/* Add to Bowl — at end of scrollable content */}
           <View style={styles.srBottomBar}>
-            <TouchableOpacity
-              style={[styles.srAddBtn, { opacity: isLogging ? 0.7 : 1 }]}
-              activeOpacity={0.9}
-              onPress={() => confirmLog()}
-              disabled={isLogging}
-            >
-              {isLogging ? (
-                <ActivityIndicator color="#041015" />
-              ) : (
-                <Text style={styles.srAddBtnText}>Add to Bowl</Text>
-              )}
-            </TouchableOpacity>
+            <PawtchiButton
+              title={hasLogged ? 'Added to Bowl' : 'Add to Bowl'}
+              variant="primary"
+              loading={isLogging}
+              disabled={hasLogged || isLogging || isPendingConfirm}
+              onPress={() => {
+                if (!hasLogged && !isLogging && !isPendingConfirm) {
+                  confirmLog();
+                }
+              }}
+            />
           </View>
         </ScrollView>
       </View>
@@ -1402,7 +1414,7 @@ export default function MealScreen() {
               <View style={[styles.warningCard, { marginHorizontal: 24, marginBottom: 16, marginTop: 8 }]}>
                 <MaterialIcons name="monitor-weight" size={20} color="#dc2626" />
                 <Text style={styles.warningText}>
-                  {activePet.name} is {gap.toFixed(1)}kg above their {targetW}kg goal. Keep portions strict!
+                  {activePet.name} is {gap.toFixed(1)}kg above their {targetW}kg target. Worth keeping portions steady.
                 </Text>
               </View>
             );
@@ -1432,30 +1444,36 @@ export default function MealScreen() {
           )}
 
           {/* Scanner Action Buttons */}
-          <View style={styles.scannerActions}>
-            <TouchableOpacity
-              style={[styles.scanActionBtn, { backgroundColor: 'rgba(255,255,255,0.15)' }]}
+          <View style={[styles.scannerActions, { flexDirection: 'row', gap: 12, justifyContent: 'center', alignItems: 'center' }]}>
+            <PawtchiButton
+              title="Gallery"
+              iconName="photo-library"
+              variant="outline"
+              size="medium"
               onPress={() => pickImage(false)}
               disabled={isAnalyzing}
-            >
-              <MaterialIcons name="photo-library" size={24} color="#FFFFFF" />
-              <Text style={styles.scanActionText}>Gallery</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.scanActionBtnMain, { backgroundColor: '#FFFC00' }]}
+              style={{ backgroundColor: 'rgba(255,255,255,0.15)', borderColor: 'transparent', flex: 1 }}
+              textStyle={{ color: '#FFFFFF' }}
+            />
+            <PawtchiButton
+              title="Camera"
+              iconName="photo-camera"
+              variant="primary"
+              size="large"
               onPress={() => pickImage(true)}
               disabled={isAnalyzing}
-            >
-              <MaterialIcons name="photo-camera" size={32} color="#000000" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.scanActionBtn, { backgroundColor: 'rgba(255,255,255,0.15)' }]}
+              style={{ flex: 1 }}
+            />
+            <PawtchiButton
+              title="Reset"
+              iconName="refresh"
+              variant="outline"
+              size="medium"
               onPress={() => { setCapturedImage(null); setScanResult(null); }}
               disabled={isAnalyzing}
-            >
-              <MaterialIcons name="refresh" size={24} color="#FFFFFF" />
-              <Text style={styles.scanActionText}>Reset</Text>
-            </TouchableOpacity>
+              style={{ backgroundColor: 'rgba(255,255,255,0.15)', borderColor: 'transparent', flex: 1 }}
+              textStyle={{ color: '#FFFFFF' }}
+            />
           </View>
 
           {/* Analyzing Full Overlay — blocks all interaction during AI processing */}
@@ -1465,10 +1483,10 @@ export default function MealScreen() {
                 <ActivityIndicator size="large" color="#041015" />
               </View>
               <View style={styles.analyzingLabelBox}>
-                <MaterialIcons name="auto-awesome" size={16} color="#041015" />
+                <MaterialIcons name="search" size={16} color="#041015" />
                 <Text style={styles.analyzingText}>{loadingMessage}</Text>
               </View>
-              <Text style={styles.analyzingSubText}>Please wait while we analyse your pet&apos;s food</Text>
+              <Text style={styles.analyzingSubText}>Analysing your pet&apos;s food</Text>
             </View>
           )}
         </View>
@@ -1504,6 +1522,7 @@ export default function MealScreen() {
         />
 
       </ScrollView>
+      {/* CoinToast appears automatically via useStreakStore when coins are awarded */}
     </View>
   );
 }

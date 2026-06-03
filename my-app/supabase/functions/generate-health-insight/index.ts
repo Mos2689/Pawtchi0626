@@ -128,6 +128,15 @@ Comparison vs Last Week:
 - Exercise: ${exerciseDelta !== null ? `${exerciseDelta > 0 ? '+' : ''}${exerciseDelta}%` : 'No data'}
 - Water: ${waterDelta !== null ? `${waterDelta > 0 ? '+' : ''}${waterDelta}%` : 'No data'}
 
+IMPORTANT VOICE RULES — follow these for every response:
+- Maximum 3 sentences for any text field (headline, tip, wins, concerns)
+- Use the animal's name, never "your dog/cat/pet"
+- Use correct pronouns (his/her based on profile sex, never "their" for a known individual)
+- Never use: exclamation marks, "immediately", "urgent", "ensure", "incredible", "amazing", "AI-powered"
+- End with a calm action or note, never an emotional exclamation
+- Tone: calm, specific, direct, plainspoken Australian English
+- Never speak as the animal — Pawtchi narrates in third person
+
 IMPORTANT: You MUST respond with a valid JSON block enclosed in \`\`\`json fences, using this exact structure:
 {
   "headline": "One-sentence summary of the week (warm, specific to the pet by name)",

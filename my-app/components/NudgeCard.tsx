@@ -13,9 +13,9 @@ const iconMap: Record<string, { name: keyof typeof MaterialIcons.glyphMap; color
   remind_water: { name: 'water-drop', color: '#3091F9' },
   remind_weight: { name: 'monitor-weight', color: '#c084fc' },
   remind_activity: { name: 'sports-tennis', color: '#4ade80' },
-  treat_ok: { name: 'celebration', color: '#4ade80' },
+  treat_ok: { name: 'check-circle', color: '#4ade80' },
   reduce_dinner: { name: 'restaurant-menu', color: '#fb923c' },
-  start_trial: { name: 'star', color: '#FFFC00' },
+  start_trial: { name: 'info-outline', color: '#FFFC00' },
 };
 
 const routeMap: Record<string, string> = {
@@ -35,7 +35,7 @@ export function NudgeCard({}: NudgeCardProps) {
   const router = useRouter();
 
   // Dynamic nudge from the context engine
-  if (nudge) {
+  if (nudge && nudge.title) {
     const isAction = nudge.priority === 'action';
     const icon = (nudge.actionType && iconMap[nudge.actionType]) ? iconMap[nudge.actionType] : { name: 'info-outline' as const, color: '#FFFC00' };
     const route = (nudge.actionType && routeMap[nudge.actionType]) ? routeMap[nudge.actionType] : null;
@@ -46,14 +46,18 @@ export function NudgeCard({}: NudgeCardProps) {
         style={styles.gradient}
       >
         <View style={styles.left}>
-          <MaterialIcons name={icon.name} size={32} color={icon.color} />
+          <View style={styles.iconContainer}>
+            <MaterialIcons name={icon.name} size={28} color={icon.color} />
+          </View>
           <View style={{ flex: 1 }}>
             <Text style={[styles.title, !isAction && { color: '#e2e8f0' }]}>{nudge.title}</Text>
-            <Text style={styles.sub}>{nudge.message}</Text>
+            {nudge.message && <Text style={styles.sub}>{nudge.message}</Text>}
           </View>
         </View>
         {isAction && route && (
-          <MaterialIcons name="arrow-forward-ios" size={16} color="#94a3b8" />
+          <View style={styles.arrowContainer}>
+            <MaterialIcons name="arrow-forward-ios" size={16} color="#94a3b8" />
+          </View>
         )}
       </LinearGradient>
     );
@@ -61,7 +65,7 @@ export function NudgeCard({}: NudgeCardProps) {
     if (isAction && route) {
       return (
         <TouchableOpacity
-          style={[styles.container, { marginBottom: 32 }]}
+          style={[styles.container, { marginBottom: 20 }]}
           onPress={() => {
             dismissNudge();
             router.push(route as any);
@@ -73,7 +77,7 @@ export function NudgeCard({}: NudgeCardProps) {
       );
     }
 
-    return <View style={[styles.container, { marginBottom: 32 }]}>{card}</View>;
+    return <View style={[styles.container, { marginBottom: 20 }]}>{card}</View>;
   }
 
   return null;
@@ -81,39 +85,55 @@ export function NudgeCard({}: NudgeCardProps) {
 
 const styles = StyleSheet.create({
   container: {
-    borderRadius: 24,
+    borderRadius: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
     shadowRadius: 20,
     elevation: 8,
+    overflow: 'hidden',
   },
   gradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 24,
-    borderRadius: 24,
+    padding: 18,
+    borderRadius: 20,
   },
   left: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 14,
     flex: 1,
-    paddingRight: 16,
+    paddingRight: 12,
+  },
+  iconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,252,0,0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   title: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '800',
-    fontSize: 16,
+    fontSize: 15,
     color: '#FFFC00',
-    marginBottom: 4,
+    marginBottom: 3,
+    lineHeight: 20,
   },
   sub: {
     fontFamily: 'Plus Jakarta Sans',
     fontWeight: '500',
-    fontSize: 13,
+    fontSize: 12,
     color: '#94a3b8',
-    lineHeight: 18,
+    lineHeight: 17,
+  },
+  arrowContainer: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

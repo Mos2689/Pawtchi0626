@@ -15,6 +15,7 @@ import { regenerateSchedule } from '../../lib/scheduleAdjuster';
 import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
 import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
+import { PawtchiButton } from '../../components/PawtchiButton';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
 
@@ -329,6 +330,29 @@ export default function ActivityScreen() {
         }),
       });
 
+      // Handle Supabase platform-level errors before parsing JSON
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error('[generateSchedule] HTTP error:', res.status, errorText);
+
+        // Supabase project paused or access denied (platform-level)
+        if (res.status === 403 || errorText.includes('denied access') || errorText.includes('paused')) {
+          throw new Error(
+            'Your Supabase project may be paused or restricted.\n\n' +
+            'Please visit your Supabase dashboard to restore the project, then try again.'
+          );
+        }
+
+        // Edge Function not found / not deployed
+        if (res.status === 404) {
+          throw new Error(
+            'Edge function not deployed.\n\nDeploy with:\nnpx supabase functions deploy generate-schedule'
+          );
+        }
+
+        throw new Error(errorText || `Server error (${res.status})`);
+      }
+
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Schedule generation failed.');
 
@@ -518,12 +542,12 @@ export default function ActivityScreen() {
   const totalScheduled = completedCount + pendingCount;
   const completionPct = totalScheduled > 0 ? Math.round((completedCount / totalScheduled) * 100) : 0;
 
-  let heroMessage = "No Plan Yet";
-  if (totalScheduled > 0 && completionPct === 0) heroMessage = "Let\u2019s Get Started!";
-  if (completionPct > 0 && completionPct < 50) heroMessage = "Good Progress";
-  if (completionPct >= 50 && completionPct < 100) heroMessage = "Almost There!";
-  if (completionPct === 100 && totalScheduled > 0) heroMessage = "All Done! \uD83C\uDF89";
-  if (totalScheduled === 0 && heroPlay > 0) heroMessage = "Active Day!";
+  let heroMessage = "No plan yet";
+  if (totalScheduled > 0 && completionPct === 0) heroMessage = "Ready to start";
+  if (completionPct > 0 && completionPct < 50) heroMessage = "Good progress";
+  if (completionPct >= 50 && completionPct < 100) heroMessage = "Almost there";
+  if (completionPct === 100 && totalScheduled > 0) heroMessage = "All done";
+  if (totalScheduled === 0 && heroPlay > 0) heroMessage = "Active day";
 
   // Date slider: 5 days centered around today
   const weekDates = useMemo(() => {
@@ -562,8 +586,8 @@ export default function ActivityScreen() {
 
         {/* Progress Section */}
         <View style={styles.progressSection}>
-          <Text style={styles.progressSubtitle}>DAILY PULSE</Text>
-          <Text style={styles.progressTitle}>Today&apos;s Progress</Text>
+          <Text style={styles.progressSubtitle}>Daily pulse</Text>
+          <Text style={styles.progressTitle}>Today&apos;s progress</Text>
 
           {/* Date Slider */}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateSlider}>
@@ -646,7 +670,7 @@ export default function ActivityScreen() {
 
           {/* Activity Burn Contribution Card */}
           {lastBurnSummary && (
-            <View style={styles.burnCard}>
+            <View style={[styles.burnCard, { marginTop: 16 }]}>
               <View style={styles.burnCardLeft}>
                 <MaterialIcons name="local-fire-department" size={20} color="#FFFC00" />
                 <Text style={styles.burnCardLabel}>Activity Burn</Text>
@@ -677,22 +701,21 @@ export default function ActivityScreen() {
               </View>
             </View>
             <View style={styles.adjustBannerActions}>
-              <TouchableOpacity
-                style={[styles.adjustBtnYes, isAdjusting && { opacity: 0.7 }]}
+              <PawtchiButton
+                title="Yes, adjust my plan"
                 onPress={adjustSchedule}
-                disabled={isAdjusting}
-              >
-                {isAdjusting
-                  ? <ActivityIndicator color="#1A1A1A" size="small" />
-                  : <Text style={styles.adjustBtnYesText}>Yes, adjust my plan</Text>
-                }
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.adjustBtnNo}
+                loading={isAdjusting}
+                size="medium"
+                style={{ flex: 1 }}
+              />
+              <PawtchiButton
+                title="I'm good"
+                variant="ghost"
                 onPress={() => { setShowAdjustBanner(false); setAdjustDismissed(true); }}
-              >
-                <Text style={styles.adjustBtnNoText}>I&apos;m good</Text>
-              </TouchableOpacity>
+                size="medium"
+                style={{ flex: 1 }}
+                textStyle={{ color: '#856404' }}
+              />
             </View>
           </View>
         )}
@@ -712,32 +735,21 @@ export default function ActivityScreen() {
             <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#FFFC00" />
           ) : activities.length === 0 ? (
             <View style={styles.emptyState}>
-              <MaterialIcons name="auto-awesome" size={48} color="#FFFC00" style={{ marginBottom: 16 }} />
+              <MaterialIcons name="event-note" size={48} color="#FFFC00" style={{ marginBottom: 16 }} />
               <Text style={styles.emptyTitle}>No Schedule Yet</Text>
               <Text style={styles.emptyDesc}>
                 Let our AI coach plan your pet&apos;s week!{"\n"}
                 Walks, water, play, and grooming — all tailored to {activePet?.name || 'your pet'}&apos;s profile.
               </Text>
-              <TouchableOpacity
-                style={[styles.generateBtn, isGenerating && { opacity: 0.7 }]}
+              <PawtchiButton
+                title={isGenerating ? "Generating Schedule..." : "Generate 7-day plan"}
+                variant="primary"
+                iconName={isGenerating ? undefined : "add-circle"}
+                iconPosition="left"
+                loading={isGenerating}
                 onPress={generateSchedule}
-                disabled={isGenerating}
-                activeOpacity={0.9}
-              >
-                <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.generateGradient}>
-                  {isGenerating ? (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                      <ActivityIndicator color="#1A1A1A" />
-                      <Text style={styles.generateText}>Generating Schedule...</Text>
-                    </View>
-                  ) : (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <MaterialIcons name="auto-awesome" size={20} color="#1A1A1A" />
-                      <Text style={styles.generateText}>GENERATE 7-DAY PLAN</Text>
-                    </View>
-                  )}
-                </LinearGradient>
-              </TouchableOpacity>
+                style={{ width: '100%' }}
+              />
             </View>
           ) : (
             <View style={styles.timelineList}>
@@ -829,7 +841,7 @@ export default function ActivityScreen() {
                             activeOpacity={0.85}
                           >
                             <MaterialIcons name="check-circle-outline" size={18} color="#041015" />
-                            <Text style={styles.markDoneBtnText}>Mark as Done</Text>
+                            <Text style={styles.markDoneBtnText}>Mark as done</Text>
                           </TouchableOpacity>
                         )}
                       </View>
@@ -1060,19 +1072,21 @@ export default function ActivityScreen() {
                     />
                   </View>
 
-                  <TouchableOpacity
-                    style={[styles.submitBtn, isSubmitting && { opacity: 0.7 }]}
+                  <PawtchiButton
+                    title="Save activity"
+                    variant="primary"
+                    loading={isSubmitting}
                     onPress={handleLogActivity}
-                    disabled={isSubmitting}
-                  >
-                    <LinearGradient colors={['#FFFC00', '#fac129']} style={styles.submitGradient}>
-                      {isSubmitting ? <ActivityIndicator color="#1A1A1A" /> : <Text style={styles.submitText}>SAVE ACTIVITY</Text>}
-                    </LinearGradient>
-                  </TouchableOpacity>
+                    style={{ marginTop: 8 }}
+                  />
 
-                  <TouchableOpacity style={styles.cancelBtn} onPress={resetForm} disabled={isSubmitting}>
-                    <Text style={styles.cancelText}>Back</Text>
-                  </TouchableOpacity>
+                  <PawtchiButton
+                    title="Back"
+                    variant="ghost"
+                    disabled={isSubmitting}
+                    onPress={resetForm}
+                    style={{ marginTop: 8 }}
+                  />
 
                 </ScrollView>
               )}
@@ -1089,11 +1103,11 @@ export default function ActivityScreen() {
           setShowScheduleSuccess(false);
           fetchData();
         }}
-        title="Schedule Created! 🎉"
-        icon={{ name: 'auto-awesome', color: '#FFFC00' }}
+        title="Schedule created"
+        icon={{ name: 'check-circle', color: '#FFFC00' }}
         lines={[
           {
-            text: `${scheduleSuccessData?.activitiesCreated} activities planned across ${scheduleSuccessData?.daysGenerated} days — starting today! Let's get moving!`,
+            text: `${scheduleSuccessData?.activitiesCreated} activities planned across ${scheduleSuccessData?.daysGenerated} days — starting today. Your schedule begins now.`,
             type: 'normal',
           },
           ...(scheduleSuccessData && scheduleSuccessData.weeklyKcal > 0
@@ -1104,7 +1118,7 @@ export default function ActivityScreen() {
             : []),
         ]}
         primaryAction={{
-          label: 'Awesome!',
+          label: 'Done',
           onPress: () => {
             setShowScheduleSuccess(false);
             fetchData();
@@ -1119,13 +1133,13 @@ export default function ActivityScreen() {
           setShowAdjustSuccess(false);
           fetchData();
         }}
-        title="Schedule Adjusted! ✨"
+        title="Schedule adjusted"
         icon={{ name: 'self-improvement', color: '#FFFC00' }}
         lines={[
           { text: adjustSuccessMsg, type: 'normal' },
         ]}
         primaryAction={{
-          label: 'Thank you!',
+          label: 'Done',
           onPress: () => {
             setShowAdjustSuccess(false);
             fetchData();
@@ -1137,7 +1151,7 @@ export default function ActivityScreen() {
       <PawtchiModal
         visible={showError}
         onClose={() => setShowError(false)}
-        title="Oops!"
+        title="Something went wrong"
         icon={{ name: 'error-outline', color: '#ef4444' }}
         message={errorMsg}
         showCloseButton
@@ -1227,7 +1241,7 @@ const styles = StyleSheet.create({
   },
 
   // Feed Section
-  feedSection: { marginTop: 32, marginBottom: 32 },
+  feedSection: { marginTop: 28, marginBottom: 32 },
   feedHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24,
   },
@@ -1408,7 +1422,7 @@ const styles = StyleSheet.create({
 
   // Auto-Adjustment Banner
   adjustBanner: {
-    backgroundColor: '#FFFBEB', borderRadius: 24, padding: 24, marginBottom: 24,
+    backgroundColor: '#FFFBEB', borderRadius: 24, padding: 24, marginTop: 24,
     borderWidth: 1, borderColor: '#FDE68A',
   },
   adjustBannerTop: {
@@ -1475,7 +1489,7 @@ const styles = StyleSheet.create({
   // Activity Burn Card
   burnCard: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#041015', borderRadius: 20, padding: 16, marginBottom: 20,
+    backgroundColor: '#041015', borderRadius: 20, padding: 16,
   },
   burnCardLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   burnCardLabel: {

@@ -8,6 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { usePetStore, ActivityLevel } from '../../store/usePetStore';
 import { getBreedDefaults } from '../../lib/breedData';
+import { PawtchiButton } from '../../components/PawtchiButton';
 
 const DOG_BREEDS = [
   "Mixed Breed",
@@ -107,7 +108,7 @@ export default function VitalsScreen() {
         <View style={styles.headlineSection}>
           <View style={[styles.blurBlob, { backgroundColor: 'rgba(255,252,0,0.1)' }]} />
           <Text style={[styles.mainHeading, { color: theme['on-surface'] }]}>
-            Tell us about your buddy.
+            Tell us about your pet.
           </Text>
           <Text style={[styles.subHeading, { color: theme['on-surface-variant'] }]}>
             We&apos;ll use these stats to calculate their daily needs.
@@ -125,7 +126,7 @@ export default function VitalsScreen() {
               ) : (
                 <View style={styles.avatarPickerPlaceholder}>
                   <MaterialIcons name="add-a-photo" size={32} color="#adadab" />
-                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', color: '#adadab', fontSize: 10, marginTop: 4 }}>UPLOAD</Text>
+                  <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: '700', color: '#adadab', fontSize: 10, marginTop: 4 }}>Upload</Text>
                 </View>
               )}
               <View style={styles.avatarPickerBadge}>
@@ -328,14 +329,17 @@ export default function VitalsScreen() {
           style={[styles.footerGradient, { paddingBottom: insets.bottom + 40 }]}
           locations={[0, 0.4, 1]}
         >
-          <TouchableOpacity
-            style={[styles.nextBtn, { backgroundColor: '#FFFC00' }]}
+          <PawtchiButton
+            title="Next"
+            variant="primary"
+            iconName="chevron-right"
+            iconPosition="right"
             onPress={() => router.push('/onboarding/allergies')}
-            activeOpacity={0.9}
-          >
-            <Text style={[styles.nextBtnText, { color: '#243036' }]}>Next</Text>
-            <MaterialIcons name="chevron-right" size={24} color="#243036" />
-          </TouchableOpacity>
+            style={{ 
+              width: 250, maxWidth: '100%', 
+              shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 15, elevation: 8 
+            }}
+          />
         </LinearGradient>
       </View>
 

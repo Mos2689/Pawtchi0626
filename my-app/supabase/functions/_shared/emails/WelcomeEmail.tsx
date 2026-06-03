@@ -20,12 +20,12 @@ interface WelcomeEmailProps {
 
 export const WelcomeEmail = ({
   ownerName = "there",
-  petName = "your furry friend",
+  petName = "your pet",
 }: WelcomeEmailProps) => {
   return (
     <Html>
       <Head />
-      <Preview>Welcome to the Pack! Let's get {petName} on tracking.</Preview>
+      <Preview>Get started with Pawtchi for {petName}.</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
@@ -35,11 +35,9 @@ export const WelcomeEmail = ({
 
           {/* Intro Section */}
           <Section style={heroSection}>
-            <Text style={heading}>Welcome to the Pack, {ownerName}! 🐾</Text>
+            <Text style={heading}>Welcome to Pawtchi, {ownerName}.</Text>
             <Text style={paragraph}>
-              We're thrilled to have you and <strong>{petName}</strong> join Pawtchi. 
-              Our mission is to help you track meals, monitor vitals, and ensure {petName} 
-              is living their happiest, healthiest life.
+              Great to have you and {petName} here. The app helps you track meals, monitor vitals, and keep a record of {petName}&apos;s health over time.
             </Text>
           </Section>
 

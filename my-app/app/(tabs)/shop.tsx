@@ -308,7 +308,7 @@ export default function ShopScreen() {
               {isTailoring && (
                 <View style={[StyleSheet.absoluteFill, styles.tailoringOverlay]}>
                   <ActivityIndicator size="large" color="#FFFC00" />
-                  <Typography variant="label" weight="bold" style={{ marginTop: 8, color: '#FFFC00', letterSpacing: 2 }}>TAILORING...</Typography>
+                  <Typography variant="label" weight="bold" style={{ marginTop: 8, color: '#FFFC00' }}>Tailoring...</Typography>
                 </View>
               )}
             </View>
@@ -330,10 +330,10 @@ export default function ShopScreen() {
         {/* HERO NUDGE */}
         <View style={styles.heroSection}>
           <View style={styles.heroContent}>
-            <Typography variant="headline" size={32} weight="bold" style={styles.heroTitle}>WANT MORE COINS?</Typography>
+            <Typography variant="headline" size={32} weight="bold" style={styles.heroTitle}>Want more coins?</Typography>
             <Typography variant="body" size={14} style={styles.heroSub}>Complete today&apos;s 5k walk to unlock a bonus 500 PawCoins!</Typography>
             <TouchableOpacity style={styles.heroButton} activeOpacity={0.8}>
-              <Text style={styles.heroButtonText}>START JOURNEY</Text>
+              <Text style={styles.heroButtonText}>Start journey</Text>
             </TouchableOpacity>
           </View>
           <MaterialIcons name="pets" size={120} color="rgba(255,255,255,0.4)" style={styles.heroIcon1} />

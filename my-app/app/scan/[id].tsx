@@ -132,22 +132,22 @@ export default function ScanDetailScreen() {
                         <View style={styles.srNutritionItem}>
                             <MaterialIcons name="local-fire-department" size={28} color="#FFFC00" />
                             <Text style={styles.srNutritionValue}>{scan.ai_estimated_calories}</Text>
-                            <Text style={styles.srNutritionLabel}>CALORIES</Text>
+                            <Text style={styles.srNutritionLabel}>Calories</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
                             <MaterialIcons name="egg-alt" size={28} color="#FFFC00" />
                             <Text style={styles.srNutritionValue}>{scan.protein_g}g</Text>
-                            <Text style={styles.srNutritionLabel}>PROTEIN</Text>
+                            <Text style={styles.srNutritionLabel}>Protein</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
                             <MaterialIcons name="grass" size={28} color="#FFFC00" />
                             <Text style={styles.srNutritionValue}>{scan.carbs_g}g</Text>
-                            <Text style={styles.srNutritionLabel}>CARBS</Text>
+                            <Text style={styles.srNutritionLabel}>Carbs</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
                             <MaterialIcons name="opacity" size={28} color="#FFFC00" />
                             <Text style={styles.srNutritionValue}>{scan.fat_g}g</Text>
-                            <Text style={styles.srNutritionLabel}>FATS</Text>
+                            <Text style={styles.srNutritionLabel}>Fats</Text>
                         </View>
                     </View>
 

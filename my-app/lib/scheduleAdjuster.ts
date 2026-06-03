@@ -115,6 +115,24 @@ export async function regenerateSchedule({
       }),
     });
 
+    // Handle Supabase platform-level errors before parsing JSON
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('[scheduleAdjuster] HTTP error:', res.status, errorText);
+
+      if (res.status === 403 || errorText.includes('denied access') || errorText.includes('paused')) {
+        return {
+          success: false, days_generated: 0, fatigueDetected,
+          error: 'Your Supabase project may be paused or restricted. Please restore it from the Supabase dashboard.',
+        };
+      }
+
+      return {
+        success: false, days_generated: 0, fatigueDetected,
+        error: errorText || `Server error (${res.status})`,
+      };
+    }
+
     const data = await res.json();
     if (!data.success) {
       return { success: false, days_generated: 0, fatigueDetected, error: data.error || 'Adjustment failed.' };

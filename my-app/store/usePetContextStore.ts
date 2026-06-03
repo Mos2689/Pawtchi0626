@@ -72,6 +72,12 @@ interface TrendData {
   weeklyDelta: number | null;
   // Days in the last 3 where consumption was below 70% of target (chronic under-eating signal)
   daysUnderTarget: number | null;
+  // New: Consecutive high-intensity days (recovery signal)
+  consecutiveHighIntensityDays: number;
+  // New: Days since last food log (churn detection)
+  daysSinceLastFoodLog: number | null;
+  // New: Exercise-calorie imbalance ratio (burned / consumed)
+  exerciseCalorieRatio: number | null;
 }
 
 interface ClinicalContext {
@@ -144,6 +150,9 @@ const initialTrends: TrendData = {
   weeklyTarget: null,
   weeklyDelta: null,
   daysUnderTarget: null,
+  consecutiveHighIntensityDays: 0,
+  daysSinceLastFoodLog: null,
+  exerciseCalorieRatio: null,
 };
 
 const initialClinical: ClinicalContext = {
@@ -193,7 +202,7 @@ function deriveClinical(pet: Pet | null): ClinicalContext {
   };
 }
 
-function computeDerived(
+export function computeDerived(
   today: TodayData,
   pet: Pet | null,
   weightTrend: TrendData['weightTrend'] | null = null,
@@ -270,6 +279,9 @@ function buildNudgeInput(state: PetContextState) {
     topContributorScan,
     isFreemiumActive: state.isFreemiumActive,
     daysSinceCreation: state.daysSinceCreation,
+    consecutiveHighIntensityDays: state.consecutiveHighIntensityDays,
+    daysSinceLastFoodLog: state.daysSinceLastFoodLog,
+    exerciseCalorieRatio: state.exerciseCalorieRatio,
   };
 }
 
@@ -405,7 +417,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const fourteenStr = getLocalYMD(fourteenAgo);
 
     try {
-      const [logs7Res, actsThisRes, actsLastRes, waterRes, weightRes, treats7Res, treatScans7Res] = await Promise.all([
+      // For consecutive high-intensity days: get all completed activities with intensity for last 7 days
+      const [logs7Res, actsThisRes, actsLastRes, waterRes, weightRes, treats7Res, treatScans7Res, actsIntensityRes, foodLogsRes] = await Promise.all([
         supabase
           .from('daily_logs')
           .select('calories_consumed, log_date')
@@ -422,7 +435,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
           .lte('scheduled_date', todayStr),
         supabase
           .from('activities')
-          .select('duration_minutes')
+          .select('duration_minutes, intensity, scheduled_date')
           .eq('pet_id', petId)
           .eq('status', 'completed')
           .in('activity_type', ['walk', 'play', 'training'])
@@ -454,6 +467,22 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
           .eq('pet_id', petId)
           .eq('is_treat', true)
           .gte('created_at', `${sevenStr}T00:00:00`),
+        // Intensity data for consecutive high-intensity days (last 7 days)
+        supabase
+          .from('activities')
+          .select('intensity, duration_minutes, scheduled_date')
+          .eq('pet_id', petId)
+          .eq('status', 'completed')
+          .in('activity_type', ['walk', 'play', 'training'])
+          .gte('scheduled_date', sevenStr)
+          .lte('scheduled_date', todayStr),
+        // Food scan logs for churn detection
+        supabase
+          .from('food_scans')
+          .select('created_at')
+          .eq('pet_id', petId)
+          .order('created_at', { ascending: false })
+          .limit(1),
       ]);
 
       // Nutrition score: days within ±10% of target
@@ -546,6 +575,46 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         }
       }
 
+      // Consecutive high-intensity days: count back from today
+      let consecutiveHighIntensityDays = 0;
+      const intensityData = (actsIntensityRes ?? { data: [] }).data as any[];
+      if (intensityData.length > 0) {
+        const sortedDates = [...new Set(intensityData.map((a: any) => a.scheduled_date))].sort().reverse();
+        for (const date of sortedDates) {
+          const dayActs = intensityData.filter((a: any) => a.scheduled_date === date);
+          const hasHighIntensity = dayActs.some((a: any) =>
+            a.intensity === 'high' || (a.duration_minutes && a.duration_minutes >= 45)
+          );
+          if (hasHighIntensity) {
+            consecutiveHighIntensityDays++;
+          } else {
+            break;
+          }
+        }
+      }
+
+      // Days since last food log (churn detection)
+      let daysSinceLastFoodLog: number | null = null;
+      const foodLogsData = (foodLogsRes ?? { data: [] }).data as any[];
+      if (foodLogsData.length > 0) {
+        const lastLog = foodLogsData[0];
+        if (lastLog.created_at) {
+          const lastLogDate = new Date(lastLog.created_at);
+          const msDiff = now.getTime() - lastLogDate.getTime();
+          daysSinceLastFoodLog = Math.floor(msDiff / (1000 * 60 * 60 * 24));
+        }
+      }
+
+      // Exercise-calorie imbalance ratio (burned vs consumed today)
+      let exerciseCalorieRatio: number | null = null;
+      const todayTotalCals = (logs7Res.data || []).find((l: any) => l.log_date === todayStr);
+      const todayMinsCalc = (actsThisRes.data || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
+      if (todayTotalCals && todayTotalCals.calories_consumed > 0) {
+        // Rough estimate: ~60 kcal burned per 10 min of activity
+        const burnedEstimate = Math.round(todayMinsCalc * 6);
+        exerciseCalorieRatio = Math.round((burnedEstimate / todayTotalCals.calories_consumed) * 100) / 100;
+      }
+
       set({
         nutritionScore,
         activityScore,
@@ -559,6 +628,9 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         weeklyTarget,
         weeklyDelta,
         daysUnderTarget,
+        consecutiveHighIntensityDays,
+        daysSinceLastFoodLog,
+        exerciseCalorieRatio,
         isTrendsLoading: false,
       });
 
