@@ -834,6 +834,14 @@ export default function ProfileScreen() {
 
 
 
+            <TouchableOpacity style={styles.accountRow} activeOpacity={0.7} onPress={() => router.push('/invite' as any)}>
+              <View style={styles.accountRowLeft}>
+                <MaterialIcons name="group-add" size={24} color="#94a3b8" />
+                <Text style={[styles.accountName, { color: '#0f172a' }]}>Invite a friend</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={24} color="#94a3b8" />
+            </TouchableOpacity>
+
             <TouchableOpacity style={styles.accountRow} activeOpacity={0.7} onPress={() => router.push('/privacy' as any)}>
               <View style={styles.accountRowLeft}>
                 <MaterialIcons name="security" size={24} color="#94a3b8" />

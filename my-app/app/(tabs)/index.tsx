@@ -516,6 +516,22 @@ export default function HomeScreen() {
             })
           )}
         </View>
+
+        {/* Invite a friend — quiet, pet-voiced. Sits at the bottom of the feed. */}
+        <TouchableOpacity
+          style={styles.inviteCard}
+          onPress={() => router.push('/invite' as any)}
+          activeOpacity={0.85}
+        >
+          <View style={styles.inviteIcon}>
+            <MaterialIcons name="group-add" size={22} color="#1a1a00" />
+          </View>
+          <View style={styles.inviteContent}>
+            <Text style={styles.inviteTitle}>A friend for {petName}</Text>
+            <Text style={styles.inviteSub}>Pawtchi is better shared</Text>
+          </View>
+          <MaterialIcons name="chevron-right" size={24} color="#cbd5e1" />
+        </TouchableOpacity>
       </Animated.ScrollView>
     </View>
   );
@@ -790,6 +806,41 @@ const styles = StyleSheet.create({
   },
 
   // Treat Banner
+  inviteCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#fffef5',
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#f5f1c2',
+    marginBottom: 16,
+  },
+  inviteIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFC00',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inviteContent: {
+    flex: 1,
+  },
+  inviteTitle: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 15,
+    color: '#0f172a',
+  },
+  inviteSub: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '500',
+    fontSize: 13,
+    color: '#64748b',
+    marginTop: 2,
+  },
   treatBanner: {
     flexDirection: 'row',
     alignItems: 'center',
