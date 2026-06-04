@@ -15,7 +15,7 @@ interface SubscriptionState {
     hasFullAccess: boolean;
 }
 
-const ENTITLEMENT_ID = 'pro'; // Must match your RevenueCat entitlement identifier
+const ENTITLEMENT_ID = 'Pawtchi Pro'; // Must match your RevenueCat entitlement identifier
 
 export function useSubscription(): SubscriptionState & {
     restorePurchases: () => Promise<void>;
