@@ -5,7 +5,9 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle } from 'react-native-svg';
+import Svg from 'react-native-svg';
+import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
+import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
@@ -17,80 +19,6 @@ import { useSubscription } from '../../hooks/useSubscription';
 import { NudgeCard } from '../../components/NudgeCard';
 import { TrialBanner } from '../../components/TrialBanner';
 import { PawtchiButton } from '../../components/PawtchiButton';
-
-// Apple-Health-style concentric rings around pet photo
-// Rings ARE the stats — calories (orange outer), activity (yellow mid), water (blue inner)
-
-const RING_SIZE = 280;
-const cx = RING_SIZE / 2;
-const cy = RING_SIZE / 2;
-const PHOTO_RADIUS = 82;
-
-const RING_CONFIG = [
-  { r: 130, color: '#f97316', stroke: 14 }, // outer - calories
-  { r: 108, color: '#FFFC00', stroke: 13 }, // mid - move
-  { r: 86,  color: '#3091F9', stroke: 12 }, // inner - hydrate
-];
-
-interface RingArcProps {
-  r: number;
-  color: string;
-  strokeWidth: number;
-  progress: number; // 0-1
-}
-
-function RingArc({ r, color, strokeWidth, progress }: RingArcProps) {
-  const circumference = 2 * Math.PI * r;
-  const clampedProgress = Math.min(Math.max(progress, 0), 1);
-  const filledLength = circumference * clampedProgress;
-
-  return (
-    <>
-      {/* Track (background) */}
-      <Circle
-        cx={cx} cy={cy} r={r}
-        stroke={color}
-        strokeWidth={strokeWidth}
-        strokeOpacity={0.18}
-        fill="none"
-      />
-      {/* Progress arc */}
-      <Circle
-        cx={cx} cy={cy} r={r}
-        stroke={color}
-        strokeWidth={strokeWidth}
-        fill="none"
-        strokeLinecap="round"
-        strokeDasharray={`${filledLength} ${circumference}`}
-        transform={`rotate(-90 ${cx} ${cy})`}
-      />
-    </>
-  );
-}
-
-// Progress bar component for legend cards
-function ProgressBar({ progress, color }: { progress: number; color: string }) {
-  return (
-    <View style={progressStyles.track}>
-      <View style={[progressStyles.fill, { width: `${Math.min(progress * 100, 100)}%`, backgroundColor: color }]} />
-    </View>
-  );
-}
-
-const progressStyles = StyleSheet.create({
-  track: {
-    width: '100%',
-    height: 4,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 2,
-    marginTop: 8,
-    overflow: 'hidden',
-  },
-  fill: {
-    height: '100%',
-    borderRadius: 2,
-  },
-});
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -137,7 +65,11 @@ export default function HomeScreen() {
   const treatCaloriesConsumed = usePetContextStore(s => s.treatCaloriesConsumed);
   const caloriesRemaining = usePetContextStore(s => s.caloriesRemaining);
   const refreshToday = usePetContextStore(s => s.refreshToday);
+  const daysSinceLastFoodLog = usePetContextStore(s => s.daysSinceLastFoodLog);
   const longestStreak = useStreakStore(s => s.longestStreak);
+
+  // Brand-new user with no real data yet — surface the future-state preview entry.
+  const isLowData = daysSinceLastFoodLog === null && todayScans.length === 0;
 
   useFocusEffect(useCallback(() => {
     if (activePet?.id) refreshToday(activePet.id);
@@ -217,6 +149,27 @@ export default function HomeScreen() {
       >
         {/* Nudge Card */}
         <NudgeCard />
+
+        {/* Profile completion — quiet, dismissible, deep-links to the right editor */}
+        <ProfileCompletionCard />
+
+        {/* Future-state preview re-entry — only while the user has no real data yet */}
+        {isLowData && (
+          <TouchableOpacity
+            style={styles.previewCard}
+            onPress={() => router.push('/preview-home' as any)}
+            activeOpacity={0.9}
+          >
+            <View style={styles.previewIcon}>
+              <MaterialIcons name="auto-awesome" size={22} color="#1a1a00" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.previewTitle}>See where you and {petName} are headed</Text>
+              <Text style={styles.previewSub}>A preview of your home as {petName}&apos;s story builds.</Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={24} color="#cbd5e1" />
+          </TouchableOpacity>
+        )}
 
         {/* Greeting */}
         <Text style={styles.greeting}>
@@ -840,6 +793,42 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#64748b',
     marginTop: 2,
+  },
+  previewCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  previewIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFFC00',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewTitle: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '800',
+    fontSize: 15,
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  previewSub: {
+    fontFamily: 'Plus Jakarta Sans',
+    fontWeight: '500',
+    fontSize: 12,
+    color: '#94a3b8',
+    lineHeight: 17,
   },
   treatBanner: {
     flexDirection: 'row',

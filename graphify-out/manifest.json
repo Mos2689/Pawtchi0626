@@ -1,0 +1,722 @@
+{
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app.json": {
+    "mtime": 1780562896.2350721,
+    "ast_hash": "18a0c496ac825cea70ed03cacc96b618",
+    "semantic_hash": "18a0c496ac825cea70ed03cacc96b618"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\eas.json": {
+    "mtime": 1780497188.8298023,
+    "ast_hash": "e3237d976bc320aadeb25165beefacc6",
+    "semantic_hash": "e3237d976bc320aadeb25165beefacc6"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\eslint.config.js": {
+    "mtime": 499162500.0,
+    "ast_hash": "560a864580ad8107fbbf8d6d452c82fe",
+    "semantic_hash": "560a864580ad8107fbbf8d6d452c82fe"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\package.json": {
+    "mtime": 1779865800.5315711,
+    "ast_hash": "ea62b8ed8eda2b309997b37e6ad72820",
+    "semantic_hash": "ea62b8ed8eda2b309997b37e6ad72820"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\tsconfig.json": {
+    "mtime": 499162500.0,
+    "ast_hash": "54dc64d62868350b1d819e47e2ac8e9a",
+    "semantic_hash": "54dc64d62868350b1d819e47e2ac8e9a"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\.vscode\\extensions.json": {
+    "mtime": 499162500.0,
+    "ast_hash": "b2354ba0225f5689d13651ec0fac0de0",
+    "semantic_hash": "b2354ba0225f5689d13651ec0fac0de0"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\.vscode\\settings.json": {
+    "mtime": 499162500.0,
+    "ast_hash": "6b9302c1f72c315e90233c7539c48c9f",
+    "semantic_hash": "6b9302c1f72c315e90233c7539c48c9f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\achievements.tsx": {
+    "mtime": 1774189919.9048347,
+    "ast_hash": "d590d1f8be1e2cab1e6fe89a95f082a5",
+    "semantic_hash": "d590d1f8be1e2cab1e6fe89a95f082a5"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\index.tsx": {
+    "mtime": 1778386555.4537716,
+    "ast_hash": "908216e4f2a61f07737c6e25ee3fb6d6",
+    "semantic_hash": "908216e4f2a61f07737c6e25ee3fb6d6"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\invite.tsx": {
+    "mtime": 1780581963.073634,
+    "ast_hash": "075dc99f0c3aba1c34dc2e9c15a5a653",
+    "semantic_hash": "075dc99f0c3aba1c34dc2e9c15a5a653"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\modal.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "a3b709a8c79864356fcc5c97ed63400d",
+    "semantic_hash": "a3b709a8c79864356fcc5c97ed63400d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\owner.tsx": {
+    "mtime": 1778386749.3212252,
+    "ast_hash": "bad5f7888e399f9af7fa0e509a8e031f",
+    "semantic_hash": "bad5f7888e399f9af7fa0e509a8e031f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\paywall.tsx": {
+    "mtime": 1780496705.636354,
+    "ast_hash": "ea518aa83d6d4829c7539d95e0d8c7d0",
+    "semantic_hash": "ea518aa83d6d4829c7539d95e0d8c7d0"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\privacy.tsx": {
+    "mtime": 1780496722.7020237,
+    "ast_hash": "ab0adc9299a75502979b6a2ede78b7e2",
+    "semantic_hash": "ab0adc9299a75502979b6a2ede78b7e2"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\_layout.tsx": {
+    "mtime": 1780579977.419528,
+    "ast_hash": "2738a4f000c8188ab59a22e9443c1c6d",
+    "semantic_hash": "2738a4f000c8188ab59a22e9443c1c6d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(auth)\\login.tsx": {
+    "mtime": 1778386734.4597435,
+    "ast_hash": "22ce03956f6cf7ca45ca6e847e771340",
+    "semantic_hash": "22ce03956f6cf7ca45ca6e847e771340"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(auth)\\_layout.tsx": {
+    "mtime": 1774199670.1513443,
+    "ast_hash": "4a42f22713c117fa5f0c901c45b18118",
+    "semantic_hash": "4a42f22713c117fa5f0c901c45b18118"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\activity.tsx": {
+    "mtime": 1779845034.3078332,
+    "ast_hash": "d8984b20af6a4721322e90cf43aac07b",
+    "semantic_hash": "d8984b20af6a4721322e90cf43aac07b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\community.tsx": {
+    "mtime": 1778321264.6453695,
+    "ast_hash": "3d21692da2d8a24a6f438b3060384ef0",
+    "semantic_hash": "3d21692da2d8a24a6f438b3060384ef0"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\explore.tsx": {
+    "mtime": 1777784968.350376,
+    "ast_hash": "be1d040c38a1c093afce12dc64a7e38b",
+    "semantic_hash": "be1d040c38a1c093afce12dc64a7e38b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\health.tsx": {
+    "mtime": 1778390653.733868,
+    "ast_hash": "4485d85264f19a5c0f04dab17155679d",
+    "semantic_hash": "4485d85264f19a5c0f04dab17155679d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\index.tsx": {
+    "mtime": 1780580484.7398968,
+    "ast_hash": "3489b3a3d2b6867cf19523b1ce33ca5f",
+    "semantic_hash": "3489b3a3d2b6867cf19523b1ce33ca5f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\meal.tsx": {
+    "mtime": 1778391881.6962886,
+    "ast_hash": "f262565442cdea7499e18cdc3b5fc2be",
+    "semantic_hash": "f262565442cdea7499e18cdc3b5fc2be"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\profile.tsx": {
+    "mtime": 1780579990.2560225,
+    "ast_hash": "24dd5cc19c5279198ee22903d3025dfd",
+    "semantic_hash": "24dd5cc19c5279198ee22903d3025dfd"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\shop.tsx": {
+    "mtime": 1778316244.2767117,
+    "ast_hash": "8ccfcb533bfafb52ee3217772ad29fda",
+    "semantic_hash": "8ccfcb533bfafb52ee3217772ad29fda"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\(tabs)\\_layout.tsx": {
+    "mtime": 1777784968.347605,
+    "ast_hash": "88b742ef5987378fd3dff127b617627f",
+    "semantic_hash": "88b742ef5987378fd3dff127b617627f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\community\\best-mates.tsx": {
+    "mtime": 1778320835.8430705,
+    "ast_hash": "79332e7d01810b06ab7f17158e2d8f9c",
+    "semantic_hash": "79332e7d01810b06ab7f17158e2d8f9c"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\health\\index.tsx": {
+    "mtime": 1774189919.9084325,
+    "ast_hash": "0c3b62d046ddfa0b34e1b05a4d58c9c9",
+    "semantic_hash": "0c3b62d046ddfa0b34e1b05a4d58c9c9"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\onboarding\\allergies.tsx": {
+    "mtime": 1778386647.814463,
+    "ast_hash": "b2146db2f939f7b4471278ca1b3a3904",
+    "semantic_hash": "b2146db2f939f7b4471278ca1b3a3904"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\onboarding\\goal.tsx": {
+    "mtime": 1778386629.9707136,
+    "ast_hash": "a2ff80ab9b74aa11f4b0c487136e6c6c",
+    "semantic_hash": "a2ff80ab9b74aa11f4b0c487136e6c6c"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\onboarding\\scan-choice.tsx": {
+    "mtime": 1778386610.3689687,
+    "ast_hash": "3631479ad204c8c630eb4aa6b862e299",
+    "semantic_hash": "3631479ad204c8c630eb4aa6b862e299"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\onboarding\\species.tsx": {
+    "mtime": 1778386592.4604216,
+    "ast_hash": "27d5a45d0e84e6da36ff2df2291d6b42",
+    "semantic_hash": "27d5a45d0e84e6da36ff2df2291d6b42"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\onboarding\\vitals.tsx": {
+    "mtime": 1778386575.9646318,
+    "ast_hash": "3030d4b52f050b08d5746a57e578da5f",
+    "semantic_hash": "3030d4b52f050b08d5746a57e578da5f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\app\\scan\\[id].tsx": {
+    "mtime": 1778315962.739778,
+    "ast_hash": "3661abf264aee6b5c9437e5735411cef",
+    "semantic_hash": "3661abf264aee6b5c9437e5735411cef"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\Button.tsx": {
+    "mtime": 1774172833.7607942,
+    "ast_hash": "b0032d843f0f8f6653e240de742511e4",
+    "semantic_hash": "b0032d843f0f8f6653e240de742511e4"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\Card.tsx": {
+    "mtime": 1774172841.7398021,
+    "ast_hash": "ebdf0e7d9c49b3a440ca578cc033fbde",
+    "semantic_hash": "ebdf0e7d9c49b3a440ca578cc033fbde"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\CircularProgress.tsx": {
+    "mtime": 1774418614.4373784,
+    "ast_hash": "90b6159f8c121ca44be752dc397a7ed8",
+    "semantic_hash": "90b6159f8c121ca44be752dc397a7ed8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\CoinToast.tsx": {
+    "mtime": 1778317584.484968,
+    "ast_hash": "793e7e474d6f60af4920805d91d70310",
+    "semantic_hash": "793e7e474d6f60af4920805d91d70310"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\EmptyPantryNudge.tsx": {
+    "mtime": 1778387322.8392189,
+    "ast_hash": "19093853cdcabf5512a39cf931da6848",
+    "semantic_hash": "19093853cdcabf5512a39cf931da6848"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\external-link.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "a71bdc8e0bd55812a1e97662ade442d1",
+    "semantic_hash": "a71bdc8e0bd55812a1e97662ade442d1"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\haptic-tab.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "3865d2fa7a067a97b4a0bbc8f7dcb2db",
+    "semantic_hash": "3865d2fa7a067a97b4a0bbc8f7dcb2db"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\Header.tsx": {
+    "mtime": 1774172840.4330409,
+    "ast_hash": "e689ca49b485e479eb1c0eb33ca45818",
+    "semantic_hash": "e689ca49b485e479eb1c0eb33ca45818"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\hello-wave.tsx": {
+    "mtime": 1778317585.6136577,
+    "ast_hash": "5a3e10c365d1bf81f94e173e82471078",
+    "semantic_hash": "5a3e10c365d1bf81f94e173e82471078"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\LiquidFillCard.tsx": {
+    "mtime": 1775313162.2021737,
+    "ast_hash": "00edc8ed460bd25979cd9aa30a7d61c5",
+    "semantic_hash": "00edc8ed460bd25979cd9aa30a7d61c5"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\NudgeCard.tsx": {
+    "mtime": 1778318216.1571066,
+    "ast_hash": "55479e4dd3409cbd51bf24b7d599f3a6",
+    "semantic_hash": "55479e4dd3409cbd51bf24b7d599f3a6"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\NutritionReferencePanel.tsx": {
+    "mtime": 1777304900.4447637,
+    "ast_hash": "5fe6693eeae6e7b5c306c728d54123ff",
+    "semantic_hash": "5fe6693eeae6e7b5c306c728d54123ff"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\PantryPillSelector.tsx": {
+    "mtime": 1777784968.3762429,
+    "ast_hash": "a655753b39d7e843d061ff3f9ea56ab8",
+    "semantic_hash": "a655753b39d7e843d061ff3f9ea56ab8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\parallax-scroll-view.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "c2c998330722001de6d4a098fa914328",
+    "semantic_hash": "c2c998330722001de6d4a098fa914328"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\PawtchiButton.tsx": {
+    "mtime": 1778386533.7580605,
+    "ast_hash": "dc8a5205c6c226364a2c3c606cfcbfd9",
+    "semantic_hash": "dc8a5205c6c226364a2c3c606cfcbfd9"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\PawtchiModal.tsx": {
+    "mtime": 1778389695.4880292,
+    "ast_hash": "727f372596cc3a6819a0e1f60d25805e",
+    "semantic_hash": "727f372596cc3a6819a0e1f60d25805e"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\QuickLogRail.tsx": {
+    "mtime": 1777810079.9753094,
+    "ast_hash": "2ec9ff19091fdf25299a8d025a12e6f4",
+    "semantic_hash": "2ec9ff19091fdf25299a8d025a12e6f4"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\themed-text.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "c1f1947c3b24be35a7097cc46f71073a",
+    "semantic_hash": "c1f1947c3b24be35a7097cc46f71073a"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\themed-view.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "ffcbffb4831735916a920f2d0305f126",
+    "semantic_hash": "ffcbffb4831735916a920f2d0305f126"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\TrialBanner.tsx": {
+    "mtime": 1775313162.2029276,
+    "ast_hash": "69ca9c7b7e0370ee92f5945e632e5a81",
+    "semantic_hash": "69ca9c7b7e0370ee92f5945e632e5a81"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\Typography.tsx": {
+    "mtime": 1774172828.2458694,
+    "ast_hash": "e7b7fe63a60f0af3b3da3fece2ecdc10",
+    "semantic_hash": "e7b7fe63a60f0af3b3da3fece2ecdc10"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\WeeklyNutritionChart.tsx": {
+    "mtime": 1775313162.2029276,
+    "ast_hash": "dc1146614f017e61ae849ffc467bdbe8",
+    "semantic_hash": "dc1146614f017e61ae849ffc467bdbe8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\ui\\collapsible.tsx": {
+    "mtime": 1774174358.9827073,
+    "ast_hash": "6cb27041848eb2acc560e4852f887c7a",
+    "semantic_hash": "6cb27041848eb2acc560e4852f887c7a"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\ui\\icon-symbol.ios.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "0f318b392e23d311c7094bdbb94d9c58",
+    "semantic_hash": "0f318b392e23d311c7094bdbb94d9c58"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\ui\\icon-symbol.tsx": {
+    "mtime": 499162500.0,
+    "ast_hash": "dca9fc677c970dc8bbeddb9e580cf99a",
+    "semantic_hash": "dca9fc677c970dc8bbeddb9e580cf99a"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\components\\walkthrough\\Hotspot.tsx": {
+    "mtime": 1776400467.084585,
+    "ast_hash": "dc63353c5244eba1f7bc7cc7c8e02206",
+    "semantic_hash": "dc63353c5244eba1f7bc7cc7c8e02206"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\constants\\brandData.ts": {
+    "mtime": 1775313162.2050831,
+    "ast_hash": "24cd2b270b1eef213ffb2cd7cc01ae71",
+    "semantic_hash": "24cd2b270b1eef213ffb2cd7cc01ae71"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\constants\\Theme.ts": {
+    "mtime": 1777784968.3822103,
+    "ast_hash": "3960b42b2f59b830b4ffd92bc75df549",
+    "semantic_hash": "3960b42b2f59b830b4ffd92bc75df549"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\data\\aafco_cat_2014.json": {
+    "mtime": 1777299421.3497193,
+    "ast_hash": "07834c1d852040ee1bb0203e703b308f",
+    "semantic_hash": "07834c1d852040ee1bb0203e703b308f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\data\\aafco_dog_2014.json": {
+    "mtime": 1777299406.972322,
+    "ast_hash": "791334ea121bfc2c5b831306e858009d",
+    "semantic_hash": "791334ea121bfc2c5b831306e858009d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\data\\au_seed_foods.json": {
+    "mtime": 1777300291.3174932,
+    "ast_hash": "14bdae7e203ca62a477c93b9602b2bf8",
+    "semantic_hash": "14bdae7e203ca62a477c93b9602b2bf8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\data\\clinical_adjustments.json": {
+    "mtime": 1777299452.1583505,
+    "ast_hash": "af2376dbe50ac9af18a285b0904b0324",
+    "semantic_hash": "af2376dbe50ac9af18a285b0904b0324"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\hooks\\use-color-scheme.ts": {
+    "mtime": 499162500.0,
+    "ast_hash": "6f3444fcb9c7013a839a7832be518831",
+    "semantic_hash": "6f3444fcb9c7013a839a7832be518831"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\hooks\\use-color-scheme.web.ts": {
+    "mtime": 499162500.0,
+    "ast_hash": "071fbb9a1a05ffb8af4b7d3b1ffa72d6",
+    "semantic_hash": "071fbb9a1a05ffb8af4b7d3b1ffa72d6"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\hooks\\use-theme-color.ts": {
+    "mtime": 1774174358.972409,
+    "ast_hash": "d542ca08b95146aaa47ab9f11770d052",
+    "semantic_hash": "d542ca08b95146aaa47ab9f11770d052"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\hooks\\usePushNotifications.ts": {
+    "mtime": 1775313162.207258,
+    "ast_hash": "8589f1bca8b549d4e6b0f87e80f1582b",
+    "semantic_hash": "8589f1bca8b549d4e6b0f87e80f1582b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\hooks\\useSubscription.ts": {
+    "mtime": 1780562277.1734242,
+    "ast_hash": "9dc70c0dee2318662c02c66b45445e9e",
+    "semantic_hash": "9dc70c0dee2318662c02c66b45445e9e"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\aafcoMath.test.ts": {
+    "mtime": 1777298810.2187274,
+    "ast_hash": "79f593ed23596d8f45d786441fe316c8",
+    "semantic_hash": "79f593ed23596d8f45d786441fe316c8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\aafcoMath.ts": {
+    "mtime": 1777298665.6798167,
+    "ast_hash": "ac9fb31d45a27d81893eba31ce78019f",
+    "semantic_hash": "ac9fb31d45a27d81893eba31ce78019f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\allergenMatcher.test.ts": {
+    "mtime": 1777827244.4513562,
+    "ast_hash": "f80a7c5f67589254ae827fcd53182488",
+    "semantic_hash": "f80a7c5f67589254ae827fcd53182488"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\allergenMatcher.ts": {
+    "mtime": 1777827189.7308266,
+    "ast_hash": "6a2bd571adb444a5478d13dd789b7875",
+    "semantic_hash": "6a2bd571adb444a5478d13dd789b7875"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\breedData.ts": {
+    "mtime": 1775460257.660387,
+    "ast_hash": "ae4569c393c403f6f5505df7b36127fb",
+    "semantic_hash": "ae4569c393c403f6f5505df7b36127fb"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\clinicalMapping.test.ts": {
+    "mtime": 1777299789.999474,
+    "ast_hash": "2597bdaa1b4dbbd46fe2e2ea1752989b",
+    "semantic_hash": "2597bdaa1b4dbbd46fe2e2ea1752989b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\clinicalMapping.ts": {
+    "mtime": 1777299744.6962495,
+    "ast_hash": "920a277eaceda6ce3c81b50f5cec1bda",
+    "semantic_hash": "920a277eaceda6ce3c81b50f5cec1bda"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\contextualizer.ts": {
+    "mtime": 1774712922.1870465,
+    "ast_hash": "ac59c746667f3da9da77f7c9a6ea4d4c",
+    "semantic_hash": "ac59c746667f3da9da77f7c9a6ea4d4c"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\foodVerdict.test.ts": {
+    "mtime": 1777299600.6764326,
+    "ast_hash": "d44d0c1a769585c53d3932b402409a97",
+    "semantic_hash": "d44d0c1a769585c53d3932b402409a97"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\foodVerdict.ts": {
+    "mtime": 1777299559.3372557,
+    "ast_hash": "7d0938f44db1d2bf1c6159d2c1cfc20c",
+    "semantic_hash": "7d0938f44db1d2bf1c6159d2c1cfc20c"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\generateVerdict.test.ts": {
+    "mtime": 1777369723.8625262,
+    "ast_hash": "227473093e8f9ee393b0cbaf9d2ced36",
+    "semantic_hash": "227473093e8f9ee393b0cbaf9d2ced36"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\generateVerdict.ts": {
+    "mtime": 1777782208.167773,
+    "ast_hash": "f2e51c696952cc1888f104d832ec3403",
+    "semantic_hash": "f2e51c696952cc1888f104d832ec3403"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\healthMath.test.ts": {
+    "mtime": 1777281654.0044608,
+    "ast_hash": "348acc8b094ee494540f00da1661b705",
+    "semantic_hash": "348acc8b094ee494540f00da1661b705"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\healthMath.ts": {
+    "mtime": 1777784968.3841376,
+    "ast_hash": "a6f136a9c91780982873d70a94ea4336",
+    "semantic_hash": "a6f136a9c91780982873d70a94ea4336"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\healthScore.test.ts": {
+    "mtime": 1777298835.3296165,
+    "ast_hash": "79e9a4f511315ee3510e6802c172655e",
+    "semantic_hash": "79e9a4f511315ee3510e6802c172655e"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\healthScore.ts": {
+    "mtime": 1777782051.259524,
+    "ast_hash": "741d7b3a9298fca306b667b25935971d",
+    "semantic_hash": "741d7b3a9298fca306b667b25935971d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\lifeStage.ts": {
+    "mtime": 1775460288.885937,
+    "ast_hash": "2e9b9aabda16dce5b08bed32ebbbfd3b",
+    "semantic_hash": "2e9b9aabda16dce5b08bed32ebbbfd3b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\nudgeEngine.ts": {
+    "mtime": 1778314026.2786882,
+    "ast_hash": "f5b9ecad324dc78438e127239441a398",
+    "semantic_hash": "f5b9ecad324dc78438e127239441a398"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\pantryMath.ts": {
+    "mtime": 1777385637.3520484,
+    "ast_hash": "293fa10bca7509472349ff820005fc39",
+    "semantic_hash": "293fa10bca7509472349ff820005fc39"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\pantrySeed.test.ts": {
+    "mtime": 1777300322.7635984,
+    "ast_hash": "666e3557b465ef8a46e8717cc2e546d3",
+    "semantic_hash": "666e3557b465ef8a46e8717cc2e546d3"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\pantrySeed.ts": {
+    "mtime": 1777300310.3302588,
+    "ast_hash": "e5774a26fdb90fe51f70d7e1296b8c72",
+    "semantic_hash": "e5774a26fdb90fe51f70d7e1296b8c72"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\pantryToScanResult.ts": {
+    "mtime": 1777827218.7411933,
+    "ast_hash": "ca3085f00afa6743600b55021f565ae5",
+    "semantic_hash": "ca3085f00afa6743600b55021f565ae5"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\referral.test.ts": {
+    "mtime": 1780581994.679278,
+    "ast_hash": "efe09e2b8f84aab18e33811324e2435e",
+    "semantic_hash": "efe09e2b8f84aab18e33811324e2435e"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\referral.ts": {
+    "mtime": 1780581947.1050866,
+    "ast_hash": "ac9368293a053f0d96bf5be250f1d901",
+    "semantic_hash": "ac9368293a053f0d96bf5be250f1d901"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\scheduleAdjuster.ts": {
+    "mtime": 1779845060.94408,
+    "ast_hash": "a94d7c912bd40c82970090d7f9bc82c0",
+    "semantic_hash": "a94d7c912bd40c82970090d7f9bc82c0"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\supabase.ts": {
+    "mtime": 1774241141.0542543,
+    "ast_hash": "69a8839549d62d29f2c94edab28a87f3",
+    "semantic_hash": "69a8839549d62d29f2c94edab28a87f3"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\vetReportFreshness.test.ts": {
+    "mtime": 1777299800.9278977,
+    "ast_hash": "82480d870fcdcd2108b2722b309c169f",
+    "semantic_hash": "82480d870fcdcd2108b2722b309c169f"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\lib\\vetReportFreshness.ts": {
+    "mtime": 1777299758.674176,
+    "ast_hash": "51d7d2c6a0561433c0f1574b7745e6c6",
+    "semantic_hash": "51d7d2c6a0561433c0f1574b7745e6c6"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\providers\\AuthProvider.tsx": {
+    "mtime": 1774197914.688269,
+    "ast_hash": "5c1eac5d76d4b7f2a5d04d135e064bd7",
+    "semantic_hash": "5c1eac5d76d4b7f2a5d04d135e064bd7"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\providers\\WalkthroughContext.tsx": {
+    "mtime": 1775452167.8868387,
+    "ast_hash": "43be165ea5cb5fb98bf823cad623d2e6",
+    "semantic_hash": "43be165ea5cb5fb98bf823cad623d2e6"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\scripts\\reset-project.js": {
+    "mtime": 499162500.0,
+    "ast_hash": "55e9a46ae7c35eb0340e956473beaed2",
+    "semantic_hash": "55e9a46ae7c35eb0340e956473beaed2"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\scripts\\testGemini.js": {
+    "mtime": 1774453897.2520764,
+    "ast_hash": "d5838d9adfefc289c00af8618289683b",
+    "semantic_hash": "d5838d9adfefc289c00af8618289683b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\scripts\\testGemini2.js": {
+    "mtime": 1774454001.9984398,
+    "ast_hash": "c119c69368906212bcf6fa4d9520fc75",
+    "semantic_hash": "c119c69368906212bcf6fa4d9520fc75"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\scripts\\testGemini3.js": {
+    "mtime": 1774454471.8505514,
+    "ast_hash": "4a0ebbab7fcdb84aceb529480568e02b",
+    "semantic_hash": "4a0ebbab7fcdb84aceb529480568e02b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\scripts\\uploadWearables.js": {
+    "mtime": 1774452265.2338722,
+    "ast_hash": "728a6896def92ba37854a3c47dc217ec",
+    "semantic_hash": "728a6896def92ba37854a3c47dc217ec"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\store\\useActivePetStore.ts": {
+    "mtime": 1778388165.3776023,
+    "ast_hash": "bdaf5d5ee753c86140a6fd2cac8b2ebc",
+    "semantic_hash": "bdaf5d5ee753c86140a6fd2cac8b2ebc"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\store\\usePetContextStore.ts": {
+    "mtime": 1778388250.757522,
+    "ast_hash": "efdff1563be38e4eaec42f47a1296f78",
+    "semantic_hash": "efdff1563be38e4eaec42f47a1296f78"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\store\\usePetStore.ts": {
+    "mtime": 1775489881.781646,
+    "ast_hash": "e2f2a925fa5b45e31d34eed8e2de897e",
+    "semantic_hash": "e2f2a925fa5b45e31d34eed8e2de897e"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\store\\useStreakStore.ts": {
+    "mtime": 1775458568.3208256,
+    "ast_hash": "f7867a85976721af191bfccb2760e4e2",
+    "semantic_hash": "f7867a85976721af191bfccb2760e4e2"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\schema.sql": {
+    "mtime": 1777784968.4000585,
+    "ast_hash": "686b3457cc6a636c92121611a5f1155d",
+    "semantic_hash": "686b3457cc6a636c92121611a5f1155d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\check-reminders\\index.ts": {
+    "mtime": 1778317774.539932,
+    "ast_hash": "b842c2325e5070326396d02a47ec052b",
+    "semantic_hash": "b842c2325e5070326396d02a47ec052b"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\estimate-weight\\index.ts": {
+    "mtime": 1775458556.4969177,
+    "ast_hash": "58f823dd34ce572f9ecab2d573edaac8",
+    "semantic_hash": "58f823dd34ce572f9ecab2d573edaac8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\gemini-proxy\\index.ts": {
+    "mtime": 1778314470.6372035,
+    "ast_hash": "5fedf784332a6dd27084482ae02d530e",
+    "semantic_hash": "5fedf784332a6dd27084482ae02d530e"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\gemini-verdict\\index.ts": {
+    "mtime": 1778314411.6764324,
+    "ast_hash": "66606ee1bbd202ff30008c2195cfb884",
+    "semantic_hash": "66606ee1bbd202ff30008c2195cfb884"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\generate-health-insight\\index.ts": {
+    "mtime": 1778314339.3208697,
+    "ast_hash": "57d4b917e5912297fce8c027babe3d76",
+    "semantic_hash": "57d4b917e5912297fce8c027babe3d76"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\generate-schedule\\index.ts": {
+    "mtime": 1778314360.85023,
+    "ast_hash": "933974e99470ee684e8e7c03145da206",
+    "semantic_hash": "933974e99470ee684e8e7c03145da206"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\parse-onboarding-report\\index.ts": {
+    "mtime": 1775467444.4884655,
+    "ast_hash": "b7719c810aa20bf8cddd437fb7bc4da7",
+    "semantic_hash": "b7719c810aa20bf8cddd437fb7bc4da7"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\scan-vet-report\\index.ts": {
+    "mtime": 1775458568.3269262,
+    "ast_hash": "b6d7a40b2b0db3a2889ad9a6c3fe05d8",
+    "semantic_hash": "b6d7a40b2b0db3a2889ad9a6c3fe05d8"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\send-email\\index.ts": {
+    "mtime": 1775363281.5672994,
+    "ast_hash": "1b5d4137689dd7b8b7e5319ae82eafb4",
+    "semantic_hash": "1b5d4137689dd7b8b7e5319ae82eafb4"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\update-streak\\index.ts": {
+    "mtime": 1774414452.893912,
+    "ast_hash": "566c6aaa71ec6a7e35101176a2b2d01d",
+    "semantic_hash": "566c6aaa71ec6a7e35101176a2b2d01d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\_shared\\cors.ts": {
+    "mtime": 1774194385.6029742,
+    "ast_hash": "400f0f0a98585bb8b5f2195f5a8f8eae",
+    "semantic_hash": "400f0f0a98585bb8b5f2195f5a8f8eae"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\_shared\\emails\\WeeklySummaryEmail.tsx": {
+    "mtime": 1778314525.9673035,
+    "ast_hash": "663ec60762d4604469baea84eb9231a1",
+    "semantic_hash": "663ec60762d4604469baea84eb9231a1"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\functions\\_shared\\emails\\WelcomeEmail.tsx": {
+    "mtime": 1778321100.4949913,
+    "ast_hash": "8514a06949303d8743fc3b999fdf72a7",
+    "semantic_hash": "8514a06949303d8743fc3b999fdf72a7"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\migrations\\20260417000000_add_cron_trigger.sql": {
+    "mtime": 1776402519.2576015,
+    "ast_hash": "b0f711b7342d331db55be534a0e92b3c",
+    "semantic_hash": "b0f711b7342d331db55be534a0e92b3c"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\migrations\\20260427000000_add_food_scans_nutrition_columns.sql": {
+    "mtime": 1777268660.6791945,
+    "ast_hash": "cbc9a8abc516819896b9a01076444172",
+    "semantic_hash": "cbc9a8abc516819896b9a01076444172"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\migrations\\20260427000001_add_food_analysis_jsonb.sql": {
+    "mtime": 1777300028.521238,
+    "ast_hash": "feac4878ea50371af8770d3a9e2e6c56",
+    "semantic_hash": "feac4878ea50371af8770d3a9e2e6c56"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\supabase\\migrations\\20260428000000_add_pantry_label_columns.sql": {
+    "mtime": 1777343312.6765766,
+    "ast_hash": "7b8fb67212275969ab36c97626304ea0",
+    "semantic_hash": "7b8fb67212275969ab36c97626304ea0"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\README.md": {
+    "mtime": 499162500.0,
+    "ast_hash": "e22acbc85bc1f0b21dd2d4fbb55488b7",
+    "semantic_hash": "e22acbc85bc1f0b21dd2d4fbb55488b7"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\activity.html": {
+    "mtime": 1774190720.292274,
+    "ast_hash": "22aa897ab7727e10289bb49ed0f969e3",
+    "semantic_hash": "22aa897ab7727e10289bb49ed0f969e3"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\details.html": {
+    "mtime": 1774190723.126155,
+    "ast_hash": "f2c16a196e29a262743e303a394a146c",
+    "semantic_hash": "f2c16a196e29a262743e303a394a146c"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\goal.html": {
+    "mtime": 1774190719.6122324,
+    "ast_hash": "3fcf79c0f52f17d64118b3054569a72d",
+    "semantic_hash": "3fcf79c0f52f17d64118b3054569a72d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\health.html": {
+    "mtime": 1774190723.8581913,
+    "ast_hash": "2dd3f13db27156706e15da1eff167ddf",
+    "semantic_hash": "2dd3f13db27156706e15da1eff167ddf"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\home.html": {
+    "mtime": 1774190722.3114016,
+    "ast_hash": "827a1cbd09290d11720f1594ea57d384",
+    "semantic_hash": "827a1cbd09290d11720f1594ea57d384"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\log.html": {
+    "mtime": 1774190721.644385,
+    "ast_hash": "ca11d96500112bbe539ff25f97874b90",
+    "semantic_hash": "ca11d96500112bbe539ff25f97874b90"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\profile.html": {
+    "mtime": 1774190720.9758482,
+    "ast_hash": "5b850bb2c1616cce2fb1bf588458b48d",
+    "semantic_hash": "5b850bb2c1616cce2fb1bf588458b48d"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\species.html": {
+    "mtime": 1774190610.438342,
+    "ast_hash": "c84fa9f0aadd35f78974648097805835",
+    "semantic_hash": "c84fa9f0aadd35f78974648097805835"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\vitals.html": {
+    "mtime": 1774190611.1404104,
+    "ast_hash": "b1899b1bf9edf4ca2ae8b8329756c6ea",
+    "semantic_hash": "b1899b1bf9edf4ca2ae8b8329756c6ea"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\stitch_html\\welcome.html": {
+    "mtime": 1774190612.500977,
+    "ast_hash": "7787d444e2edfc256797ec994847e123",
+    "semantic_hash": "7787d444e2edfc256797ec994847e123"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\assets\\images\\android-icon-background.png": {
+    "mtime": 1777784968.3671176,
+    "ast_hash": "5bd8133b854375f2cf5da0e7a9d531c5",
+    "semantic_hash": "5bd8133b854375f2cf5da0e7a9d531c5"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\assets\\images\\android-icon-foreground.png": {
+    "mtime": 1777784968.3671176,
+    "ast_hash": "5bd8133b854375f2cf5da0e7a9d531c5",
+    "semantic_hash": "5bd8133b854375f2cf5da0e7a9d531c5"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\assets\\images\\icon.png": {
+    "mtime": 1777784968.3691952,
+    "ast_hash": "5bd8133b854375f2cf5da0e7a9d531c5",
+    "semantic_hash": "5bd8133b854375f2cf5da0e7a9d531c5"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\assets\\images\\notification-icon.png": {
+    "mtime": 1776403131.0681913,
+    "ast_hash": "c5054a79249c1e5d58cc2e3dd963eafd",
+    "semantic_hash": "c5054a79249c1e5d58cc2e3dd963eafd"
+  },
+  "C:\\Users\\pradi\\Downloads\\Antigravity_applications\\Pawtchi\\my-app\\assets\\images\\splash-icon.png": {
+    "mtime": 1777784968.371685,
+    "ast_hash": "5bd8133b854375f2cf5da0e7a9d531c5",
+    "semantic_hash": "5bd8133b854375f2cf5da0e7a9d531c5"
+  }
+}

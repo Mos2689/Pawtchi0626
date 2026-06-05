@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
     View,
     Text,
     StyleSheet,
     TouchableOpacity,
-    Image,
     ScrollView,
     ActivityIndicator,
     Alert,
@@ -13,744 +12,643 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import { PurchasesPackage } from 'react-native-purchases';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import Purchases, { PurchasesPackage } from 'react-native-purchases';
+import Constants from 'expo-constants';
+import { useFonts, Montserrat_400Regular, Montserrat_500Medium, Montserrat_600SemiBold } from '@expo-google-fonts/montserrat';
+import { BebasNeue_400Regular } from '@expo-google-fonts/bebas-neue';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useSubscription } from '../hooks/useSubscription';
-import { PawtchiButton } from '../components/PawtchiButton';
+import { track } from '../lib/analytics';
 
-// ─── Paywall Modes ───
-// welcome  → Post-onboarding, first encounter. Warm, generous, gift-like.
-// upgrade  → Mid-freemium window. Appreciative, confident, gentle nudge.
-// renewal  → Post-expiry or lapsed subscriber. Emotional, loss aversion.
+// ─── Brand system (Pawtchi Brand Book 2026, Part IV) ───
+// Navy ground + electric yellow accent only. Yellow marks the ONE thing that
+// matters (§4.02) — here, the call to action. Bebas Neue display, Montserrat body
+// (§4.03). Left-aligned, one idea per surface (§4.06).
+const NAVY = '#07202A';
+const NAVY_RAISED = '#0B2A36';
+const YELLOW = '#F7F602';
+const CREAM = '#F4F1EC';
+const CREAM_DIM = 'rgba(244, 241, 236, 0.66)';
+const CREAM_FAINT = 'rgba(244, 241, 236, 0.42)';
+const HAIRLINE = 'rgba(244, 241, 236, 0.14)';
+
+const DISPLAY = 'BebasNeue_400Regular';
+const BODY = 'Montserrat_400Regular';
+const BODY_MED = 'Montserrat_500Medium';
+const BODY_SEMI = 'Montserrat_600SemiBold';
+
+const OFFERINGS_TIMEOUT_MS = 8000;
+
+// In Expo Go the RevenueCat native module isn't available, so live offerings never
+// load and the paywall can't be previewed. To preview the full UI during development
+// we fall back to SAMPLE prices — but only in Expo Go AND only when `__DEV__` is true.
+//
+// The `__DEV__` guard is the safety contract: a production release build compiles with
+// `__DEV__ === false`, so it is ALWAYS live, data-driven, and can NEVER render these
+// placeholders — keeping the store-reviewed build compliant with pricing policy.
+const IS_EXPO_GO =
+    Constants.appOwnership === 'expo' ||
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Constants as any).executionEnvironment === 'storeClient';
+const USE_MOCK_PLANS = __DEV__ && IS_EXPO_GO;
+
+// Shape mirrors only the RevenueCat fields the paywall actually reads.
+const MOCK_PACKAGES = [
+    {
+        identifier: 'annual', packageType: 'ANNUAL',
+        product: {
+            priceString: 'A$79.00', price: 79, currencyCode: 'AUD',
+            pricePerMonth: 6.58, pricePerMonthString: 'A$6.58',
+            pricePerWeek: 1.52, pricePerWeekString: 'A$1.52',
+            introPrice: null, subscriptionOptions: [],
+            defaultOption: { freePhase: { billingPeriod: { unit: 'MONTH', value: 1, iso8601: 'P1M' } } },
+        },
+    },
+    {
+        identifier: 'monthly', packageType: 'MONTHLY',
+        product: {
+            priceString: 'A$9.99', price: 9.99, currencyCode: 'AUD',
+            pricePerMonth: 9.99, pricePerMonthString: 'A$9.99',
+            pricePerWeek: 2.31, pricePerWeekString: 'A$2.31',
+            introPrice: null, subscriptionOptions: [],
+            defaultOption: { freePhase: { billingPeriod: { unit: 'MONTH', value: 1, iso8601: 'P1M' } } },
+        },
+    },
+] as unknown as PurchasesPackage[];
+
 type PaywallMode = 'welcome' | 'upgrade' | 'renewal';
+type LoadState = 'loading' | 'loaded' | 'error';
 
-function deriveMode(
-    status: string,
-    isFreemiumActive: boolean,
-    daysSinceCreation: number,
-): PaywallMode {
-    // Just finished onboarding (first day or two)
-    if (daysSinceCreation <= 1 && (status === 'none' || status === 'loading')) {
-        return 'welcome';
-    }
-    // Mid-freemium window — still has free access
-    if (isFreemiumActive && status !== 'expired') {
-        return 'upgrade';
-    }
-    // Everything else: expired sub, or freemium window is over
+function deriveMode(status: string, isFreemiumActive: boolean, daysSinceCreation: number): PaywallMode {
+    if (daysSinceCreation <= 1 && (status === 'none' || status === 'loading')) return 'welcome';
+    if (isFreemiumActive && status !== 'expired') return 'upgrade';
     return 'renewal';
 }
 
-// ─── Mode-specific content ───
-interface ModeContent {
-    title: (petName: string, parentTitle: string) => string;
-    subtitle: (petName: string, daysLeft: number) => string;
-    ctaLabel: (price: string, plan: 'monthly' | 'yearly') => string;
-    dismissLabel: string;
-    showDismiss: boolean;
-    heroColors: [string, string, string];
+// Concrete features the subscription unlocks. "Instant food scanning" replaces the
+// old "AI-powered food scanning" — the brand book bans the word "AI" (§6.04 rule 06).
+const FEATURES: { icon: keyof typeof MaterialIcons.glyphMap; label: string }[] = [
+    { icon: 'photo-camera', label: 'Instant food scanning' },
+    { icon: 'directions-run', label: 'Activity & walk tracking' },
+    { icon: 'insights', label: 'Weekly health insights' },
+    { icon: 'notifications-none', label: 'Smart pet reminders' },
+    { icon: 'description', label: 'Vet report analysis' },
+    { icon: 'show-chart', label: 'Calorie & nutrition trends' },
+];
+
+// ─── Pricing helpers ───
+// Every price and trial term is derived from live, localized RevenueCat product
+// data so the offer screen always matches the store cart (Play Subscriptions policy).
+
+function capitalize(s: string): string {
+    return s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-const MODE_CONFIG: Record<PaywallMode, ModeContent> = {
-    welcome: {
-        title: (_pet, _parent) => 'Welcome to\nPawtchi Premium!',
-        subtitle: (petName, _daysLeft) =>
-            `Enjoy 30 days of full access — free, on us.\nWe want you and ${petName} to fall in love with the experience first.`,
-        ctaLabel: (price, plan) => `Start Free Trial — then ${price}/${plan === 'yearly' ? 'year' : 'month'}`,
-        dismissLabel: 'Maybe Later',
-        showDismiss: true,
-        heroColors: ['#041015', '#0c2a1a', '#041015'],
-    },
-    upgrade: {
-        title: (petName, _parent) => `Loving Pawtchi,\n${petName}?`,
-        subtitle: (_petName, daysLeft) =>
-            `${daysLeft} day${daysLeft !== 1 ? 's' : ''} of free access remaining.\nSubscribe now to keep everything unlocked — your data, your streaks, your AI insights.`,
-        ctaLabel: (price, plan) => `Continue with Premium — ${price}/${plan === 'yearly' ? 'year' : 'month'}`,
-        dismissLabel: 'Not Yet',
-        showDismiss: true,
-        heroColors: ['#041015', '#1a1a2e', '#041015'],
-    },
-    renewal: {
-        title: (_pet, parentTitle) => `I'll miss you,\n${parentTitle}...`,
-        subtitle: (petName, _daysLeft) =>
-            `${petName}'s data is safe, but premium features are paused.\nSubscribe to pick up where you left off.`,
-        ctaLabel: (price, plan) => `Reactivate Premium — ${price}/${plan === 'yearly' ? 'year' : 'month'}`,
-        dismissLabel: '',
-        showDismiss: false,
-        heroColors: ['#041015', '#0a1a22', '#041015'],
-    },
-};
+function periodPhrase(unit?: string | null, value?: number | null, iso?: string | null): string | null {
+    let u = unit ? String(unit).toUpperCase() : null;
+    let v = value ?? null;
+    if ((!u || !v) && iso) {
+        const m = String(iso).toUpperCase().match(/P(\d+)([DWMY])/);
+        if (m) {
+            v = parseInt(m[1], 10);
+            u = ({ D: 'DAY', W: 'WEEK', M: 'MONTH', Y: 'YEAR' } as Record<string, string>)[m[2]];
+        }
+    }
+    if (!u || !v) return null;
+    const noun = u.startsWith('DAY') ? 'day' : u.startsWith('WEEK') ? 'week' : u.startsWith('MONTH') ? 'month' : u.startsWith('YEAR') ? 'year' : null;
+    return noun ? `${v}-${noun}` : null;
+}
+
+function getTrialPhrase(pkg?: PurchasesPackage): string | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p: any = pkg?.product;
+    if (!p) return null;
+    const intro = p.introPrice;
+    if (intro && Number(intro.price) === 0) {
+        const ph = periodPhrase(intro.periodUnit, intro.periodNumberOfUnits, intro.period);
+        if (ph) return `${ph} free trial`;
+    }
+    const opt = p.defaultOption || (Array.isArray(p.subscriptionOptions) ? p.subscriptionOptions[0] : null);
+    const bp = opt?.freePhase?.billingPeriod;
+    if (bp) {
+        const ph = periodPhrase(bp.unit, bp.value, bp.iso8601);
+        if (ph) return `${ph} free trial`;
+    }
+    return null;
+}
+
+function getPerMonthString(pkg?: PurchasesPackage): string | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p: any = pkg?.product;
+    return p?.pricePerMonthString ?? null;
+}
+
+// Localized per-week price (e.g. "A$1.52") — used as the conversion anchor on the
+// plan cards even though billing is yearly/monthly. Comes from the store, so the
+// currency always matches the cart.
+function getPerWeekString(pkg?: PurchasesPackage): string | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p: any = pkg?.product;
+    return p?.pricePerWeekString ?? null;
+}
+
+function getSavingsPercent(yearly?: PurchasesPackage, monthly?: PurchasesPackage): number | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const y: any = yearly?.product;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m: any = monthly?.product;
+    const yPerMonth = typeof y?.pricePerMonth === 'number' ? y.pricePerMonth : (typeof y?.price === 'number' ? y.price / 12 : null);
+    const mPrice = typeof m?.price === 'number' ? m.price : null;
+    if (!yPerMonth || !mPrice || mPrice <= 0) return null;
+    const pct = Math.round((1 - yPerMonth / mPrice) * 100);
+    return pct > 0 && pct < 100 ? pct : null;
+}
 
 export default function PaywallScreen() {
     const insets = useSafeAreaInsets();
     const router = useRouter();
     const { activePet } = useActivePetStore();
-    const {
-        restorePurchases,
-        purchasePackage,
-        getOfferings,
-        status,
-        isFreemiumActive,
-        daysSinceCreation,
-    } = useSubscription();
+    const { restorePurchases, purchasePackage, getOfferings, status, isFreemiumActive, daysSinceCreation } = useSubscription();
+
+    const [fontsLoaded] = useFonts({
+        BebasNeue_400Regular,
+        Montserrat_400Regular,
+        Montserrat_500Medium,
+        Montserrat_600SemiBold,
+    });
+
     const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'yearly'>('yearly');
     const [purchasing, setPurchasing] = useState(false);
     const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+    const [loadState, setLoadState] = useState<LoadState>('loading');
+    const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
 
-    const petName = activePet?.name || 'Your Pet';
-    const parentTitle = activePet?.parent_title || 'Mom/Dad';
-    const petImage =
-        activePet?.image_url ||
-        'https://images.unsplash.com/photo-1587300003388-59208cc962cb?q=80&w=1000&auto=format&fit=crop';
+    const petName = activePet?.name?.trim() || null;
+    const petPossessive = petName ? `${petName}'s` : "your animal's";
 
-    // ─── Auto-detect mode ───
     const mode = deriveMode(status, isFreemiumActive, daysSinceCreation);
-    const config = MODE_CONFIG[mode];
-    const freemiumDaysLeft = Math.max(0, 30 - daysSinceCreation);
+    const showDismiss = mode !== 'renewal';
 
-    // Load offerings on mount
-    useEffect(() => {
-        (async () => {
-            const pkgs = await getOfferings();
-            setPackages(pkgs);
-        })();
+    const headline = mode === 'renewal' ? 'PICK UP\nWHERE YOU\nLEFT OFF.' : 'NOTICE\nEVERYTHING.';
+    const subcopy =
+        mode === 'renewal'
+            ? `${capitalize(petPossessive)} history is safe. Pick up the patterns right where you left off.`
+            : mode === 'upgrade'
+                ? `Keep noticing the slow changes in ${petPossessive} weight, food and energy — Pawtchi is already watching.`
+                : `Pawtchi notices the slow changes in ${petPossessive} weight, food and energy, while they're still small. Free to start.`;
+
+    // ─── Robust offerings load: timeout + retry + error state (never an infinite spinner) ───
+    const loadOfferings = useCallback(async () => {
+        setLoadState('loading');
+        try {
+            const pkgs = await Promise.race([
+                getOfferings(),
+                new Promise<PurchasesPackage[]>((_, reject) =>
+                    setTimeout(() => reject(new Error('offerings_timeout')), OFFERINGS_TIMEOUT_MS),
+                ),
+            ]);
+            if (pkgs && pkgs.length > 0) {
+                setPackages(pkgs);
+                setLoadState('loaded');
+            } else if (USE_MOCK_PLANS) {
+                setPackages(MOCK_PACKAGES);
+                setLoadState('loaded');
+            } else {
+                setPackages([]);
+                setLoadState('error');
+                track('paywall_offerings_error', { reason: 'empty' });
+            }
+        } catch (e: unknown) {
+            if (USE_MOCK_PLANS) {
+                setPackages(MOCK_PACKAGES);
+                setLoadState('loaded');
+            } else {
+                setPackages([]);
+                setLoadState('error');
+                track('paywall_offerings_error', { reason: e instanceof Error ? e.message : 'exception' });
+            }
+        }
     }, [getOfferings]);
 
-    // Package helpers
+    useEffect(() => {
+        loadOfferings();
+    }, [loadOfferings]);
+
+    // One-time: record the view, and (dev only) learn whether RevenueCat is configured.
+    useEffect(() => {
+        track('paywall_viewed', { mode });
+        (async () => {
+            try {
+                setIsConfigured(await Purchases.isConfigured());
+            } catch {
+                setIsConfigured(false);
+            }
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const handleRetry = () => {
+        track('paywall_offerings_retried', {});
+        loadOfferings();
+    };
+
+    // Live, localized pricing — sourced from the store, never hardcoded.
+    const loaded = loadState === 'loaded';
     const yearlyPkg = packages.find((p) => p.packageType === 'ANNUAL');
     const monthlyPkg = packages.find((p) => p.packageType === 'MONTHLY');
-    const yearlyPrice = yearlyPkg?.product.priceString ?? 'AUD $89';
-    const monthlyPrice = monthlyPkg?.product.priceString ?? 'AUD $9.99';
     const selectedPkg = selectedPlan === 'yearly' ? yearlyPkg : monthlyPkg;
-    const selectedPrice = selectedPlan === 'yearly' ? yearlyPrice : monthlyPrice;
+    const selectedPrice = selectedPkg?.product.priceString ?? '';
+    const periodWord = selectedPlan === 'yearly' ? 'year' : 'month';
+    const trialPhrase = getTrialPhrase(selectedPkg);
+    const yearSavings = getSavingsPercent(yearlyPkg, monthlyPkg);
+
+    const selectPlan = (plan: 'monthly' | 'yearly') => {
+        setSelectedPlan(plan);
+        track('paywall_plan_selected', { plan });
+    };
+
+    // Plan card — anchored on the per-week price (cheap, approachable) while billing
+    // stays yearly/monthly. Selected card fills electric yellow with navy text.
+    const renderPlanCard = (plan: 'yearly' | 'monthly', pkg: PurchasesPackage) => {
+        const selected = selectedPlan === plan;
+        const perWeek = getPerWeekString(pkg);
+        const name = plan === 'yearly' ? 'Yearly' : 'Monthly';
+        const billed = plan === 'yearly' ? 'billed yearly' : 'billed monthly';
+        const mainColor = selected ? NAVY : CREAM;
+        const dimColor = selected ? 'rgba(7, 32, 42, 0.62)' : CREAM_DIM;
+        return (
+            <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => selectPlan(plan)}
+                style={[styles.planCard, selected && styles.planCardSelected]}
+            >
+                <View style={styles.planTopRow}>
+                    <Text style={[styles.planName, { color: mainColor }]}>{name}</Text>
+                    {plan === 'yearly' && yearSavings !== null && (
+                        <View style={[styles.badge, selected && styles.badgeSelected]}>
+                            <Text style={styles.badgeText}>{`SAVE ${yearSavings}%`}</Text>
+                        </View>
+                    )}
+                </View>
+                <Text style={[styles.planWeek, { color: mainColor }]}>
+                    {perWeek ? `${perWeek} ` : `${pkg.product.priceString} `}
+                    <Text style={[styles.planWeekUnit, { color: dimColor }]}>
+                        {perWeek ? '/ week' : `/ ${plan === 'yearly' ? 'year' : 'month'}`}
+                    </Text>
+                </Text>
+                <Text style={[styles.planBilled, { color: dimColor }]}>{`${pkg.product.priceString} ${billed}`}</Text>
+            </TouchableOpacity>
+        );
+    };
 
     const handlePurchase = async () => {
+        const pkg = selectedPkg || packages[0];
+        if (!pkg) {
+            Alert.alert('No plans available', 'Please try again in a moment.');
+            return;
+        }
+        if (USE_MOCK_PLANS) {
+            Alert.alert('Preview mode', 'Subscriptions run in a development or production build — not in Expo Go.');
+            return;
+        }
         setPurchasing(true);
+        track('paywall_purchase_started', { plan: selectedPlan, price: selectedPrice });
         try {
-            const pkg = selectedPkg || packages[0];
-            if (pkg) {
-                const success = await purchasePackage(pkg);
-                if (success) {
-                    router.back();
-                }
+            const success = await purchasePackage(pkg);
+            if (success) {
+                track('paywall_purchase_succeeded', { plan: selectedPlan, price: selectedPrice });
+                router.back();
             } else {
-                Alert.alert('No plans available', 'Please try again later.');
+                track('paywall_purchase_cancelled', { plan: selectedPlan });
             }
-        } catch (e) {
+        } catch (e: unknown) {
+            track('paywall_purchase_failed', { reason: e instanceof Error ? e.message : 'exception' });
             console.error('Purchase error:', e);
         } finally {
             setPurchasing(false);
         }
     };
 
-    const features = [
-        { icon: 'camera-alt' as const, text: 'AI-powered food scanning' },
-        { icon: 'directions-run' as const, text: 'Activity & walk tracking' },
-        { icon: 'monitor-heart' as const, text: 'Weekly health insights' },
-        { icon: 'notifications-active' as const, text: 'Smart pet reminders' },
-        { icon: 'medical-services' as const, text: 'Vet report analysis' },
-        { icon: 'auto-graph' as const, text: 'Calorie & nutrition trends' },
-    ];
+    const handleDismiss = () => {
+        track('paywall_dismissed', { mode });
+        router.back();
+    };
+
+    const handleRestore = () => {
+        track('paywall_restore_tapped', {});
+        restorePurchases();
+    };
+
+    if (!fontsLoaded) {
+        return (
+            <View style={[styles.container, styles.center]}>
+                <StatusBar style="light" />
+                <ActivityIndicator color={YELLOW} />
+            </View>
+        );
+    }
+
+    // Sticky CTA button behaviour adapts to load state.
+    const ctaLabel = !loaded
+        ? (loadState === 'error' ? 'Try again' : 'Loading…')
+        : trialPhrase
+            ? `Start your ${trialPhrase}`
+            : `Subscribe — ${selectedPrice}/${periodWord}`;
+    const ctaOnPress = loadState === 'error' ? handleRetry : handlePurchase;
+    const ctaDisabled = loadState === 'loading' || purchasing;
 
     return (
         <View style={[styles.container, { paddingTop: insets.top }]}>
-            {/* Close / dismiss — only for welcome & upgrade modes */}
-            {config.showDismiss && (
+            <StatusBar style="light" />
+
+            {showDismiss && (
                 <TouchableOpacity
-                    style={[styles.closeButton, { top: insets.top + 12 }]}
-                    onPress={() => router.back()}
+                    style={[styles.closeButton, { top: insets.top + 8 }]}
+                    onPress={handleDismiss}
                     activeOpacity={0.7}
                     hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 >
-                    <MaterialIcons name="close" size={24} color="#64748b" />
+                    <MaterialIcons name="close" size={24} color={CREAM_DIM} />
                 </TouchableOpacity>
             )}
 
             <ScrollView
-                contentContainerStyle={styles.scrollContent}
+                contentContainerStyle={[styles.scroll, { paddingBottom: 230 + insets.bottom }]}
                 showsVerticalScrollIndicator={false}
                 bounces={false}
             >
-                {/* ═══ Hero Section ═══ */}
-                <View style={styles.heroSection}>
-                    <LinearGradient
-                        colors={config.heroColors}
-                        style={styles.heroGradient}
-                    >
-                        {/* Glow */}
-                        <View
-                            style={[
-                                styles.glowCircle,
-                                mode === 'welcome' && { backgroundColor: 'rgba(74, 222, 128, 0.12)' },
-                                mode === 'upgrade' && { backgroundColor: 'rgba(255, 252, 0, 0.12)' },
-                                mode === 'renewal' && { backgroundColor: 'rgba(255, 252, 0, 0.08)' },
-                            ]}
-                        />
+                {USE_MOCK_PLANS && (
+                    <View style={styles.devBanner}>
+                        <Text style={styles.devBannerText}>DEV PREVIEW · SAMPLE PRICES (EXPO GO)</Text>
+                    </View>
+                )}
 
-                        {/* Pet image */}
-                        <View
-                            style={[
-                                styles.petImageWrapper,
-                                mode === 'welcome' && { borderColor: 'rgba(74, 222, 128, 0.5)' },
-                                mode === 'upgrade' && { borderColor: 'rgba(255, 252, 0, 0.4)' },
-                                mode === 'renewal' && { borderColor: 'rgba(255, 252, 0, 0.25)' },
-                            ]}
-                        >
-                            <Image source={{ uri: petImage }} style={styles.petImage} />
-                        </View>
+                <Animated.View entering={FadeInDown.duration(450)}>
+                    <Text style={styles.eyebrow}>PAWTCHI PLUS</Text>
+                    <Text style={styles.headline}>{headline}</Text>
+                    <Text style={styles.subcopy}>{subcopy}</Text>
+                </Animated.View>
 
-                        {/* Icon */}
-                        <View style={styles.emojiWrapper}>
-                            <MaterialIcons
-                                name={mode === 'welcome' ? 'celebration' : mode === 'upgrade' ? 'workspace-premium' : 'favorite'}
-                                size={48}
-                                color="#FFFC00"
-                            />
-                        </View>
-
-                        {/* Title */}
-                        <Text style={[
-                            styles.heroTitle,
-                            mode === 'welcome' && { color: '#4ade80' },
-                        ]}>
-                            {config.title(petName, parentTitle)}
-                        </Text>
-
-                        {/* Subtitle */}
-                        <Text style={styles.heroSubtitle}>
-                            {config.subtitle(petName, freemiumDaysLeft)}
-                        </Text>
-
-                        {/* Welcome mode: extra trust signals */}
-                        {mode === 'welcome' && (
-                            <View style={styles.trustRow}>
-                                <View style={styles.trustPill}>
-                                    <MaterialIcons name="check-circle" size={14} color="#4ade80" />
-                                    <Text style={styles.trustText}>No payment now</Text>
-                                </View>
-                                <View style={styles.trustPill}>
-                                    <MaterialIcons name="check-circle" size={14} color="#4ade80" />
-                                    <Text style={styles.trustText}>Cancel anytime</Text>
-                                </View>
-                                <View style={styles.trustPill}>
-                                    <MaterialIcons name="check-circle" size={14} color="#4ade80" />
-                                    <Text style={styles.trustText}>Full access</Text>
-                                </View>
-                            </View>
-                        )}
-
-                        {/* Upgrade mode: countdown pill */}
-                        {mode === 'upgrade' && freemiumDaysLeft > 0 && (
-                            <View style={styles.countdownPill}>
-                                <MaterialIcons name="schedule" size={14} color="#fbbf24" />
-                                <Text style={styles.countdownText}>
-                                    {freemiumDaysLeft} day{freemiumDaysLeft !== 1 ? 's' : ''} remaining
-                                </Text>
-                            </View>
-                        )}
-                    </LinearGradient>
-                </View>
-
-                {/* ═══ Plan Cards ═══ */}
-                <View style={styles.plansSection}>
-                    <Text style={styles.plansTitle}>
-                        {mode === 'welcome' ? 'After Your Free Month' : 'Choose Your Plan'}
-                    </Text>
-
-                    {/* Yearly */}
-                    <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={() => setSelectedPlan('yearly')}
-                        style={[
-                            styles.planCard,
-                            selectedPlan === 'yearly' && styles.planCardSelected,
-                        ]}
-                    >
-                        <View style={styles.bestValueBadge}>
-                            <Text style={styles.bestValueText}>BEST VALUE</Text>
-                        </View>
-                        <View style={styles.planHeader}>
-                            <View>
-                                <Text style={styles.planName}>Yearly</Text>
-                                <Text style={styles.planPrice}>
-                                    {yearlyPrice}
-                                    <Text style={styles.planPeriod}> / year</Text>
-                                </Text>
-                            </View>
-                            <View style={styles.radioOuter}>
-                                {selectedPlan === 'yearly' && <View style={styles.radioInner} />}
-                            </View>
-                        </View>
-                        <View style={styles.savingsRow}>
-                            <MaterialIcons name="local-offer" size={14} color="#166534" />
-                            <Text style={styles.savingsText}>Save 26% — just $7.42/mo</Text>
-                        </View>
-                    </TouchableOpacity>
-
-                    {/* Monthly */}
-                    <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={() => setSelectedPlan('monthly')}
-                        style={[
-                            styles.planCard,
-                            selectedPlan === 'monthly' && styles.planCardSelected,
-                        ]}
-                    >
-                        <View style={styles.planHeader}>
-                            <View>
-                                <Text style={styles.planName}>Monthly</Text>
-                                <Text style={styles.planPrice}>
-                                    {monthlyPrice}
-                                    <Text style={styles.planPeriod}> / month</Text>
-                                </Text>
-                            </View>
-                            <View style={styles.radioOuter}>
-                                {selectedPlan === 'monthly' && <View style={styles.radioInner} />}
-                            </View>
-                        </View>
-                    </TouchableOpacity>
-                </View>
-
-                {/* ═══ Feature List ═══ */}
-                <View style={styles.featuresSection}>
-                    <Text style={styles.featuresTitle}>Everything included</Text>
-                    {features.map((feature, idx) => (
-                        <View key={idx} style={styles.featureRow}>
-                            <View style={styles.featureIconBg}>
-                                <MaterialIcons name={feature.icon} size={18} color="#1a1a00" />
-                            </View>
-                            <Text style={styles.featureText}>{feature.text}</Text>
+                {/* What's included — concrete, scannable (§4.05 line icons, cream not yellow) */}
+                <Animated.View entering={FadeInDown.duration(450).delay(70)} style={styles.features}>
+                    <Text style={styles.sectionLabel}>WHAT&apos;S INCLUDED</Text>
+                    {FEATURES.map((f) => (
+                        <View key={f.label} style={styles.featureRow}>
+                            <MaterialIcons name={f.icon} size={20} color={CREAM} style={styles.featureIcon} />
+                            <Text style={styles.featureText}>{f.label}</Text>
                         </View>
                     ))}
-                </View>
+                </Animated.View>
 
-                {/* ═══ CTA Section ═══ */}
-                <View style={styles.ctaSection}>
-                    <PawtchiButton
-                        title={config.ctaLabel(selectedPrice, selectedPlan)}
-                        variant="primary"
-                        loading={purchasing}
-                        onPress={handlePurchase}
-                        style={{ width: '100%', shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6 }}
-                    />
-
-                    <Text style={styles.trialNote}>
-                        {mode === 'welcome'
-                            ? `30-day free trial. After trial ends, you will be charged ${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}. Subscription auto-renews until cancelled.`
-                            : `Includes 1-month free trial. After trial, ${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}. Auto-renews until cancelled.`}
-                    </Text>
-
-                    <Text style={styles.cancelNote}>
-                        {Platform.OS === 'android'
-                            ? 'Cancel anytime in Google Play Store → Subscriptions.'
-                            : 'Cancel anytime in Settings → Apple ID → Subscriptions.'}
-                    </Text>
-
-                    {/* Maybe Later / Not Yet — only for welcome & upgrade */}
-                    {config.showDismiss && (
-                        <TouchableOpacity
-                            onPress={() => router.back()}
-                            style={styles.dismissBtn}
-                            activeOpacity={0.7}
-                        >
-                            <Text style={styles.dismissText}>{config.dismissLabel}</Text>
-                        </TouchableOpacity>
+                {/* Plans */}
+                <Animated.View entering={FadeInDown.duration(450).delay(140)} style={styles.plans}>
+                    {loadState === 'loading' && (
+                        <View style={styles.plansState}>
+                            <ActivityIndicator color={CREAM_DIM} />
+                            <Text style={styles.fine}>Loading plans…</Text>
+                        </View>
                     )}
 
-                    <TouchableOpacity onPress={restorePurchases} style={styles.restoreBtn}>
-                        <Text style={styles.restoreText}>Restore Purchase</Text>
-                    </TouchableOpacity>
-                </View>
+                    {loadState === 'error' && (
+                        <View style={styles.plansState}>
+                            <Text style={styles.errorText}>We couldn&apos;t load plans right now.</Text>
+                            <TouchableOpacity style={styles.retryBtn} onPress={handleRetry} activeOpacity={0.85}>
+                                <MaterialIcons name="refresh" size={16} color={CREAM} />
+                                <Text style={styles.retryText}>Retry</Text>
+                            </TouchableOpacity>
+                            {__DEV__ && isConfigured === false && (
+                                <Text style={styles.devHint}>Dev note: in-app purchases load in a development build, not Expo Go.</Text>
+                            )}
+                        </View>
+                    )}
 
-                {/* Legal */}
-                <Text style={styles.legalText}>
-                    {Platform.OS === 'android'
-                        ? `Payment will be charged to your Google Play account at confirmation of purchase. Your subscription (${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}) automatically renews unless cancelled at least 24 hours before the end of the current billing period. You can manage or cancel your subscription anytime through Google Play Store → Payments & subscriptions → Subscriptions.`
-                        : `Payment will be charged to your Apple ID account at confirmation of purchase. Your subscription (${selectedPrice}/${selectedPlan === 'yearly' ? 'year' : 'month'}) automatically renews unless auto-renew is turned off at least 24 hours before the end of the current period. Manage subscriptions in Settings → Apple ID → Subscriptions.`}
-                </Text>
+                    {loaded && (
+                        <>
+                            {yearlyPkg && renderPlanCard('yearly', yearlyPkg)}
+                            {monthlyPkg && renderPlanCard('monthly', monthlyPkg)}
+                        </>
+                    )}
+                </Animated.View>
 
-                {/* Terms & Privacy Links */}
+                {/* Footer — restore + legal (kept off the sticky bar to keep it focused) */}
+                <TouchableOpacity onPress={handleRestore} style={styles.restoreBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={styles.restoreText}>Restore purchase</Text>
+                </TouchableOpacity>
+
+                {loaded && selectedPkg && (
+                    <Text style={styles.legal}>
+                        {Platform.OS === 'android'
+                            ? `Payment is charged to your Google Play account at confirmation.${trialPhrase ? ` Your free trial converts to a paid subscription (${selectedPrice}/${periodWord}) when it ends unless cancelled beforehand.` : ''} It renews at ${selectedPrice}/${periodWord} unless cancelled at least 24 hours before the period ends. Manage in Google Play → Subscriptions.`
+                            : `Payment is charged to your Apple ID at confirmation.${trialPhrase ? ` Your free trial converts to a paid subscription (${selectedPrice}/${periodWord}) when it ends unless cancelled beforehand.` : ''} It renews at ${selectedPrice}/${periodWord} unless auto-renew is turned off at least 24 hours before the period ends. Manage in Settings → Apple ID → Subscriptions.`}
+                    </Text>
+                )}
+
                 <View style={styles.legalLinks}>
                     <TouchableOpacity onPress={() => router.push('/privacy')}>
-                        <Text style={styles.legalLinkText}>Privacy Policy</Text>
+                        <Text style={styles.legalLink}>Privacy Policy</Text>
                     </TouchableOpacity>
-                    <Text style={styles.legalDot}>•</Text>
+                    <Text style={styles.legalDot}>·</Text>
                     <TouchableOpacity onPress={() => Linking.openURL('https://pawtchi.com/terms')}>
-                        <Text style={styles.legalLinkText}>Terms of Use</Text>
+                        <Text style={styles.legalLink}>Terms of Use</Text>
                     </TouchableOpacity>
                 </View>
-
-                <View style={{ height: insets.bottom + 20 }} />
             </ScrollView>
+
+            {/* ─── Sticky conversion bar — always visible ─── */}
+            <View style={[styles.stickyBar, { paddingBottom: insets.bottom + 12 }]}>
+                {loaded && selectedPkg && (
+                    <Text style={styles.stickyTerms}>
+                        {trialPhrase
+                            ? `${capitalize(trialPhrase)}, then ${selectedPrice}/${periodWord}. Cancel anytime in ${Platform.OS === 'android' ? 'Google Play → Subscriptions' : 'App Store settings'}.`
+                            : `${selectedPrice}/${periodWord}. Cancel anytime in ${Platform.OS === 'android' ? 'Google Play → Subscriptions' : 'App Store settings'}.`}
+                    </Text>
+                )}
+                <TouchableOpacity
+                    style={[styles.cta, ctaDisabled && styles.ctaDisabled]}
+                    onPress={ctaOnPress}
+                    disabled={ctaDisabled}
+                    activeOpacity={0.9}
+                >
+                    {purchasing ? <ActivityIndicator color={NAVY} /> : <Text style={styles.ctaText}>{ctaLabel}</Text>}
+                </TouchableOpacity>
+            </View>
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#FFFFFF',
-    },
+    container: { flex: 1, backgroundColor: NAVY },
+    center: { justifyContent: 'center', alignItems: 'center' },
     closeButton: {
         position: 'absolute',
-        top: 12,
-        right: 16,
+        right: 20,
         zIndex: 10,
         width: 36,
         height: 36,
         borderRadius: 18,
-        backgroundColor: 'rgba(255,255,255,0.9)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
-    },
-    scrollContent: {
-        paddingBottom: 40,
-    },
-
-    // ─── Hero ───
-    heroSection: {
-        width: '100%',
-        overflow: 'hidden',
-    },
-    heroGradient: {
-        width: '100%',
-        alignItems: 'center',
-        paddingTop: 48,
-        paddingBottom: 36,
-        position: 'relative',
-    },
-    glowCircle: {
-        position: 'absolute',
-        top: 20,
-        width: 220,
-        height: 220,
-        borderRadius: 110,
-    },
-    petImageWrapper: {
-        width: 120,
-        height: 120,
-        borderRadius: 60,
-        borderWidth: 3,
-        overflow: 'hidden',
-        marginBottom: 16,
-        shadowColor: '#FFFC00',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.3,
-        shadowRadius: 20,
-        elevation: 10,
-    },
-    petImage: {
-        width: '100%',
-        height: '100%',
-    },
-    emojiWrapper: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
-        backgroundColor: 'rgba(255,252,0,0.1)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginBottom: 16,
-    },
-    heroTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 26,
-        fontWeight: '800',
-        color: '#FFFFFF',
-        textAlign: 'center',
-        marginBottom: 10,
-        lineHeight: 34,
-    },
-    heroSubtitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 14,
-        fontWeight: '500',
-        color: 'rgba(255,255,255,0.65)',
-        textAlign: 'center',
-        lineHeight: 22,
-        paddingHorizontal: 36,
-    },
-
-    // Trust signals (welcome mode)
-    trustRow: {
-        flexDirection: 'row',
-        gap: 8,
-        marginTop: 20,
-        flexWrap: 'wrap',
-        justifyContent: 'center',
-        paddingHorizontal: 20,
-    },
-    trustPill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        backgroundColor: 'rgba(74, 222, 128, 0.12)',
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        borderRadius: 20,
-        borderWidth: 1,
-        borderColor: 'rgba(74, 222, 128, 0.2)',
-    },
-    trustText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 11,
-        fontWeight: '600',
-        color: '#4ade80',
-    },
-
-    // Countdown pill (upgrade mode)
-    countdownPill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        marginTop: 20,
-        backgroundColor: 'rgba(251, 191, 36, 0.12)',
-        paddingHorizontal: 14,
-        paddingVertical: 6,
-        borderRadius: 20,
-        borderWidth: 1,
-        borderColor: 'rgba(251, 191, 36, 0.2)',
-    },
-    countdownText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 12,
-        fontWeight: '700',
-        color: '#fbbf24',
-    },
-
-    // ─── Plans ───
-    plansSection: {
-        paddingHorizontal: 20,
-        paddingTop: 28,
-    },
-    plansTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700',
-        fontSize: 18,
-        color: '#041015',
-        marginBottom: 16,
-    },
-    planCard: {
-        borderWidth: 2,
-        borderColor: '#e0e0e0',
-        borderRadius: 16,
-        padding: 18,
-        marginBottom: 12,
-        backgroundColor: '#FFFFFF',
-        position: 'relative',
-        overflow: 'hidden',
-    },
-    planCardSelected: {
-        borderColor: '#FFFC00',
-        backgroundColor: '#fffef5',
-    },
-    bestValueBadge: {
-        position: 'absolute',
-        top: 0,
-        right: 0,
-        backgroundColor: '#041015',
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderBottomLeftRadius: 10,
-    },
-    bestValueText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 10,
-        fontWeight: '800',
-        color: '#FFFFFF',
-        letterSpacing: 0.5,
-    },
-    planHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-    },
-    planName: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 16,
-        fontWeight: '700',
-        color: '#041015',
-        marginBottom: 2,
-    },
-    planPrice: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 20,
-        fontWeight: '800',
-        color: '#041015',
-    },
-    planPeriod: {
-        fontSize: 13,
-        fontWeight: '500',
-        color: '#041015',
-    },
-    radioOuter: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        borderWidth: 2,
-        borderColor: '#FFFC00',
         justifyContent: 'center',
         alignItems: 'center',
     },
-    radioInner: {
-        width: 14,
-        height: 14,
-        borderRadius: 7,
-        backgroundColor: '#FFFC00',
+    scroll: {
+        paddingHorizontal: 24,
+        paddingTop: 52,
     },
-    savingsRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginTop: 10,
-        gap: 6,
-        backgroundColor: '#FFFC00',
+
+    // Dev-only preview banner (never compiled into a production release)
+    devBanner: {
         alignSelf: 'flex-start',
-        paddingHorizontal: 10,
+        backgroundColor: 'rgba(247, 246, 2, 0.14)',
+        borderRadius: 6,
+        paddingHorizontal: 8,
         paddingVertical: 4,
-        borderRadius: 20,
+        marginBottom: 16,
     },
-    savingsText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 12,
-        fontWeight: '700',
-        color: '#041015',
+    devBannerText: {
+        fontFamily: BODY_SEMI,
+        fontSize: 9.5,
+        letterSpacing: 0.5,
+        color: YELLOW,
     },
 
-    // ─── Features ───
-    featuresSection: {
-        paddingHorizontal: 20,
-        paddingTop: 24,
+    // Hero
+    eyebrow: {
+        fontFamily: BODY_SEMI,
+        fontSize: 12,
+        letterSpacing: 3,
+        color: CREAM_DIM,
+        marginBottom: 12,
     },
-    featuresTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700',
-        fontSize: 16,
-        color: '#041015',
-        marginBottom: 14,
+    headline: {
+        fontFamily: DISPLAY,
+        fontSize: 44,
+        lineHeight: 42,
+        letterSpacing: 1,
+        color: CREAM,
+    },
+    subcopy: {
+        fontFamily: BODY,
+        fontSize: 15,
+        lineHeight: 22,
+        color: CREAM_DIM,
+        marginTop: 14,
+        maxWidth: 460,
+    },
+
+    // Features
+    features: { marginTop: 28 },
+    sectionLabel: {
+        fontFamily: BODY_SEMI,
+        fontSize: 11,
+        letterSpacing: 2,
+        color: CREAM_FAINT,
+        marginBottom: 12,
     },
     featureRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginBottom: 12,
+        paddingVertical: 9,
+    },
+    featureIcon: { marginRight: 14 },
+    featureText: {
+        fontFamily: BODY_MED,
+        fontSize: 15.5,
+        color: CREAM,
+    },
+
+    // Plans
+    plans: { marginTop: 28, gap: 12 },
+    plansState: {
+        paddingVertical: 24,
+        alignItems: 'flex-start',
         gap: 12,
     },
-    featureIconBg: {
-        width: 32,
-        height: 32,
-        borderRadius: 8,
-        backgroundColor: '#FFFC00',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    featureText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#041015',
-    },
-
-    // ─── CTA ───
-    ctaSection: {
-        paddingHorizontal: 20,
-        paddingTop: 28,
-        alignItems: 'center',
-    },
-    ctaButton: {
-        width: '100%',
-        borderRadius: 16,
-        overflow: 'hidden',
-        shadowColor: '#FFFC00',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12,
-        elevation: 6,
-    },
-    ctaGradient: {
-        paddingVertical: 18,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    ctaText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 15,
-        fontWeight: '800',
-        color: '#041015',
-        letterSpacing: 0.3,
-    },
-    trialNote: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 11,
-        fontWeight: '600',
-        color: '#64748b',
-        marginTop: 12,
-        textAlign: 'center',
-        lineHeight: 17,
-        paddingHorizontal: 8,
-    },
-    cancelNote: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 11,
-        fontWeight: '600',
-        color: '#475569',
-        marginTop: 6,
-        textAlign: 'center',
-    },
-    dismissBtn: {
-        marginTop: 16,
-        paddingVertical: 12,
-        paddingHorizontal: 32,
-    },
-    dismissText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 15,
-        fontWeight: '600',
-        color: '#94a3b8',
-    },
-    restoreBtn: {
-        marginTop: 8,
-        paddingVertical: 8,
-    },
-    restoreText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 13,
-        fontWeight: '600',
-        color: '#041015',
-        textDecorationLine: 'underline',
-    },
-
-    // Legal
-    legalText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 10,
-        color: 'rgba(4, 16, 21, 0.5)',
-        textAlign: 'center',
-        lineHeight: 16,
-        paddingHorizontal: 30,
-        marginTop: 20,
-    },
-    legalLinks: {
+    fine: { fontFamily: BODY, fontSize: 13, color: CREAM_DIM },
+    errorText: { fontFamily: BODY_MED, fontSize: 14, color: CREAM },
+    retryBtn: {
         flexDirection: 'row',
-        justifyContent: 'center',
         alignItems: 'center',
         gap: 8,
-        marginTop: 12,
+        borderWidth: 1,
+        borderColor: CREAM_DIM,
+        borderRadius: 12,
+        paddingVertical: 10,
+        paddingHorizontal: 18,
     },
-    legalLinkText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontSize: 11,
-        fontWeight: '600',
-        color: '#041015',
-        textDecorationLine: 'underline',
+    retryText: { fontFamily: BODY_SEMI, fontSize: 14, color: CREAM },
+    devHint: { fontFamily: BODY, fontSize: 11, color: CREAM_FAINT, maxWidth: 320 },
+    planCard: {
+        borderWidth: 1.5,
+        borderColor: HAIRLINE,
+        borderRadius: 16,
+        paddingVertical: 16,
+        paddingHorizontal: 18,
     },
-    legalDot: {
-        fontSize: 10,
-        color: '#94a3b8',
+    planCardSelected: {
+        backgroundColor: YELLOW,
+        borderColor: YELLOW,
     },
+    planTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 6,
+    },
+    planName: { fontFamily: BODY_SEMI, fontSize: 15, letterSpacing: 0.3 },
+    badge: {
+        backgroundColor: 'rgba(247, 246, 2, 0.16)',
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+    },
+    badgeSelected: { backgroundColor: NAVY },
+    badgeText: { fontFamily: BODY_SEMI, fontSize: 10, letterSpacing: 0.5, color: YELLOW },
+    planWeek: { fontFamily: BODY_SEMI, fontSize: 23, letterSpacing: 0.2 },
+    planWeekUnit: { fontFamily: BODY_MED, fontSize: 13 },
+    planBilled: { fontFamily: BODY, fontSize: 12.5, marginTop: 3 },
+
+    // Footer
+    restoreBtn: { marginTop: 22, alignSelf: 'flex-start' },
+    restoreText: { fontFamily: BODY_MED, fontSize: 13, color: CREAM_DIM, textDecorationLine: 'underline' },
+    legal: {
+        fontFamily: BODY,
+        fontSize: 10.5,
+        lineHeight: 16,
+        color: CREAM_FAINT,
+        marginTop: 18,
+    },
+    legalLinks: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+    legalLink: { fontFamily: BODY_MED, fontSize: 11, color: CREAM_DIM, textDecorationLine: 'underline' },
+    legalDot: { color: CREAM_FAINT, fontSize: 11 },
+
+    // Sticky bar
+    stickyBar: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: NAVY_RAISED,
+        borderTopWidth: 1,
+        borderTopColor: HAIRLINE,
+        paddingHorizontal: 24,
+        paddingTop: 14,
+    },
+    stickyTerms: {
+        fontFamily: BODY,
+        fontSize: 12,
+        color: CREAM_DIM,
+        textAlign: 'center',
+        marginBottom: 10,
+    },
+    cta: {
+        height: 56,
+        borderRadius: 16,
+        backgroundColor: YELLOW,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    ctaDisabled: { opacity: 0.55 },
+    ctaText: { fontFamily: BODY_SEMI, fontSize: 16, color: NAVY, letterSpacing: 0.2 },
 });

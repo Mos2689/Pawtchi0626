@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Switch, Alert, ActivityIndicator, Modal, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
@@ -18,6 +18,7 @@ import { usePetContextStore } from '../../store/usePetContextStore';
 import { useSubscription } from '../../hooks/useSubscription';
 import { useWalkthrough } from '../../providers/WalkthroughContext';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { computeCompleteness } from '../../lib/profileCompleteness';
 
 // Screen 6: Profile & Settings
 export default function ProfileScreen() {
@@ -31,6 +32,9 @@ export default function ProfileScreen() {
   const { clearContext } = usePetContextStore();
   const { status: subStatus, daysLeft: subDaysLeft, hasFullAccess } = useSubscription();
   const { replayWalkthrough } = useWalkthrough();
+  const { focus } = useLocalSearchParams<{ focus?: string }>();
+
+  const completeness = computeCompleteness(activePet, { pantryCount: foodPantry?.length ?? 0 });
 
 
   const [feedingToggle, setFeedingToggle] = useState(true);
@@ -425,6 +429,69 @@ export default function ProfileScreen() {
   };
 
 
+  // Generic optimistic field setter (mirrors updateParentTitle / handleUpdateBowlSize).
+  const persistPetField = async (column: string, value: any) => {
+    if (!activePet) return;
+    useActivePetStore.setState({ activePet: { ...activePet, [column]: value } as any });
+    const { error } = await supabase.from('pets').update({ [column]: value }).eq('id', activePet.id);
+    if (error) {
+      console.error(`Failed to update ${column}:`, error);
+      useActivePetStore.setState({ activePet });
+    }
+  };
+
+  const handleSetGender = () => {
+    if (!activePet || !checkAccess()) return;
+    Alert.alert(`${activePet.name || 'Your pet'}'s sex`, undefined, [
+      { text: 'Male', onPress: () => persistPetField('gender', 'male') },
+      { text: 'Female', onPress: () => persistPetField('gender', 'female') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const handleSetBcs = () => {
+    if (!activePet || !checkAccess()) return;
+    Alert.alert(`${activePet.name || 'Your pet'}'s body shape`, 'How would you describe their shape?', [
+      { text: 'A bit thin', onPress: () => persistPetField('body_condition_score', 3) },
+      { text: 'Just right', onPress: () => persistPetField('body_condition_score', 5) },
+      { text: 'A bit chunky', onPress: () => persistPetField('body_condition_score', 7) },
+      { text: 'Overweight', onPress: () => persistPetField('body_condition_score', 9) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const promptAddFood = () => {
+    if (!checkAccess()) return;
+    Alert.alert('Add Food', 'Scan a food label to add it to the pantry.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Photo Library', onPress: () => handleScanFoodLabel(false) },
+      { text: 'Camera', onPress: () => handleScanFoodLabel(true) },
+    ]);
+  };
+
+  // Deep-link target from the completion card (`/(tabs)/profile?focus=<key>`).
+  const focusField = (key?: string) => {
+    if (!key || !activePet) return;
+    switch (key) {
+      case 'photo': openEditModal(); break;
+      case 'breed': openInlineEdit('breed', 'Breed', activePet.breed || '', 'e.g. Golden Retriever', 'default'); break;
+      case 'age': openInlineEdit('age_years', 'Age (years)', activePet.age_years?.toString() || '', 'e.g. 3', 'numeric'); break;
+      case 'allergies': openInlineEdit('allergies', 'Allergies (comma separated)', (activePet.allergies || []).join(', '), 'e.g. Chicken, Beef', 'default'); break;
+      case 'gender': handleSetGender(); break;
+      case 'bcs': handleSetBcs(); break;
+      case 'pantry': promptAddFood(); break;
+      default: break; // bowl_size lives in a visible section — no modal to open
+    }
+  };
+
+  useEffect(() => {
+    if (focus) {
+      focusField(focus);
+      router.setParams({ focus: undefined } as any);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, activePet?.id]);
+
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
 
@@ -473,6 +540,15 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
 
                 <View style={styles.tagsRow}>
+                  {!completeness.isAccurateEnough && (
+                    <TouchableOpacity
+                      style={[styles.tagPill, { backgroundColor: '#1a1a00', borderColor: '#1a1a00' }]}
+                      activeOpacity={0.85}
+                      onPress={() => focusField(completeness.missing[0]?.focus)}
+                    >
+                      <Text style={[styles.tagText, { color: '#FFFC00' }]}>Complete profile · {completeness.score}%</Text>
+                    </TouchableOpacity>
+                  )}
                   <View style={[styles.tagPill, { backgroundColor: 'rgba(255,255,255,0.3)', borderColor: 'rgba(255,255,255,0.2)' }]}>
                     <Text style={[styles.tagText, { color: '#1a1a00' }]}>Active Walker</Text>
                   </View>

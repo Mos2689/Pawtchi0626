@@ -74,6 +74,7 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="preview-home" options={{ presentation: 'card', headerShown: false, gestureEnabled: false }} />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>

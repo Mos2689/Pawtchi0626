@@ -28,7 +28,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 21,
+      "versionCode": 22,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.RECORD_AUDIO"

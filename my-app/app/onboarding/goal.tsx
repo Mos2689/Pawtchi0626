@@ -170,11 +170,9 @@ export default function GoalScreen() {
       await useActivePetStore.getState().fetchPet(user.id);
       usePetStore.getState().resetForm();
 
-      // Navigate to main app and instantly overlay the paywall
-      router.replace('/(tabs)');
-      setTimeout(() => {
-        router.push('/paywall' as any);
-      }, 100);
+      // Land on the personalized future-state preview (the "wow"). Its CTA continues
+      // into the app and triggers the paywall.
+      router.replace('/preview-home' as any);
     }
   };
 
