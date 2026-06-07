@@ -4,6 +4,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { usePetContextStore } from '../store/usePetContextStore';
+import { useSubscription } from '../hooks/useSubscription';
 
 interface NudgeCardProps {}
 
@@ -33,6 +34,12 @@ export function NudgeCard({}: NudgeCardProps) {
   const nudge = usePetContextStore(s => s.nudge);
   const dismissNudge = usePetContextStore(s => s.dismissNudge);
   const router = useRouter();
+  const { isPro } = useSubscription();
+
+  // Don't nudge an existing subscriber to start a trial they already have.
+  if (nudge?.actionType === 'start_trial' && isPro) {
+    return null;
+  }
 
   // Dynamic nudge from the context engine
   if (nudge && nudge.title) {

@@ -4,8 +4,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Once the preview has been seen, it never resurfaces (one-time view).
+export const PREVIEW_SEEN_KEY = 'preview_home_seen';
 
 import { useActivePetStore } from '../store/useActivePetStore';
+import { useSubscription } from '../hooks/useSubscription';
 import { HealthRings, ProgressBar } from '../components/HealthRings';
 import { deriveLifeStage, getLifeStageLabel } from '../lib/lifeStage';
 import { track } from '../lib/analytics';
@@ -25,6 +30,7 @@ export default function PreviewHomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { activePet } = useActivePetStore();
+  const { isPro } = useSubscription();
 
   const petName = activePet?.name?.trim() || 'your pet';
   const photo = activePet?.image_url || FALLBACK_PHOTO;
@@ -45,12 +51,17 @@ export default function PreviewHomeScreen() {
 
   useEffect(() => {
     track('preview_home_viewed', {});
+    // Mark as seen so it never resurfaces on the home again.
+    AsyncStorage.setItem(PREVIEW_SEEN_KEY, 'true').catch(() => {});
   }, []);
 
   const handleStart = () => {
     track('preview_home_cta', { pet: petName });
     router.replace('/(tabs)');
-    setTimeout(() => router.push('/paywall' as any), 120);
+    // Already-subscribed users land straight on home; only prompt non-subscribers.
+    if (!isPro) {
+      setTimeout(() => router.push('/paywall' as any), 120);
+    }
   };
 
   const sampleMeals = [

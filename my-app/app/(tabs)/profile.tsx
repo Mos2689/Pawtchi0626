@@ -16,6 +16,7 @@ import { BOWL_SIZES } from '../../constants/brandData';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useSubscription } from '../../hooks/useSubscription';
+import { openManageSubscription } from '../../lib/manageSubscription';
 import { useWalkthrough } from '../../providers/WalkthroughContext';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { computeCompleteness } from '../../lib/profileCompleteness';
@@ -30,7 +31,9 @@ export default function ProfileScreen() {
   const { activePet, clearPet, foodPantry, addPantryItem, fetchPantry } = useActivePetStore();
   const { clearStreak } = useStreakStore();
   const { clearContext } = usePetContextStore();
-  const { status: subStatus, daysLeft: subDaysLeft, hasFullAccess } = useSubscription();
+  const { status: subStatus, daysLeft: subDaysLeft, isPro, hasFullAccess } = useSubscription();
+  // Subscribers manage their plan in the store; everyone else sees the purchase paywall.
+  const openBilling = () => (isPro ? openManageSubscription() : router.push('/paywall' as any));
   const { replayWalkthrough } = useWalkthrough();
   const { focus } = useLocalSearchParams<{ focus?: string }>();
 
@@ -801,16 +804,16 @@ export default function ProfileScreen() {
             <TouchableOpacity
               style={[styles.settingRow, { backgroundColor: '#FFFFFF', borderColor: '#f1f5f9' }]}
               activeOpacity={0.7}
-              onPress={() => router.push('/paywall' as any)}
+              onPress={openBilling}
             >
               <View style={styles.settingRowLeft}>
                 <View style={[styles.settingIconBg, { backgroundColor: '#ede9fe' }]}>
                   <MaterialIcons name="credit-card" size={24} color="#7c3aed" />
                 </View>
                 <View>
-                  <Text style={[styles.settingName, { color: '#0f172a' }]}>Billing & Subscription</Text>
+                  <Text style={[styles.settingName, { color: '#0f172a' }]}>{isPro ? 'Manage subscription' : 'Billing & Subscription'}</Text>
                   <Text style={[styles.settingSub, { color: '#64748b' }]}>
-                    {subStatus === 'active' ? 'Pro — Active' : subStatus === 'trial' ? `Free Trial — ${subDaysLeft} days left` : 'Upgrade to Pro'}
+                    {subStatus === 'active' ? 'Pawtchi Plus — Active' : subStatus === 'trial' ? `Free trial — ${subDaysLeft} days left` : 'Upgrade to Pawtchi Plus'}
                   </Text>
                 </View>
               </View>
@@ -900,10 +903,10 @@ export default function ProfileScreen() {
               <MaterialIcons name="chevron-right" size={24} color="#94a3b8" />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.accountRow} activeOpacity={0.7} onPress={() => router.push('/paywall' as any)}>
+            <TouchableOpacity style={styles.accountRow} activeOpacity={0.7} onPress={openBilling}>
               <View style={styles.accountRowLeft}>
                 <MaterialIcons name="payment" size={24} color="#94a3b8" />
-                <Text style={[styles.accountName, { color: '#0f172a' }]}>Billing & Subscription</Text>
+                <Text style={[styles.accountName, { color: '#0f172a' }]}>{isPro ? 'Manage subscription' : 'Billing & Subscription'}</Text>
               </View>
               <MaterialIcons name="chevron-right" size={24} color="#94a3b8" />
             </TouchableOpacity>

@@ -13,6 +13,7 @@ SplashScreen.preventAutoHideAsync();
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider } from '@/providers/AuthProvider';
 import { WalkthroughProvider } from '@/providers/WalkthroughContext';
+import { SubscriptionProvider } from '@/providers/SubscriptionProvider';
 import { useAuth } from '@/providers/AuthProvider';
 
 export const unstable_settings = {
@@ -84,9 +85,11 @@ function RootLayoutNav() {
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <WalkthroughProvider>
-        <RootLayoutNav />
-      </WalkthroughProvider>
+      <SubscriptionProvider>
+        <WalkthroughProvider>
+          <RootLayoutNav />
+        </WalkthroughProvider>
+      </SubscriptionProvider>
     </AuthProvider>
   );
 }

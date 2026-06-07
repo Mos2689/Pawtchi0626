@@ -22,6 +22,7 @@ import { BebasNeue_400Regular } from '@expo-google-fonts/bebas-neue';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useSubscription } from '../hooks/useSubscription';
 import { track } from '../lib/analytics';
+import { openManageSubscription } from '../lib/manageSubscription';
 
 // ─── Brand system (Pawtchi Brand Book 2026, Part IV) ───
 // Navy ground + electric yellow accent only. Yellow marks the ONE thing that
@@ -171,7 +172,7 @@ export default function PaywallScreen() {
     const insets = useSafeAreaInsets();
     const router = useRouter();
     const { activePet } = useActivePetStore();
-    const { restorePurchases, purchasePackage, getOfferings, status, isFreemiumActive, daysSinceCreation } = useSubscription();
+    const { restorePurchases, purchasePackage, getOfferings, status, isPro, isFreemiumActive, daysSinceCreation } = useSubscription();
 
     const [fontsLoaded] = useFonts({
         BebasNeue_400Regular,
@@ -305,6 +306,12 @@ export default function PaywallScreen() {
     };
 
     const handlePurchase = async () => {
+        // Guard the brief window before entitlement status resolves: an active
+        // subscriber should manage, never re-purchase.
+        if (isPro) {
+            openManageSubscription();
+            return;
+        }
         const pkg = selectedPkg || packages[0];
         if (!pkg) {
             Alert.alert('No plans available', 'Please try again in a moment.');
@@ -347,6 +354,53 @@ export default function PaywallScreen() {
             <View style={[styles.container, styles.center]}>
                 <StatusBar style="light" />
                 <ActivityIndicator color={YELLOW} />
+            </View>
+        );
+    }
+
+    // ─── Already subscribed: never show a purchase CTA ───
+    // An active subscriber who reaches this screen must not be able to buy again —
+    // that triggers the store's "you already own this" error. Show a calm confirmation
+    // with a Manage option that deep-links to the store, never the in-app purchase flow.
+    if (isPro) {
+        return (
+            <View style={[styles.container, { paddingTop: insets.top }]}>
+                <StatusBar style="light" />
+                <TouchableOpacity
+                    style={[styles.closeButton, { top: insets.top + 8 }]}
+                    onPress={() => router.back()}
+                    activeOpacity={0.7}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                    <MaterialIcons name="close" size={24} color={CREAM_DIM} />
+                </TouchableOpacity>
+
+                <View style={styles.activeWrap}>
+                    <Animated.View entering={FadeInDown.duration(450)} style={styles.activeInner}>
+                        <View style={styles.activeBadge}>
+                            <MaterialIcons name="check-circle" size={16} color={NAVY} />
+                            <Text style={styles.activeBadgeText}>
+                                {status === 'trial' ? 'TRIAL ACTIVE' : 'ACTIVE'}
+                            </Text>
+                        </View>
+                        <Text style={styles.eyebrow}>PAWTCHI PLUS</Text>
+                        <Text style={styles.headline}>{'YOU’RE\nALL SET.'}</Text>
+                        <Text style={styles.subcopy}>
+                            {petName
+                                ? `You're already on Pawtchi Plus. ${petPossessive} full picture is unlocked.`
+                                : "You're already on Pawtchi Plus. Your animal's full picture is unlocked."}
+                        </Text>
+                    </Animated.View>
+                </View>
+
+                <View style={[styles.stickyBar, { paddingBottom: insets.bottom + 12 }]}>
+                    <TouchableOpacity style={styles.cta} onPress={openManageSubscription} activeOpacity={0.9}>
+                        <Text style={styles.ctaText}>Manage subscription</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.activeClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <Text style={styles.activeCloseText}>Close</Text>
+                    </TouchableOpacity>
+                </View>
             </View>
         );
     }
@@ -512,6 +566,28 @@ const styles = StyleSheet.create({
         letterSpacing: 0.5,
         color: YELLOW,
     },
+
+    // Already-subscribed state
+    activeWrap: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
+    activeInner: { alignItems: 'flex-start', width: '100%' },
+    activeBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: YELLOW,
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        marginBottom: 20,
+    },
+    activeBadgeText: {
+        fontFamily: BODY_SEMI,
+        fontSize: 11,
+        letterSpacing: 1,
+        color: NAVY,
+    },
+    activeClose: { alignSelf: 'center', marginTop: 14 },
+    activeCloseText: { fontFamily: BODY_MED, fontSize: 14, color: CREAM_DIM },
 
     // Hero
     eyebrow: {

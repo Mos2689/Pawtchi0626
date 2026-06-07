@@ -6,8 +6,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg from 'react-native-svg';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
 import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
+import { PREVIEW_SEEN_KEY } from '../preview-home';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
@@ -70,6 +72,15 @@ export default function HomeScreen() {
 
   // Brand-new user with no real data yet — surface the future-state preview entry.
   const isLowData = daysSinceLastFoodLog === null && todayScans.length === 0;
+
+  // The preview is a one-time view: once seen (or closed), it never resurfaces.
+  // Default `true` keeps the card hidden on first render so it never flashes.
+  const [previewSeen, setPreviewSeen] = React.useState(true);
+  React.useEffect(() => {
+    AsyncStorage.getItem(PREVIEW_SEEN_KEY)
+      .then((v) => setPreviewSeen(v === 'true'))
+      .catch(() => {});
+  }, []);
 
   useFocusEffect(useCallback(() => {
     if (activePet?.id) refreshToday(activePet.id);
@@ -153,8 +164,8 @@ export default function HomeScreen() {
         {/* Profile completion — quiet, dismissible, deep-links to the right editor */}
         <ProfileCompletionCard />
 
-        {/* Future-state preview re-entry — only while the user has no real data yet */}
-        {isLowData && (
+        {/* Future-state preview re-entry — only before it's been seen, and only while the user has no real data yet */}
+        {isLowData && !previewSeen && (
           <TouchableOpacity
             style={styles.previewCard}
             onPress={() => router.push('/preview-home' as any)}
