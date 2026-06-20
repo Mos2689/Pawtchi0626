@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, Image, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -75,11 +76,11 @@ export default function PreviewHomeScreen() {
       {/* Preview banner */}
       <View style={[styles.banner, { paddingTop: insets.top + 12 }]}>
         <View style={styles.bannerLeft}>
-          <MaterialIcons name="auto-awesome" size={18} color="#1a1a00" />
+          <MaterialIcons name="auto-awesome" size={18} color="#07202A" />
           <Text style={styles.bannerText}>A preview of {petName}&apos;s home as their story builds</Text>
         </View>
         <TouchableOpacity onPress={handleStart} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <MaterialIcons name="close" size={22} color="#1a1a00" />
+          <MaterialIcons name="close" size={22} color="#07202A" />
         </TouchableOpacity>
       </View>
 
@@ -97,7 +98,7 @@ export default function PreviewHomeScreen() {
         <View style={styles.ringsWrapper}>
           <HealthRings calorieProgress={0.96} activityProgress={1} waterProgress={0.88}>
             <View style={styles.petPhoto}>
-              <Image source={{ uri: photo }} style={styles.petPhotoImg} />
+              <Image source={{ uri: photo }} style={styles.petPhotoImg} contentFit="cover" cachePolicy="memory-disk" transition={200} />
             </View>
             <View style={styles.streakBadge}>
               <MaterialIcons name="local-fire-department" size={12} color="#ea580c" />
@@ -124,7 +125,7 @@ export default function PreviewHomeScreen() {
           </View>
           <View style={styles.legendCard}>
             <View style={styles.legendHeader}>
-              <View style={[styles.legendIcon, { backgroundColor: '#FFFC00' }]}>
+              <View style={[styles.legendIcon, { backgroundColor: '#F7F602' }]}>
                 <MaterialIcons name="directions-walk" size={10} color="#1A1A1A" />
               </View>
               <Text style={styles.legendLabel}>Move</Text>
@@ -133,7 +134,7 @@ export default function PreviewHomeScreen() {
               <Text style={styles.legendValue}>45</Text>
               <Text style={styles.legendSub}>/ 45 min</Text>
             </View>
-            <ProgressBar progress={1} color="#FFFC00" />
+            <ProgressBar progress={1} color="#F7F602" />
           </View>
           <View style={styles.legendCard}>
             <View style={styles.legendHeader}>
@@ -155,7 +156,7 @@ export default function PreviewHomeScreen() {
           <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.insightGradient}>
             <View style={styles.insightHeader}>
               <View style={styles.insightIcon}>
-                <MaterialIcons name="insights" size={22} color="#FFFC00" />
+                <MaterialIcons name="insights" size={22} color="#F7F602" />
               </View>
               <Text style={styles.insightLabel}>WHAT PAWTCHI WILL NOTICE</Text>
             </View>
@@ -212,7 +213,7 @@ export default function PreviewHomeScreen() {
         <Text style={styles.ctaHint}>Start logging and this becomes {petName}&apos;s real story.</Text>
         <TouchableOpacity style={styles.cta} onPress={handleStart} activeOpacity={0.9}>
           <Text style={styles.ctaText}>Log {petName}&apos;s first meal</Text>
-          <MaterialIcons name="arrow-forward" size={20} color="#1a1a00" />
+          <MaterialIcons name="arrow-forward" size={20} color="#07202A" />
         </TouchableOpacity>
       </View>
     </View>
@@ -228,15 +229,15 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 20,
     paddingBottom: 12,
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
   },
   bannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
-  bannerText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#1a1a00', flex: 1 },
+  bannerText: { fontFamily: 'Montserrat_700Bold', fontSize: 13, color: '#07202A', flex: 1 },
 
   scroll: { paddingHorizontal: 20, paddingTop: 20 },
-  greeting: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 28, color: '#0f172a', letterSpacing: -0.5 },
+  greeting: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 28, color: '#0f172a', letterSpacing: -0.5 },
   greetingName: { color: '#a16207' },
-  lifeStage: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 13, color: '#64748b', marginTop: 4, textTransform: 'capitalize' },
+  lifeStage: { fontFamily: 'Montserrat_600SemiBold', fontSize: 13, color: '#64748b', marginTop: 4, textTransform: 'capitalize' },
 
   ringsWrapper: { alignItems: 'center', marginVertical: 24, position: 'relative' },
   petPhoto: {
@@ -250,7 +251,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3,
   },
-  streakBadgeText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 12, color: '#ea580c' },
+  streakBadgeText: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 12, color: '#ea580c' },
   ringsSampleTag: { position: 'absolute', top: 0, right: 8 },
 
   legendRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
@@ -260,41 +261,41 @@ const styles = StyleSheet.create({
   },
   legendHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
   legendIcon: { width: 18, height: 18, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
-  legendLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11, color: '#64748b' },
+  legendLabel: { fontFamily: 'Montserrat_700Bold', fontSize: 11, color: '#64748b' },
   legendValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 3 },
-  legendValue: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 18, color: '#0f172a' },
-  legendSub: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 10, color: '#94a3b8' },
+  legendValue: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 18, color: '#0f172a' },
+  legendSub: { fontFamily: 'Montserrat_600SemiBold', fontSize: 10, color: '#94a3b8' },
 
   insightCard: { borderRadius: 20, overflow: 'hidden', marginBottom: 20 },
   insightGradient: { padding: 18 },
   insightHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 },
   insightIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,252,0,0.1)', alignItems: 'center', justifyContent: 'center' },
-  insightLabel: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11, letterSpacing: 1, color: '#FFFC00' },
-  insightBody: { fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 14, lineHeight: 21, color: '#e2e8f0' },
+  insightLabel: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 11, letterSpacing: 1, color: '#F7F602' },
+  insightBody: { fontFamily: 'Montserrat_500Medium', fontSize: 14, lineHeight: 21, color: '#e2e8f0' },
 
   trendCard: { backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 1, borderColor: '#f1f5f9', padding: 18, marginBottom: 20 },
   trendHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  trendTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 16, color: '#0f172a' },
+  trendTitle: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 16, color: '#0f172a' },
   trendRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  trendNow: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 22, color: '#0f172a' },
-  trendCaption: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 11, color: '#94a3b8' },
-  trendNote: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, color: '#16a34a', marginTop: 12 },
+  trendNow: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 22, color: '#0f172a' },
+  trendCaption: { fontFamily: 'Montserrat_600SemiBold', fontSize: 11, color: '#94a3b8' },
+  trendNote: { fontFamily: 'Montserrat_600SemiBold', fontSize: 12, color: '#16a34a', marginTop: 12 },
 
   mealsHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
-  mealsTitle: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 18, color: '#0f172a' },
+  mealsTitle: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 18, color: '#0f172a' },
   mealCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#f1f5f9',
     padding: 12, marginBottom: 10,
   },
   mealImage: { width: 48, height: 48, borderRadius: 12, backgroundColor: '#f8fafc', alignItems: 'center', justifyContent: 'center' },
-  mealName: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#0f172a' },
-  mealKcal: { fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 12, color: '#64748b', marginTop: 2 },
+  mealName: { fontFamily: 'Montserrat_700Bold', fontSize: 14, color: '#0f172a' },
+  mealKcal: { fontFamily: 'Montserrat_600SemiBold', fontSize: 12, color: '#64748b', marginTop: 2 },
   mealPill: { backgroundColor: '#f1f5f9', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5 },
-  mealPillText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11, color: '#475569' },
+  mealPillText: { fontFamily: 'Montserrat_700Bold', fontSize: 11, color: '#475569' },
 
   sampleTag: { backgroundColor: '#f1f5f9', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
-  sampleTagText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 9, letterSpacing: 0.8, color: '#94a3b8' },
+  sampleTagText: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 9, letterSpacing: 0.8, color: '#94a3b8' },
 
   ctaBar: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
@@ -302,10 +303,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: '#f1f5f9',
     paddingHorizontal: 20, paddingTop: 14,
   },
-  ctaHint: { fontFamily: 'Plus Jakarta Sans', fontWeight: '500', fontSize: 12, color: '#64748b', textAlign: 'center', marginBottom: 10 },
+  ctaHint: { fontFamily: 'Montserrat_500Medium', fontSize: 12, color: '#64748b', textAlign: 'center', marginBottom: 10 },
   cta: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    height: 58, borderRadius: 16, backgroundColor: '#FFFC00',
+    height: 58, borderRadius: 16, backgroundColor: '#F7F602',
   },
-  ctaText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 16, color: '#1a1a00' },
+  ctaText: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 16, color: '#07202A' },
 });

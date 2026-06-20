@@ -15,15 +15,16 @@ interface WeeklyNutritionChartProps {
     data: DayMacro[];
 }
 
-export default function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps) {
-    // Normalize each metric against its week's maximum to plot on the same visual scale
-    const maxCal = Math.max(...data.map(d => d.calories), 1);
-    const maxPro = Math.max(...data.map(d => d.protein), 1);
-    const maxCarb = Math.max(...data.map(d => d.carbs), 1);
-    const maxFat = Math.max(...data.map(d => d.fat), 1);
+function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps) {
+    // All derivation memoized in one pass keyed on `data` (was partly recomputed
+    // every render). Normalizes each metric against its week's maximum.
+    const { processedData, absoluteMaxTotalS, hasZeroData } = useMemo(() => {
+        const maxCal = Math.max(...data.map(d => d.calories), 1);
+        const maxPro = Math.max(...data.map(d => d.protein), 1);
+        const maxCarb = Math.max(...data.map(d => d.carbs), 1);
+        const maxFat = Math.max(...data.map(d => d.fat), 1);
 
-    const processedData = useMemo(() => {
-        return data.map(d => {
+        const processed = data.map(d => {
             const calS = d.calories / maxCal;
             const proS = d.protein / maxPro;
             const carbS = d.carbs / maxCarb;
@@ -40,12 +41,14 @@ export default function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps
                 fatP: d.calories === 0 && d.protein === 0 ? 0 : (fatS / totalS) * 100,
             };
         });
-    }, [data, maxCal, maxPro, maxCarb, maxFat]);
 
-    const absoluteMaxTotalS = Math.max(...processedData.map(d => d.totalS), 1);
-
-    // If there's literally no data (all 0), show thin empty placeholder bars.
-    const hasZeroData = data.every(d => d.calories === 0 && d.protein === 0 && d.carbs === 0 && d.fat === 0);
+        return {
+            processedData: processed,
+            absoluteMaxTotalS: Math.max(...processed.map(d => d.totalS), 1),
+            // If there's literally no data (all 0), show thin empty placeholder bars.
+            hasZeroData: data.every(d => d.calories === 0 && d.protein === 0 && d.carbs === 0 && d.fat === 0),
+        };
+    }, [data]);
 
     return (
         <View style={styles.container}>
@@ -59,7 +62,7 @@ export default function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps
                     </Text>
                 </View>
                 <View style={styles.legendWrapper}>
-                    <LegendItem color="#FFFC00" label="CAL" />
+                    <LegendItem color="#F7F602" label="CAL" />
                     <LegendItem color="#EF4444" label="PRO" />
                     <LegendItem color="#3B82F6" label="CARB" />
                     <LegendItem color="#F97316" label="FAT" />
@@ -83,7 +86,7 @@ export default function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps
                                         <View style={[styles.segment, { backgroundColor: '#F97316', height: `${d.fatP}%` }]} />
                                         <View style={[styles.segment, { backgroundColor: '#3B82F6', height: `${d.carbP}%` }]} />
                                         <View style={[styles.segment, { backgroundColor: '#EF4444', height: `${d.proP}%` }]} />
-                                        <View style={[styles.segment, { backgroundColor: '#FFFC00', height: `${d.calP}%` }]} />
+                                        <View style={[styles.segment, { backgroundColor: '#F7F602', height: `${d.calP}%` }]} />
                                     </>
                                 )}
                             </View>
@@ -96,6 +99,10 @@ export default function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps
         </View>
     );
 }
+
+// Memoized: the chart only needs to re-render when its `data` prop changes, not
+// on every parent (Health screen) re-render.
+export default React.memo(WeeklyNutritionChart);
 
 const LegendItem = ({ color, label }: { color: string, label: string }) => (
     <View style={styles.legendItem}>
@@ -127,15 +134,13 @@ const styles = StyleSheet.create({
         gap: 12,
     },
     title: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800',
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 22,
         color: '#041015',
         marginBottom: 4,
     },
     subtitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700',
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 12,
         color: '#94a3b8',
         letterSpacing: 0.5,
@@ -157,8 +162,7 @@ const styles = StyleSheet.create({
         borderRadius: 3,
     },
     legendText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700',
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 10,
         color: '#94a3b8',
     },
@@ -187,8 +191,7 @@ const styles = StyleSheet.create({
     },
     dayLabel: {
         marginTop: 16,
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700',
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 11,
         color: '#94a3b8',
     },

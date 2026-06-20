@@ -1,11 +1,13 @@
 import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, ActivityIndicator, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import Svg from 'react-native-svg';
+import Reanimated, { FadeInDown } from 'react-native-reanimated';
+import { color, font, radius, shadow, space } from '../../constants/design';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
 import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
@@ -21,13 +23,22 @@ import { useSubscription } from '../../hooks/useSubscription';
 import { NudgeCard } from '../../components/NudgeCard';
 import { TrialBanner } from '../../components/TrialBanner';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { SecondOpinionCard } from '../../components/SecondOpinionCard';
+import { VetCheckinNudge } from '../../components/VetCheckinNudge';
+import { getMonthlyUsage, getPendingCheckin, type MonthlyUsage, type PendingCheckin } from '../../lib/askVet';
+import { track } from '../../lib/analytics';
 
 export default function HomeScreen() {
   const router = useRouter();
   const scrollY = React.useRef(new Animated.Value(0)).current;
   const insets = useSafeAreaInsets();
-  const { activePet, isTailoring } = useActivePetStore();
-  const { currentStreak, pawCoins, fetchStreak } = useStreakStore();
+  // Fine-grained selectors: re-render only when the specific value changes, not on
+  // any unrelated store mutation (pantry, isLoading, etc.).
+  const activePet = useActivePetStore(s => s.activePet);
+  const isTailoring = useActivePetStore(s => s.isTailoring);
+  const currentStreak = useStreakStore(s => s.currentStreak);
+  const pawCoins = useStreakStore(s => s.pawCoins);
+  const fetchStreak = useStreakStore(s => s.fetchStreak);
   const { user } = useAuth();
   const { expoPushToken } = usePushNotifications();
   const { isFreemiumActive, daysSinceCreation } = useSubscription();
@@ -90,6 +101,18 @@ export default function HomeScreen() {
     if (user?.id) fetchStreak(user.id);
   }, [user?.id, fetchStreak]));
 
+  // Ask Pawtchi monthly allowance — shown quietly on the home entry card.
+  const [askUsage, setAskUsage] = React.useState<MonthlyUsage | null>(null);
+  useFocusEffect(useCallback(() => {
+    if (user?.id) getMonthlyUsage(user.id).then(setAskUsage).catch(() => {});
+  }, [user?.id]));
+
+  // Pending Second Opinion check-in — surfaces a gentle "how is {pet} doing" card.
+  const [pendingCheckin, setPendingCheckin] = React.useState<PendingCheckin | null>(null);
+  useFocusEffect(useCallback(() => {
+    if (activePet?.id) getPendingCheckin(activePet.id).then(setPendingCheckin).catch(() => {});
+  }, [activePet?.id]));
+
   // Computed values
   const calorieProgress = Math.min(calPercent / 100, 1);
   const activityProgress = Math.min(activityCompletionRate, 1);
@@ -134,6 +157,9 @@ export default function HomeScreen() {
             <Image
               source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=200' }}
               style={styles.avatarMiniImg}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={200}
             />
           </View>
           <View>
@@ -158,8 +184,20 @@ export default function HomeScreen() {
         )}
         scrollEventThrottle={16}
       >
+        {/* Pending Second Opinion check-in — takes priority over the generic nudge */}
+        {pendingCheckin && (
+          <VetCheckinNudge
+            petName={petName}
+            reason={pendingCheckin.reason}
+            onPress={() => {
+              track('vet_checkin_opened', { source: 'home_nudge' });
+              router.push(`/ask?case=${pendingCheckin.questionId}&mode=checkin` as any);
+            }}
+          />
+        )}
+
         {/* Nudge Card */}
-        <NudgeCard />
+        {!pendingCheckin && <NudgeCard />}
 
         {/* Profile completion — quiet, dismissible, deep-links to the right editor */}
         <ProfileCompletionCard />
@@ -172,7 +210,7 @@ export default function HomeScreen() {
             activeOpacity={0.9}
           >
             <View style={styles.previewIcon}>
-              <MaterialIcons name="auto-awesome" size={22} color="#1a1a00" />
+              <MaterialIcons name="auto-awesome" size={22} color="#07202A" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.previewTitle}>See where you and {petName} are headed</Text>
@@ -202,10 +240,13 @@ export default function HomeScreen() {
                 <Image
                   source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000&auto=format&fit=crop' }}
                   style={styles.petPhotoImg}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  transition={200}
                 />
                 {isTailoring && (
                   <View style={styles.tailoringOverlay}>
-                    <ActivityIndicator size="large" color="#FFFC00" />
+                    <ActivityIndicator size="large" color="#F7F602" />
                     <Text style={styles.tailoringText}>Tailoring...</Text>
                   </View>
                 )}
@@ -227,84 +268,56 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Legend Cards */}
-        <View style={styles.legendRow}>
-          {/* Calories */}
-          <View style={styles.legendCard}>
-            <View style={styles.legendHeader}>
-              <View style={[styles.legendIcon, { backgroundColor: '#f97316' }]}>
-                <MaterialIcons name="local-fire-department" size={10} color="#FFFFFF" />
-              </View>
-              <Text style={styles.legendLabel}>Calories</Text>
-            </View>
-            <View style={styles.legendValueRow}>
-              <Text style={styles.legendValue}>
-                {todayCalories > 0 ? todayCalories : '0'}
-              </Text>
-              <Text style={styles.legendSub}>/ {targetCal || 0} kcal</Text>
-            </View>
-            <ProgressBar progress={calorieProgress} color="#f97316" />
-          </View>
+        {/* ─── Second Opinion — flagship membership-crest moment ─── */}
+        <Reanimated.View entering={FadeInDown.duration(420)}>
+          <SecondOpinionCard
+            remaining={askUsage?.remaining ?? null}
+            resetsAt={askUsage?.resetsAt}
+            onPress={() => router.push('/ask' as any)}
+          />
+        </Reanimated.View>
 
-          {/* Move */}
-          <View style={styles.legendCard}>
-            <View style={styles.legendHeader}>
-              <View style={[styles.legendIcon, { backgroundColor: '#FFFC00' }]}>
-                <MaterialIcons name="directions-walk" size={10} color="#1A1A1A" />
-              </View>
-              <Text style={styles.legendLabel}>Move</Text>
+        {/* ─── Today — typography on the ground, hairline-divided ─── */}
+        <Reanimated.View entering={FadeInDown.duration(420)}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionLabel}>TODAY</Text>
+            <View style={styles.sectionRule} />
+          </View>
+          <View style={styles.statRow}>
+            <View style={styles.stat}>
+              <Text style={styles.statValue}>{todayCalories > 0 ? todayCalories : '0'}</Text>
+              <Text style={styles.statTarget}>of {targetCal || 0} kcal</Text>
+              <ProgressBar progress={calorieProgress} color={color.viz.calories} />
             </View>
-            <View style={styles.legendValueRow}>
-              <Text style={styles.legendValue}>
+            <View style={styles.statDivider} />
+            <View style={styles.stat}>
+              <Text style={styles.statValue}>
                 {todayActivityMinutes > 0 ? todayActivityMinutes : '0'}
+                <Text style={styles.statUnit}> min</Text>
               </Text>
-              <Text style={styles.legendSub}>/ 45 min</Text>
+              <Text style={styles.statTarget}>of 45 min moving</Text>
+              <ProgressBar progress={activityProgress} color={color.viz.move} />
             </View>
-            <ProgressBar progress={activityProgress} color="#FFFC00" />
-          </View>
-
-          {/* Hydrate */}
-          <View style={styles.legendCard}>
-            <View style={styles.legendHeader}>
-              <View style={[styles.legendIcon, { backgroundColor: '#3091F9' }]}>
-                <MaterialIcons name="water-drop" size={10} color="#FFFFFF" />
-              </View>
-              <Text style={styles.legendLabel}>Hydrate</Text>
-            </View>
-            <View style={styles.legendValueRow}>
-              <Text style={styles.legendValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+            <View style={styles.statDivider} />
+            <View style={styles.stat}>
+              <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
                 {todayWater > 0 ? waterDisplay : '0'}
               </Text>
-              <Text style={styles.legendSub} numberOfLines={1}>/ {waterTargetDisplay}</Text>
+              <Text style={styles.statTarget} numberOfLines={1}>of {waterTargetDisplay} water</Text>
+              <ProgressBar progress={waterProgress} color={color.viz.hydrate} />
             </View>
-            <ProgressBar progress={waterProgress} color="#3091F9" />
           </View>
-        </View>
 
-        {/* Macros Row */}
-        <View style={styles.macrosRow}>
-          <View style={styles.macroCard}>
-            <View style={styles.macroLeft}>
-              <View style={[styles.macroDot, { backgroundColor: '#ec4899' }]} />
-              <Text style={styles.macroLabel}>Protein</Text>
-            </View>
-            <Text style={styles.macroValue}>{todayProtein}g</Text>
+          {/* One quiet ledger line for macros */}
+          <View style={styles.macroLine}>
+            <View style={[styles.macroDot, { backgroundColor: '#ec4899' }]} />
+            <Text style={styles.macroText}>{todayProtein}g protein</Text>
+            <View style={[styles.macroDot, { backgroundColor: color.viz.calories }]} />
+            <Text style={styles.macroText}>{todayCarbs}g carbs</Text>
+            <View style={[styles.macroDot, { backgroundColor: color.viz.hydrate }]} />
+            <Text style={styles.macroText}>{todayFats}g fats</Text>
           </View>
-          <View style={styles.macroCard}>
-            <View style={styles.macroLeft}>
-              <View style={[styles.macroDot, { backgroundColor: '#f97316' }]} />
-              <Text style={styles.macroLabel}>Carbs</Text>
-            </View>
-            <Text style={styles.macroValue}>{todayCarbs}g</Text>
-          </View>
-          <View style={styles.macroCard}>
-            <View style={styles.macroLeft}>
-              <View style={[styles.macroDot, { backgroundColor: '#3091F9' }]} />
-              <Text style={styles.macroLabel}>Fats</Text>
-            </View>
-            <Text style={styles.macroValue}>{todayFats}g</Text>
-          </View>
-        </View>
+        </Reanimated.View>
 
         {/* Treat Banner */}
         {targetCal > 0 && (() => {
@@ -346,32 +359,29 @@ export default function HomeScreen() {
               <MaterialIcons name="replay" size={22} color="#553e00" />
             </View>
             <View style={styles.streakNudgeContent}>
-              <Text style={styles.streakNudgeTitle}>You had a {longestStreak}-day streak!</Text>
-              <Text style={styles.streakNudgeSubtitle}>Log something today to start a new one!</Text>
+              <Text style={styles.streakNudgeTitle}>You had a {longestStreak}-day streak</Text>
+              <Text style={styles.streakNudgeSubtitle}>Log something today to start a new one</Text>
             </View>
             <MaterialIcons name="chevron-right" size={20} color="#b45309" />
           </TouchableOpacity>
         )}
 
-        {/* Suggested Activity */}
+        {/* ─── Up next — the deliberate dark moment on the feed ─── */}
         {nextActivity && (
-          <TouchableOpacity
-            style={styles.suggestedCard}
-            onPress={() => router.push('/(tabs)/activity')}
-            activeOpacity={0.9}
-          >
-            <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.suggestedGradient}>
-              <View style={styles.suggestedTop}>
-                <View style={styles.suggestedBadge}>
-                  <MaterialIcons name="sports" size={11} color="#fac129" />
-                  <Text style={styles.suggestedBadgeText}>Suggested</Text>
-                </View>
-                <Text style={styles.suggestedTime}>
+          <Reanimated.View entering={FadeInDown.duration(420).delay(60)}>
+            <TouchableOpacity
+              style={styles.upNext}
+              onPress={() => router.push('/(tabs)/activity')}
+              activeOpacity={0.92}
+            >
+              <View style={styles.upNextHead}>
+                <Text style={styles.upNextEyebrow}>UP NEXT</Text>
+                <Text style={styles.upNextTime}>
                   {nextActivity.scheduled_time ? nextActivity.scheduled_time.slice(0, 5) : ''}
                 </Text>
               </View>
-              <View style={styles.suggestedBody}>
-                <View style={styles.suggestedIconBg}>
+              <View style={styles.upNextBody}>
+                <View style={styles.upNextIcon}>
                   <MaterialIcons
                     name={
                       nextActivity.activity_type === 'walk' ? 'directions-walk'
@@ -382,32 +392,24 @@ export default function HomeScreen() {
                                 : 'star'
                     }
                     size={22}
-                    color={nextActivity.activity_type === 'water' ? '#60a5fa' : '#FFFC00'}
+                    color={nextActivity.activity_type === 'water' ? '#60a5fa' : color.yellow}
                   />
                 </View>
-                <View style={styles.suggestedTextContainer}>
-                  <Text style={styles.suggestedTitle}>{nextActivity.title}</Text>
-                  <View style={styles.suggestedMeta}>
-                    {nextActivity.duration_minutes && (
-                      <View style={styles.suggestedMetaItem}>
-                        <MaterialIcons name="timer" size={11} color="#94a3b8" />
-                        <Text style={styles.suggestedMetaText}>{nextActivity.duration_minutes} min</Text>
-                      </View>
-                    )}
-                    {nextActivity.intensity && (
-                      <View style={styles.suggestedMetaItem}>
-                        <MaterialIcons name="speed" size={11} color="#94a3b8" />
-                        <Text style={styles.suggestedMetaText}>{nextActivity.intensity}</Text>
-                      </View>
-                    )}
-                  </View>
+                <View style={styles.upNextText}>
+                  <Text style={styles.upNextTitle}>{nextActivity.title}</Text>
+                  <Text style={styles.upNextMeta}>
+                    {[
+                      nextActivity.duration_minutes ? `${nextActivity.duration_minutes} min` : null,
+                      nextActivity.intensity || null,
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
                 </View>
-                <View style={styles.suggestedPlayBtn}>
-                  <MaterialIcons name="play-arrow" size={18} color="#1A1A1A" />
+                <View style={styles.upNextPlay}>
+                  <MaterialIcons name="play-arrow" size={18} color={color.navy} />
                 </View>
               </View>
-            </LinearGradient>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          </Reanimated.View>
         )}
 
         {/* Primary CTA */}
@@ -418,83 +420,69 @@ export default function HomeScreen() {
           style={{ marginBottom: 24 }}
         />
 
-        {/* Today's Meals */}
-        <View style={styles.mealsSection}>
-          <View style={styles.mealsHeader}>
-            <Text style={styles.mealsTitle}>Today&apos;s Meals</Text>
-            <Text style={styles.mealsCount}>{todayScans.length} logged</Text>
+        {/* ─── Meals — editorial list, no boxes ─── */}
+        <Reanimated.View entering={FadeInDown.duration(420).delay(120)}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionLabel}>MEALS</Text>
+            <View style={styles.sectionRule} />
+            <Text style={styles.sectionMeta}>{todayScans.length} logged</Text>
           </View>
 
           {todayScans.length === 0 ? (
             <View style={styles.emptyMeals}>
-              <MaterialIcons name="no-food" size={32} color="#d1d5db" />
-              <Text style={styles.emptyMealsText}>No meals{"\n"}logged yet.</Text>
+              <MaterialIcons name="restaurant" size={26} color={'#d1d5db'} />
+              <Text style={styles.emptyMealsText}>Nothing logged yet today</Text>
             </View>
           ) : (
-            todayScans.slice(0, 3).map((scan) => {
+            todayScans.slice(0, 3).map((scan, i, arr) => {
               const time = new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               return (
                 <TouchableOpacity
                   key={scan.id}
-                  style={styles.mealCard}
+                  style={[styles.mealRow, i === arr.length - 1 && styles.mealRowLast]}
                   onPress={() => router.push(`/scan/${scan.id}`)}
-                  activeOpacity={0.9}
+                  activeOpacity={0.8}
                 >
-                  <View style={styles.mealImageContainer}>
-                    {scan.image_url ? (
-                      <Image source={{ uri: scan.image_url }} style={styles.mealImage} />
-                    ) : (
-                      <View style={styles.mealImagePlaceholder}>
-                        <MaterialIcons name="restaurant" size={24} color="#9ca3af" />
-                      </View>
-                    )}
-                  </View>
-                  <View style={styles.mealContent}>
-                    <View style={styles.mealHeaderRow}>
-                      <Text style={styles.mealTitle} numberOfLines={2}>{scan.ai_identified_food || 'Unidentified Food'}</Text>
-                      <View style={styles.mealPill}>
-                        <Text style={styles.mealPillText}>{scan.is_treat ? 'Treat' : 'Meal'}</Text>
-                      </View>
+                  {scan.image_url ? (
+                    <Image source={{ uri: scan.image_url }} style={styles.mealThumb} contentFit="cover" cachePolicy="memory-disk" transition={200} />
+                  ) : (
+                    <View style={[styles.mealThumb, styles.mealThumbEmpty]}>
+                      <MaterialIcons name="restaurant" size={20} color={'#9ca3af'} />
                     </View>
-                    <Text style={styles.mealDesc}>{scan.ai_estimated_calories} kcal</Text>
-                    <View style={styles.mealMetaRow}>
-                      <Text style={styles.mealTime}>{time}</Text>
-                      <View style={styles.mealMacros}>
-                        <View style={styles.mealMacroPill}>
-                          <View style={[styles.mealMacroDot, { backgroundColor: '#ec4899' }]} />
-                          <Text style={styles.mealMacroText}>P: {scan.protein_g}g</Text>
+                  )}
+                  <View style={styles.mealInfo}>
+                    <View style={styles.mealTitleRow}>
+                      <Text style={styles.mealTitle} numberOfLines={1}>{scan.ai_identified_food || 'Unidentified Food'}</Text>
+                      {scan.is_treat && (
+                        <View style={styles.treatChip}>
+                          <Text style={styles.treatChipText}>TREAT</Text>
                         </View>
-                        <View style={styles.mealMacroPill}>
-                          <View style={[styles.mealMacroDot, { backgroundColor: '#f97316' }]} />
-                          <Text style={styles.mealMacroText}>F: {scan.fat_g}g</Text>
-                        </View>
-                        <View style={styles.mealMacroPill}>
-                          <View style={[styles.mealMacroDot, { backgroundColor: '#3091F9' }]} />
-                          <Text style={styles.mealMacroText}>C: {scan.carbs_g}g</Text>
-                        </View>
-                      </View>
+                      )}
                     </View>
+                    <Text style={styles.mealMeta}>{scan.ai_estimated_calories} kcal · {time}</Text>
+                    <Text style={styles.mealMacroLine}>P {scan.protein_g}g · F {scan.fat_g}g · C {scan.carbs_g}g</Text>
                   </View>
+                  <MaterialIcons name="chevron-right" size={18} color={color.slateFaint} />
                 </TouchableOpacity>
               );
             })
           )}
-        </View>
+        </Reanimated.View>
 
         {/* Invite a friend — quiet, pet-voiced. Sits at the bottom of the feed. */}
         <TouchableOpacity
-          style={styles.inviteCard}
+          style={styles.inviteRow}
           onPress={() => router.push('/invite' as any)}
-          activeOpacity={0.85}
+          activeOpacity={0.8}
         >
           <View style={styles.inviteIcon}>
-            <MaterialIcons name="group-add" size={22} color="#1a1a00" />
+            <MaterialIcons name="group-add" size={18} color={color.navy} />
           </View>
-          <View style={styles.inviteContent}>
+          <View style={{ flex: 1 }}>
             <Text style={styles.inviteTitle}>A friend for {petName}</Text>
             <Text style={styles.inviteSub}>Pawtchi is better shared</Text>
           </View>
-          <MaterialIcons name="chevron-right" size={24} color="#cbd5e1" />
+          <MaterialIcons name="chevron-right" size={18} color={color.slateFaint} />
         </TouchableOpacity>
       </Animated.ScrollView>
     </View>
@@ -528,21 +516,20 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 2.5,
-    borderColor: '#FFFC00',
+    borderColor: '#F7F602',
   },
   avatarMiniImg: {
     width: '100%',
     height: '100%',
   },
   headerTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
+    fontFamily: 'BebasNeue_400Regular',
     fontSize: 20,
-    letterSpacing: -0.5,
-    color: '#041015',
+    letterSpacing: 2.5,
+    color: '#0f172a',
   },
   headerDate: {
-    fontFamily: 'Plus Jakarta Sans',
+    fontFamily: 'Montserrat_400Regular',
     fontSize: 11,
     color: '#94a3b8',
     marginTop: 2,
@@ -562,19 +549,17 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
     justifyContent: 'center',
     alignItems: 'center',
   },
   coinIconText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 11,
     color: '#041015',
   },
   coinText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     color: '#041015',
   },
@@ -587,17 +572,16 @@ const styles = StyleSheet.create({
 
   // Greeting
   greeting: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 28,
-    color: '#2e2f2d',
+    fontFamily: 'Montserrat_700Bold',
+    fontSize: 26,
+    color: '#475569',
     marginTop: 16,
     marginBottom: 24,
     letterSpacing: -0.5,
   },
   greetingName: {
-    fontWeight: '900',
-    color: '#041015',
+    fontFamily: 'Montserrat_800ExtraBold',
+    color: '#0f172a',
   },
 
   // Rings
@@ -641,7 +625,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tailoringText: {
-    color: '#FFFC00',
+    color: '#F7F602',
     fontWeight: 'bold',
     fontSize: 9,
     letterSpacing: 1,
@@ -667,149 +651,116 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   streakBadgeText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 11,
   },
 
-  // Legend Row
-  legendRow: {
+  // ─── Editorial section heads: caption + hairline rule ───
+  sectionHead: {
     flexDirection: 'row',
-    gap: 10,
-    marginBottom: 20,
+    alignItems: 'center',
+    gap: space.md,
+    marginBottom: space.lg,
+    marginTop: space.sm,
   },
-  legendCard: {
+  sectionLabel: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 2.4,
+    color: color.slateFaint,
+  },
+  sectionRule: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-    minHeight: 100,
+    height: 1,
+    backgroundColor: '#ece9e2',
   },
-  legendHeader: {
+  sectionMeta: {
+    fontFamily: font.bold,
+    fontSize: 11,
+    color: color.slateFaint,
+  },
+
+  // ─── Today — stats as typography, hairline-divided ───
+  statRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
+    gap: space.lg,
+    marginBottom: space.lg,
   },
-  legendIcon: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    justifyContent: 'center',
-    alignItems: 'center',
+  stat: { flex: 1 },
+  statDivider: {
+    width: 1,
+    backgroundColor: '#ece9e2',
   },
-  legendLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 9,
-    color: '#94a3b8',
+  statValue: {
+    fontFamily: font.display,
+    fontSize: 28,
+    lineHeight: 28,
+    color: color.ink,
     letterSpacing: 0.5,
   },
-  legendValueRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 2,
-    marginBottom: 4,
-    flexWrap: 'wrap',
+  statUnit: {
+    fontSize: 13,
+    color: color.slateFaint,
   },
-  legendValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 20,
-    color: '#041015',
-    letterSpacing: -0.5,
+  statTarget: {
+    fontFamily: font.medium,
+    fontSize: 10.5,
+    color: color.slateMuted,
+    marginTop: 3,
+    marginBottom: 2,
   },
-  legendSub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 10,
-    color: '#94a3b8',
-    flexShrink: 1,
-  },
-
-  // Macros Row
-  macrosRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  macroCard: {
-    flex: 1,
+  macroLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-  },
-  macroLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    gap: 7,
+    marginBottom: space.xl,
   },
   macroDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
   },
-  macroLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 12,
-    color: '#64748b',
-  },
-  macroValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 16,
-    color: '#041015',
+  macroText: {
+    fontFamily: font.semibold,
+    fontSize: 11.5,
+    color: color.slateMuted,
+    marginRight: 7,
   },
 
-  // Treat Banner
-  inviteCard: {
+  // ─── Invite — quiet end-of-feed row ───
+  inviteRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#fffef5',
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#f5f1c2',
-    marginBottom: 16,
+    gap: space.md,
+    paddingVertical: space.lg,
+    borderTopWidth: 1,
+    borderTopColor: '#ece9e2',
+    marginTop: space.sm,
   },
   inviteIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFC00',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: color.yellow,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  inviteContent: {
-    flex: 1,
-  },
   inviteTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 15,
-    color: '#0f172a',
+    fontFamily: font.bold,
+    fontSize: 14,
+    color: color.ink,
   },
   inviteSub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
-    fontSize: 13,
-    color: '#64748b',
-    marginTop: 2,
+    fontFamily: font.regular,
+    fontSize: 12,
+    color: color.slateMuted,
+    marginTop: 1,
   },
   previewCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#07202A',
     borderRadius: 20,
     padding: 18,
     marginBottom: 20,
@@ -822,45 +773,45 @@ const styles = StyleSheet.create({
   previewIcon: {
     width: 44,
     height: 44,
-    borderRadius: 14,
-    backgroundColor: '#FFFC00',
+    borderRadius: 12,
+    backgroundColor: '#F7F602',
     alignItems: 'center',
     justifyContent: 'center',
   },
   previewTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 15,
     color: '#FFFFFF',
     marginBottom: 2,
   },
   previewSub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
+    fontFamily: 'Montserrat_500Medium',
     fontSize: 12,
     color: '#94a3b8',
     lineHeight: 17,
   },
+  // ─── Treats — quiet ledger strip; red only when earned ───
   treatBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    marginBottom: 16,
+    gap: space.md,
+    paddingVertical: space.md,
+    paddingHorizontal: 2,
+    borderTopWidth: 1,
+    borderTopColor: '#ece9e2',
+    marginBottom: space.lg,
   },
   treatBannerWarning: {
-    borderColor: '#fca5a5',
-    backgroundColor: '#fef2f2',
+    backgroundColor: color.errorSoft,
+    borderTopWidth: 0,
+    borderRadius: radius.lg,
+    paddingHorizontal: space.lg,
   },
   treatIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f3f4f6',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: color.track,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -868,42 +819,38 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   treatTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 14,
-    color: '#16a34a',
+    fontFamily: font.bold,
+    fontSize: 13.5,
+    color: color.ink,
   },
   treatTitleWarning: {
-    color: '#ef4444',
+    color: color.error,
   },
   treatSubtitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 12,
-    color: '#15803d',
-    marginTop: 2,
+    fontFamily: font.medium,
+    fontSize: 11.5,
+    color: color.slateMuted,
+    marginTop: 1,
   },
   treatSubtitleWarning: {
-    color: '#ef4444',
+    color: color.error,
   },
 
-  // Streak Nudge
+  // ─── Streak nudge — soft, calm prompt ───
   streakNudge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: space.md,
     backgroundColor: '#fef3c7',
-    borderRadius: 18,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#fde68a',
-    marginBottom: 16,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    marginBottom: space.lg,
   },
   streakNudgeIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#fac129',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(146, 64, 14, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -911,266 +858,145 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   streakNudgeTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 14,
+    fontFamily: font.bold,
+    fontSize: 13.5,
     color: '#92400e',
   },
   streakNudgeSubtitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
-    fontSize: 12,
+    fontFamily: font.medium,
+    fontSize: 11.5,
     color: '#b45309',
-    marginTop: 2,
+    marginTop: 1,
   },
 
-  // Suggested Activity
-  suggestedCard: {
-    borderRadius: 22,
-    overflow: 'hidden',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
-    elevation: 8,
+  // ─── Up next — the dark navy moment ───
+  upNext: {
+    backgroundColor: color.navy,
+    borderRadius: 28,
+    padding: space.xxl,
+    marginBottom: space.xl,
+    ...shadow.raised,
   },
-  suggestedGradient: {
-    padding: 20,
-  },
-  suggestedTop: {
+  upNextHead: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: space.lg,
   },
-  suggestedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(250,193,41,0.12)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
+  upNextEyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 2.4,
+    color: color.yellow,
   },
-  suggestedBadgeText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 9,
-    letterSpacing: 1,
-    color: '#fac129',
-  },
-  suggestedTime: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+  upNextTime: {
+    fontFamily: font.bold,
     fontSize: 12,
-    color: '#94a3b8',
+    color: color.creamDim,
   },
-  suggestedBody: {
+  upNextBody: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: space.lg,
   },
-  suggestedIconBg: {
-    width: 50,
-    height: 50,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,252,0,0.12)',
+  upNextIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.lg,
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  suggestedTextContainer: {
-    flex: 1,
-  },
-  suggestedTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
+  upNextText: { flex: 1, minWidth: 0 },
+  upNextTitle: {
+    fontFamily: font.bold,
     fontSize: 16,
-    color: '#FFFFFF',
-    marginBottom: 6,
+    color: color.cream,
+    letterSpacing: -0.2,
   },
-  suggestedMeta: {
-    flexDirection: 'row',
-    gap: 14,
+  upNextMeta: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.creamDim,
+    marginTop: 4,
   },
-  suggestedMetaItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  suggestedMetaText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 11,
-    color: '#94a3b8',
-  },
-  suggestedPlayBtn: {
+  upNextPlay: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#FFFC00',
+    backgroundColor: color.yellow,
     justifyContent: 'center',
     alignItems: 'center',
   },
 
-  // Primary CTA
-  primaryBtn: {
-    borderRadius: 32,
-    overflow: 'hidden',
-    marginBottom: 28,
-    shadowColor: '#FFFC00',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 6,
-  },
-  primaryBtnGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 18,
-    gap: 10,
-  },
-  primaryBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 17,
-    color: '#1A1A1A',
-  },
-
-  // Meals Section
-  mealsSection: {
-    marginBottom: 20,
-  },
-  mealsHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  mealsTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 20,
-    color: '#041015',
-  },
-  mealsCount: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 12,
-    color: '#94a3b8',
-  },
+  // ─── Meals — editorial rows ───
   emptyMeals: {
     alignItems: 'center',
-    paddingVertical: 36,
-    backgroundColor: '#f9fafb',
-    borderRadius: 18,
-    gap: 10,
+    paddingVertical: space.xxl,
+    gap: 8,
+    marginBottom: space.lg,
   },
   emptyMealsText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 13,
-    color: '#9ca3af',
+    fontFamily: font.regular,
+    fontSize: 12.5,
+    color: color.slateFaint,
     textAlign: 'center',
   },
-  mealCard: {
+  mealRow: {
     flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    overflow: 'hidden',
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-  },
-  mealImageContainer: {
-    width: '22%',
-    aspectRatio: 1,
-    backgroundColor: '#f3f4f6',
-  },
-  mealImage: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  mealImagePlaceholder: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
+    gap: space.md,
+    paddingVertical: space.md,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ece9e2',
   },
-  mealPill: {
-    backgroundColor: '#FFFC00',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginLeft: 8,
+  mealRowLast: { borderBottomWidth: 0 },
+  mealThumb: {
+    width: 54,
+    height: 54,
+    borderRadius: radius.md,
+    backgroundColor: color.track,
   },
-  mealPillText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 10,
-    color: '#041015',
-    textTransform: 'uppercase',
-    letterSpacing: -0.2,
-  },
-  mealContent: {
-    flex: 1,
-    padding: 14,
+  mealThumbEmpty: {
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  mealHeaderRow: {
+  mealInfo: { flex: 1, minWidth: 0 },
+  mealTitleRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 4,
+    alignItems: 'center',
+    gap: 8,
   },
   mealTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 15,
-    color: '#041015',
-    flex: 1,
-    marginRight: 8,
+    fontFamily: font.bold,
+    fontSize: 14,
+    color: color.ink,
+    flexShrink: 1,
   },
-  mealTime: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+  treatChip: {
+    backgroundColor: color.yellowSoft,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  treatChipText: {
+    fontFamily: font.bold,
+    fontSize: 8.5,
+    letterSpacing: 0.8,
+    color: color.navy,
+  },
+  mealMeta: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.slate,
+    marginTop: 2,
+  },
+  mealMacroLine: {
+    fontFamily: font.regular,
     fontSize: 11,
-    color: '#94a3b8',
-    marginRight: 8,
-  },
-  mealDesc: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 13,
-    color: '#64748b',
-    marginBottom: 8,
-  },
-  mealMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  mealMacros: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  mealMacroPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#f9fafb',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 10,
-  },
-  mealMacroDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  mealMacroText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 10,
-    color: '#64748b',
+    color: color.slateFaint,
+    marginTop: 2,
   },
 });

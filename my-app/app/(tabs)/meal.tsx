@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { color, font, radius, shadow, space } from '../../constants/design';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
@@ -63,6 +64,9 @@ export default function MealScreen() {
   const { pawCoins, awardCoins } = useStreakStore();
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
+  // Subscribe to today's calorie state so the canopy reflects updates live.
+  // Must be at top of the component — never after a conditional return.
+  const consumedToday = usePetContextStore((s) => s.todayCalories) ?? 0;
 
   const checkAccess = () => {
     if (!hasFullAccess) {
@@ -1116,9 +1120,12 @@ export default function MealScreen() {
         });
       }
 
-      // Update context store with new calorie total
+      // Update context store with new calorie total. updateCalories keeps the
+      // headline number instant; invalidateContext forces the next Home focus to
+      // refetch the scans list + macros (which aren't updated optimistically).
       const newCalTotal = (existingLog?.calories_consumed || 0) + totalCalories;
       usePetContextStore.getState().updateCalories(newCalTotal);
+      usePetContextStore.getState().invalidateContext();
 
       // Award coins for food log (before clearing state)
       if (user?.id) {
@@ -1150,377 +1157,419 @@ export default function MealScreen() {
     const displayCalories = Math.round(scanResult.calories_per_serving * servingCount);
     const ingredientsList = scanResult.ingredients ?? scanResult.ingredients_of_concern ?? [];
 
+    // Pre-compute budget values so the JSX stays clean
+    const ctxStore = usePetContextStore.getState();
+    const budgetTarget = activePet?.target_daily_calories ?? 0;
+    const consumed = ctxStore.todayCalories ?? 0;
+    const afterMeal = budgetTarget - consumed - displayCalories;
+    const pctUsed = budgetTarget > 0 ? Math.round((consumed / budgetTarget) * 100) : 0;
+    const mealPct = budgetTarget > 0 ? Math.round((displayCalories / budgetTarget) * 100) : 0;
+
     return (
-      <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-        {/* Scan Result Top Bar */}
-        <View style={[styles.srHeader, { paddingTop: insets.top + 12 }]}>
-          <View style={styles.srHeaderLeft}>
-            <TouchableOpacity style={styles.srBackBtn} onPress={() => { setScanResult(null); }} activeOpacity={0.7}>
-              <MaterialIcons name="arrow-back" size={24} color="#041015" />
-            </TouchableOpacity>
-            <Text style={styles.srHeaderTitle}>Scan Result</Text>
-          </View>
-          <TouchableOpacity activeOpacity={0.7}>
-            <MaterialIcons name="more-horiz" size={24} color="#041015" />
+      <View style={styles.srRoot}>
+        {/* ─── Top bar — quiet back ─── */}
+        <View style={[styles.srTopBar, { paddingTop: insets.top + space.md }]}>
+          <TouchableOpacity onPress={() => setScanResult(null)} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <MaterialIcons name="arrow-back" size={22} color={color.ink} />
           </TouchableOpacity>
+          <Text style={styles.srEyebrow}>SCAN RESULT</Text>
+          <View style={{ width: 22 }} />
         </View>
 
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.srScrollContent} showsVerticalScrollIndicator={false}>
-          {/* Hero Image */}
-          <View style={styles.srHeroContainer}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={[styles.srScroll, { paddingBottom: 120 }]}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* ─── Hero — full-bleed image, no decorative chrome ─── */}
+          <View style={styles.srHero}>
             {capturedImage ? (
-              <Image source={{ uri: capturedImage }} style={styles.srHeroImage} />
+              <Image source={{ uri: capturedImage }} style={styles.srHeroImg} />
             ) : (
-              <View style={[styles.srHeroImage, { backgroundColor: '#e5e7eb', justifyContent: 'center', alignItems: 'center' }]}>
-                <MaterialIcons name="restaurant" size={64} color="#94a3b8" />
+              <View style={[styles.srHeroImg, styles.srHeroFallback]}>
+                <MaterialIcons name="restaurant" size={56} color={color.slateFaint} />
               </View>
             )}
-            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.4)']} style={styles.srHeroGradient} />
-            <View style={styles.srNutritionBadge}>
-              <MaterialIcons name="eco" size={14} color="#FFFFFF" />
-              <Text style={styles.srNutritionBadgeText}>Nutrition</Text>
-            </View>
           </View>
 
-          {/* Result Card */}
-          <View style={styles.srResultCard}>
-            <View style={styles.srAccentLine} />
-            <View style={styles.srFoodHeader}>
-              <Text style={styles.srFoodName}>{scanResult.food_name}</Text>
-            </View>
+          <Animated.View entering={FadeInDown.duration(420)} style={{ paddingHorizontal: space.xxl }}>
+            {/* Food name — display weight */}
+            <Text style={styles.srFoodName} numberOfLines={3}>{scanResult.food_name}</Text>
 
-            {/* Serving Count Adjuster */}
-            <View style={styles.srServingRow}>
+            {/* Allergy strip — only when triggered */}
+            {scanResult.is_allergy_trigger && scanResult.allergy_warnings?.length > 0 && (
+              <View style={styles.srAllergyStrip}>
+                <MaterialIcons name="warning" size={18} color={color.error} />
+                <Text style={styles.srAllergyText}>{scanResult.allergy_warnings.join('. ')}</Text>
+              </View>
+            )}
+
+            {/* ─── Portion ─── */}
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>PORTION</Text>
+              <View style={styles.sectionRule} />
+            </View>
+            <View style={styles.portionRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.srServingLabel}>Portion</Text>
+                <Text style={styles.portionValue}>
+                  {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(1)}
+                  <Text style={styles.portionUnit}> serving{servingCount !== 1 ? 's' : ''}</Text>
+                </Text>
                 {scanResult.serving_size && (
-                  <Text style={[styles.srServingHint, { marginTop: 2 }]} numberOfLines={1}>
+                  <Text style={styles.portionHint} numberOfLines={1}>
                     1 serving = {scanResult.serving_size}
                   </Text>
                 )}
+                {servingCount !== 1 && (
+                  <Text style={styles.portionHint} numberOfLines={1}>
+                    {scanResult.calories_per_serving} × {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(1)} = {displayCalories} kcal
+                  </Text>
+                )}
               </View>
-              <View style={styles.srServingStepper}>
+              <View style={styles.stepper}>
                 <TouchableOpacity
-                  style={[styles.srServingBtn, servingCount <= 0.5 && { opacity: 0.3 }]}
+                  style={[styles.stepperBtn, servingCount <= 0.5 && { opacity: 0.3 }]}
                   onPress={() => setServingCount(Math.max(0.5, servingCount - 0.5))}
                   disabled={servingCount <= 0.5}
                   activeOpacity={0.7}
                 >
-                  <MaterialIcons name="remove" size={18} color="#041015" />
+                  <MaterialIcons name="remove" size={18} color={color.navy} />
                 </TouchableOpacity>
-                <Text style={styles.srServingValue}>{servingCount % 1 === 0 ? servingCount : servingCount.toFixed(1)}</Text>
                 <TouchableOpacity
-                  style={styles.srServingBtn}
+                  style={styles.stepperBtn}
                   onPress={() => setServingCount(servingCount + 0.5)}
                   activeOpacity={0.7}
                 >
-                  <MaterialIcons name="add" size={18} color="#041015" />
+                  <MaterialIcons name="add" size={18} color={color.navy} />
                 </TouchableOpacity>
               </View>
             </View>
-            {servingCount !== 1 && (
-              <Text style={styles.srServingHint}>
-                {scanResult.calories_per_serving} kcal/serving × {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(1)} = {displayCalories} kcal total
-              </Text>
-            )}
 
-            {/* Health Score */}
-            <View style={styles.srHealthScoreCard}>
-              <View style={styles.srHealthScoreHeader}>
-                <Text style={styles.srHealthScoreLabel}>Health Score</Text>
-                <Text style={styles.srHealthScoreValue}>{healthScore}/10</Text>
+            {/* ─── Verdict — the deliberate dark moment ─── */}
+            <View style={styles.verdict}>
+              <View style={styles.verdictHead}>
+                <Text style={styles.verdictEyebrow}>PAWTCHI&apos;S VERDICT</Text>
+                <View style={styles.verdictScoreChip}>
+                  <Text style={styles.verdictScoreNum}>{healthScore}</Text>
+                  <Text style={styles.verdictScoreOf}>/10</Text>
+                </View>
               </View>
-              <View style={styles.srProgressBarBg}>
-                <View style={[styles.srProgressBarFill, { width: `${healthScore * 10}%` }]} />
+              <View style={styles.verdictBarTrack}>
+                <View style={[styles.verdictBarFill, { width: `${healthScore * 10}%` }]} />
               </View>
-              <Text style={styles.srHealthScoreDesc}>
-                {scanResult.verdict ?? scanResult.recommendation}
-              </Text>
+              {(scanResult.verdict || scanResult.recommendation) && (
+                <View style={styles.verdictBodyRow}>
+                  <View style={styles.verdictQuoteBar} />
+                  <Text style={styles.verdictBody}>
+                    {scanResult.verdict ?? scanResult.recommendation}
+                  </Text>
+                </View>
+              )}
             </View>
 
-            {/* Daily Budget Card — connects this meal to the pet's weight journey */}
-            {(() => {
-              const ctxStore = usePetContextStore.getState();
-              const budgetTarget = activePet?.target_daily_calories ?? 0;
-              const consumed = ctxStore.todayCalories ?? 0;
-              const remaining = budgetTarget - consumed;
-              const afterMeal = remaining - displayCalories;
-              const pctUsed = budgetTarget > 0 ? Math.round((consumed / budgetTarget) * 100) : 0;
-              const mealPct = budgetTarget > 0 ? Math.round((displayCalories / budgetTarget) * 100) : 0;
-              const currentW = activePet?.current_weight_kg ?? 0;
-              const targetW = activePet?.target_weight_kg ?? null;
-              const wGap = targetW ? Math.abs(currentW - targetW) : 0;
-              const wGoal = targetW && targetW < currentW - 0.5 ? 'lose' : targetW && targetW > currentW + 0.5 ? 'gain' : 'maintain';
-              const trendDir = ctxStore.weightTrend?.direction ?? null;
-              const trendArrow = trendDir === 'down' ? '↘' : trendDir === 'up' ? '↗' : '→';
+            {/* ─── Nutrition — typography stat strip, no boxes ─── */}
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>NUTRITION</Text>
+              <View style={styles.sectionRule} />
+            </View>
+            <View style={styles.nutrRow}>
+              <View style={styles.nutrCell}>
+                <Text style={styles.nutrValue}>{displayCalories}</Text>
+                <Text style={styles.nutrLabel}>kcal</Text>
+              </View>
+              <View style={styles.nutrDivider} />
+              <View style={styles.nutrCell}>
+                <Text style={styles.nutrValue}>{proteinG}<Text style={styles.nutrUnit}>g</Text></Text>
+                <Text style={styles.nutrLabel}>protein</Text>
+              </View>
+              <View style={styles.nutrDivider} />
+              <View style={styles.nutrCell}>
+                <Text style={styles.nutrValue}>{carbsG}<Text style={styles.nutrUnit}>g</Text></Text>
+                <Text style={styles.nutrLabel}>carbs</Text>
+              </View>
+              <View style={styles.nutrDivider} />
+              <View style={styles.nutrCell}>
+                <Text style={styles.nutrValue}>{fatG}<Text style={styles.nutrUnit}>g</Text></Text>
+                <Text style={styles.nutrLabel}>fats</Text>
+              </View>
+            </View>
 
-              if (budgetTarget <= 0) return null;
-
-              return (
-                <View style={styles.srBudgetCard}>
-                  <View style={styles.srBudgetHeader}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <MaterialIcons name="pie-chart" size={16} color="rgba(255,255,255,0.7)" />
-                      <Text style={styles.srBudgetTitle}>Daily Budget</Text>
-                    </View>
-                    <Text style={styles.srBudgetPct}>{pctUsed}%</Text>
-                  </View>
-
-                  {/* Progress bar */}
-                  <View style={styles.srBudgetBarBg}>
-                    <View style={[styles.srBudgetBarFill, {
-                      width: `${Math.min(pctUsed, 100)}%`,
-                      backgroundColor: pctUsed >= 100 ? '#ef4444' : pctUsed >= 80 ? '#f59e0b' : '#22c55e',
-                    }]} />
-                  </View>
-                  <Text style={styles.srBudgetConsumed}>
-                    {consumed} / {budgetTarget} kcal consumed today
+            {/* ─── Daily budget — editorial bar + ledger lines ─── */}
+            {budgetTarget > 0 && (
+              <>
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionLabel}>DAILY BUDGET</Text>
+                  <View style={styles.sectionRule} />
+                  <Text style={[styles.sectionMeta, { color: pctUsed >= 100 ? color.error : pctUsed >= 80 ? color.alert : color.success }]}>
+                    {pctUsed}% used
                   </Text>
-
-                  {/* This meal's impact */}
-                  <View style={styles.srBudgetDivider} />
-                  <View style={styles.srBudgetRow}>
-                    <Text style={styles.srBudgetRowLabel}>This meal</Text>
-                    <Text style={styles.srBudgetRowValue}>+{displayCalories} kcal ({mealPct}%)</Text>
+                </View>
+                <View style={styles.budgetTrack}>
+                  <View
+                    style={[
+                      styles.budgetFill,
+                      {
+                        width: `${Math.min(pctUsed, 100)}%`,
+                        backgroundColor: pctUsed >= 100 ? color.error : pctUsed >= 80 ? color.alert : color.success,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.budgetMeta}>{consumed} / {budgetTarget} kcal consumed today</Text>
+                <View style={styles.budgetLedger}>
+                  <View style={styles.budgetLedgerRow}>
+                    <Text style={styles.budgetLedgerLabel}>This meal</Text>
+                    <Text style={styles.budgetLedgerValue}>+{displayCalories} kcal · {mealPct}%</Text>
                   </View>
-                  <View style={styles.srBudgetRow}>
-                    <Text style={styles.srBudgetRowLabel}>After logging</Text>
-                    <Text style={[styles.srBudgetRowValue, afterMeal < 0 && { color: '#ef4444' }]}>
-                      {afterMeal >= 0 ? `${afterMeal} kcal remaining` : `${Math.abs(afterMeal)} kcal over`}
+                  <View style={styles.budgetLedgerRow}>
+                    <Text style={styles.budgetLedgerLabel}>After logging</Text>
+                    <Text style={[styles.budgetLedgerValue, afterMeal < 0 && { color: color.error }]}>
+                      {afterMeal >= 0 ? `${afterMeal} kcal left` : `${Math.abs(afterMeal)} kcal over`}
                     </Text>
                   </View>
-
-                  {/* Weight goal context */}
-                  {wGoal !== 'maintain' && wGap > 0 && (
-                    <View style={styles.srBudgetWeightRow}>
-                      <MaterialIcons name="fitness-center" size={14} color="rgba(255,255,255,0.5)" />
-                      <Text style={styles.srBudgetWeightText}>
-                        {activePet?.name} needs to {wGoal} {wGap.toFixed(1)} kg {trendDir ? `${trendArrow} ${trendDir === 'down' && wGoal === 'lose' ? 'on track' : trendDir === 'up' && wGoal === 'lose' ? 'needs attention' : ''}` : ''}
-                      </Text>
-                    </View>
-                  )}
                 </View>
-              );
-            })()}
-
-            {/* Allergy Warnings */}
-            {scanResult.is_allergy_trigger && scanResult.allergy_warnings?.length > 0 && (
-              <View style={styles.warningCard}>
-                <MaterialIcons name="error" size={20} color="#dc2626" />
-                <Text style={styles.warningText}>{scanResult.allergy_warnings.join('. ')}</Text>
-              </View>
+              </>
             )}
 
-            {/* Nutrition Grid */}
-            <View style={styles.srNutritionGrid}>
-              <View style={styles.srNutritionItem}>
-                <MaterialIcons name="local-fire-department" size={28} color="#FFFC00" />
-                <Text style={styles.srNutritionValue}>{displayCalories}</Text>
-                <Text style={styles.srNutritionLabel}>Calories</Text>
-              </View>
-              <View style={styles.srNutritionItem}>
-                <MaterialIcons name="egg-alt" size={28} color="#FFFC00" />
-                <Text style={styles.srNutritionValue}>{proteinG}g</Text>
-                <Text style={styles.srNutritionLabel}>Protein</Text>
-              </View>
-              <View style={styles.srNutritionItem}>
-                <MaterialIcons name="grass" size={28} color="#FFFC00" />
-                <Text style={styles.srNutritionValue}>{carbsG}g</Text>
-                <Text style={styles.srNutritionLabel}>Carbs</Text>
-              </View>
-              <View style={styles.srNutritionItem}>
-                <MaterialIcons name="opacity" size={28} color="#FFFC00" />
-                <Text style={styles.srNutritionValue}>{fatG}g</Text>
-                <Text style={styles.srNutritionLabel}>Fats</Text>
-              </View>
-            </View>
-
-            {/* Nutrition Reference (AAFCO + clinical adjustments) — same panel
-                as Scan Details, computed at scan time so preview and history match */}
+            {/* ─── Nutrition reference (external panel) ─── */}
             {scanResult.food_analysis && (
-              <NutritionReferencePanel
-                foodAnalysis={scanResult.food_analysis}
-                mealKcalOverride={displayCalories}
-              />
+              <View style={{ marginTop: space.xxl }}>
+                <NutritionReferencePanel
+                  foodAnalysis={scanResult.food_analysis}
+                  mealKcalOverride={displayCalories}
+                />
+              </View>
             )}
 
-            {/* Ingredients */}
+            {/* ─── Ingredients — quiet chip row ─── */}
             {ingredientsList.length > 0 && (
-              <View style={styles.srIngredientsSection}>
-                <Text style={styles.srIngredientsTitle}>Ingredients</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.srIngredientsScroll}>
+              <>
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionLabel}>INGREDIENTS</Text>
+                  <View style={styles.sectionRule} />
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.ingChipRow}
+                >
                   {ingredientsList.map((item, idx) => (
-                    <View key={idx} style={styles.srIngredientChip}>
-                      <Text style={styles.srIngredientText}>{item}</Text>
+                    <View key={idx} style={styles.ingChip}>
+                      <Text style={styles.ingChipText}>{item}</Text>
                     </View>
                   ))}
                 </ScrollView>
-              </View>
+              </>
             )}
 
-            {/* Confidence */}
-            <View style={styles.srConfidenceRow}>
-              <Text style={styles.srConfidenceLabel}>AI Confidence:</Text>
-              <Text style={[styles.srConfidenceValue, { color: scanResult.confidence > 0.7 ? '#4ade80' : '#fbbf24' }]}>
+            {/* Confidence — quiet end-of-content note */}
+            <View style={styles.confidenceRow}>
+              <Text style={styles.confidenceLabel}>Scan confidence</Text>
+              <Text style={[styles.confidenceValue, { color: scanResult.confidence > 0.7 ? color.success : color.alert }]}>
                 {Math.round(scanResult.confidence * 100)}%
               </Text>
             </View>
-          </View>
-
-          {/* Add to Bowl — at end of scrollable content */}
-          <View style={styles.srBottomBar}>
-            <PawtchiButton
-              title={hasLogged ? 'Added to Bowl' : 'Add to Bowl'}
-              variant="primary"
-              loading={isLogging}
-              disabled={hasLogged || isLogging || isPendingConfirm}
-              onPress={() => {
-                if (!hasLogged && !isLogging && !isPendingConfirm) {
-                  confirmLog();
-                }
-              }}
-            />
-          </View>
+          </Animated.View>
         </ScrollView>
+
+        {/* ─── Sticky Add to Bowl — plinth lifts off the sheet ─── */}
+        <View style={styles.srSticky}>
+          <PawtchiButton
+            title={hasLogged ? 'Added to bowl' : 'Add to bowl'}
+            variant="primary"
+            size="large"
+            iconName={hasLogged ? 'check' : 'add'}
+            loading={isLogging}
+            disabled={hasLogged || isLogging || isPendingConfirm}
+            onPress={() => {
+              if (!hasLogged && !isLogging && !isPendingConfirm) {
+                confirmLog();
+              }
+            }}
+          />
+        </View>
       </View>
     );
   }
 
-  return (
-    <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
+  // ─── Weight context line for the canopy (calm phrasing, no red card) ───
+  const weightContextLine = (() => {
+    if (!activePet) return null;
+    const targetW = activePet.target_weight_kg || activePet.current_weight_kg || 0;
+    const currentW = activePet.current_weight_kg || 0;
+    const gap = currentW - targetW;
+    if (gap > 0.5) return `${activePet.name} is ${gap.toFixed(1)} kg above their ${targetW} kg target — keep portions steady.`;
+    if (gap < -0.5) return `${activePet.name} is ${Math.abs(gap).toFixed(1)} kg below their ${targetW} kg goal.`;
+    return null;
+  })();
 
-      {/* Top Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.headerTitle}>Food Scanner</Text>
+  // Today's consumed / target for the canopy hero number
+  // (consumedToday subscribed at the top — keeps hooks order stable across renders)
+  const dailyTarget = activePet?.target_daily_calories ?? 0;
+  const pctToday = dailyTarget > 0 ? Math.min(100, Math.round((consumedToday / dailyTarget) * 100)) : 0;
+
+  // Calorie context for the status strip
+  const remaining = dailyTarget - consumedToday;
+  const overBudget = remaining < 0;
+
+  return (
+    <View style={styles.scRoot}>
+      {/* ════ STATUS STRIP — slim yellow band, no longer the hero ════ */}
+      <View style={[styles.statusStrip, { paddingTop: insets.top + 10 }]}>
+        <View style={styles.statusRow}>
+          <View style={styles.statusLeft}>
+            <Text style={styles.statusEyebrow}>MEAL</Text>
+            <Text style={styles.statusValue} numberOfLines={1}>
+              {dailyTarget > 0
+                ? overBudget
+                  ? `${Math.abs(remaining)} kcal over today`
+                  : `${remaining} kcal left today`
+                : 'Scan a food label'}
+            </Text>
+          </View>
+          <View style={styles.coinChip}>
+            <View style={styles.coinDot} />
+            <Text style={styles.coinChipText}>{pawCoins.toLocaleString()}</Text>
+          </View>
         </View>
-        <View style={[styles.coinPill, { backgroundColor: '#f9fafb', borderColor: '#e5e7eb' }]}>
-          <MaterialIcons name="generating-tokens" size={18} color="#755700" />
-          <Text style={styles.coinText}>{pawCoins.toLocaleString()}</Text>
-        </View>
+        {dailyTarget > 0 && (
+          <View style={styles.statusTrack}>
+            <View style={[styles.statusFill, { width: `${pctToday}%` }]} />
+          </View>
+        )}
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Weight context — calm inline row, only when off-target */}
+        {weightContextLine && (
+          <Animated.View entering={FadeInDown.duration(420)} style={styles.weightNote}>
+            <MaterialIcons name="info-outline" size={14} color={color.slateMuted} />
+            <Text style={styles.weightNoteText} numberOfLines={2}>{weightContextLine}</Text>
+          </Animated.View>
+        )}
 
-        {/* Psychological Weight Goal Nudge */}
-        {(() => {
-          if (!activePet) return null;
-          const targetW = activePet.target_weight_kg || activePet.current_weight_kg || 10;
-          const currentW = activePet.current_weight_kg || 10;
-          const gap = currentW - targetW;
-
-          if (gap > 0.5) {
-            return (
-              <View style={[styles.warningCard, { marginHorizontal: 24, marginBottom: 16, marginTop: 8 }]}>
-                <MaterialIcons name="monitor-weight" size={20} color="#dc2626" />
-                <Text style={styles.warningText}>
-                  {activePet.name} is {gap.toFixed(1)}kg above their {targetW}kg target. Worth keeping portions steady.
-                </Text>
-              </View>
-            );
-          } else if (gap < -0.5) {
-            return (
-              <View style={[styles.warningCard, { marginHorizontal: 24, marginBottom: 16, marginTop: 8, backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }]}>
-                <MaterialIcons name="monitor-weight" size={20} color="#16a34a" />
-                <Text style={[styles.warningText, { color: '#14532d' }]}>
-                  {activePet.name} is {Math.abs(gap).toFixed(1)}kg below their {targetW}kg goal.
-                </Text>
-              </View>
-            );
-          }
-          return null;
-        })()}
-
-
-        {/* AI Scanner Viewport */}
-        <View style={[styles.scannerContainer, { backgroundColor: '#0f172a' }]}>
+        {/* ════ SCANNER HERO — the page's anchor ════ */}
+        <Animated.View entering={FadeInDown.duration(440).delay(40)} style={styles.scannerHero}>
           {capturedImage ? (
             <Image source={{ uri: capturedImage }} style={styles.scannerImg} />
           ) : (
             <View style={styles.scannerPlaceholder}>
-              <MaterialIcons name="photo-camera" size={64} color="rgba(255,255,255,0.3)" />
-              <Text style={styles.scannerPlaceholderText}>Tap below to scan a food label</Text>
+              {/* Faint frame ticks evoke a viewfinder */}
+              <View style={[styles.frameTick, styles.frameTickTL]} />
+              <View style={[styles.frameTick, styles.frameTickTR]} />
+              <View style={[styles.frameTick, styles.frameTickBL]} />
+              <View style={[styles.frameTick, styles.frameTickBR]} />
+              <View style={styles.scannerPhotoIcon}>
+                <MaterialIcons name="photo-camera" size={32} color={color.creamFaint} />
+              </View>
+              <Text style={styles.scannerPlaceholderTitle}>
+                Scan {activePet?.name || 'your pet'}&apos;s next meal
+              </Text>
+              <Text style={styles.scannerPlaceholderText}>
+                Pawtchi reads the label in seconds
+              </Text>
             </View>
           )}
 
-          {/* Scanner Action Buttons */}
-          <View style={[styles.scannerActions, { flexDirection: 'row', gap: 12, justifyContent: 'center', alignItems: 'center' }]}>
-            <PawtchiButton
-              title="Gallery"
-              iconName="photo-library"
-              variant="outline"
-              size="medium"
+          {/* Action dock — Gallery (ghost) + Camera (big yellow round) + Reset (ghost) */}
+          <View style={styles.scannerDock}>
+            <TouchableOpacity
+              style={styles.dockGhostBtn}
               onPress={() => pickImage(false)}
               disabled={isAnalyzing}
-              style={{ backgroundColor: 'rgba(255,255,255,0.15)', borderColor: 'transparent', flex: 1 }}
-              textStyle={{ color: '#FFFFFF' }}
-            />
-            <PawtchiButton
-              title="Camera"
-              iconName="photo-camera"
-              variant="primary"
-              size="large"
+              activeOpacity={0.85}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <MaterialIcons name="photo-library" size={20} color={color.cream} />
+              <Text style={styles.dockGhostText}>Gallery</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.dockShutter}
               onPress={() => pickImage(true)}
               disabled={isAnalyzing}
-              style={{ flex: 1 }}
-            />
-            <PawtchiButton
-              title="Reset"
-              iconName="refresh"
-              variant="outline"
-              size="medium"
+              activeOpacity={0.9}
+            >
+              <View style={styles.dockShutterInner}>
+                <MaterialIcons name="photo-camera" size={28} color={color.navy} />
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.dockGhostBtn}
               onPress={() => { setCapturedImage(null); setScanResult(null); }}
               disabled={isAnalyzing}
-              style={{ backgroundColor: 'rgba(255,255,255,0.15)', borderColor: 'transparent', flex: 1 }}
-              textStyle={{ color: '#FFFFFF' }}
-            />
+              activeOpacity={0.85}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <MaterialIcons name="refresh" size={20} color={color.cream} />
+              <Text style={styles.dockGhostText}>Reset</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Analyzing Full Overlay — blocks all interaction during AI processing */}
+          {/* Analysing overlay — navy "AI is working" state, yellow accent */}
           {isAnalyzing && (
             <View style={styles.analyzingOverlay} pointerEvents="box-only">
               <View style={styles.analyzingSpinnerRing}>
-                <ActivityIndicator size="large" color="#041015" />
+                <ActivityIndicator size="large" color={color.yellow} />
               </View>
-              <View style={styles.analyzingLabelBox}>
-                <MaterialIcons name="search" size={16} color="#041015" />
-                <Text style={styles.analyzingText}>{loadingMessage}</Text>
-              </View>
-              <Text style={styles.analyzingSubText}>Analysing your pet&apos;s food</Text>
+              <Text style={styles.analyzingText}>{loadingMessage}</Text>
+              <Text style={styles.analyzingSub}>Reading the label for {activePet?.name || 'your pet'}</Text>
             </View>
           )}
-        </View>
+        </Animated.View>
 
-        {/* Context Zone: Pantry Nudge OR Pills */}
-        <View style={styles.contextZone}>
-          {foodPantry.length === 0 && showPantryNudge && activePet ? (
-            <EmptyPantryNudge
-              petId={activePet.id}
-              petName={activePet.name}
-              petAvatarUrl={(activePet as any).current_avatar_url}
-              onUpdatePantry={() => router.push('/(tabs)/profile')}
-              onDismiss={() => setShowPantryNudge(false)}
-            />
-          ) : (
-            foodPantry.length > 0 && (
-              <PantryPillSelector
+        {/* Below: editorial sections continue on the warm sheet */}
+        <View style={styles.sheet}>
+
+          {/* ─── Pantry context ─── */}
+          <Animated.View entering={FadeInDown.duration(420).delay(100)}>
+            {foodPantry.length === 0 && showPantryNudge && activePet ? (
+              <View style={{ marginTop: space.xl }}>
+                <EmptyPantryNudge
+                  petId={activePet.id}
+                  petName={activePet.name}
+                  petAvatarUrl={(activePet as any).current_avatar_url}
+                  onUpdatePantry={() => router.push('/(tabs)/profile')}
+                  onDismiss={() => setShowPantryNudge(false)}
+                />
+              </View>
+            ) : (
+              foodPantry.length > 0 && (
+                <>
+                  <View style={styles.sectionHead}>
+                    <Text style={styles.sectionLabel}>PANTRY</Text>
+                    <View style={styles.sectionRule} />
+                  </View>
+                  <PantryPillSelector
+                    pantryItems={foodPantry}
+                    selectedId={selectedPantryId}
+                    onSelect={setSelectedPantryId}
+                    onAddNew={() => router.push('/(tabs)/profile')}
+                  />
+                </>
+              )
+            )}
+          </Animated.View>
+
+          {/* ─── Quick log ─── */}
+          {foodPantry.length > 0 && (
+            <Animated.View entering={FadeInDown.duration(420).delay(160)}>
+              <View style={styles.sectionHead}>
+                <Text style={styles.sectionLabel}>QUICK LOG</Text>
+                <View style={styles.sectionRule} />
+              </View>
+              <QuickLogRail
                 pantryItems={foodPantry}
-                selectedId={selectedPantryId}
-                onSelect={setSelectedPantryId}
-                onAddNew={() => router.push('/(tabs)/profile')}
+                onLog={handleQuickLog}
+                isBusy={isAnalyzing || isLogging}
               />
-            )
+            </Animated.View>
           )}
         </View>
-
-        {/* Quick Log — replaces "Recent Scans". Tap a chip to land on the same
-            result screen as a scan, pre-populated from pantry data. */}
-        <QuickLogRail
-          pantryItems={foodPantry}
-          onLog={handleQuickLog}
-          isBusy={isAnalyzing || isLogging}
-        />
-
       </ScrollView>
       {/* CoinToast appears automatically via useStreakStore when coins are awarded */}
     </View>
@@ -1528,723 +1577,559 @@ export default function MealScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: {
+  // ════ Default scanner screen ════
+  scRoot: { flex: 1, backgroundColor: color.surfaceSubtle },
+  scScrollContent: { flexGrow: 1, paddingBottom: 120 },
+
+  // ─── Status strip: slim yellow band, no longer the hero ───
+  statusStrip: {
+    backgroundColor: color.yellow,
+    paddingHorizontal: space.xxl,
+    paddingBottom: 0,
+  },
+  statusRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingBottom: 16,
-    backgroundColor: '#FFFFFF',
-    zIndex: 50,
+    paddingBottom: space.md,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  statusLeft: { flex: 1, minWidth: 0 },
+  statusEyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 10,
+    letterSpacing: 2.4,
+    color: 'rgba(7, 32, 42, 0.62)',
+    marginBottom: 2,
   },
-  headerTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 28,
-    letterSpacing: -0.5,
-    color: '#2e2f2d',
-  },
-  coinPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  coinText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 14,
-    color: '#2e2f2d',
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 100,
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  searchIcon: {
-    position: 'absolute',
-    left: 20,
-    zIndex: 10,
-  },
-  searchInput: {
-    flex: 1,
-    height: 56,
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingLeft: 56,
-    paddingRight: 24,
-    fontFamily: 'Plus Jakarta Sans',
+  statusValue: {
+    fontFamily: font.bold,
     fontSize: 16,
+    color: color.navy,
+    letterSpacing: -0.2,
   },
-  scannerContainer: {
-    width: '100%',
-    minHeight: 280,
-    borderRadius: 24,
+  coinChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(7, 32, 42, 0.18)',
+    borderRadius: radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginLeft: space.md,
+  },
+  coinDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: color.navy,
+  },
+  coinChipText: {
+    fontFamily: font.bold,
+    fontSize: 11.5,
+    color: color.navy,
+  },
+  // Thin progress sits flush at the strip's bottom edge — reads as a system bar
+  statusTrack: {
+    height: 3,
+    backgroundColor: 'rgba(7, 32, 42, 0.14)',
     overflow: 'hidden',
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
-    elevation: 8,
+  },
+  statusFill: {
+    height: 3,
+    backgroundColor: color.navy,
+  },
+
+  // ─── Weight nudge — calm inline row above the scanner ───
+  weightNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginHorizontal: space.xxl,
+    marginTop: space.lg,
+  },
+  weightNoteText: {
+    flex: 1,
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slate,
+    lineHeight: 17,
+  },
+
+  // ─── Scanner hero — the page's anchor ───
+  scannerHero: {
+    backgroundColor: color.navy,
+    borderRadius: 32,
+    overflow: 'hidden',
+    marginHorizontal: space.xxl,
+    marginTop: space.lg,
+    ...shadow.raised,
   },
   scannerImg: {
     width: '100%',
-    height: 280,
+    aspectRatio: 1,
   },
   scannerPlaceholder: {
     width: '100%',
-    height: 280,
+    aspectRatio: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 16,
+    paddingHorizontal: space.xxl,
+    position: 'relative',
   },
-  contextZone: {
-    marginBottom: 24,
-    marginTop: 8,
+  // Four corner ticks evoke a viewfinder frame
+  frameTick: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderColor: 'rgba(244, 241, 236, 0.32)',
+  },
+  frameTickTL: { top: 18, left: 18, borderTopWidth: 1.5, borderLeftWidth: 1.5, borderTopLeftRadius: 4 },
+  frameTickTR: { top: 18, right: 18, borderTopWidth: 1.5, borderRightWidth: 1.5, borderTopRightRadius: 4 },
+  frameTickBL: { bottom: 18, left: 18, borderBottomWidth: 1.5, borderLeftWidth: 1.5, borderBottomLeftRadius: 4 },
+  frameTickBR: { bottom: 18, right: 18, borderBottomWidth: 1.5, borderRightWidth: 1.5, borderBottomRightRadius: 4 },
+  scannerPhotoIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.lg,
+  },
+  scannerPlaceholderTitle: {
+    fontFamily: font.bold,
+    fontSize: 17,
+    color: color.cream,
+    letterSpacing: -0.2,
+    textAlign: 'center',
+    marginBottom: 4,
   },
   scannerPlaceholderText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.4)',
+    fontFamily: font.regular,
+    fontSize: 13,
+    color: color.creamDim,
+    textAlign: 'center',
   },
+
+  // Camera-app style action dock — gallery + big shutter + reset
+  scannerDock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    backgroundColor: color.navyRaised,
+    borderTopWidth: 1,
+    borderTopColor: color.hairlineOnNavy,
+    paddingVertical: space.lg,
+    paddingHorizontal: space.xxl,
+  },
+  dockGhostBtn: {
+    alignItems: 'center',
+    gap: 4,
+    width: 64,
+  },
+  dockGhostText: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 0.8,
+    color: color.creamDim,
+  },
+  dockShutter: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: color.yellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 4,
+    borderColor: color.navy,
+    // Camera-shutter halo
+    shadowColor: color.yellow,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  dockShutterInner: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: color.yellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // ─── Sheet wrapper for PANTRY / QUICK LOG below the scanner ───
+  sheet: {
+    paddingHorizontal: space.xxl,
+    paddingTop: space.sm,
+    minHeight: 200,
+  },
+
   analyzingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#FFFC00',
+    backgroundColor: color.navy,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 20,
-    zIndex: 100,
-    borderRadius: 24,
+    gap: space.md,
+    paddingHorizontal: space.xxl,
   },
   analyzingSpinnerRing: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(4,16,21,0.1)',
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-  },
-  analyzingLabelBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    marginBottom: space.sm,
   },
   analyzingText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
+    fontFamily: font.bold,
     fontSize: 14,
-    letterSpacing: 1.5,
-    color: '#041015',
+    letterSpacing: 1.4,
+    color: color.yellow,
   },
-  analyzingSubText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
-    fontSize: 13,
-    color: '#041015',
-    opacity: 0.65,
+  analyzingSub: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.creamDim,
     textAlign: 'center',
-    paddingHorizontal: 32,
   },
-  scannerActions: {
+
+  // ─── Editorial section heads ───
+  sectionHead: {
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    gap: 24,
-    paddingVertical: 20,
-    paddingHorizontal: 24,
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    gap: space.md,
+    marginTop: space.xxl,
+    marginBottom: space.md,
   },
-  scanActionBtn: {
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 16,
-    gap: 4,
-  },
-  scanActionText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+  sectionLabel: {
+    fontFamily: font.semibold,
     fontSize: 11,
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
+    letterSpacing: 2.4,
+    color: color.slateFaint,
   },
-  scanActionBtnMain: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#FFFC00',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    elevation: 8,
+  sectionRule: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#ece9e2',
   },
-  resultCard: {
-    margin: 16,
-    padding: 24,
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 8,
+  sectionMeta: {
+    fontFamily: font.bold,
+    fontSize: 11,
   },
-  estHeader: {
+
+  // ════ Scan result screen ════
+  srRoot: { flex: 1, backgroundColor: color.surfaceSubtle },
+  srTopBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
+    alignItems: 'center',
+    paddingHorizontal: space.xxl,
+    paddingBottom: space.md,
+    backgroundColor: color.surfaceSubtle,
+    zIndex: 50,
   },
-  estLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+  srEyebrow: {
+    fontFamily: font.semibold,
     fontSize: 11,
-    letterSpacing: 2,
-    color: '#94a3b8',
+    letterSpacing: 2.4,
+    color: color.slateFaint,
   },
-  estValueRow: {
+  srScroll: {
+    flexGrow: 1,
+    paddingTop: space.md,
+  },
+  srHero: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    backgroundColor: color.track,
+    marginBottom: space.xl,
+  },
+  srHeroImg: {
+    width: '100%',
+    height: '100%',
+  },
+  srHeroFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.track,
+  },
+  srFoodName: {
+    fontFamily: font.display,
+    fontSize: 42,
+    lineHeight: 42,
+    letterSpacing: 1,
+    color: color.ink,
+    marginBottom: space.md,
+  },
+  srAllergyStrip: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: color.errorSoft,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: 10,
+    marginTop: space.md,
   },
-  estValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 36,
-    color: '#0f172a',
-  },
-  estUnit: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 18,
-    marginLeft: 4,
-    color: '#64748b',
-  },
-  estIconBg: {
-    padding: 10,
-    borderRadius: 20,
-  },
-  estDesc: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
-    fontSize: 16,
-    color: '#334155',
-    marginBottom: 12,
-  },
-  warningCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#fef2f2',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#fecaca',
-  },
-  warningText: {
+  srAllergyText: {
     flex: 1,
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 13,
+    fontFamily: font.semibold,
+    fontSize: 12.5,
     color: '#991b1b',
-    lineHeight: 18,
+    lineHeight: 17,
   },
-  recommendationText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 14,
-    color: '#64748b',
-    marginBottom: 12,
-    lineHeight: 20,
+
+  // ─── Portion ───
+  portionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.md,
   },
-  confidenceRow: {
+  portionValue: {
+    fontFamily: font.display,
+    fontSize: 38,
+    lineHeight: 38,
+    letterSpacing: 0.5,
+    color: color.ink,
+  },
+  portionUnit: {
+    fontSize: 15,
+    color: color.slateFaint,
+  },
+  portionHint: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slateMuted,
+    marginTop: 4,
+  },
+  stepper: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 16,
   },
-  confidenceLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 12,
-    color: '#94a3b8',
-  },
-  confidenceValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 14,
-  },
-  confirmBtn: {
-    width: '100%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  confirmBtnGradient: {
-    width: '100%',
-    paddingVertical: 18,
-    borderRadius: 32,
+  stepperBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.pill,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.hairline,
     alignItems: 'center',
     justifyContent: 'center',
+    ...shadow.card,
   },
-  confirmBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
-    fontSize: 14,
-    letterSpacing: 2,
-    color: '#000000',
+
+  // ─── Verdict (the dark moment) ───
+  verdict: {
+    backgroundColor: color.navy,
+    borderRadius: 28,
+    padding: space.xxl,
+    marginTop: space.xxl,
+    ...shadow.raised,
   },
-  bentoGrid: {
-    gap: 16,
-    marginBottom: 32,
-  },
-  bentoFull: {
+  verdictHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 24,
-    borderRadius: 16,
-    borderWidth: 1,
+    marginBottom: space.md,
   },
-  bentoLeft: {
+  verdictEyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 2.4,
+    color: color.yellow,
+  },
+  verdictScoreChip: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
+    alignItems: 'baseline',
+    backgroundColor: color.navyRaised,
+    borderRadius: radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
   },
-  bentoIconBg: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  bentoTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+  verdictScoreNum: {
+    fontFamily: font.extrabold,
     fontSize: 18,
+    color: color.yellow,
   },
-  bentoSub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 14,
+  verdictScoreOf: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    color: color.creamDim,
+    marginLeft: 2,
   },
-  bentoRow: {
+  verdictBarTrack: {
+    height: 4,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(244, 241, 236, 0.12)',
+    overflow: 'hidden',
+    marginBottom: space.lg,
+  },
+  verdictBarFill: {
+    height: 4,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
+  },
+  verdictBodyRow: {
     flexDirection: 'row',
-    gap: 16,
+    gap: space.md,
   },
-  bentoHalf: {
+  verdictQuoteBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: color.yellow,
+  },
+  verdictBody: {
     flex: 1,
-    aspectRatio: 1,
-    padding: 24,
-    borderRadius: 16,
-    borderWidth: 1,
-    justifyContent: 'space-between',
+    fontFamily: font.regular,
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: color.creamDim,
   },
-  bentoSubSmall: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 12,
+
+  // ─── Nutrition (typography strip) ───
+  nutrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nutrCell: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  nutrDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: '#ece9e2',
+    marginHorizontal: space.sm,
+  },
+  nutrValue: {
+    fontFamily: font.display,
+    fontSize: 28,
+    lineHeight: 28,
+    letterSpacing: 0.5,
+    color: color.ink,
+  },
+  nutrUnit: {
+    fontSize: 14,
+    color: color.slateFaint,
+  },
+  nutrLabel: {
+    fontFamily: font.medium,
+    fontSize: 11,
+    color: color.slateMuted,
     marginTop: 4,
   },
-  // ── Scan Result (sr*) styles ──
-  srHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    paddingHorizontal: 24,
-    paddingBottom: 12,
-    backgroundColor: '#FFFFFF',
-    zIndex: 50,
+
+  // ─── Daily budget ───
+  budgetTrack: {
+    height: 6,
+    borderRadius: radius.pill,
+    backgroundColor: color.track,
+    overflow: 'hidden',
   },
-  srHeaderLeft: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 16,
+  budgetFill: {
+    height: 6,
+    borderRadius: radius.pill,
   },
-  srBackBtn: {
-    justifyContent: 'center' as const,
-    alignItems: 'center' as const,
+  budgetMeta: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slateMuted,
+    marginTop: space.sm,
   },
-  srHeaderTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 28,
-    letterSpacing: -0.5,
-    color: '#041015',
+  budgetLedger: {
+    marginTop: space.md,
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: '#ece9e2',
+    gap: 6,
   },
-  srScrollContent: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-    paddingTop: 8,
-    paddingBottom: 32,
+  budgetLedgerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  srHeroContainer: {
-    width: '100%' as const,
-    aspectRatio: 1,
-    borderRadius: 40,
-    overflow: 'hidden' as const,
-    marginBottom: 24,
-    position: 'relative' as const,
+  budgetLedgerLabel: {
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    color: color.slateMuted,
   },
-  srHeroImage: {
-    width: '100%' as const,
-    height: '100%' as const,
+  budgetLedgerValue: {
+    fontFamily: font.bold,
+    fontSize: 13,
+    color: color.ink,
   },
-  srHeroGradient: {
-    position: 'absolute' as const,
+
+  // ─── Ingredients ───
+  ingChipRow: {
+    gap: 8,
+    paddingRight: space.xxl,
+  },
+  ingChip: {
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    borderRadius: radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  ingChipText: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slate,
+  },
+
+  // ─── Confidence + sticky Add to Bowl ───
+  confidenceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: space.xxl,
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: '#ece9e2',
+  },
+  confidenceLabel: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slateMuted,
+  },
+  confidenceValue: {
+    fontFamily: font.bold,
+    fontSize: 13,
+  },
+  srSticky: {
+    position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    height: '50%' as const,
+    backgroundColor: color.surface,
+    paddingHorizontal: space.xxl,
+    paddingTop: space.lg,
+    paddingBottom: space.lg,
+    // Real elevation so the bar lifts off the warm sheet beneath it.
+    // Negative y so the shadow falls UP onto the content above.
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    elevation: 12,
   },
-  srNutritionBadge: {
-    position: 'absolute' as const,
-    top: 20,
-    right: 20,
-    backgroundColor: '#041015',
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 6,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 40,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  srNutritionBadgeText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 14,
-    color: '#FFFFFF',
-  },
-  srResultCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 40,
-    padding: 28,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.04,
-    shadowRadius: 40,
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.04)',
-    overflow: 'hidden' as const,
-    position: 'relative' as const,
-  },
-  srAccentLine: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 6,
-    backgroundColor: '#FFFC00',
-  },
-  srFoodHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'flex-start' as const,
-    marginBottom: 20,
-    marginTop: 8,
-  },
-  srFoodName: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 28,
-    letterSpacing: -0.5,
-    lineHeight: 34,
-    color: '#041015',
-    flex: 1,
-    marginRight: 16,
-  },
-  srServingRow: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    backgroundColor: '#f8fafc',
-    borderRadius: 20,
-    padding: 14,
-    paddingHorizontal: 20,
-    marginBottom: 8,
-  },
-  srServingLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 15,
-    color: '#64748b',
-  },
-  srServingStepper: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 4,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    padding: 4,
-  },
-  srServingBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    backgroundColor: '#FFFC00',
-    justifyContent: 'center' as const,
-    alignItems: 'center' as const,
-  },
-  srServingValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900' as const,
-    fontSize: 20,
-    color: '#041015',
-    minWidth: 40,
-    textAlign: 'center' as const,
-  },
-  srServingHint: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600' as const,
-    fontSize: 12,
-    color: '#94a3b8',
-    textAlign: 'center' as const,
-    marginBottom: 16,
-  },
-  srHealthScoreCard: {
-    backgroundColor: '#041015',
-    borderRadius: 32,
-    padding: 24,
-    marginBottom: 20,
-  },
-  srHealthScoreHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'flex-end' as const,
-    marginBottom: 12,
-  },
-  srHealthScoreLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.6)',
-  },
-  srHealthScoreValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 28,
-    color: '#FFFC00',
-  },
-  srProgressBarBg: {
-    width: '100%' as const,
-    height: 12,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 8,
-    overflow: 'hidden' as const,
-  },
-  srProgressBarFill: {
-    height: '100%' as const,
-    borderRadius: 8,
-    backgroundColor: '#FFFC00',
-  },
-  srHealthScoreDesc: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500' as const,
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.6)',
-    lineHeight: 20,
-    marginTop: 14,
-  },
-  srBudgetCard: {
-    backgroundColor: '#041015',
-    borderRadius: 32,
-    padding: 24,
-    marginBottom: 20,
-  },
-  srBudgetHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    marginBottom: 12,
-  },
-  srBudgetTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.7)',
-  },
-  srBudgetPct: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 20,
-    color: '#FFFC00',
-  },
-  srBudgetBarBg: {
-    width: '100%' as const,
-    height: 10,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 6,
-    overflow: 'hidden' as const,
-    marginBottom: 8,
-  },
-  srBudgetBarFill: {
-    height: '100%' as const,
-    borderRadius: 6,
-  },
-  srBudgetConsumed: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500' as const,
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
-    marginBottom: 4,
-  },
-  srBudgetDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    marginVertical: 12,
-  },
-  srBudgetRow: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    marginBottom: 6,
-  },
-  srBudgetRowLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600' as const,
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.5)',
-  },
-  srBudgetRowValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 13,
-    color: '#FFFFFF',
-  },
-  srBudgetWeightRow: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 6,
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
-  },
-  srBudgetWeightText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600' as const,
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
-    flex: 1,
-  },
-  srNutritionGrid: {
-    flexDirection: 'row' as const,
-    flexWrap: 'wrap' as const,
-    gap: 12,
-    marginBottom: 24,
-  },
-  srNutritionItem: {
-    width: '47%' as const,
-    backgroundColor: '#041015',
-    borderRadius: 32,
-    padding: 22,
-    gap: 6,
-  },
-  srNutritionValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 24,
-    color: '#FFFFFF',
-  },
-  srNutritionLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 10,
-    letterSpacing: 2,
-    color: 'rgba(255,255,255,0.5)',
-  },
-  srIngredientsSection: {
-    marginBottom: 20,
-  },
-  srIngredientsTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 18,
-    color: '#041015',
-    marginBottom: 14,
-    paddingHorizontal: 4,
-  },
-  srIngredientsScroll: {
-    gap: 10,
-    paddingBottom: 8,
-  },
-  srIngredientChip: {
-    backgroundColor: '#041015',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 40,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  srIngredientText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 14,
-    color: '#FFFFFF',
-  },
-  srConfidenceRow: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 8,
-    marginTop: 4,
-  },
-  srConfidenceLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600' as const,
-    fontSize: 13,
-    color: 'rgba(4,16,21,0.5)',
-  },
-  srConfidenceValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800' as const,
-    fontSize: 15,
-  },
-  srBottomBar: {
-    marginTop: 24,
-    paddingHorizontal: 24,
-    paddingTop: 4,
-    paddingBottom: 32,
-  },
-  srAddBtn: {
-    width: '100%' as const,
-    backgroundColor: '#FFFC00',
-    paddingVertical: 20,
-    borderRadius: 40,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-    shadowColor: '#FFFC00',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    elevation: 8,
-  },
-  srAddBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700' as const,
-    fontSize: 17,
-    color: '#041015',
-  },
-
 });
+

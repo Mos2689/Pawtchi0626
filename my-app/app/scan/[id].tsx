@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Image } from 'expo-image';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -49,7 +50,7 @@ export default function ScanDetailScreen() {
     if (isLoading) {
         return (
             <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-                <ActivityIndicator size="large" color="#FFFC00" />
+                <ActivityIndicator size="large" color="#F7F602" />
             </View>
         );
     }
@@ -57,9 +58,9 @@ export default function ScanDetailScreen() {
     if (!scan) {
         return (
             <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontSize: 16 }}>Scan not found</Text>
+                <Text style={{ fontFamily: 'Montserrat_400Regular', fontSize: 16 }}>Scan not found</Text>
                 <TouchableOpacity style={{ marginTop: 16 }} onPress={() => router.back()}>
-                    <Text style={{ fontFamily: 'Plus Jakarta Sans', color: '#16a34a' }}>Go Back</Text>
+                    <Text style={{ fontFamily: 'Montserrat_400Regular', color: '#16a34a' }}>Go Back</Text>
                 </TouchableOpacity>
             </View>
         );
@@ -87,7 +88,7 @@ export default function ScanDetailScreen() {
                 {/* Placeholder Hero Image */}
                 <View style={styles.srHeroContainer}>
                     {scan.image_url ? (
-                        <Image source={{ uri: scan.image_url }} style={styles.srHeroImage} />
+                        <Image source={{ uri: scan.image_url }} style={styles.srHeroImage} contentFit="cover" cachePolicy="memory-disk" transition={200} />
                     ) : (
                         <View style={[styles.srHeroImage, { backgroundColor: '#e5e7eb', justifyContent: 'center', alignItems: 'center' }]}>
                             <MaterialIcons name="restaurant" size={64} color="#94a3b8" />
@@ -130,22 +131,22 @@ export default function ScanDetailScreen() {
                     {/* Nutrition Grid */}
                     <View style={styles.srNutritionGrid}>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="local-fire-department" size={28} color="#FFFC00" />
+                            <MaterialIcons name="local-fire-department" size={28} color="#F7F602" />
                             <Text style={styles.srNutritionValue}>{scan.ai_estimated_calories}</Text>
                             <Text style={styles.srNutritionLabel}>Calories</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="egg-alt" size={28} color="#FFFC00" />
+                            <MaterialIcons name="egg-alt" size={28} color="#F7F602" />
                             <Text style={styles.srNutritionValue}>{scan.protein_g}g</Text>
                             <Text style={styles.srNutritionLabel}>Protein</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="grass" size={28} color="#FFFC00" />
+                            <MaterialIcons name="grass" size={28} color="#F7F602" />
                             <Text style={styles.srNutritionValue}>{scan.carbs_g}g</Text>
                             <Text style={styles.srNutritionLabel}>Carbs</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="opacity" size={28} color="#FFFC00" />
+                            <MaterialIcons name="opacity" size={28} color="#F7F602" />
                             <Text style={styles.srNutritionValue}>{scan.fat_g}g</Text>
                             <Text style={styles.srNutritionLabel}>Fats</Text>
                         </View>
@@ -176,14 +177,14 @@ export default function ScanDetailScreen() {
                     {/* Confidence */}
                     <View style={styles.srConfidenceRow}>
                         <Text style={styles.srConfidenceLabel}>AI Confidence:</Text>
-                        <Text style={[styles.srConfidenceValue, { color: scan.ai_confidence_score > 70 ? '#4ade80' : '#fbbf24' }]}>
+                        <Text style={[styles.srConfidenceValue, { color: scan.ai_confidence_score > 70 ? '#4ade80' : '#FFC400' }]}>
                             {scan.ai_confidence_score}%
                         </Text>
                     </View>
                 </View>
 
                 <View style={{ alignItems: 'center', marginTop: 24, paddingBottom: 40 }}>
-                    <Text style={{ fontFamily: 'Plus Jakarta Sans', color: '#9ca3af', fontWeight: '600' }}>Logged today at {timeStr}</Text>
+                    <Text style={{ fontFamily: 'Montserrat_600SemiBold', color: '#9ca3af',}}>Logged today at {timeStr}</Text>
                 </View>
             </ScrollView>
         </View>
@@ -212,8 +213,7 @@ const styles = StyleSheet.create({
         alignItems: 'center' as const,
     },
     srHeaderTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 28,
         letterSpacing: -0.5,
         color: '#041015',
@@ -251,8 +251,7 @@ const styles = StyleSheet.create({
         borderColor: 'rgba(255,255,255,0.1)',
     },
     srNutritionBadgeText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 14,
         color: '#FFFFFF',
     },
@@ -276,7 +275,7 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         height: 6,
-        backgroundColor: '#FFFC00',
+        backgroundColor: '#F7F602',
     },
     srFoodHeader: {
         flexDirection: 'row' as const,
@@ -286,8 +285,7 @@ const styles = StyleSheet.create({
         marginTop: 8,
     },
     srFoodName: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 28,
         letterSpacing: -0.5,
         lineHeight: 34,
@@ -304,8 +302,7 @@ const styles = StyleSheet.create({
         backgroundColor: '#FFFFFF',
     },
     srServingCount: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 18,
         color: '#041015',
     },
@@ -322,16 +319,14 @@ const styles = StyleSheet.create({
         marginBottom: 12,
     },
     srHealthScoreLabel: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 16,
         color: 'rgba(255,255,255,0.6)',
     },
     srHealthScoreValue: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 28,
-        color: '#FFFC00',
+        color: '#F7F602',
     },
     srProgressBarBg: {
         width: '100%' as const,
@@ -343,11 +338,10 @@ const styles = StyleSheet.create({
     srProgressBarFill: {
         height: '100%' as const,
         borderRadius: 8,
-        backgroundColor: '#FFFC00',
+        backgroundColor: '#F7F602',
     },
     srHealthScoreDesc: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '500' as const,
+        fontFamily: 'Montserrat_500Medium',
         fontSize: 14,
         color: 'rgba(255,255,255,0.6)',
         lineHeight: 20,
@@ -367,14 +361,12 @@ const styles = StyleSheet.create({
         gap: 6,
     },
     srNutritionValue: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 24,
         color: '#FFFFFF',
     },
     srNutritionLabel: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 10,
         letterSpacing: 2,
         color: 'rgba(255,255,255,0.5)',
@@ -383,8 +375,7 @@ const styles = StyleSheet.create({
         marginBottom: 20,
     },
     srIngredientsTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 18,
         color: '#041015',
         marginBottom: 14,
@@ -403,8 +394,7 @@ const styles = StyleSheet.create({
         borderColor: 'rgba(255,255,255,0.1)',
     },
     srIngredientText: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 14,
         color: '#FFFFFF',
     },
@@ -415,14 +405,12 @@ const styles = StyleSheet.create({
         marginTop: 4,
     },
     srConfidenceLabel: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '600' as const,
+        fontFamily: 'Montserrat_600SemiBold',
         fontSize: 13,
         color: 'rgba(4,16,21,0.5)',
     },
     srConfidenceValue: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 15,
     },
     srNutritionReference: {
@@ -430,8 +418,7 @@ const styles = StyleSheet.create({
         paddingTop: 8,
     },
     srSectionTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 18,
         color: '#041015',
         marginBottom: 14,
@@ -444,15 +431,13 @@ const styles = StyleSheet.create({
         marginBottom: 12,
     },
     srMealContextLabel: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 11,
         letterSpacing: 1.5,
         color: '#6B7280',
     },
     srMealContextValue: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 14,
         color: '#041015',
         marginTop: 4,
@@ -463,15 +448,13 @@ const styles = StyleSheet.create({
         padding: 14,
     },
     srAdjustmentsTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 13,
         color: '#92400e',
         textTransform: 'capitalize' as const,
     },
     srAdjustmentItem: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '600' as const,
+        fontFamily: 'Montserrat_600SemiBold',
         fontSize: 13,
         color: '#92400e',
         textTransform: 'capitalize' as const,
@@ -486,28 +469,24 @@ const styles = StyleSheet.create({
         padding: 12,
     },
     srNutrientName: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800' as const,
+        fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 14,
         color: '#041015',
     },
     srNutrientValue: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700' as const,
+        fontFamily: 'Montserrat_700Bold',
         fontSize: 13,
         color: '#374151',
         marginTop: 2,
     },
     srNutrientRef: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '500' as const,
+        fontFamily: 'Montserrat_500Medium',
         fontSize: 12,
         color: '#6B7280',
         marginTop: 2,
     },
     srNutrientAdj: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '600' as const,
+        fontFamily: 'Montserrat_600SemiBold',
         fontSize: 12,
         color: '#92400e',
         marginTop: 4,
@@ -521,15 +500,13 @@ const styles = StyleSheet.create({
         gap: 4,
     },
     srNoteItem: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '500' as const,
+        fontFamily: 'Montserrat_500Medium',
         fontSize: 12,
         color: '#6B7280',
         lineHeight: 16,
     },
     srDisclaimer: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '500' as const,
+        fontFamily: 'Montserrat_500Medium',
         fontSize: 11,
         color: '#9CA3AF',
         lineHeight: 16,

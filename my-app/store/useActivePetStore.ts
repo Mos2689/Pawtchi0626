@@ -59,7 +59,7 @@ interface ActivePetState {
     foodPantry: PantryItem[];
     isLoading: boolean;
     error: string | null;
-    fetchPet: (userId: string) => Promise<void>;
+    fetchPet: (userId: string, options?: { silent?: boolean }) => Promise<void>;
     fetchPantry: (petId: string) => Promise<void>;
     addPantryItem: (item: Omit<PantryItem, 'id' | 'first_scanned_at' | 'last_scanned_at' | 'scan_count'>) => Promise<PantryItem | null>;
     incrementPantryScan: (itemId: string) => Promise<void>;
@@ -76,8 +76,15 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
     isLoading: true,
     isTailoring: false,
     error: null,
-    fetchPet: async (userId) => {
-        set({ isLoading: true, error: null });
+    fetchPet: async (userId, options) => {
+        // Silent refresh (used after an optimistic write) must NOT toggle the
+        // global isLoading flag: the tab layout renders a full-screen spinner and
+        // unmounts the whole navigator while petLoading is true, which would blank
+        // the app to a spinner on a routine edit. First-load keeps the spinner.
+        const silent = options?.silent === true;
+        if (!silent) {
+            set({ isLoading: true, error: null });
+        }
 
         // Fetch the most recently created pet for this user
         const { data, error } = await supabase
@@ -90,9 +97,9 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
 
         if (error && error.code !== 'PGRST116') {
             console.error('Error fetching pet:', error);
-            set({ error: error.message, isLoading: false, activePet: null });
+            set(silent ? { error: error.message } : { error: error.message, isLoading: false, activePet: null });
         } else {
-            set({ activePet: data || null, isLoading: false, error: null });
+            set(silent ? { activePet: data || null, error: null } : { activePet: data || null, isLoading: false, error: null });
             // Also fetch pantry when pet loads
             if (data?.id) {
                 get().fetchPantry(data.id);

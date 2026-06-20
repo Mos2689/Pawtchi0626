@@ -1,6 +1,7 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Text, Image, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Text, ActivityIndicator } from 'react-native';
+import { Image } from 'expo-image';
 import { Typography } from '../../components/Typography';
 import { Header } from '../../components/Header';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -136,7 +137,7 @@ const RewardCard = ({
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
-    borderColor: isUnlocked ? '#FFFC00' : '#f0f0f0',
+    borderColor: isUnlocked ? '#F7F602' : '#f0f0f0',
     borderWidth: isUnlocked ? 2 : 1,
   }));
 
@@ -145,7 +146,7 @@ const RewardCard = ({
       return (
         <View style={styles.cardLarge}>
           <View style={styles.largeImageContainer}>
-            <Image source={{ uri: item.image }} style={styles.largeImage} />
+            <Image source={{ uri: item.image }} style={styles.largeImage} contentFit="cover" cachePolicy="memory-disk" transition={200} />
             {item.tag && (
               <View style={styles.tagBadge}>
                 <Text style={styles.tagText}>{item.tag}</Text>
@@ -159,7 +160,7 @@ const RewardCard = ({
             </View>
             <TouchableOpacity 
               activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleAction}
-              style={[styles.buyPill, { backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#FFFC00') : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
+              style={[styles.buyPill, { backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#F7F602') : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
             >
               {isUnlocked ? (
                 <View style={styles.costRow}>
@@ -184,14 +185,14 @@ const RewardCard = ({
       return (
         <View style={styles.cardMedium}>
           <View style={styles.mediumImageContainer}>
-            <Image source={{ uri: item.image }} style={styles.mediumImage} />
+            <Image source={{ uri: item.image }} style={styles.mediumImage} contentFit="cover" cachePolicy="memory-disk" transition={200} />
           </View>
           <View style={styles.mediumInfo}>
             <Typography variant="headline" size={18} weight="bold" color="on-surface">{item.name}</Typography>
             <Typography variant="body" size={12} color="on-surface-variant" style={{ marginBottom: 12 }}>{item.description}</Typography>
             <TouchableOpacity 
               activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleAction}
-              style={[styles.buyPill, { alignSelf: 'flex-start', backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#FFFC00') : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
+              style={[styles.buyPill, { alignSelf: 'flex-start', backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#F7F602') : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
             >
               {isUnlocked ? (
                 <View style={styles.costRow}>
@@ -215,12 +216,12 @@ const RewardCard = ({
     return (
       <View style={styles.cardSmall}>
         <View style={styles.smallImageContainer}>
-          <Image source={{ uri: item.image }} style={styles.smallImage} />
+          <Image source={{ uri: item.image }} style={styles.smallImage} contentFit="cover" cachePolicy="memory-disk" transition={200} />
         </View>
         <Typography variant="headline" size={14} weight="bold" color="on-surface" numberOfLines={1}>{item.name}</Typography>
         <TouchableOpacity 
           activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleAction}
-          style={[styles.smallBuyPill, { marginTop: 8, backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#FFFC00') : (canAfford ? '#f8f8f8' : '#f0f0f0') }]}
+          style={[styles.smallBuyPill, { marginTop: 8, backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#F7F602') : (canAfford ? '#f8f8f8' : '#f0f0f0') }]}
         >
           {isUnlocked ? (
             <View style={styles.costRow}>
@@ -231,7 +232,7 @@ const RewardCard = ({
             </View>
           ) : (
             <View style={styles.costRow}>
-              <MaterialIcons name="toll" size={14} color={canAfford ? '#FFFC00' : '#999'} />
+              <MaterialIcons name="toll" size={14} color={canAfford ? '#F7F602' : '#999'} />
               <Typography variant="label" weight="bold" color={canAfford ? 'on-surface' : 'on-surface-variant'} size={12}>{item.cost}</Typography>
             </View>
           )}
@@ -301,14 +302,17 @@ export default function ShopScreen() {
         {activePet && (
           <View style={styles.fittingRoomContainer}>
             <View style={styles.fittingRoomFrame}>
-              <Image 
-                source={{ uri: activePet.current_avatar_url || activePet.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=1000' }} 
-                style={styles.fittingRoomImage} 
+              <Image
+                source={{ uri: activePet.current_avatar_url || activePet.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=1000' }}
+                style={styles.fittingRoomImage}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={200}
               />
               {isTailoring && (
                 <View style={[StyleSheet.absoluteFill, styles.tailoringOverlay]}>
-                  <ActivityIndicator size="large" color="#FFFC00" />
-                  <Typography variant="label" weight="bold" style={{ marginTop: 8, color: '#FFFC00' }}>Tailoring...</Typography>
+                  <ActivityIndicator size="large" color="#F7F602" />
+                  <Typography variant="label" weight="bold" style={{ marginTop: 8, color: '#F7F602' }}>Tailoring...</Typography>
                 </View>
               )}
             </View>
@@ -331,7 +335,7 @@ export default function ShopScreen() {
         <View style={styles.heroSection}>
           <View style={styles.heroContent}>
             <Typography variant="headline" size={32} weight="bold" style={styles.heroTitle}>Want more coins?</Typography>
-            <Typography variant="body" size={14} style={styles.heroSub}>Complete today&apos;s 5k walk to unlock a bonus 500 PawCoins!</Typography>
+            <Typography variant="body" size={14} style={styles.heroSub}>Complete today&apos;s 5k walk to unlock a bonus 500 PawCoins</Typography>
             <TouchableOpacity style={styles.heroButton} activeOpacity={0.8}>
               <Text style={styles.heroButtonText}>Start journey</Text>
             </TouchableOpacity>
@@ -416,7 +420,7 @@ const styles = StyleSheet.create({
   fittingRoomBadge: {
     position: 'absolute',
     bottom: -12,
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
@@ -434,13 +438,13 @@ const styles = StyleSheet.create({
   // Hero Nudge
   heroSection: {
     marginHorizontal: 24,
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
     borderRadius: 24,
     padding: 24,
     overflow: 'hidden',
     position: 'relative',
     marginBottom: 24,
-    shadowColor: '#FFFC00',
+    shadowColor: '#F7F602',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.2,
     shadowRadius: 16,
@@ -451,7 +455,7 @@ const styles = StyleSheet.create({
     width: '70%',
   },
   heroTitle: {
-    fontFamily: 'PlusJakartaSans_800ExtraBold',
+    fontFamily: 'Montserrat_800ExtraBold',
     letterSpacing: -1,
     lineHeight: 34,
     color: '#1A1A1A',
@@ -472,7 +476,7 @@ const styles = StyleSheet.create({
   },
   heroButtonText: {
     color: '#FFF',
-    fontFamily: 'PlusJakartaSans_800ExtraBold',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 12,
     letterSpacing: 1,
   },
@@ -502,15 +506,15 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
   categoryPillActive: {
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
   },
   categoryPillText: {
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     color: '#5b5c5a',
   },
   categoryPillTextActive: {
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     color: '#1A1A1A',
   },
@@ -565,7 +569,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   tagText: {
-    fontFamily: 'PlusJakartaSans_800ExtraBold',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 10,
     color: '#553e00',
     letterSpacing: 1,

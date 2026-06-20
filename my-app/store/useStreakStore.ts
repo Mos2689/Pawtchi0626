@@ -28,26 +28,42 @@ interface StreakState {
   // Last earn event for CoinToast display
   lastEarnEvent: EarnEvent | null;
 
-  fetchStreak: (userId: string) => Promise<void>;
+  // Internal freshness bookkeeping (mirrors usePetContextStore's staleness guard).
+  _fetchedAt: number;
+  _fetchedUser: string | null;
+
+  fetchStreak: (userId: string, opts?: { force?: boolean }) => Promise<void>;
   awardCoins: (userId: string, action: string, referenceId?: string) => Promise<void>;
   deductCoins: (userId: string, amount: number) => Promise<boolean>;
   clearLastEarn: () => void;
   clearStreak: () => void;
 }
 
-export const useStreakStore = create<StreakState>((set) => ({
+// Skip a refetch within this window (awardCoins/deductCoins keep the store fresh).
+const STREAK_STALE_MS = 30_000;
+
+export const useStreakStore = create<StreakState>((set, get) => ({
   currentStreak: 0,
   longestStreak: 0,
   pawCoins: 0,
   lastLoggedDate: null,
   isLoading: true,
   lastEarnEvent: null,
+  _fetchedAt: 0,
+  _fetchedUser: null,
 
-  fetchStreak: async (userId: string) => {
+  fetchStreak: async (userId: string, opts?: { force?: boolean }) => {
+    // Staleness guard: the streak is fetched on every Home focus + in the tab
+    // layout. awardCoins/deductCoins update it optimistically, so a fresh fetch
+    // within the window is redundant.
+    const prev = get();
+    if (!opts?.force && prev._fetchedUser === userId && (Date.now() - prev._fetchedAt) < STREAK_STALE_MS) {
+      return;
+    }
     try {
       const { data, error } = await supabase
         .from('streaks')
-        .select('*')
+        .select('current_streak, longest_streak, paw_coins, last_logged_date')
         .eq('owner_id', userId)
         .single();
 
@@ -64,9 +80,11 @@ export const useStreakStore = create<StreakState>((set) => ({
           pawCoins: data.paw_coins || 0,
           lastLoggedDate: data.last_logged_date || null,
           isLoading: false,
+          _fetchedAt: Date.now(),
+          _fetchedUser: userId,
         });
       } else {
-        set({ isLoading: false });
+        set({ isLoading: false, _fetchedAt: Date.now(), _fetchedUser: userId });
       }
     } catch (err) {
       console.error('[StreakStore] Fetch error:', err);
@@ -103,6 +121,10 @@ export const useStreakStore = create<StreakState>((set) => ({
           pawCoins: data.pawCoins,
           lastLoggedDate: new Date().toISOString().split('T')[0],
           lastEarnEvent: earnEvent,
+          // Store is now authoritative → refresh the freshness stamp so the next
+          // focus doesn't issue a redundant fetch.
+          _fetchedAt: Date.now(),
+          _fetchedUser: userId,
         });
       } else {
         console.error('[StreakStore] Award error:', data.error);
@@ -148,5 +170,7 @@ export const useStreakStore = create<StreakState>((set) => ({
     lastLoggedDate: null,
     isLoading: true,
     lastEarnEvent: null,
+    _fetchedAt: 0,
+    _fetchedUser: null,
   }),
 }));

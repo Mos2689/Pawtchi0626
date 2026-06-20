@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, StyleSheet, Image, Share, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, Share, TouchableOpacity, Platform } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -18,7 +19,7 @@ import {
 // ─── Brand system (Pradip's design system) ───
 // Two colours only: deep navy structure, electric yellow accent. No gradients.
 const NAVY = '#07202a';
-const YELLOW = '#FFFC00';
+const YELLOW = '#F7F602';
 const CREAM = '#F4F1EC';
 const CREAM_MUTED = 'rgba(244, 241, 236, 0.55)';
 
@@ -75,6 +76,9 @@ export default function InviteScreen() {
           <Image
             source={{ uri: activePet?.image_url || FALLBACK_PET_IMAGE }}
             style={styles.portrait}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={200}
           />
         </Animated.View>
 
@@ -124,8 +128,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   wordmark: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 14,
     letterSpacing: 3,
     color: CREAM,
@@ -155,16 +158,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   overline: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 13,
     letterSpacing: 2,
     color: YELLOW,
     marginBottom: 20,
   },
   headline: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 40,
     lineHeight: 46,
     letterSpacing: -0.5,
@@ -175,8 +176,7 @@ const styles = StyleSheet.create({
     color: YELLOW,
   },
   subcopy: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '400',
+    fontFamily: 'Montserrat_400Regular',
     fontSize: 16,
     lineHeight: 26,
     color: CREAM_MUTED,
@@ -200,14 +200,12 @@ const styles = StyleSheet.create({
     backgroundColor: YELLOW,
   },
   ctaText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 17,
     color: NAVY,
   },
   privacy: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
+    fontFamily: 'Montserrat_500Medium',
     fontSize: 12,
     letterSpacing: 0.3,
     color: CREAM_MUTED,

@@ -98,16 +98,28 @@ interface PetContextState extends TodayData, DerivedToday, TrendData {
   isFreemiumActive?: boolean;
   daysSinceCreation?: number;
 
+  // Internal freshness bookkeeping (F5 staleness guard). Kept on the store so a
+  // skipped refetch survives component remounts. Short window → any missed
+  // invalidation self-heals on the next focus rather than going permanently stale.
+  _todayFetchedAt: number;
+  _trendsFetchedAt: number;
+  _contextPetId: string | null;
+
   fetchContext: (petId: string) => Promise<void>;
   injectSubscriptionData: (isFreemiumActive: boolean, daysSinceCreation: number) => void;
-  refreshToday: (petId: string) => Promise<void>;
-  refreshTrends: (petId: string) => Promise<void>;
+  refreshToday: (petId: string, opts?: { force?: boolean }) => Promise<void>;
+  refreshTrends: (petId: string, opts?: { force?: boolean }) => Promise<void>;
   updateCalories: (newTotal: number) => void;
   updateWater: (newTotal: number) => void;
   updateWalks: (newCount: number) => void;
   dismissNudge: () => void;
+  invalidateContext: () => void;
   clearContext: () => void;
 }
+
+// How long a refreshToday/refreshTrends result is considered fresh. Pure
+// navigation within this window skips the network; writes call invalidateContext().
+const CONTEXT_STALE_MS = 30_000;
 
 // ---- Initial state ----
 
@@ -295,6 +307,9 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
   nudge: null,
   isTodayLoading: true,
   isTrendsLoading: true,
+  _todayFetchedAt: 0,
+  _trendsFetchedAt: 0,
+  _contextPetId: null,
 
   fetchContext: async (petId: string) => {
     const state = get();
@@ -311,7 +326,13 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     set({ nudge });
   },
 
-  refreshToday: async (petId: string) => {
+  refreshToday: async (petId: string, opts) => {
+    // Staleness guard: skip the network if this slice was fetched for the same pet
+    // within the freshness window (unless explicitly forced after a write).
+    const prev = get();
+    if (!opts?.force && prev._contextPetId === petId && (Date.now() - prev._todayFetchedAt) < CONTEXT_STALE_MS) {
+      return;
+    }
     set({ isTodayLoading: true });
     const pet = useActivePetStore.getState().activePet;
     const today = getLocalYMD(new Date());
@@ -392,6 +413,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         ...derived,
         clinical,
         isTodayLoading: false,
+        _todayFetchedAt: Date.now(),
+        _contextPetId: petId,
       });
 
       // Recompute nudge with fresh today data
@@ -403,7 +426,13 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     }
   },
 
-  refreshTrends: async (petId: string) => {
+  refreshTrends: async (petId: string, opts) => {
+    // Staleness guard — mirrors refreshToday. Trends are heavier (9 queries), so
+    // skipping redundant focus refetches is the bigger win here.
+    const prevState = get();
+    if (!opts?.force && prevState._contextPetId === petId && (Date.now() - prevState._trendsFetchedAt) < CONTEXT_STALE_MS) {
+      return;
+    }
     set({ isTrendsLoading: true });
     const pet = useActivePetStore.getState().activePet;
 
@@ -632,6 +661,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         daysSinceLastFoodLog,
         exerciseCalorieRatio,
         isTrendsLoading: false,
+        _trendsFetchedAt: Date.now(),
+        _contextPetId: petId,
       });
 
       // Recompute derived (now includes weekly delta correction) and nudge
@@ -687,6 +718,10 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     set({ nudge: null });
   },
 
+  // Mark today + trends stale so the next refreshToday/refreshTrends actually hits
+  // the network. Called after any write that changes today's or trend data.
+  invalidateContext: () => set({ _todayFetchedAt: 0, _trendsFetchedAt: 0 }),
+
   clearContext: () => set({
     ...initialTodayData,
     ...initialDerived,
@@ -695,5 +730,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     nudge: null,
     isTodayLoading: true,
     isTrendsLoading: true,
+    _todayFetchedAt: 0,
+    _trendsFetchedAt: 0,
+    _contextPetId: null,
   }),
 }));

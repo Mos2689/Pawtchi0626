@@ -1,6 +1,9 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
+import Animated, { useSharedValue, useAnimatedProps, withTiming, Easing } from 'react-native-reanimated';
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 // Apple-Health-style concentric rings — calories (orange), activity (yellow), hydrate (blue).
 // Shared by the real Home and the future-state preview so the two never drift visually.
@@ -12,7 +15,7 @@ export const PHOTO_RADIUS = 82;
 
 export const RING_CONFIG = [
   { r: 130, color: '#f97316', stroke: 14 }, // outer — calories
-  { r: 108, color: '#FFFC00', stroke: 13 }, // mid — move
+  { r: 108, color: '#F7F602', stroke: 13 }, // mid — move
   { r: 86, color: '#3091F9', stroke: 12 },  // inner — hydrate
 ];
 
@@ -26,12 +29,26 @@ interface RingArcProps {
 export function RingArc({ r, color, strokeWidth, progress }: RingArcProps) {
   const circumference = 2 * Math.PI * r;
   const clampedProgress = Math.min(Math.max(progress, 0), 1);
-  const filledLength = circumference * clampedProgress;
+
+  // Animate the fill: keep the dash one full circumference long and ease the
+  // dash offset from "empty" (offset = circumference) to the target. Re-runs when
+  // progress changes (e.g. after logging a meal), so the ring fills smoothly.
+  const animatedProgress = useSharedValue(0);
+  useEffect(() => {
+    animatedProgress.value = withTiming(clampedProgress, {
+      duration: 900,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [clampedProgress, animatedProgress]);
+
+  const animatedProps = useAnimatedProps(() => ({
+    strokeDashoffset: circumference * (1 - animatedProgress.value),
+  }));
 
   return (
     <>
       <Circle cx={cx} cy={cy} r={r} stroke={color} strokeWidth={strokeWidth} strokeOpacity={0.18} fill="none" />
-      <Circle
+      <AnimatedCircle
         cx={cx}
         cy={cy}
         r={r}
@@ -39,7 +56,8 @@ export function RingArc({ r, color, strokeWidth, progress }: RingArcProps) {
         strokeWidth={strokeWidth}
         fill="none"
         strokeLinecap="round"
-        strokeDasharray={`${filledLength} ${circumference}`}
+        strokeDasharray={circumference}
+        animatedProps={animatedProps}
         transform={`rotate(-90 ${cx} ${cy})`}
       />
     </>

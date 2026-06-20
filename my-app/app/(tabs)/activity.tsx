@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
+import { color, font, radius, shadow, space } from '../../constants/design';
 import { supabase } from '../../lib/supabase';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
@@ -25,7 +25,7 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * 28; // r=28
 
 // Activity Type Definitions
 const ACTIVITY_TYPES = [
-  { id: 'walk', label: 'Walk', icon: 'directions-walk', color: '#FFFC00' },
+  { id: 'walk', label: 'Walk', icon: 'directions-walk', color: '#F7F602' },
   { id: 'play', label: 'Play', icon: 'sports-baseball', color: '#fef8c3' },
   { id: 'water', label: 'Water', icon: 'water-drop', color: '#cde0ea' },
   { id: 'medicine', label: 'Medicine', icon: 'healing', color: '#fca5a5' },
@@ -35,11 +35,229 @@ const ACTIVITY_TYPES = [
   { id: 'other', label: 'Other', icon: 'star', color: '#f3f4f6' },
 ];
 
+// Activity types whose completion asks "how long?" before confirming.
+const TIME_BASED_TYPES = ['walk', 'play', 'training'];
+const DURATION_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
+
+interface SmartConfirmProps {
+  item: any;
+  petName: string;
+  confirmingDuration: number;
+  onSelectDuration: (mins: number) => void;
+  onConfirm: (item: any, duration: number) => void;
+  onCancel: () => void;
+}
+
+// Inline duration picker shown when completing a time-based activity. Memoized +
+// shared by the "Up next" card and the timeline rows (was a render-prop closure).
+const SmartConfirm = React.memo(function SmartConfirm({
+  item, petName, confirmingDuration, onSelectDuration, onConfirm, onCancel,
+}: SmartConfirmProps) {
+  return (
+    <View style={styles.smartConfirm}>
+      <Text style={styles.smartConfirmLabel}>How long did {petName} go?</Text>
+      <View style={styles.smartConfirmRow}>
+        {DURATION_OPTIONS.map(mins => {
+          const isScheduled = mins === (item.duration_minutes || 15);
+          const isSelected = mins === confirmingDuration;
+          return (
+            <TouchableOpacity
+              key={mins}
+              style={[
+                styles.smartChip,
+                isSelected && styles.smartChipActive,
+                isScheduled && !isSelected && styles.smartChipScheduled,
+              ]}
+              onPress={() => onSelectDuration(mins)}
+            >
+              <Text style={[styles.smartChipText, isSelected && styles.smartChipTextActive]}>{mins}m</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      <View style={styles.smartConfirmActions}>
+        <TouchableOpacity style={styles.smartDoneBtn} onPress={() => onConfirm(item, confirmingDuration)}>
+          <MaterialIcons name="check" size={16} color={color.navy} />
+          <Text style={styles.smartDoneBtnText}>Confirm</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.smartCancelBtn} onPress={onCancel}>
+          <Text style={styles.smartCancelBtnText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+});
+
+interface TimelineRowProps {
+  item: any;
+  isLast: boolean;
+  isExpanded: boolean;
+  isConfirming: boolean;
+  confirmingDuration: number;
+  petName: string;
+  currentWeightKg?: number;
+  onToggleExpand: (item: any, isExpanded: boolean) => void;
+  onCheckTap: (item: any) => void;
+  onSelectDuration: (mins: number) => void;
+  onConfirm: (item: any, duration: number) => void;
+  onCancel: () => void;
+}
+
+// One timeline entry (food or activity). Memoized so toggling expand/confirm on
+// one row doesn't re-render the whole list. Non-affected rows receive identical
+// props (callbacks are stable, confirmingDuration is normalized to -1 when not
+// confirming) → React.memo skips them.
+const TimelineRow = React.memo(function TimelineRow({
+  item, isLast, isExpanded, isConfirming, confirmingDuration,
+  petName, currentWeightKg, onToggleExpand, onCheckTap, onSelectDuration, onConfirm, onCancel,
+}: TimelineRowProps) {
+  const isFood = item._feedType === 'food';
+  const timeStr = item.scheduled_time
+    ? item.scheduled_time.slice(0, 5)
+    : new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  if (isFood) {
+    return (
+      <View style={styles.tlRow}>
+        <View style={styles.tlRail}>
+          <View style={[styles.tlDot, styles.tlDotDone]}>
+            <MaterialIcons name="restaurant" size={9} color={color.navy} />
+          </View>
+          {!isLast && <View style={styles.tlLine} />}
+        </View>
+        <View style={styles.tlBody}>
+          <View style={styles.tlHead}>
+            <Text style={styles.tlTime}>{timeStr}</Text>
+            <Text style={styles.tlMeta}>{item.ai_estimated_calories} kcal</Text>
+          </View>
+          <Text style={styles.tlTitle} numberOfLines={1}>
+            {item.ai_identified_food || 'Food logged'}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  const isPending = item.status === 'pending';
+  const isCompleted = item.status === 'completed';
+  const isSkipped = item.status === 'skipped';
+  const typeDef = ACTIVITY_TYPES.find(t => t.id === item.activity_type) || ACTIVITY_TYPES[0];
+  const meta: string[] = [];
+  if (item.duration_minutes) meta.push(`${item.duration_minutes} min`);
+  if (item.water_ml) meta.push(`${item.water_ml} ml`);
+  if (item.distance_km) meta.push(`${item.distance_km} km`);
+
+  return (
+    <View style={styles.tlRow}>
+      <View style={styles.tlRail}>
+        <View style={[
+          styles.tlDot,
+          isCompleted && styles.tlDotDone,
+          isPending && styles.tlDotPending,
+          isSkipped && styles.tlDotSkipped,
+        ]}>
+          {isCompleted && <MaterialIcons name="check" size={11} color={color.navy} />}
+          {isSkipped && <MaterialIcons name="close" size={10} color={color.slateFaint} />}
+        </View>
+        {!isLast && <View style={styles.tlLine} />}
+      </View>
+      <TouchableOpacity
+        style={[styles.tlBody, isExpanded && styles.tlBodyExpanded]}
+        activeOpacity={0.7}
+        disabled={isConfirming}
+        onPress={() => { if (!isConfirming) onToggleExpand(item, isExpanded); }}
+      >
+        <View style={styles.tlHead}>
+          <Text style={[styles.tlTime, isSkipped && { color: color.slateFaint }]}>{timeStr}</Text>
+          {meta.length > 0 && (
+            <Text style={[styles.tlMeta, isSkipped && { color: color.slateFaint }]}>
+              {meta.join(' · ')}
+            </Text>
+          )}
+        </View>
+        <View style={styles.tlTitleRow}>
+          <MaterialIcons
+            name={typeDef.icon as any}
+            size={14}
+            color={isSkipped ? color.slateFaint : color.slateMuted}
+          />
+          <Text style={[styles.tlTitle, isSkipped && { color: color.slateFaint, textDecorationLine: 'line-through' }]} numberOfLines={isExpanded ? undefined : 1}>
+            {item.title}
+          </Text>
+          {!!item.notes && !isExpanded && !isConfirming && (
+            <MaterialIcons name="expand-more" size={16} color={color.slateFaint} style={{ marginLeft: 'auto' }} />
+          )}
+        </View>
+
+        {/* Collapsed: single-line preview */}
+        {!!item.notes && !isExpanded && !isConfirming && (
+          <Text style={styles.tlNote} numberOfLines={1}>{item.notes}</Text>
+        )}
+
+        {/* Expanded: full description + contextual info + actions */}
+        {isExpanded && !isConfirming && (
+          <View style={styles.tlExpandedDetail}>
+            {!!item.notes && (
+              <Text style={styles.tlDetailDesc}>{item.notes}</Text>
+            )}
+            {currentWeightKg && ['walk', 'play'].includes(item.activity_type) && item.duration_minutes && (
+              <Text style={styles.tlContext}>
+                {contextualizeWalk(item.duration_minutes, currentWeightKg)}
+              </Text>
+            )}
+            {item.intensity && (
+              <View style={styles.tlDetailTagRow}>
+                <View style={styles.tlDetailTag}>
+                  <MaterialIcons name="speed" size={12} color={color.slateMuted} />
+                  <Text style={styles.tlDetailTagText}>{item.intensity}</Text>
+                </View>
+                {item.distance_km && (
+                  <View style={styles.tlDetailTag}>
+                    <MaterialIcons name="straighten" size={12} color={color.slateMuted} />
+                    <Text style={styles.tlDetailTagText}>{item.distance_km} km</Text>
+                  </View>
+                )}
+              </View>
+            )}
+            {isPending && (
+              <TouchableOpacity
+                style={styles.tlDetailMarkDone}
+                onPress={() => onCheckTap(item)}
+                activeOpacity={0.9}
+              >
+                <MaterialIcons name="check" size={15} color={color.navy} />
+                <Text style={styles.tlDetailMarkDoneText}>Mark done</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* Collapsed context line (walk/play only) */}
+        {!isExpanded && isPending && !isConfirming && currentWeightKg && ['walk', 'play'].includes(item.activity_type) && item.duration_minutes && (
+          <Text style={styles.tlContext} numberOfLines={1}>
+            {contextualizeWalk(item.duration_minutes, currentWeightKg)}
+          </Text>
+        )}
+        {isConfirming && (
+          <SmartConfirm
+            item={item}
+            petName={petName}
+            confirmingDuration={confirmingDuration}
+            onSelectDuration={onSelectDuration}
+            onConfirm={onConfirm}
+            onCancel={onCancel}
+          />
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+});
+
 export default function ActivityScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { activePet } = useActivePetStore();
-  const { awardCoins } = useStreakStore();
+  const activePet = useActivePetStore(s => s.activePet);
+  const awardCoins = useStreakStore(s => s.awardCoins);
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
 
@@ -89,6 +307,9 @@ export default function ActivityScreen() {
   const [confirmingTaskId, setConfirmingTaskId] = useState<string | null>(null);
   const [confirmingDuration, setConfirmingDuration] = useState(0);
 
+  // Expanded detail view — tap a timeline item to see full description
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+
   // Modal state
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -111,9 +332,15 @@ export default function ActivityScreen() {
 
   const dateStr = getLocalYMD(currentDate);
 
+  // Tracks whether the screen has completed at least one fetch. Used to keep the
+  // full loading state to the FIRST load only — later refetches (tab focus, date
+  // change, modal close) refresh in place so the timeline never unmounts (which is
+  // what caused the flicker + FadeInDown entrance-animation replay).
+  const hasLoadedRef = useRef(false);
+
   const fetchData = useCallback(async () => {
     if (!activePet) return;
-    setIsLoading(true);
+    if (!hasLoadedRef.current) setIsLoading(true);
 
     const startOfDay = new Date(currentDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -121,37 +348,36 @@ export default function ActivityScreen() {
     endOfDay.setHours(23, 59, 59, 999);
 
     try {
-      // Fetch daily log
-      const { data: logData } = await supabase
-        .from('daily_logs')
-        .select('*')
-        .eq('pet_id', activePet.id)
-        .eq('log_date', dateStr)
-        .single();
-      setDailyLog(logData || null);
-
-      // Fetch food scans
-      const { data: scansData } = await supabase
-        .from('food_scans')
-        .select('*')
-        .eq('pet_id', activePet.id)
-        .gte('created_at', startOfDay.toISOString())
-        .lte('created_at', endOfDay.toISOString())
-        .order('created_at', { ascending: false });
-      setFoodScans(scansData || []);
-
-      // Fetch activities (now includes scheduled ones)
-      const { data: actsData } = await supabase
-        .from('activities')
-        .select('*')
-        .eq('pet_id', activePet.id)
-        .eq('scheduled_date', dateStr)
-        .order('scheduled_time', { ascending: true });
-      setActivities(actsData || []);
+      // Three independent reads → run in parallel instead of a serial waterfall.
+      const [logRes, scansRes, actsRes] = await Promise.all([
+        supabase
+          .from('daily_logs')
+          .select('*')
+          .eq('pet_id', activePet.id)
+          .eq('log_date', dateStr)
+          .single(),
+        supabase
+          .from('food_scans')
+          .select('*')
+          .eq('pet_id', activePet.id)
+          .gte('created_at', startOfDay.toISOString())
+          .lte('created_at', endOfDay.toISOString())
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('activities')
+          .select('*')
+          .eq('pet_id', activePet.id)
+          .eq('scheduled_date', dateStr)
+          .order('scheduled_time', { ascending: true }),
+      ]);
+      setDailyLog(logRes.data || null);
+      setFoodScans(scansRes.data || []);
+      setActivities(actsRes.data || []);
     } catch (e) {
       console.error(e);
     } finally {
       setIsLoading(false);
+      hasLoadedRef.current = true;
     }
   }, [activePet, currentDate, dateStr]);
 
@@ -213,27 +439,36 @@ export default function ActivityScreen() {
 
   const isToday = new Date().toDateString() === currentDate.toDateString();
 
-  const TIME_BASED_TYPES = ['walk', 'play', 'training'];
+  // Keep a ref to the latest activities so confirmCompletion can snapshot for
+  // rollback without taking `activities` as a useCallback dep (which would make
+  // the handler — and every memoized row — churn on every list change).
+  const activitiesRef = useRef(activities);
+  activitiesRef.current = activities;
 
-  // Handle tap on the check circle
-  const handleCheckTap = (item: any) => {
-    if (!checkAccess()) return;
-    if (TIME_BASED_TYPES.includes(item.activity_type)) {
-      // Show inline duration confirmation
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      setConfirmingTaskId(item.id);
-      setConfirmingDuration(item.duration_minutes || 15);
-    } else {
-      // Instant completion for non-time tasks
-      confirmCompletion(item, null);
+  // Confirm completion (with optional duration override). Defined before
+  // handleCheckTap because that handler depends on it.
+  const confirmCompletion = useCallback(async (item: any, durationOverride: number | null) => {
+    // ── Optimistic UI FIRST — the checkmark must flip instantly, not after the
+    // network round-trip(s). Snapshot prior state so we can revert on failure. ──
+    const prevActivities = activitiesRef.current;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setConfirmingTaskId(null);
+    setActivities(prev =>
+      prev.map(a =>
+        a.id === item.id
+          ? { ...a, status: 'completed', ...(durationOverride !== null ? { duration_minutes: durationOverride } : {}) }
+          : a
+      )
+    );
+    // Award coins for activity completion (fire-and-forget)
+    if (user?.id) {
+      awardCoins(user.id, 'activity_complete', item.id);
     }
-  };
+    // Completion changes activity minutes / completion-rate (the Home activity
+    // ring), which aren't updated optimistically → force a refetch on next focus.
+    usePetContextStore.getState().invalidateContext();
 
-  // Confirm completion (with optional duration override)
-  const confirmCompletion = async (item: any, durationOverride: number | null) => {
     try {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
       const updatePayload: any = { status: 'completed' };
       if (durationOverride !== null) {
         updatePayload.duration_minutes = durationOverride;
@@ -287,26 +522,33 @@ export default function ActivityScreen() {
         }
       }
 
-      setConfirmingTaskId(null);
-
-      // Optimistic update — instantly mark completed in local state (no reload flash)
-      setActivities(prev =>
-        prev.map(a =>
-          a.id === item.id
-            ? { ...a, status: 'completed', ...(durationOverride !== null ? { duration_minutes: durationOverride } : {}) }
-            : a
-        )
-      );
-
-      // Award coins for activity completion
-      if (user?.id) {
-        awardCoins(user.id, 'activity_complete', item.id);
-      }
     } catch (e: any) {
+      // Network failed — roll the optimistic completion back so the UI stays truthful.
+      setActivities(prevActivities);
       setErrorMsg(e?.message || 'Failed to complete activity.');
       setShowError(true);
     }
-  };
+  }, [activePet, dateStr, user, awardCoins]);
+
+  // Handle tap on the check circle. Stable so memoized rows don't re-render.
+  const handleCheckTap = useCallback((item: any) => {
+    if (!hasFullAccess) { router.push('/paywall' as any); return; }
+    if (TIME_BASED_TYPES.includes(item.activity_type)) {
+      // Show inline duration confirmation
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setConfirmingTaskId(item.id);
+      setConfirmingDuration(item.duration_minutes || 15);
+    } else {
+      // Instant completion for non-time tasks
+      confirmCompletion(item, null);
+    }
+  }, [hasFullAccess, router, confirmCompletion]);
+
+  // Stable handlers passed to memoized timeline rows.
+  const handleToggleExpand = useCallback((item: any, isExpanded: boolean) => {
+    setExpandedItemId(isExpanded ? null : item.id);
+  }, []);
+  const handleCancelConfirm = useCallback(() => setConfirmingTaskId(null), []);
 
   // Generate AI Schedule
   const generateSchedule = async () => {
@@ -378,6 +620,8 @@ export default function ActivityScreen() {
         totalMinutes: data.activity_burn?.total_minutes ?? 0,
       });
       setShowScheduleSuccess(true);
+      // New schedule changes today's activities → refresh Home's "up next".
+      usePetContextStore.getState().invalidateContext();
     } catch (e: any) {
       let msg = e?.message || 'Schedule generation failed.';
 
@@ -415,11 +659,13 @@ export default function ActivityScreen() {
       setAdjustDismissed(true);
 
       const adjustMsg = result.fatigueDetected
-        ? 'A gentler, enrichment-focused plan has been created. Small steps count!'
+        ? 'A gentler, enrichment-focused plan has been created. Small steps count.'
         : `A lighter, more achievable plan has been generated across ${result.days_generated} days.`;
 
       setAdjustSuccessMsg(adjustMsg);
       setShowAdjustSuccess(true);
+      // Adjusted plan changes today's activities → refresh Home's "up next".
+      usePetContextStore.getState().invalidateContext();
     } catch (e: any) {
       setErrorMsg(e?.message || 'Adjustment failed.');
       setShowError(true);
@@ -503,6 +749,8 @@ export default function ActivityScreen() {
       if (user?.id) {
         awardCoins(user.id, 'activity_complete');
       }
+      // A manual log changes today's activity/water stats → force a Home refetch.
+      usePetContextStore.getState().invalidateContext();
     } catch (e: any) {
       setErrorMsg(e?.message || 'Failed to log activity.');
       setShowError(true);
@@ -563,349 +811,320 @@ export default function ActivityScreen() {
   const waterPct = Math.min(1, targetWater > 0 ? heroWater / targetWater : 0);
   const playPct = Math.min(1, targetPlay > 0 ? heroPlay / targetPlay : 0);
 
-  return (
-    <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
+  // Pet-voiced framing — the screen is "Bruno's mission today", not "your tasks"
+  const petName = activePet?.name?.trim() || 'your pet';
+  const allDone = totalScheduled > 0 && completedCount === totalScheduled;
 
-      {/* Top Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <View style={styles.headerLeft}>
-          <View style={styles.avatarMini}>
-            <Image
-              source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=200' }}
-              style={styles.avatarMiniImg}
-            />
-          </View>
-          <Text style={styles.headerTitle}>Pawtchi</Text>
+  // The single most important card on the screen: the next pending activity.
+  // Decision fatigue is the enemy; we surface one clear next thing to do.
+  const nextPending = activities.find(a => a.status === 'pending');
+
+  // Friendly status line that follows goal-gradient psychology
+  let missionStatus = 'Ready when you are';
+  if (completedCount > 0 && !allDone) {
+    if (completionPct < 30) missionStatus = 'Good start';
+    else if (completionPct < 70) missionStatus = 'Halfway there';
+    else missionStatus = 'Almost done';
+  }
+  if (allDone) missionStatus = 'All done';
+
+
+  return (
+    <View style={styles.container}>
+      {/* ════ STATUS STRIP — slim yellow band, date navigation only ════ */}
+      <View style={[styles.statusStrip, { paddingTop: insets.top + 10 }]}>
+        <View style={styles.statusTopRow}>
+          <Text style={styles.statusEyebrow}>ACTIVITY</Text>
+          <TouchableOpacity
+            style={styles.todayChip}
+            onPress={() => setCurrentDate(new Date())}
+            activeOpacity={0.85}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <Text style={styles.todayChipText}>{isToday ? 'TODAY' : 'JUMP TO TODAY'}</Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.bellBtn} onPress={() => router.push('/(tabs)/profile' as any)}>
-          <MaterialIcons name="settings" size={24} color="#243036" />
-        </TouchableOpacity>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.dateRow}
+        >
+          {weekDates.map((date, idx) => {
+            const isSelected = getLocalYMD(date) === dateStr;
+            const isFuture = new Date(date.setHours(0, 0, 0, 0)).getTime() > new Date().setHours(0, 0, 0, 0);
+            return (
+              <TouchableOpacity
+                key={idx}
+                style={[
+                  styles.datePill,
+                  isSelected && styles.datePillActive,
+                  isFuture && !isSelected && { opacity: 0.55 },
+                ]}
+                onPress={() => setCurrentDate(new Date(date))}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.datePillDay, isSelected && styles.datePillDayActive]}>
+                  {DAY_NAMES[date.getDay()]}
+                </Text>
+                <Text style={[styles.datePillDate, isSelected && styles.datePillDateActive]}>
+                  {date.getDate()}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-        {/* Progress Section */}
-        <View style={styles.progressSection}>
-          <Text style={styles.progressSubtitle}>Daily pulse</Text>
-          <Text style={styles.progressTitle}>Today&apos;s progress</Text>
-
-          {/* Date Slider */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateSlider}>
-            {weekDates.map((date, idx) => {
-              const isSelected = getLocalYMD(date) === dateStr;
-              const isFuture = date.setHours(0, 0, 0, 0) > new Date().setHours(0, 0, 0, 0);
-              return (
-                <TouchableOpacity
-                  key={idx}
-                  style={[
-                    styles.datePill,
-                    isSelected && styles.datePillActive,
-                    isFuture && !isSelected && { opacity: 0.6 },
-                  ]}
-                  onPress={() => setCurrentDate(new Date(date))}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[styles.datePillDay, isSelected && styles.datePillDayActive]}>
-                    {DAY_NAMES[date.getDay()]}
-                  </Text>
-                  <Text style={[styles.datePillDate, isSelected && styles.datePillDateActive]}>
-                    {date.getDate()} {MONTH_NAMES[date.getMonth()]}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          {/* Completion Badge */}
-          {totalScheduled > 0 && (
-            <View style={styles.completionBadge}>
-              <Text style={styles.completionBadgeText}>{completionPct}% Total</Text>
-            </View>
-          )}
-
-          {/* Stats Grid with SVG Rings */}
-          <View style={styles.statsGrid}>
-            {/* Calories Ring */}
-            <View style={[styles.ringCard, { backgroundColor: '#f8fafc' }]}>
-              <View style={styles.ringContainer}>
-                <Svg width={64} height={64} style={{ transform: [{ rotate: '-90deg' }] }}>
-                  <Circle cx={32} cy={32} r={28} stroke="#e2e8f0" strokeWidth={6} fill="transparent" />
-                  <Circle cx={32} cy={32} r={28} stroke="#041015" strokeWidth={6} fill="transparent"
-                    strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE * (1 - calPct)} strokeLinecap="round" />
-                </Svg>
-                <MaterialIcons name="local-fire-department" size={22} color="#041015" style={styles.ringIcon} />
-              </View>
-              <Text style={styles.ringValue}>{heroCalories}</Text>
-              <Text style={styles.ringLabel}>kcal</Text>
-            </View>
-
-            {/* Water Ring */}
-            <View style={[styles.ringCard, { backgroundColor: '#041015' }]}>
-              <View style={styles.ringContainer}>
-                <Svg width={64} height={64} style={{ transform: [{ rotate: '-90deg' }] }}>
-                  <Circle cx={32} cy={32} r={28} stroke="#1e293b" strokeWidth={6} fill="transparent" />
-                  <Circle cx={32} cy={32} r={28} stroke="#FFFC00" strokeWidth={6} fill="transparent"
-                    strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE * (1 - waterPct)} strokeLinecap="round" />
-                </Svg>
-                <MaterialIcons name="water-drop" size={22} color="#FFFC00" style={styles.ringIcon} />
-              </View>
-              <Text style={[styles.ringValue, { color: '#FFFFFF' }]}>{(heroWater / 1000).toFixed(1)}</Text>
-              <Text style={[styles.ringLabel, { color: '#94a3b8' }]}>Liters</Text>
-            </View>
-
-            {/* Play Ring */}
-            <View style={[styles.ringCard, { backgroundColor: '#f8fafc' }]}>
-              <View style={styles.ringContainer}>
-                <Svg width={64} height={64} style={{ transform: [{ rotate: '-90deg' }] }}>
-                  <Circle cx={32} cy={32} r={28} stroke="#e2e8f0" strokeWidth={6} fill="transparent" />
-                  <Circle cx={32} cy={32} r={28} stroke="#041015" strokeWidth={6} fill="transparent"
-                    strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE * (1 - playPct)} strokeLinecap="round" />
-                </Svg>
-                <MaterialIcons name="sports-tennis" size={22} color="#041015" style={styles.ringIcon} />
-              </View>
-              <Text style={styles.ringValue}>{heroPlay}</Text>
-              <Text style={styles.ringLabel}>Mins</Text>
-            </View>
-          </View>
-
-          {/* Activity Burn Contribution Card */}
-          {lastBurnSummary && (
-            <View style={[styles.burnCard, { marginTop: 16 }]}>
-              <View style={styles.burnCardLeft}>
-                <MaterialIcons name="local-fire-department" size={20} color="#FFFC00" />
-                <Text style={styles.burnCardLabel}>Activity Burn</Text>
-              </View>
-              <View style={styles.burnCardStats}>
-                <Text style={styles.burnCardValue}>{lastBurnSummary.weeklyKcal} kcal/wk</Text>
-                <View style={styles.burnCardBadge}>
-                  <Text style={styles.burnCardBadgeText}>{lastBurnSummary.deficitPct}% of deficit</Text>
-                </View>
-              </View>
-            </View>
-          )}
-        </View>
-
-        {/* Auto-Adjustment Banner */}
-        {showAdjustBanner && isToday && (
-          <View style={styles.adjustBanner}>
-            <View style={styles.adjustBannerTop}>
-              <MaterialIcons name="self-improvement" size={28} color="#92400e" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.adjustBannerTitle}>Busy week?</Text>
-                <Text style={styles.adjustBannerDesc}>
-                  {weeklyStats && weeklyStats.skipped > weeklyStats.completed
-                    ? `I noticed most tasks were skipped this week. Let me create a gentler plan with enrichment activities your pet will love.`
-                    : `I noticed some tasks were missed. Want me to build a lighter, more achievable plan based on what's been working?`
-                  }
-                </Text>
-              </View>
-            </View>
-            <View style={styles.adjustBannerActions}>
-              <PawtchiButton
-                title="Yes, adjust my plan"
-                onPress={adjustSchedule}
-                loading={isAdjusting}
-                size="medium"
-                style={{ flex: 1 }}
-              />
-              <PawtchiButton
-                title="I'm good"
-                variant="ghost"
-                onPress={() => { setShowAdjustBanner(false); setAdjustDismissed(true); }}
-                size="medium"
-                style={{ flex: 1 }}
-                textStyle={{ color: '#856404' }}
-              />
-            </View>
-          </View>
-        )}
-
-        {/* Activity Feed */}
-        <View style={styles.feedSection}>
-          <View style={styles.feedHeader}>
-            <Text style={styles.feedTitle}>Timeline</Text>
-            {pendingCount > 0 && (
-              <View style={[styles.pendingBadge, { backgroundColor: '#FEF3C7' }]}>
-                <Text style={styles.pendingBadgeText}>{pendingCount} pending</Text>
-              </View>
-            )}
-          </View>
-
-          {isLoading ? (
-            <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#FFFC00" />
-          ) : activities.length === 0 ? (
-            <View style={styles.emptyState}>
-              <MaterialIcons name="event-note" size={48} color="#FFFC00" style={{ marginBottom: 16 }} />
-              <Text style={styles.emptyTitle}>No Schedule Yet</Text>
-              <Text style={styles.emptyDesc}>
-                Let our AI coach plan your pet&apos;s week!{"\n"}
-                Walks, water, play, and grooming — all tailored to {activePet?.name || 'your pet'}&apos;s profile.
+        {/* ════ MISSION HERO — pet-voiced, the day's narrative ════ */}
+        <Animated.View entering={FadeInDown.duration(420)}>
+          {activities.length === 0 && !isLoading ? (
+            // Empty-state hero: prominent generate moment
+            <View style={styles.missionEmpty}>
+              <Text style={styles.missionEmptyEyebrow}>{petName.toUpperCase()}&apos;S WEEK</Text>
+              <Text style={styles.missionEmptyTitle}>
+                Build {petName}&apos;s{'\n'}first week.
+              </Text>
+              <Text style={styles.missionEmptyBody}>
+                Pawtchi plans walks, water, play, and grooming for {petName} —
+                tuned to their breed, weight, and goal.
               </Text>
               <PawtchiButton
-                title={isGenerating ? "Generating Schedule..." : "Generate 7-day plan"}
+                title={isGenerating ? 'Planning…' : 'Generate 7-day plan'}
                 variant="primary"
-                iconName={isGenerating ? undefined : "add-circle"}
+                size="large"
+                iconName={isGenerating ? undefined : 'auto-awesome'}
                 iconPosition="left"
                 loading={isGenerating}
                 onPress={generateSchedule}
-                style={{ width: '100%' }}
+                style={{ marginTop: space.lg }}
               />
             </View>
+          ) : totalScheduled > 0 ? (
+            <View style={styles.mission}>
+              <View style={styles.missionHead}>
+                <Text style={styles.missionEyebrow}>{petName.toUpperCase()}&apos;S MISSION TODAY</Text>
+                {allDone && (
+                  <View style={styles.missionDoneBadge}>
+                    <MaterialIcons name="check-circle" size={13} color={color.yellow} />
+                    <Text style={styles.missionDoneBadgeText}>ALL DONE</Text>
+                  </View>
+                )}
+              </View>
+
+              {allDone ? (
+                <>
+                  <Text style={styles.missionDoneTitle}>All done.</Text>
+                  <Text style={styles.missionDoneBody}>
+                    A good day with you. Tomorrow&apos;s plan is ready when {petName} is.
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <View style={styles.missionFractionRow}>
+                    <Text style={styles.missionFractionNum}>
+                      {completedCount}
+                      <Text style={styles.missionFractionOf}> / {totalScheduled}</Text>
+                    </Text>
+                    <Text style={styles.missionStatus}>{missionStatus}</Text>
+                  </View>
+                  <View style={styles.missionTrack}>
+                    <View style={[styles.missionFill, { width: `${completionPct}%` }]} />
+                  </View>
+                </>
+              )}
+
+              {/* Stat strip: moving · water · activity-burn */}
+              <View style={styles.missionStatRow}>
+                <View style={styles.missionStat}>
+                  <Text style={styles.missionStatValue}>{heroPlay}<Text style={styles.missionStatUnit}> min</Text></Text>
+                  <Text style={styles.missionStatLabel}>moving</Text>
+                </View>
+                <View style={styles.missionStatDivider} />
+                <View style={styles.missionStat}>
+                  <Text style={styles.missionStatValue}>
+                    {heroWater >= 1000 ? `${(heroWater / 1000).toFixed(1)}L` : `${heroWater}ml`}
+                  </Text>
+                  <Text style={styles.missionStatLabel}>water</Text>
+                </View>
+                <View style={styles.missionStatDivider} />
+                <View style={styles.missionStat}>
+                  <Text style={styles.missionStatValue}>
+                    {lastBurnSummary?.dailyKcal ? `${lastBurnSummary.dailyKcal}` : '—'}
+                    {lastBurnSummary?.dailyKcal ? <Text style={styles.missionStatUnit}> kcal</Text> : null}
+                  </Text>
+                  <Text style={styles.missionStatLabel}>activity burn</Text>
+                </View>
+              </View>
+            </View>
           ) : (
-            <View style={styles.timelineList}>
-              {timeline.map((item, idx) => {
-                const isFood = item._feedType === 'food';
-                const isPending = item.status === 'pending';
-                const isCompleted = item.status === 'completed';
-                const isSkipped = item.status === 'skipped';
-                const timeStr = item.scheduled_time
-                  ? item.scheduled_time.slice(0, 5)
-                  : new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                const isLastItem = idx === timeline.length - 1;
+            // Loading or fallback
+            <View style={styles.missionLoading}>
+              <ActivityIndicator color={color.navy} />
+            </View>
+          )}
+        </Animated.View>
 
-                if (isFood) {
-                  return (
-                    <View key={`food-${item.id}`} style={styles.tlItem}>
-                      {/* Timeline dot */}
-                      <View style={styles.tlDotCol}>
-                        <View style={[styles.tlDot, styles.tlDotCompleted]}>
-                          <MaterialIcons name="check" size={12} color="#041015" />
-                        </View>
-                        {!isLastItem && <View style={styles.tlLine} />}
-                      </View>
-                      {/* Card */}
-                      <View style={styles.tlCard}>
-                        <Text style={styles.tlTime}>{timeStr}</Text>
-                        <Text style={styles.tlTitle}>{item.ai_identified_food || 'Food'}</Text>
-                        <Text style={styles.tlDesc}>{item.ai_estimated_calories} calories logged</Text>
-                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-                          <View style={styles.tlBadge}>
-                            <Text style={styles.tlBadgeText}>{item.ai_estimated_calories} KCAL</Text>
-                          </View>
-                        </View>
-                        <View style={styles.tlWatermark}>
-                          <MaterialIcons name="restaurant" size={100} color="rgba(255,255,255,0.06)" />
-                        </View>
-                      </View>
+        {/* ════ UP NEXT — the single highest-priority action ════ */}
+        {nextPending && (
+          <Animated.View entering={FadeInDown.duration(420).delay(60)} exiting={FadeOut.duration(180)} layout={LinearTransition.duration(220)}>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>UP NEXT</Text>
+              <View style={styles.sectionRule} />
+            </View>
+            {(() => {
+              const typeDef = ACTIVITY_TYPES.find(t => t.id === nextPending.activity_type) || ACTIVITY_TYPES[0];
+              const timeStr = nextPending.scheduled_time
+                ? nextPending.scheduled_time.slice(0, 5)
+                : '';
+              const meta: string[] = [];
+              if (nextPending.duration_minutes) meta.push(`${nextPending.duration_minutes} min`);
+              if (nextPending.intensity) meta.push(nextPending.intensity);
+              if (nextPending.water_ml) meta.push(`${nextPending.water_ml} ml`);
+              return (
+                <View style={styles.upNextCard}>
+                  <View style={styles.upNextRow}>
+                    <View style={styles.upNextIcon}>
+                      <MaterialIcons name={typeDef.icon as any} size={24} color={color.yellow} />
                     </View>
-                  );
-                }
-
-                const typeDef = ACTIVITY_TYPES.find(t => t.id === item.activity_type) || ACTIVITY_TYPES[0];
-                const metricLabel = item.water_ml ? `${item.water_ml} ML` : item.duration_minutes ? `${item.duration_minutes} MIN` : null;
-
-                return (
-                  <View key={`act-${item.id}`} style={[styles.tlItem, isSkipped && { opacity: 0.4 }]}>
-                    {/* Timeline dot — visual indicator only */}
-                    <View style={styles.tlDotCol}>
-                      {isPending ? (
-                        <View style={[styles.tlDot, styles.tlDotPending]}>
-                          <View style={styles.tlDotPendingInner} />
-                        </View>
-                      ) : (
-                        <View style={[styles.tlDot, isCompleted ? styles.tlDotCompleted : styles.tlDotSkipped]}>
-                          <MaterialIcons name={isCompleted ? "check" : "close"} size={12} color={isCompleted ? "#041015" : "#9ca3af"} />
-                        </View>
-                      )}
-                      {!isLastItem && <View style={styles.tlLine} />}
-                    </View>
-
-                    {/* Card */}
-                    <View style={[styles.tlCard, isSkipped && { borderStyle: 'dashed' as any, borderWidth: 2, borderColor: '#e2e8f0', backgroundColor: 'transparent' }]}>
-                      <View style={{ position: 'relative', zIndex: 10 }}>
-                        <Text style={[styles.tlTime, isSkipped && { color: '#94a3b8' }]}>{timeStr}</Text>
-                        <Text style={[styles.tlTitle, isSkipped && { color: '#94a3b8' }]}>{item.title}</Text>
-                        {!!item.notes && <Text style={styles.tlDesc}>{item.notes}</Text>}
-
-                        {/* Tags row */}
-                        <View style={styles.tlTagsRow}>
-                          {!!item.duration_minutes && !item.distance_km && ['walk', 'play'].includes(item.activity_type) && activePet?.current_weight_kg && (
-                            <Text style={styles.tlDescSmall}>{contextualizeWalk(item.duration_minutes, activePet.current_weight_kg)}</Text>
-                          )}
-                          {!!item.distance_km && (
-                            <Text style={styles.tlDescSmall}>{item.distance_km} km</Text>
-                          )}
-                          <View style={{ flex: 1 }} />
-                          {metricLabel && (
-                            <View style={styles.tlBadge}>
-                              <Text style={styles.tlBadgeText}>{metricLabel}</Text>
-                            </View>
-                          )}
-                        </View>
-
-                        {/* Mark as Done CTA — only on pending items, before confirmation */}
-                        {isPending && confirmingTaskId !== item.id && (
-                          <TouchableOpacity
-                            style={styles.markDoneBtn}
-                            onPress={() => handleCheckTap(item)}
-                            activeOpacity={0.85}
-                          >
-                            <MaterialIcons name="check-circle-outline" size={18} color="#041015" />
-                            <Text style={styles.markDoneBtnText}>Mark as done</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-
-                      {/* Watermark icon */}
-                      {!isSkipped && (
-                        <View style={styles.tlWatermark}>
-                          <MaterialIcons name={typeDef.icon as any} size={100} color="rgba(255,255,255,0.06)" />
-                        </View>
-                      )}
-
-                      {/* Smart Completion Inline UI */}
-                      {confirmingTaskId === item.id && (
-                        <View style={styles.smartConfirm}>
-                          <Text style={styles.smartConfirmLabel}>How long did you go?</Text>
-                          <View style={styles.smartConfirmRow}>
-                            {[5, 10, 15, 20, 30, 45, 60].map(mins => {
-                              const isScheduled = mins === (item.duration_minutes || 15);
-                              const isSelected = mins === confirmingDuration;
-                              return (
-                                <TouchableOpacity
-                                  key={mins}
-                                  style={[
-                                    styles.smartChip,
-                                    isSelected && styles.smartChipActive,
-                                    isScheduled && !isSelected && styles.smartChipScheduled,
-                                  ]}
-                                  onPress={() => setConfirmingDuration(mins)}
-                                >
-                                  <Text style={[styles.smartChipText, isSelected && styles.smartChipTextActive]}>{mins}m</Text>
-                                  {isScheduled && !isSelected && <Text style={styles.smartChipHint}>✓</Text>}
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </View>
-                          <View style={styles.smartConfirmActions}>
-                            <TouchableOpacity style={styles.smartDoneBtn} onPress={() => confirmCompletion(item, confirmingDuration)}>
-                              <MaterialIcons name="check" size={18} color="#1A1A1A" />
-                              <Text style={styles.smartDoneBtnText}>Done</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={styles.smartCancelBtn} onPress={() => setConfirmingTaskId(null)}>
-                              <Text style={styles.smartCancelBtnText}>Cancel</Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
+                    <View style={styles.upNextBody}>
+                      <Text style={styles.upNextTime}>{timeStr || 'When you can'}</Text>
+                      <Text style={styles.upNextTitle} numberOfLines={1}>{nextPending.title}</Text>
+                      {meta.length > 0 && (
+                        <Text style={styles.upNextMeta}>{meta.join(' · ')}</Text>
                       )}
                     </View>
                   </View>
+                  {confirmingTaskId !== nextPending.id ? (
+                    <TouchableOpacity
+                      style={styles.upNextCta}
+                      onPress={() => handleCheckTap(nextPending)}
+                      activeOpacity={0.9}
+                    >
+                      <MaterialIcons name="check" size={17} color={color.navy} />
+                      <Text style={styles.upNextCtaText}>Mark done</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <SmartConfirm
+                      item={nextPending}
+                      petName={petName}
+                      confirmingDuration={confirmingDuration}
+                      onSelectDuration={setConfirmingDuration}
+                      onConfirm={confirmCompletion}
+                      onCancel={handleCancelConfirm}
+                    />
+                  )}
+                </View>
+              );
+            })()}
+          </Animated.View>
+        )}
+
+        {/* ════ ADJUST BANNER — calm, supportive tone ════ */}
+        {showAdjustBanner && isToday && (
+          <Animated.View entering={FadeInDown.duration(420).delay(80)} style={styles.adjustBanner}>
+            <View style={styles.adjustBannerHead}>
+              <MaterialIcons name="spa" size={20} color={color.navy} />
+              <Text style={styles.adjustBannerTitle}>Let&apos;s lighten this week</Text>
+            </View>
+            <Text style={styles.adjustBannerDesc}>
+              {weeklyStats && weeklyStats.skipped > weeklyStats.completed
+                ? `Most of last week's tasks were skipped. Pawtchi can build a gentler plan ${petName} will actually keep.`
+                : `A few tasks slipped this week. Pawtchi can rebuild a lighter plan around what's been working for ${petName}.`}
+            </Text>
+            <View style={styles.adjustBannerActions}>
+              <TouchableOpacity
+                style={styles.adjustPrimary}
+                onPress={adjustSchedule}
+                disabled={isAdjusting}
+                activeOpacity={0.9}
+              >
+                {isAdjusting ? (
+                  <ActivityIndicator color={color.navy} size="small" />
+                ) : (
+                  <Text style={styles.adjustPrimaryText}>Adjust the plan</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.adjustSecondary}
+                onPress={() => { setShowAdjustBanner(false); setAdjustDismissed(true); }}
+              >
+                <Text style={styles.adjustSecondaryText}>Not now</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        )}
+
+        {/* ════ TIMELINE — slim editorial, dot + rail ════ */}
+        {!isLoading && activities.length > 0 && (
+          <Animated.View entering={FadeInDown.duration(420).delay(120)} layout={LinearTransition.duration(220)}>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>TIMELINE</Text>
+              <View style={styles.sectionRule} />
+              {pendingCount > 0 && (
+                <Text style={styles.sectionMeta}>{pendingCount} pending</Text>
+              )}
+            </View>
+            <View style={styles.timeline}>
+              {timeline.map((item, idx) => {
+                const isConfirming = confirmingTaskId === item.id;
+                return (
+                  <TimelineRow
+                    key={item._feedType === 'food' ? `food-${item.id}` : `act-${item.id}`}
+                    item={item}
+                    isLast={idx === timeline.length - 1}
+                    isExpanded={expandedItemId === item.id}
+                    isConfirming={isConfirming}
+                    // Normalize to -1 when not confirming so unrelated rows keep an
+                    // identical prop and React.memo can skip them on duration changes.
+                    confirmingDuration={isConfirming ? confirmingDuration : -1}
+                    petName={petName}
+                    currentWeightKg={activePet?.current_weight_kg}
+                    onToggleExpand={handleToggleExpand}
+                    onCheckTap={handleCheckTap}
+                    onSelectDuration={setConfirmingDuration}
+                    onConfirm={confirmCompletion}
+                    onCancel={handleCancelConfirm}
+                  />
                 );
               })}
             </View>
-          )}
-        </View>
+          </Animated.View>
+        )}
+
+        {/* ════ ACTIVITY BURN — micro context card, only when interesting ════ */}
+        {lastBurnSummary && lastBurnSummary.weeklyKcal > 0 && (
+          <Animated.View entering={FadeInDown.duration(420).delay(160)} style={styles.burnCard}>
+            <View style={styles.burnCardLeft}>
+              <View style={styles.burnIcon}>
+                <MaterialIcons name="local-fire-department" size={16} color={color.viz.calories} />
+              </View>
+              <View>
+                <Text style={styles.burnLabel}>{petName}&apos;s burn this week</Text>
+                <Text style={styles.burnSub}>{lastBurnSummary.totalMinutes} min · {lastBurnSummary.dailyKcal} kcal/day</Text>
+              </View>
+            </View>
+            <View style={styles.burnBadge}>
+              <Text style={styles.burnBadgeText}>{lastBurnSummary.deficitPct}% of deficit</Text>
+            </View>
+          </Animated.View>
+        )}
+
+        {isLoading && (
+          <ActivityIndicator style={{ marginTop: 32 }} size="small" color={color.navy} />
+        )}
       </ScrollView>
 
-      {/* FAB */}
+      {/* Log activity FAB — yellow pill, sticks above the tab bar */}
       <TouchableOpacity
-        style={[styles.fab, { backgroundColor: '#FFFC00', bottom: insets.bottom + 90 }]}
+        style={[styles.fab, { bottom: insets.bottom + 78 }, (isLoading || !activePet) && styles.fabDisabled]}
         activeOpacity={0.9}
+        disabled={isLoading || !activePet}
         onPress={() => setIsModalVisible(true)}
       >
-        <View style={styles.fabInner}>
-          <MaterialIcons name="add" size={32} color="#1A1A1A" />
-        </View>
+        <MaterialIcons name="add" size={20} color={color.navy} />
+        <Text style={styles.fabText}>Log activity</Text>
       </TouchableOpacity>
 
       {/* LOG ACTIVITY MODAL / BOTTOM SHEET */}
@@ -1007,7 +1226,7 @@ export default function ActivityScreen() {
                         step={5}
                         value={formDuration}
                         onValueChange={setFormDuration}
-                        minimumTrackTintColor="#FFFC00"
+                        minimumTrackTintColor="#F7F602"
                         maximumTrackTintColor="#f3f4f6"
                         thumbTintColor="#1A1A1A"
                       />
@@ -1104,7 +1323,7 @@ export default function ActivityScreen() {
           fetchData();
         }}
         title="Schedule created"
-        icon={{ name: 'check-circle', color: '#FFFC00' }}
+        icon={{ name: 'check-circle', color: '#F7F602' }}
         lines={[
           {
             text: `${scheduleSuccessData?.activitiesCreated} activities planned across ${scheduleSuccessData?.daysGenerated} days — starting today. Your schedule begins now.`,
@@ -1134,7 +1353,7 @@ export default function ActivityScreen() {
           fetchData();
         }}
         title="Schedule adjusted"
-        icon={{ name: 'self-improvement', color: '#FFFC00' }}
+        icon={{ name: 'self-improvement', color: '#F7F602' }}
         lines={[
           { text: adjustSuccessMsg, type: 'normal' },
         ]}
@@ -1162,348 +1381,784 @@ export default function ActivityScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 24, paddingBottom: 16, backgroundColor: '#FFFFFF',
-    zIndex: 50, borderBottomWidth: 1, borderBottomColor: '#f1f5f9',
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatarMini: {
-    width: 44, height: 44, borderRadius: 22, overflow: 'hidden',
-    borderWidth: 2.5, borderColor: '#FFFC00',
-  },
-  avatarMiniImg: { width: '100%', height: '100%' },
-  headerTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 22,
-    letterSpacing: -0.5, color: '#243036',
-  },
-  bellBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'flex-end' },
-  scrollContent: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 160 },
+  container: { flex: 1, backgroundColor: color.surfaceSubtle },
+  scrollContent: { flexGrow: 1, paddingHorizontal: space.xxl, paddingTop: space.lg, paddingBottom: 180 },
 
-  // Progress Section
-  progressSection: { marginBottom: 28 },
-  progressSubtitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11,
-    letterSpacing: 2, color: '#94a3b8', marginBottom: 4,
+  // ════ Status strip ════
+  statusStrip: {
+    backgroundColor: color.yellow,
+    paddingHorizontal: space.xxl,
+    paddingBottom: 0,
   },
-  progressTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 26,
-    letterSpacing: -0.5, color: '#0f172a', marginBottom: 20,
+  statusTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.md,
   },
-
-  // Date Slider
-  dateSlider: { gap: 10, paddingVertical: 4, marginBottom: 20 },
+  statusEyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 3,
+    color: 'rgba(7, 32, 42, 0.62)',
+  },
+  todayChip: {
+    borderWidth: 1,
+    borderColor: 'rgba(7, 32, 42, 0.22)',
+    borderRadius: radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  todayChipText: {
+    fontFamily: font.bold,
+    fontSize: 10.5,
+    letterSpacing: 1.2,
+    color: color.navy,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingBottom: space.md,
+  },
   datePill: {
-    paddingHorizontal: 18, paddingVertical: 12, borderRadius: 16,
-    backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', alignItems: 'center',
+    width: 48,
+    paddingVertical: 8,
+    borderRadius: radius.md,
+    backgroundColor: 'rgba(7, 32, 42, 0.06)',
+    alignItems: 'center',
   },
   datePillActive: {
-    backgroundColor: '#FFFC00', borderColor: '#FFFC00',
-    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    backgroundColor: color.navy,
   },
   datePillDay: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 11,
-    letterSpacing: 1, color: '#94a3b8', marginBottom: 2,
+    fontFamily: font.semibold,
+    fontSize: 9.5,
+    letterSpacing: 0.8,
+    color: 'rgba(7, 32, 42, 0.62)',
+    marginBottom: 2,
   },
-  datePillDayActive: { color: '#0f172a' },
+  datePillDayActive: { color: color.creamDim },
   datePillDate: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 13, color: '#475569',
+    fontFamily: font.bold,
+    fontSize: 15,
+    color: color.navy,
+    letterSpacing: -0.3,
   },
-  datePillDateActive: { color: '#0f172a' },
+  datePillDateActive: { color: color.cream },
 
-  // Completion Badge
-  completionBadge: {
-    alignSelf: 'flex-start', backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0',
-    paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, marginBottom: 20,
+  // ════ Mission hero — pet-voiced narrative ════
+  mission: {
+    backgroundColor: color.navy,
+    borderRadius: 28,
+    padding: space.xxl,
+    marginTop: space.lg,
+    ...shadow.raised,
   },
-  completionBadgeText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 13, color: '#16a34a',
+  missionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.lg,
   },
-
-  // Stats Grid & Rings
-  statsGrid: { flexDirection: 'row', gap: 12 },
-  ringCard: {
-    flex: 1, borderRadius: 20, padding: 16, alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+  missionEyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 2.4,
+    color: color.yellow,
+    flex: 1,
   },
-  ringContainer: {
-    width: 64, height: 64, justifyContent: 'center', alignItems: 'center', marginBottom: 10,
+  missionDoneBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: color.navyRaised,
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
   },
-  ringIcon: { position: 'absolute' },
-  ringValue: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18, color: '#0f172a',
+  missionDoneBadgeText: {
+    fontFamily: font.bold,
+    fontSize: 9.5,
+    letterSpacing: 0.8,
+    color: color.yellow,
   },
-  ringLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '600', fontSize: 11, color: '#94a3b8', marginTop: 2,
+  missionFractionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    marginBottom: space.md,
   },
-
-  // Feed Section
-  feedSection: { marginTop: 28, marginBottom: 32 },
-  feedHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24,
+  missionFractionNum: {
+    fontFamily: font.display,
+    fontSize: 64,
+    lineHeight: 60,
+    letterSpacing: 1,
+    color: color.cream,
   },
-  feedTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 22, letterSpacing: -0.5, color: '#0f172a',
+  missionFractionOf: {
+    fontSize: 26,
+    color: color.creamFaint,
   },
-  pendingBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16 },
-  pendingBadgeText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 12, color: '#92400e',
+  missionStatus: {
+    fontFamily: font.medium,
+    fontSize: 13,
+    color: color.creamDim,
+    marginBottom: 6,
   },
-
-  // Empty State
-  emptyState: {
-    alignItems: 'center', padding: 40, backgroundColor: '#f8fafc', borderRadius: 24,
-    borderWidth: 1, borderColor: '#e2e8f0',
+  missionTrack: {
+    height: 5,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(244, 241, 236, 0.12)',
+    overflow: 'hidden',
+    marginBottom: space.xl,
   },
-  emptyTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18, color: '#1A1A1A', marginBottom: 8,
+  missionFill: {
+    height: 5,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
   },
-  emptyDesc: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 14, color: '#6b7280',
-    textAlign: 'center', lineHeight: 20, marginBottom: 24,
+  missionStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: color.hairlineOnNavy,
   },
-  generateBtn: { borderRadius: 32, overflow: 'hidden', width: '100%' },
-  generateGradient: { paddingVertical: 16, alignItems: 'center', justifyContent: 'center' },
-  generateText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 16, color: '#1A1A1A' },
-
-  // Timeline Items
-  timelineList: { gap: 0 },
-  tlItem: { flexDirection: 'row', gap: 16 },
-  tlDotCol: { alignItems: 'center', width: 28 },
-  tlDot: {
-    width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center',
-    borderWidth: 2, borderColor: '#e2e8f0', backgroundColor: '#FFFFFF',
+  missionStat: { flex: 1 },
+  missionStatDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: color.hairlineOnNavy,
+    marginHorizontal: space.sm,
   },
-  tlDotCompleted: {
-    backgroundColor: '#FFFC00', borderColor: '#FFFC00',
+  missionStatValue: {
+    fontFamily: font.display,
+    fontSize: 22,
+    lineHeight: 22,
+    letterSpacing: 0.4,
+    color: color.cream,
   },
-  tlDotPending: {
-    backgroundColor: '#FFFC00', borderColor: '#FFFC00',
-    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6, shadowRadius: 6, elevation: 4,
+  missionStatUnit: {
+    fontSize: 12,
+    color: color.creamFaint,
   },
-  tlDotPendingInner: {
-    width: 8, height: 8, borderRadius: 4, backgroundColor: '#041015',
+  missionStatLabel: {
+    fontFamily: font.medium,
+    fontSize: 10.5,
+    letterSpacing: 0.4,
+    color: color.creamFaint,
+    marginTop: 3,
   },
-  tlDotSkipped: {
-    backgroundColor: '#f1f5f9', borderColor: '#e2e8f0',
+  missionDoneTitle: {
+    fontFamily: font.display,
+    fontSize: 48,
+    lineHeight: 48,
+    letterSpacing: 1,
+    color: color.cream,
+    marginBottom: 6,
   },
-  tlLine: {
-    width: 2, flex: 1, backgroundColor: '#e2e8f0', marginVertical: 4,
+  missionDoneBody: {
+    fontFamily: font.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: color.creamDim,
+    marginBottom: space.xl,
   },
-  tlCard: {
-    flex: 1, backgroundColor: '#041015', borderRadius: 20, padding: 20,
-    marginBottom: 16, overflow: 'hidden', position: 'relative',
-  },
-  tlTime: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11,
-    letterSpacing: 1.5, color: '#FFFC00', marginBottom: 6,
-  },
-  tlTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 17,
-    color: '#FFFFFF', marginBottom: 4,
-  },
-  tlDesc: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 13, color: '#94a3b8',
-    lineHeight: 18, marginBottom: 12,
-  },
-  tlDescSmall: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 12, color: '#64748b',
-  },
-  tlTagsRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4,
-  },
-  tlBadge: {
-    backgroundColor: 'rgba(255,252,0,0.15)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12,
-  },
-  tlBadgeText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11,
-    letterSpacing: 1, color: '#FFFC00',
-  },
-  tlWatermark: {
-    position: 'absolute', bottom: -10, right: -10,
-  },
-
-  // Mark as Done CTA
-  markDoneBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, marginTop: 16,
-    backgroundColor: '#FFFC00', borderRadius: 14,
-    paddingVertical: 12, paddingHorizontal: 20,
-    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
-  },
-  markDoneBtnText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 14,
-    color: '#041015', letterSpacing: 0.3,
-  },
-
-  // FAB
-  fab: {
-    position: 'absolute', right: 24,
-    shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35, shadowRadius: 16, elevation: 10, borderRadius: 32,
-  },
-  fabInner: {
-    width: 64, height: 64, borderRadius: 32,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 4, borderColor: '#FFFFFF',
+  missionLoading: {
+    minHeight: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
-  // Modal
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
-  modalContent: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 32, borderTopRightRadius: 32,
-    padding: 24, paddingBottom: Platform.OS === 'ios' ? 40 : 24, maxHeight: '90%',
+  // Empty-state hero (no schedule yet)
+  missionEmpty: {
+    backgroundColor: color.navy,
+    borderRadius: 28,
+    padding: space.xxl,
+    marginTop: space.lg,
+    ...shadow.raised,
   },
-  modalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24,
+  missionEmptyEyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 2.4,
+    color: color.yellow,
+    marginBottom: space.md,
   },
-  modalTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 24, color: '#1A1A1A',
+  missionEmptyTitle: {
+    fontFamily: font.display,
+    fontSize: 42,
+    lineHeight: 42,
+    letterSpacing: 1,
+    color: color.cream,
+    marginBottom: space.md,
   },
-  bentoGrid: { gap: 16 },
-  bentoHero: {
-    width: '100%', height: 130, borderRadius: 32, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 10, elevation: 5,
-  },
-  heroOverlay: {
-    flex: 1, padding: 24, justifyContent: 'flex-end', alignItems: 'flex-start',
-  },
-  heroLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 28, color: '#1A1A1A', marginTop: 8,
-  },
-  bentoRow: { flexDirection: 'row', gap: 16 },
-  bentoSquare: {
-    flex: 1, height: 120, borderRadius: 32, padding: 24, justifyContent: 'flex-end', alignItems: 'flex-start',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 4,
-  },
-  bentoLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 18, color: '#1A1A1A', marginTop: 12,
-  },
-  bentoTagsScroll: { gap: 12, paddingVertical: 8, paddingHorizontal: 4 },
-  bentoTag: {
-    flexDirection: 'row', alignItems: 'center', padding: 8, paddingRight: 18, borderRadius: 100, gap: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
-  },
-  bentoTagIconBox: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.4)', justifyContent: 'center', alignItems: 'center',
-  },
-  bentoTagLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 15, color: '#1A1A1A',
-  },
-  inputGroup: { marginBottom: 20 },
-  inputLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#515d64', marginBottom: 8,
-  },
-  input: {
-    backgroundColor: '#F8FAFC', borderRadius: 20, paddingHorizontal: 18, paddingVertical: 16,
-    fontFamily: 'Plus Jakarta Sans', fontSize: 16, color: '#1A1A1A',
-    borderWidth: 1, borderColor: '#e2e8f0', shadowColor: '#000', shadowOpacity: 0.03, shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 1,
-  },
-  presetRow: { flexDirection: 'row', gap: 8, backgroundColor: '#f1f5f9', padding: 6, borderRadius: 20 },
-  presetBtn: {
-    flex: 1, paddingVertical: 12, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-  },
-  presetBtnActive: {
-    backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.08, shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, elevation: 2,
-  },
-  presetBtnText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#64748b',
-  },
-  submitBtn: { marginTop: 8, borderRadius: 32, overflow: 'hidden' },
-  submitGradient: { paddingVertical: 16, alignItems: 'center' },
-  submitText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 16, color: '#1A1A1A' },
-  cancelBtn: { paddingVertical: 16, alignItems: 'center', marginTop: 8 },
-  cancelText: { fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 16, color: '#6b7280' },
-
-  // Auto-Adjustment Banner
-  adjustBanner: {
-    backgroundColor: '#FFFBEB', borderRadius: 24, padding: 24, marginTop: 24,
-    borderWidth: 1, borderColor: '#FDE68A',
-  },
-  adjustBannerTop: {
-    flexDirection: 'row', gap: 16, alignItems: 'flex-start', marginBottom: 20,
-  },
-  adjustBannerTitle: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 18, color: '#92400e', marginBottom: 4,
-  },
-  adjustBannerDesc: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 14, lineHeight: 20, color: '#78350f',
-  },
-  adjustBannerActions: { flexDirection: 'row', gap: 12 },
-  adjustBtnYes: {
-    flex: 1, backgroundColor: '#FFFC00', borderRadius: 16, paddingVertical: 14, alignItems: 'center',
-  },
-  adjustBtnYesText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 14, color: '#1A1A1A',
-  },
-  adjustBtnNo: {
-    flex: 1, backgroundColor: '#FEF3C7', borderRadius: 16, paddingVertical: 14, alignItems: 'center',
-  },
-  adjustBtnNoText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#92400e',
+  missionEmptyBody: {
+    fontFamily: font.regular,
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: color.creamDim,
   },
 
-  // Smart Completion
+  // ════ Section heads ════
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginTop: space.xxl,
+    marginBottom: space.md,
+  },
+  sectionLabel: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 2.4,
+    color: color.slateFaint,
+  },
+  sectionRule: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#ece9e2',
+  },
+  sectionMeta: {
+    fontFamily: font.bold,
+    fontSize: 11,
+    color: color.alert,
+  },
+
+  // ════ Up next card — the prominent action ════
+  upNextCard: {
+    backgroundColor: color.surface,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    padding: space.lg,
+    ...shadow.card,
+  },
+  upNextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginBottom: space.md,
+  },
+  upNextIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.lg,
+    backgroundColor: color.navy,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  upNextBody: { flex: 1, minWidth: 0 },
+  upNextTime: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 0.8,
+    color: color.slateFaint,
+    marginBottom: 2,
+  },
+  upNextTitle: {
+    fontFamily: font.bold,
+    fontSize: 16,
+    color: color.ink,
+    letterSpacing: -0.2,
+  },
+  upNextMeta: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slateMuted,
+    marginTop: 3,
+  },
+  upNextCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: color.yellow,
+    borderRadius: radius.pill,
+    paddingVertical: 11,
+  },
+  upNextCtaText: {
+    fontFamily: font.bold,
+    fontSize: 13.5,
+    color: color.navy,
+    letterSpacing: 0.2,
+  },
+
+  // ════ Smart confirm (inline duration picker) ════
   smartConfirm: {
-    marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)',
-    position: 'relative', zIndex: 20,
+    marginTop: space.sm,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.md,
+    padding: space.md,
   },
   smartConfirmLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8', marginBottom: 12,
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slate,
+    marginBottom: space.sm,
   },
-  smartConfirmRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
+  smartConfirmRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: space.sm,
+  },
   smartChip: {
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center',
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.hairline,
   },
-  smartChipActive: { backgroundColor: '#FFFC00' },
-  smartChipScheduled: { borderWidth: 2, borderColor: 'rgba(255,255,255,0.2)' },
+  smartChipActive: {
+    backgroundColor: color.navy,
+    borderColor: color.navy,
+  },
+  smartChipScheduled: {
+    borderColor: color.yellow,
+  },
   smartChipText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8',
+    fontFamily: font.bold,
+    fontSize: 12,
+    color: color.ink,
   },
-  smartChipTextActive: { color: '#1A1A1A' },
-  smartChipHint: {
-    fontFamily: 'Plus Jakarta Sans', fontSize: 10, color: '#64748b', marginTop: 2,
+  smartChipTextActive: { color: color.cream },
+  smartConfirmActions: {
+    flexDirection: 'row',
+    gap: 8,
   },
-  smartConfirmActions: { flexDirection: 'row', gap: 12 },
   smartDoneBtn: {
-    flex: 1, flexDirection: 'row', gap: 6, backgroundColor: '#FFFC00', borderRadius: 14,
-    paddingVertical: 12, alignItems: 'center', justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: color.yellow,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    borderRadius: radius.pill,
+    flex: 1,
   },
   smartDoneBtnText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 14, color: '#1A1A1A',
+    fontFamily: font.bold,
+    fontSize: 12.5,
+    color: color.navy,
   },
   smartCancelBtn: {
-    paddingVertical: 12, paddingHorizontal: 20, borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
   },
   smartCancelBtnText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 14, color: '#94a3b8',
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slateMuted,
   },
 
-  // Activity Burn Card
+  // ════ Adjust banner ════
+  adjustBanner: {
+    backgroundColor: color.surface,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    padding: space.lg,
+    marginTop: space.xxl,
+    ...shadow.card,
+  },
+  adjustBannerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  adjustBannerTitle: {
+    fontFamily: font.bold,
+    fontSize: 14.5,
+    color: color.ink,
+  },
+  adjustBannerDesc: {
+    fontFamily: font.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: color.slateMuted,
+    marginBottom: space.md,
+  },
+  adjustBannerActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  adjustPrimary: {
+    flex: 1,
+    backgroundColor: color.yellow,
+    borderRadius: radius.pill,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  adjustPrimaryText: {
+    fontFamily: font.bold,
+    fontSize: 13,
+    color: color.navy,
+  },
+  adjustSecondary: {
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: radius.pill,
+  },
+  adjustSecondaryText: {
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.slateMuted,
+  },
+
+  // ════ Timeline — slim editorial ════
+  timeline: {},
+  tlRow: { flexDirection: 'row' },
+  tlRail: {
+    width: 22,
+    alignItems: 'center',
+  },
+  tlDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    backgroundColor: color.surface,
+    borderWidth: 1.5,
+    borderColor: color.hairline,
+  },
+  tlDotDone: {
+    backgroundColor: color.yellow,
+    borderColor: color.yellow,
+  },
+  tlDotPending: {
+    backgroundColor: color.surface,
+    borderColor: color.slateFaint,
+  },
+  tlDotSkipped: {
+    backgroundColor: color.track,
+    borderColor: color.track,
+  },
+  tlLine: {
+    flex: 1,
+    width: 1.5,
+    backgroundColor: '#ece9e2',
+    marginTop: 3,
+    marginBottom: -3,
+  },
+  tlBody: {
+    flex: 1,
+    paddingLeft: space.md,
+    paddingBottom: space.xl,
+  },
+  tlHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  tlTime: {
+    fontFamily: font.bold,
+    fontSize: 12.5,
+    color: color.slate,
+    letterSpacing: 0.2,
+  },
+  tlMeta: {
+    fontFamily: font.medium,
+    fontSize: 11.5,
+    color: color.slateMuted,
+  },
+  tlTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 3,
+  },
+  tlTitle: {
+    flex: 1,
+    fontFamily: font.bold,
+    fontSize: 14.5,
+    color: color.ink,
+    letterSpacing: -0.2,
+  },
+  tlNote: {
+    fontFamily: font.regular,
+    fontSize: 12,
+    color: color.slateMuted,
+    marginTop: 3,
+  },
+  tlBodyExpanded: {
+    backgroundColor: '#fafaf5',
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginLeft: -10,
+    marginRight: -4,
+  },
+  tlExpandedDetail: {
+    marginTop: 8,
+    gap: 8,
+  },
+  tlDetailDesc: {
+    fontFamily: font.regular,
+    fontSize: 13.5,
+    color: color.ink,
+    lineHeight: 20,
+  },
+  tlDetailTagRow: {
+    flexDirection: 'row' as const,
+    gap: 8,
+    flexWrap: 'wrap' as const,
+  },
+  tlDetailTag: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 4,
+    backgroundColor: '#f0f0e8',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  tlDetailTagText: {
+    fontFamily: font.medium,
+    fontSize: 11,
+    color: color.slateMuted,
+    textTransform: 'capitalize' as const,
+  },
+  tlDetailMarkDone: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    alignSelf: 'flex-start' as const,
+    gap: 5,
+    backgroundColor: color.yellow,
+    borderRadius: radius.md,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  tlDetailMarkDoneText: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.navy,
+  },
+  tlContext: {
+    fontFamily: font.medium,
+    fontSize: 11.5,
+    color: color.slate,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+
+  // ════ Burn micro-card ════
   burnCard: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#041015', borderRadius: 20, padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: color.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    paddingVertical: space.md,
+    paddingHorizontal: space.lg,
+    marginTop: space.lg,
   },
-  burnCardLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  burnCardLabel: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '700', fontSize: 13, color: '#94a3b8',
+  burnCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    flex: 1,
   },
-  burnCardStats: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  burnCardValue: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '900', fontSize: 15, color: '#FFFC00',
+  burnIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(249, 115, 22, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  burnCardBadge: {
-    backgroundColor: 'rgba(255,252,0,0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+  burnLabel: {
+    fontFamily: font.bold,
+    fontSize: 13,
+    color: color.ink,
   },
-  burnCardBadgeText: {
-    fontFamily: 'Plus Jakarta Sans', fontWeight: '800', fontSize: 11, color: '#FFFC00',
+  burnSub: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    color: color.slateMuted,
+    marginTop: 1,
+  },
+  burnBadge: {
+    backgroundColor: color.track,
+    borderRadius: radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  burnBadgeText: {
+    fontFamily: font.bold,
+    fontSize: 10.5,
+    letterSpacing: 0.4,
+    color: color.slate,
+  },
+
+  // ════ Floating "Log activity" pill ════
+  fab: {
+    position: 'absolute',
+    right: space.xxl,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: color.yellow,
+    paddingLeft: 12,
+    paddingRight: 16,
+    height: 48,
+    borderRadius: radius.pill,
+    shadowColor: color.yellow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  fabDisabled: {
+    opacity: 0.45,
+  },
+  fabText: {
+    fontFamily: font.bold,
+    fontSize: 13.5,
+    color: color.navy,
+    letterSpacing: 0.2,
+  },
+
+  // ════ Bottom-sheet modal ════
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(7, 32, 42, 0.55)',
+  },
+  modalContent: {
+    backgroundColor: color.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: space.xxl,
+    paddingTop: space.lg,
+    paddingBottom: 32,
+    maxHeight: '85%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.lg,
+  },
+  modalTitle: {
+    fontFamily: font.bold,
+    fontSize: 19,
+    color: color.ink,
+    letterSpacing: -0.2,
+  },
+
+  // Bento type picker
+  bentoGrid: { gap: 10 },
+  bentoHero: {
+    height: 110,
+    borderRadius: radius.xl,
+    overflow: 'hidden',
+    backgroundColor: color.yellow,
+  },
+  heroOverlay: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: space.xl,
+    gap: space.lg,
+  },
+  heroLabel: {
+    fontFamily: font.extrabold,
+    fontSize: 30,
+    color: color.navy,
+    letterSpacing: -0.6,
+  },
+  bentoRow: { flexDirection: 'row', gap: 10 },
+  bentoSquare: {
+    flex: 1,
+    aspectRatio: 1.2,
+    borderRadius: radius.xl,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  bentoLabel: {
+    fontFamily: font.bold,
+    fontSize: 14,
+    color: color.navy,
+  },
+  bentoTagsScroll: {
+    gap: 8,
+    paddingVertical: space.sm,
+  },
+  bentoTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: radius.pill,
+  },
+  bentoTagIconBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(7, 32, 42, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bentoTagLabel: {
+    fontFamily: font.bold,
+    fontSize: 12.5,
+    color: color.navy,
+  },
+
+  // Form inputs
+  inputGroup: { marginBottom: space.lg },
+  inputLabel: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slate,
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    paddingHorizontal: space.lg,
+    paddingVertical: 12,
+    fontFamily: font.medium,
+    fontSize: 15,
+    color: color.ink,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  presetBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    backgroundColor: color.surface,
+    alignItems: 'center',
+  },
+  presetBtnActive: {
+    backgroundColor: color.yellow,
+    borderColor: color.yellow,
+  },
+  presetBtnText: {
+    fontFamily: font.bold,
+    fontSize: 12.5,
+    color: color.slateMuted,
   },
 });
 

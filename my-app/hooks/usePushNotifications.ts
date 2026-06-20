@@ -3,25 +3,44 @@ import { Platform } from 'react-native';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
+import { useRouter } from 'expo-router';
 
 Notifications.setNotificationHandler({
     handleNotification: async () => ({
         shouldShowAlert: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
         shouldPlaySound: true,
         shouldSetBadge: false,
     }),
 });
 
+// Route a tapped notification to the right place. Returns true if handled.
+function routeFromNotification(router: ReturnType<typeof useRouter>, response: Notifications.NotificationResponse | null) {
+    const data = response?.notification?.request?.content?.data as Record<string, unknown> | undefined;
+    if (!data) return;
+    if (data.type === 'vet_checkin' && typeof data.questionId === 'string') {
+        router.push(`/ask?case=${data.questionId}&mode=checkin` as any);
+    }
+}
+
 export function usePushNotifications() {
     const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
     const [notification, setNotification] = useState<Notifications.Notification | null>(null);
-    const responseListener = useRef<Notifications.Subscription>();
+    const responseListener = useRef<Notifications.Subscription | undefined>(undefined);
+    const router = useRouter();
 
     useEffect(() => {
         registerForPushNotificationsAsync().then((token) => setExpoPushToken(token ?? null));
 
+        // Cold start: app opened by tapping a notification.
+        Notifications.getLastNotificationResponseAsync().then((response) => {
+            routeFromNotification(router, response);
+        });
+
+        // Warm taps while the app is running.
         responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
-            console.log('User tapped notification', response);
+            routeFromNotification(router, response);
         });
 
         return () => {
@@ -52,7 +71,7 @@ async function registerForPushNotificationsAsync() {
             finalStatus = status;
         }
         if (finalStatus !== 'granted') {
-            console.log('Failed to get push token for push notification!');
+            if (__DEV__) console.log('Failed to get push token for push notification!');
             return null;
         }
 
@@ -65,13 +84,14 @@ async function registerForPushNotificationsAsync() {
                     projectId ? { projectId } : undefined
                 )
             ).data;
-            console.log('Push token successfully generated:', token);
+            // Never log the token in production — it's sensitive.
+            if (__DEV__) console.log('Push token successfully generated:', token);
         } catch (e: unknown) {
             console.error('Push token error:', e);
             token = `Error: ${e}`;
         }
     } else {
-        console.log('Must use physical device for Push Notifications');
+        if (__DEV__) console.log('Must use physical device for Push Notifications');
     }
 
     return token;
