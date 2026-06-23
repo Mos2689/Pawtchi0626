@@ -1,65 +1,84 @@
 import React from 'react';
-import { Text, TextProps, StyleSheet } from 'react-native';
-import { Colors, Typography as ThemeTypography } from '../constants/Theme';
+import { Text, TextProps } from 'react-native';
+import { color, font, type as typeScale } from '../constants/design';
 
-export type TextVariant = 'headline' | 'body' | 'label';
+// Brand text component. Weight maps to a Montserrat family file (Android
+// ignores fontWeight with custom fonts), variant maps to the type scale.
+// Public API kept compatible with the previous version.
+
+export type TextVariant = 'display' | 'headline' | 'title' | 'heading' | 'body' | 'label' | 'caption';
 export type TextWeight = 'normal' | 'medium' | 'semibold' | 'bold' | 'extrabold';
-export type TextColor = keyof typeof Colors.light;
 
 interface TypographyProps extends TextProps {
   variant?: TextVariant;
   weight?: TextWeight;
-  color?: TextColor;
+  color?: string;
   size?: number;
   align?: 'auto' | 'left' | 'right' | 'center' | 'justify';
 }
 
+const WEIGHT_FAMILY: Record<TextWeight, string> = {
+  normal: font.regular,
+  medium: font.medium,
+  semibold: font.semibold,
+  bold: font.bold,
+  extrabold: font.extrabold,
+};
+
+const VARIANT_PRESET: Record<TextVariant, { fontFamily: string; fontSize: number; lineHeight?: number; letterSpacing?: number }> = {
+  display: typeScale.display,
+  headline: typeScale.title, // legacy alias
+  title: typeScale.title,
+  heading: typeScale.heading,
+  body: typeScale.body,
+  label: typeScale.label,
+  caption: typeScale.caption,
+};
+
+// Older screens pass Material-style token names from the deprecated Theme.ts.
+// Resolve them to brand colors so those screens render correctly until they're
+// migrated to direct `color.*` imports.
+const LEGACY_COLOR: Record<string, string> = {
+  'on-surface': color.ink,
+  'on-background': color.ink,
+  'on-surface-variant': color.slateMuted,
+  'on-primary': color.navy,
+  'on-primary-container': color.navy,
+  'on-tertiary-container': color.slate,
+  'primary': color.yellow,
+  'primary-fixed-dim': color.alert,
+  'inverse-on-surface': color.slateFaint,
+};
+
+function resolveColor(c?: string): string {
+  if (!c) return color.ink;
+  return LEGACY_COLOR[c] ?? c;
+}
+
 export const Typography: React.FC<TypographyProps> = ({
   variant = 'body',
-  weight = 'normal',
-  color = 'on-background',
+  weight,
+  color: textColor,
   size,
   align = 'auto',
   style,
   children,
   ...rest
 }) => {
-  const isDarkMode = false; // Add real hook later if needed
-  const themeColors = isDarkMode ? Colors.dark : Colors.light;
-
-  const getFontFamily = () => {
-    // In a real app, you'd load font variants based on weight, e.g., 'PlusJakartaSans-Bold'
-    // For now, we'll try to map it gracefully or just use the base family if weights aren't loaded explicitly as separate families
-    return ThemeTypography.fontFamily[variant];
-  };
-
-  const getFontWeight = (): any => {
-    switch (weight) {
-      case 'medium': return '500';
-      case 'semibold': return '600';
-      case 'bold': return '700';
-      case 'extrabold': return '800';
-      default: return '400';
-    }
-  };
-
-  const getDefaultSize = () => {
-    switch(variant) {
-      case 'headline': return 24;
-      case 'label': return 14;
-      case 'body':
-      default: return 16;
-    }
-  };
+  const preset = VARIANT_PRESET[variant];
+  // Bebas has a single weight; otherwise an explicit weight overrides the preset family.
+  const fontFamily =
+    variant === 'display' ? font.display : weight ? WEIGHT_FAMILY[weight] : preset.fontFamily;
 
   return (
     <Text
       style={[
         {
-          fontFamily: getFontFamily(),
-          fontWeight: getFontWeight(),
-          color: themeColors[color] || themeColors['on-background'],
-          fontSize: size || getDefaultSize(),
+          fontFamily,
+          fontSize: size ?? preset.fontSize,
+          lineHeight: size ? undefined : preset.lineHeight,
+          letterSpacing: preset.letterSpacing,
+          color: resolveColor(textColor),
           textAlign: align,
         },
         style,

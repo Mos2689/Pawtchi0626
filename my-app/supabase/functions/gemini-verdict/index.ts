@@ -1,14 +1,37 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders } from '../_shared/cors.ts'
+import { getCorsHeaders } from '../_shared/cors.ts'
+import { verifyAuth } from '../_shared/auth.ts'
+import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
+import { safeParseBody } from '../_shared/validate.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 30_000;
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
+    // ── Security: Authenticate caller ──
+    const auth = await verifyAuth(req, corsHeaders);
+    if (auth.error) return auth.error;
+
+    // ── Security: Rate limit (30 requests/hour) ──
+    const rateLimited = await checkRateLimit(auth.userId, 'gemini-verdict', RATE_LIMITS['gemini-verdict'], corsHeaders);
+    if (rateLimited) return rateLimited;
+
+    // ── Security: Parse body with size limits ──
+    const parsed = await safeParseBody(req);
+    if (parsed.error) {
+      return new Response(
+        JSON.stringify({ success: false, error: parsed.error }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
     const {
       pet,
       scan,
@@ -17,7 +40,7 @@ Deno.serve(async (req) => {
       analysis,
       // Weight & calorie context — holistic view of the pet's day and journey
       weight_context,
-    } = await req.json()
+    } = parsed.data as Record<string, any>;
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
@@ -154,6 +177,9 @@ ${dailyKcalTarget > 0 ? `After this meal: ${projectedRemaining > 0 ? `${projecte
 
 Output ONLY the paragraph. No preamble, no bullets, no markdown formatting.`
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -167,7 +193,9 @@ Output ONLY the paragraph. No preamble, no bullets, no markdown formatting.`
           maxOutputTokens: 512,
         },
       }),
+      signal: controller.signal,
     })
+    clearTimeout(timeout);
 
     if (!response.ok) {
       const errBody = await response.text()

@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, Modal, StyleSheet,
+  View, Text, TouchableOpacity, TouchableWithoutFeedback, Modal, StyleSheet,
   Dimensions, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
+import { motion } from '../constants/design';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -57,6 +59,8 @@ export function PawtchiModal({
           activeOpacity={1}
           onPress={onClose}
         >
+          {/* Absorb touches inside the card so they don't bubble to the backdrop. */}
+          <TouchableWithoutFeedback onPress={() => {}}>
           <View style={styles.container}>
             {/* Glow accent */}
             <View style={styles.glow} />
@@ -101,7 +105,7 @@ export function PawtchiModal({
                   ) : (
                     <LinearGradient
                       key={index}
-                      colors={['#FFFC00', '#fac129']}
+                      colors={['#F7F602', '#fac129']}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 0 }}
                       style={styles.actionBtnGradient}
@@ -119,6 +123,7 @@ export function PawtchiModal({
               </View>
             </View>
           </View>
+          </TouchableWithoutFeedback>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </Modal>
@@ -144,6 +149,17 @@ export function PawtchiSuccessModal({
   secondaryAction,
   icon,
 }: SuccessModalProps) {
+  // The card springs up from a slight scale so success reads as a "pop", not a
+  // cross-fade. Re-runs each time the modal becomes visible.
+  const cardScale = useSharedValue(0.96);
+  useEffect(() => {
+    if (visible) {
+      cardScale.value = 0.96;
+      cardScale.value = withSpring(1, motion.spring.bouncy);
+    }
+  }, [visible, cardScale]);
+  const cardAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: cardScale.value }] }));
+
   return (
     <Modal
       visible={visible}
@@ -161,7 +177,9 @@ export function PawtchiSuccessModal({
           activeOpacity={1}
           onPress={onClose}
         >
-          <View style={styles.container}>
+          {/* Absorb touches inside the card so they don't bubble to the backdrop. */}
+          <TouchableWithoutFeedback onPress={() => {}}>
+          <Animated.View style={[styles.container, cardAnimatedStyle]}>
             <View style={[styles.card, styles.successCard]}>
               {/* Header with close button */}
               <View style={styles.successHeader}>
@@ -182,7 +200,7 @@ export function PawtchiSuccessModal({
                   if (line.type === 'burn') {
                     return (
                       <View key={idx} style={styles.burnLine}>
-                        <MaterialIcons name="local-fire-department" size={16} color="#FFFC00" />
+                        <MaterialIcons name="local-fire-department" size={16} color="#F7F602" />
                         <Text style={styles.burnText}>{line.text}</Text>
                       </View>
                     );
@@ -204,7 +222,7 @@ export function PawtchiSuccessModal({
               {/* Actions */}
               <View style={styles.successActions}>
                 <LinearGradient
-                  colors={['#FFFC00', '#fac129']}
+                  colors={['#F7F602', '#fac129']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={styles.actionBtnGradient}
@@ -229,7 +247,8 @@ export function PawtchiSuccessModal({
                 )}
               </View>
             </View>
-          </View>
+          </Animated.View>
+          </TouchableWithoutFeedback>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </Modal>
@@ -269,7 +288,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 28,
     padding: 28,
-    shadowColor: '#FFFC00',
+    shadowColor: '#F7F602',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.3,
     shadowRadius: 24,
@@ -294,8 +313,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   title: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 20,
     color: '#0f172a',
     flex: 1,
@@ -305,7 +323,7 @@ const styles = StyleSheet.create({
     marginLeft: 'auto',
   },
   message: {
-    fontFamily: 'Plus Jakarta Sans',
+    fontFamily: 'Montserrat_400Regular',
     fontSize: 15,
     color: '#475569',
     lineHeight: 22,
@@ -327,8 +345,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   actionBtnPrimaryText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 15,
     color: '#041015',
   },
@@ -338,8 +355,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   actionBtnSecondaryText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 15,
     color: '#64748b',
     textAlign: 'center',
@@ -352,8 +368,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   successTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '900',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 22,
     color: '#041015',
     marginTop: 12,
@@ -364,13 +379,13 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   lineText: {
-    fontFamily: 'Plus Jakarta Sans',
+    fontFamily: 'Montserrat_400Regular',
     fontSize: 15,
     color: '#475569',
     lineHeight: 22,
   },
   subText: {
-    fontFamily: 'Plus Jakarta Sans',
+    fontFamily: 'Montserrat_400Regular',
     fontSize: 13,
     color: '#94a3b8',
     lineHeight: 20,
@@ -384,10 +399,9 @@ const styles = StyleSheet.create({
     marginVertical: 8,
   },
   highlightText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 15,
-    color: '#FFFC00',
+    color: '#F7F602',
     textAlign: 'center',
   },
   burnLine: {
@@ -401,10 +415,9 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   burnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 13,
-    color: '#FFFC00',
+    color: '#F7F602',
     flex: 1,
     lineHeight: 18,
   },
@@ -416,8 +429,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   secondaryBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 15,
     color: '#64748b',
   },

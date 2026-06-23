@@ -1,16 +1,16 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+import { getCorsHeaders } from '../_shared/cors.ts'
+import { verifyAuth } from '../_shared/auth.ts'
+import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
+import { safeParseBody } from '../_shared/validate.ts'
 
 // Coin economy constants
 const COIN_REWARDS: Record<string, number> = {
   food_log: 5,
   activity_complete: 10,
   weight_log: 15,
+  vet_report_log: 25,
 };
 
 const MILESTONE_BONUSES: Record<number, number> = {
@@ -21,17 +21,40 @@ const MILESTONE_BONUSES: Record<number, number> = {
 };
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const body = await req.json();
-    const { userId, action, referenceId } = body;
+    // ── Security: Authenticate caller ──
+    const auth = await verifyAuth(req, corsHeaders);
+    if (auth.error) return auth.error;
 
-    if (!userId || !action) {
+    // ── Security: Rate limit (60 requests/hour) ──
+    const rateLimited = await checkRateLimit(auth.userId, 'update-streak', RATE_LIMITS['update-streak'], corsHeaders);
+    if (rateLimited) return rateLimited;
+
+    // ── Security: Parse body with size limits ──
+    const parsed = await safeParseBody(req);
+    if (parsed.error) {
       return new Response(
-        JSON.stringify({ success: false, error: 'userId and action are required' }),
+        JSON.stringify({ success: false, error: parsed.error }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    const body = parsed.data as Record<string, any>;
+    const { action, referenceId } = body;
+
+    // ── Security: Force userId to the authenticated caller ──
+    // Prevents users from manipulating other users' streaks/coins
+    const userId = auth.userId;
+
+    if (!action) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'action is required' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
     }

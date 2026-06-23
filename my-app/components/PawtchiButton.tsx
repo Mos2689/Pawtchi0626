@@ -1,6 +1,8 @@
 import React from 'react';
-import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle, View } from 'react-native';
+import { Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { color, font, radius } from '../constants/design';
+import { AnimatedPressable } from './AnimatedPressable';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'black';
 export type ButtonSize = 'large' | 'medium' | 'small';
@@ -34,32 +36,33 @@ export const PawtchiButton: React.FC<PawtchiButtonProps> = ({
 }) => {
   const getBackgroundStyle = () => {
     switch (variant) {
-      case 'primary': return { backgroundColor: '#FFFC00' };
-      case 'secondary': return { backgroundColor: '#e5eeff' };
-      case 'black': return { backgroundColor: '#000407' };
-      case 'outline': return { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#000407' };
+      case 'primary': return { backgroundColor: color.yellow };
+      case 'secondary': return { backgroundColor: color.track };
+      case 'black': return { backgroundColor: color.navy };
+      case 'outline': return { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: color.navy };
       case 'ghost': return { backgroundColor: 'transparent' };
-      default: return { backgroundColor: '#FFFC00' };
+      default: return { backgroundColor: color.yellow };
     }
   };
 
   const getTextStyle = () => {
     switch (variant) {
-      case 'primary': return { color: '#000407' };
-      case 'secondary': return { color: '#000407' };
-      case 'black': return { color: '#FFFC00' };
-      case 'outline': return { color: '#000407' };
-      case 'ghost': return { color: '#42474b' };
-      default: return { color: '#000407' };
+      case 'primary': return { color: color.navy };
+      case 'secondary': return { color: color.ink };
+      case 'black': return { color: color.yellow };
+      case 'outline': return { color: color.navy };
+      case 'ghost': return { color: color.slateMuted };
+      default: return { color: color.navy };
     }
   };
 
+  // Fixed heights give every CTA in the app the same physical presence.
   const getSizeStyle = () => {
     switch (size) {
-      case 'large': return { paddingVertical: 16, paddingHorizontal: 24, borderRadius: 16 };
-      case 'medium': return { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 14 };
-      case 'small': return { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 12 };
-      default: return { paddingVertical: 16, paddingHorizontal: 24, borderRadius: 16 };
+      case 'large': return { height: 56, paddingHorizontal: 24, borderRadius: radius.lg };
+      case 'medium': return { height: 48, paddingHorizontal: 20, borderRadius: radius.md };
+      case 'small': return { height: 40, paddingHorizontal: 16, borderRadius: radius.md };
+      default: return { height: 56, paddingHorizontal: 24, borderRadius: radius.lg };
     }
   };
 
@@ -90,11 +93,13 @@ export const PawtchiButton: React.FC<PawtchiButtonProps> = ({
   const iconColor = getTextStyle().color;
 
   return (
-    <TouchableOpacity
+    <AnimatedPressable
       style={baseStyles}
       onPress={onPress}
       disabled={disabled || loading}
-      activeOpacity={activeOpacity}
+      // Loading buttons shouldn't buzz; a disabled/loading button neither
+      // scales nor taps (AnimatedPressable already skips scale when disabled).
+      haptic={disabled || loading ? 'none' : 'tap'}
     >
       {loading ? (
         <ActivityIndicator color={iconColor} />
@@ -109,7 +114,7 @@ export const PawtchiButton: React.FC<PawtchiButtonProps> = ({
           )}
         </View>
       )}
-    </TouchableOpacity>
+    </AnimatedPressable>
   );
 };
 
@@ -125,9 +130,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   text: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: font.bold,
     textAlign: 'center',
+    letterSpacing: 0.2,
   },
   iconLeft: {
     marginRight: 8,

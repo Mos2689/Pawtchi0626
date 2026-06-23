@@ -35,10 +35,25 @@ describe('computeCompleteness', () => {
   });
 
   test('all high-impact present but a med gap → accurate enough, score < 100', () => {
-    const r = computeCompleteness(fullPet, { pantryCount: 0 }); // pantry (med) missing
+    const r = computeCompleteness({ ...fullPet, gender: null }, { pantryCount: 2 }); // gender (med) missing
     expect(r.isAccurateEnough).toBe(true);
     expect(r.score).toBeLessThan(100);
+    expect(r.missing.map((m) => m.key)).toEqual(['gender']);
+  });
+
+  test('missing pantry alone → not accurate enough (meal logging depends on it)', () => {
+    const r = computeCompleteness(fullPet, { pantryCount: 0 });
+    expect(r.isAccurateEnough).toBe(false);
     expect(r.missing.map((m) => m.key)).toEqual(['pantry']);
+  });
+
+  test('pantry + bowl_size surface before lighter high-impact gaps', () => {
+    const pet: CompletenessPet = { ...fullPet, bowl_size: null, breed: null };
+    const r = computeCompleteness(pet, { pantryCount: 0 });
+    // heaviest-weight high-impact fields (pantry/bowl_size, weight 3) lead
+    // the queue ahead of weight-2 high fields like breed.
+    expect(r.missing.slice(0, 2).map((m) => m.key).sort()).toEqual(['bowl_size', 'pantry']);
+    expect(r.missing[2].key).toBe('breed');
   });
 
   test('missing high-impact fields → not accurate enough, high items listed first', () => {

@@ -1,23 +1,58 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+import { getCorsHeaders } from '../_shared/cors.ts'
+import { verifyAuth } from '../_shared/auth.ts'
+import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
+import { validateImagePayload, safeParseBody, isValidUUID } from '../_shared/validate.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 30_000;
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+  const t0 = Date.now();
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const { imageBase64, mimeType, petId, petProfile } = await req.json()
+    // ── Security: Authenticate caller ──
+    const auth = await verifyAuth(req, corsHeaders);
+    if (auth.error) return auth.error;
+
+    // ── Security: Rate limit (5 requests/hour) ──
+    const rateLimited = await checkRateLimit(auth.userId, 'scan-vet-report', RATE_LIMITS['scan-vet-report'], corsHeaders);
+    if (rateLimited) return rateLimited;
+
+    // ── Security: Parse body with size limits ──
+    const parsed = await safeParseBody(req);
+    if (parsed.error) {
+      return new Response(
+        JSON.stringify({ success: false, error: parsed.error }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    const { imageBase64, mimeType, petId, petProfile } = parsed.data as Record<string, any>;
 
     if (!imageBase64 || !petId) {
       throw new Error('imageBase64 and petId are required.')
+    }
+
+    console.log(`[scan-vet-report] start user=${auth.userId} mime=${mimeType || 'unknown'} bytes=${typeof imageBase64 === 'string' ? imageBase64.length : 0}`);
+
+    // ── Security: Validate inputs ──
+    if (!isValidUUID(petId)) {
+      throw new Error('Invalid petId format.')
+    }
+
+    const imageErr = validateImagePayload(imageBase64, mimeType);
+    if (imageErr) {
+      return new Response(
+        JSON.stringify({ success: false, error: imageErr }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
     }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
@@ -25,7 +60,8 @@ Deno.serve(async (req) => {
       throw new Error('GEMINI_API_KEY is not configured.')
     }
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`
+    // ── Security: API key via header, not URL parameter ──
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
     const systemPrompt = `You are a veterinary document analysis AI for PAWTCHI, a pet health app.
 Your task is to extract structured medical data from the provided vet report/document image.
@@ -79,16 +115,29 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
       }],
       generationConfig: {
         temperature: 0.2,
-        maxOutputTokens: 2048,
+        // Rich reports (multiple diagnoses + meds + vaccinations) exceeded 2048
+        // tokens and got truncated mid-JSON. 4096 leaves comfortable headroom.
+        maxOutputTokens: 4096,
         responseMimeType: 'application/json'
       }
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+
+    console.log('[scan-vet-report] gemini call');
+    const tGemini = Date.now();
     const geminiRes = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY,
+      },
       body: JSON.stringify(geminiPayload),
+      signal: controller.signal,
     })
+    clearTimeout(timeout);
+    console.log(`[scan-vet-report] gemini done ms=${Date.now() - tGemini} ok=${geminiRes.ok}`);
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text()
@@ -109,12 +158,61 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
       cleanText = cleanText.substring(0, cleanText.length - 3);
     }
     cleanText = cleanText.trim();
+    // Gemini sometimes emits a short preamble before the JSON. Trim to the
+    // first '{' so the parser sees only the object.
+    const firstBrace = cleanText.indexOf('{');
+    if (firstBrace > 0) cleanText = cleanText.slice(firstBrace);
 
-    let extractedData: any
+    let extractedData: any = null;
+    let parseOutcome: 'ok' | 'repaired' | 'failed' = 'ok';
     try {
       extractedData = JSON.parse(cleanText)
     } catch {
-      extractedData = { vet_notes: cleanText }
+      // Salvage repair: when the tail of a long response is cut, walk back to
+      // the last balanced '}' and retry. Most truncations clip an array late
+      // in the document — this typically recovers everything before that.
+      let depth = 0, lastBalanced = -1;
+      for (let i = 0; i < cleanText.length; i++) {
+        const ch = cleanText[i];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) lastBalanced = i; }
+      }
+      if (lastBalanced > 0) {
+        try {
+          extractedData = JSON.parse(cleanText.slice(0, lastBalanced + 1));
+          parseOutcome = 'repaired';
+        } catch { parseOutcome = 'failed'; }
+      } else {
+        parseOutcome = 'failed';
+      }
+    }
+    console.log(`[scan-vet-report] parse outcome=${parseOutcome} chars=${cleanText.length}`);
+
+    // If parsing still failed, refuse to persist a phantom vet visit. The
+    // client routes this to the calm "couldn't read" error modal.
+    if (!extractedData || typeof extractedData !== 'object') {
+      return new Response(
+        JSON.stringify({ success: false, error: "Scan didn't fully read — try a clearer photo." }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      );
+    }
+
+    // Require at least one useful structured field before saving — otherwise
+    // the row appears in the vet timeline as a real visit with no details.
+    const hasUsefulField =
+      (typeof extractedData.weight_kg === 'number' && extractedData.weight_kg > 0) ||
+      (typeof extractedData.body_condition_score === 'number') ||
+      (Array.isArray(extractedData.diagnoses) && extractedData.diagnoses.length > 0) ||
+      (Array.isArray(extractedData.allergies) && extractedData.allergies.length > 0) ||
+      (Array.isArray(extractedData.medications) && extractedData.medications.length > 0) ||
+      (Array.isArray(extractedData.vaccinations) && extractedData.vaccinations.length > 0) ||
+      !!extractedData.next_appointment ||
+      !!extractedData.vet_notes;
+    if (!hasUsefulField) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Scan didn't fully read — try a clearer photo." }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      );
     }
 
     // Store in Supabase
@@ -122,14 +220,19 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const sb = createClient(supabaseUrl, supabaseKey)
 
-    // Insert vet report
+    // Insert vet report — validate the date so a malformed string from the
+    // model doesn't poison the timeline rendering.
+    const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+    const safeReportDate = typeof extractedData.report_date === 'string' && isoDate.test(extractedData.report_date)
+      ? extractedData.report_date
+      : new Date().toISOString().split('T')[0];
     const { data: report, error: reportErr } = await sb
       .from('vet_reports')
       .insert({
         pet_id: petId,
         image_url: 'uploaded_scan',
         ai_extracted_data: extractedData,
-        report_date: extractedData.report_date || new Date().toISOString().split('T')[0],
+        report_date: safeReportDate,
       })
       .select()
       .single()
@@ -179,6 +282,7 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
       await sb.from('pets').update(updates).eq('id', petId)
     }
 
+    console.log(`[scan-vet-report] sent success=true reportId=${report.id} elapsedMs=${Date.now() - t0}`);
     return new Response(
       JSON.stringify({
         success: true,
@@ -189,8 +293,9 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
     )
 
   } catch (err: any) {
+    console.error(`[scan-vet-report] crash elapsedMs=${Date.now() - t0} message=${err?.message}`, err);
     return new Response(
-      JSON.stringify({ success: false, error: err.message }),
+      JSON.stringify({ success: false, error: err?.message || 'Scan failed.' }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }

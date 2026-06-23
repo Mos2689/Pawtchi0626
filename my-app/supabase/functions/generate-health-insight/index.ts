@@ -1,21 +1,41 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+import { getCorsHeaders } from '../_shared/cors.ts'
+import { verifyAuth } from '../_shared/auth.ts'
+import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
+import { safeParseBody, isValidUUID } from '../_shared/validate.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 30_000;
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const { petId } = await req.json()
+    // ── Security: Authenticate caller ──
+    const auth = await verifyAuth(req, corsHeaders);
+    if (auth.error) return auth.error;
+
+    // ── Security: Rate limit (3 requests/hour) ──
+    const rateLimited = await checkRateLimit(auth.userId, 'generate-health-insight', RATE_LIMITS['generate-health-insight'], corsHeaders);
+    if (rateLimited) return rateLimited;
+
+    // ── Security: Parse body with size limits ──
+    const parsed = await safeParseBody(req);
+    if (parsed.error) {
+      return new Response(
+        JSON.stringify({ success: false, error: parsed.error }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    const { petId } = parsed.data as Record<string, any>;
     if (!petId) throw new Error('petId is required.')
+    if (!isValidUUID(petId)) throw new Error('Invalid petId format.')
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured.')
@@ -23,6 +43,20 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const sb = createClient(supabaseUrl, supabaseKey)
+
+    // ── Security: Verify the caller owns this pet ──
+    const { data: petOwnerCheck } = await sb
+      .from('pets')
+      .select('owner_id')
+      .eq('id', petId)
+      .single();
+    
+    if (!petOwnerCheck || petOwnerCheck.owner_id !== auth.userId) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'You do not own this pet.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
+      );
+    }
 
     // Gather pet data
     const { data: pet } = await sb.from('pets').select('*').eq('id', petId).single()
@@ -157,11 +191,17 @@ Rules:
 - Reference the pet by name in the headline
 - Keep tone warm, encouraging, and vet-informed`
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
     const geminiRes = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY,
+      },
       body: JSON.stringify({
         contents: [{ parts: [{ text: dataPrompt }] }],
         generationConfig: {
@@ -169,7 +209,9 @@ Rules:
           maxOutputTokens: 8192,
         },
       }),
+      signal: controller.signal,
     })
+    clearTimeout(timeoutId);
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text()

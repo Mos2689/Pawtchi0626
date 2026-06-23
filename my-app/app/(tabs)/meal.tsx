@@ -1,11 +1,11 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Pressable, ActivityIndicator, Alert, Modal, BackHandler, InteractionManager } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { color, font, radius, shadow, space } from '../../constants/design';
+import { color, font, motion, radius, shadow, space } from '../../constants/design';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
@@ -18,11 +18,17 @@ import { computePantryMacros } from '../../lib/pantryMath';
 import { mapMedicalConditionsToAdjustmentKeys } from '../../lib/clinicalMapping';
 import { deriveGoal } from '../../lib/healthMath';
 import { useSubscription } from '../../hooks/useSubscription';
-import EmptyPantryNudge from '../../components/EmptyPantryNudge';
 import PantryPillSelector from '../../components/PantryPillSelector';
 import NutritionReferencePanel from '../../components/NutritionReferencePanel';
-import QuickLogRail from '../../components/QuickLogRail';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { AnimatedPressable } from '../../components/AnimatedPressable';
+import { ScanSourceRow } from '../../components/ScanSourceRow';
+import { MealHero } from '../../components/MealHero';
+import { Image as ExpoImage } from 'expo-image';
+import { BOWL_SIZE_GRAMS } from '../../lib/pantryMath';
+import { predictMeal } from '../../lib/mealPrediction';
+import { recordServing, getSuggestion, clearHistory } from '../../lib/portionLearning';
+import { haptic } from '../../lib/haptics';
 import { pantryItemToScanResult } from '../../lib/pantryToScanResult';
 import type { PantryItem } from '../../store/useActivePetStore';
 
@@ -60,7 +66,7 @@ interface ScanResult {
 export default function MealScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { activePet, foodPantry, incrementPantryScan } = useActivePetStore();
+  const { activePet, foodPantry, incrementPantryScan, archivePantryItem, addPantryItem } = useActivePetStore();
   const { pawCoins, awardCoins } = useStreakStore();
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
@@ -78,12 +84,25 @@ export default function MealScreen() {
 
   // Pantry awareness state
   const [selectedPantryId, setSelectedPantryId] = useState<string | null>(null);
-  const [showPantryNudge, setShowPantryNudge] = useState(true);
+  // "Change source" picker visible on the result screen.
+  const [sourcePickerVisible, setSourcePickerVisible] = useState(false);
+
+  // Centered popups rendered as inline absolute overlays — NOT as <Modal>.
+  // RN's Modal on Android can leave native touch handlers in a stale state
+  // after the first dismiss; rendering inline sidesteps that lifecycle
+  // entirely. Camera/library/log are deferred via InteractionManager so the
+  // overlay's unmount commits before the next intent fires.
+  const [sourcePopupVisible, setSourcePopupVisible] = useState(false);
+
+  // The user can override the predicted hero by tapping an alternative row.
+  // null = use the prediction; otherwise this pantry item id sits in the hero.
+  const [heroOverrideId, setHeroOverrideId] = useState<string | null>(null);
 
   // Reset pantry selection when pet changes
   useEffect(() => {
     setSelectedPantryId(null);
-    setShowPantryNudge(true);
+    setSourcePopupVisible(false);
+    setHeroOverrideId(null);
   }, [activePet?.id]);
 
   // Scanner state
@@ -93,6 +112,13 @@ export default function MealScreen() {
 
   // Serving count multiplier — lets users adjust portions
   const [servingCount, setServingCount] = useState(1);
+  // Show the precise +/- stepper only when the user taps Custom. The three
+  // Less/Usual/More chips cover ~95% of real intent.
+  const [showCustomPortion, setShowCustomPortion] = useState(false);
+  // Learned-portion suggestion for the current pantry source: when the user has
+  // repeatedly fed off-1×, offer "make this the new usual?". `{ id, multiplier }`.
+  const [usualSuggestion, setUsualSuggestion] = useState<{ id: string; multiplier: number } | null>(null);
+  const [applyingUsual, setApplyingUsual] = useState(false);
 
   // Rotate spinner words during analysis
   useEffect(() => {
@@ -129,8 +155,59 @@ export default function MealScreen() {
     if (scanResult) {
       setHasLogged(false);
       setIsPendingConfirm(false);
+    } else {
+      setUsualSuggestion(null);
     }
   }, [scanResult]);
+
+  // When a result opens for a pantry-sourced food, load any learned-portion
+  // suggestion and pre-default the portion to what the owner's been feeding.
+  useEffect(() => {
+    if (!scanResult) return;
+    const serverMatchId = (scanResult as any).matched_pantry_id as string | null | undefined;
+    const matchConf = ((scanResult as any).match_confidence as number | undefined) ?? 0;
+    const sourceId = selectedPantryId ?? (serverMatchId && matchConf >= 0.5 ? serverMatchId : null);
+    if (!sourceId) {
+      setUsualSuggestion(null);
+      return;
+    }
+    let cancelled = false;
+    getSuggestion(sourceId).then((mult) => {
+      if (cancelled || mult == null) return;
+      setUsualSuggestion({ id: sourceId, multiplier: mult });
+      // Pre-default the chip to the learned portion (user just confirms).
+      setShowCustomPortion(false);
+      setServingCount(mult);
+    });
+    return () => { cancelled = true; };
+  }, [scanResult, selectedPantryId]);
+
+  // Accept the learned portion → bump the pantry item's per-serving kcal to
+  // match what's actually being fed, then clear the history.
+  const applyNewUsual = async () => {
+    if (!usualSuggestion || applyingUsual) return;
+    const item = foodPantry.find(p => p.id === usualSuggestion.id);
+    if (!item) { setUsualSuggestion(null); return; }
+    setApplyingUsual(true);
+    try {
+      const base = item.kcal_per_serving ?? 350;
+      const newKcal = Math.max(1, Math.round(base * usualSuggestion.multiplier));
+      await supabase.from('food_pantry').update({ kcal_per_serving: newKcal }).eq('id', item.id);
+      // Reflect in the store so subsequent logs use the new value immediately.
+      useActivePetStore.setState((s) => ({
+        foodPantry: s.foodPantry.map(p => p.id === item.id ? { ...p, kcal_per_serving: newKcal } : p),
+      }));
+      await clearHistory(item.id);
+      haptic.success();
+      // Reset to 1× now that "usual" means the new value.
+      setServingCount(1);
+      setUsualSuggestion(null);
+    } catch {
+      // Non-critical; leave the suggestion in place to retry.
+    } finally {
+      setApplyingUsual(false);
+    }
+  };
 
   // Branded log success modal state — no longer used (replaced by CoinToast)
 
@@ -139,6 +216,27 @@ export default function MealScreen() {
   // but still computes health score, food_analysis, and verdict so the result
   // screen has the full review UX. The user adjusts servings and taps
   // "Add to Bowl" → confirmLog runs through the regular logging pipeline.
+  // Long-press a non-primary pantry pill → hide it from the rail (history kept).
+  // Structural param so it accepts the pill selector's narrower PantryItem too.
+  const promptArchivePantry = (item: { id: string; brand: string; product_name?: string | null }) => {
+    const label = item.product_name ? `${item.brand} ${item.product_name}` : item.brand;
+    Alert.alert(
+      'Hide this food',
+      `${label} will leave the meal rail and quick log. Past logs stay in ${activePet?.name || 'your pet'}’s history.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Hide',
+          style: 'destructive',
+          onPress: () => {
+            if (selectedPantryId === item.id) setSelectedPantryId(null);
+            archivePantryItem(item.id);
+          },
+        },
+      ],
+    );
+  };
+
   const handleQuickLog = useCallback(async (item: PantryItem) => {
     if (!checkAccess() || !activePet) return;
 
@@ -159,7 +257,10 @@ export default function MealScreen() {
         activePet.allergies ?? null,
         activePet.name,
       ) as ScanResult;
-      const macros = computePantryMacros(item, 1);
+      const macros = computePantryMacros(item, 1, {
+        species: activePet?.species,
+        bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
+      });
       synthetic.calories_per_serving = macros.total_kcal;
       synthetic.protein_g = macros.protein_g;
       synthetic.fat_g = macros.fat_g;
@@ -386,6 +487,36 @@ export default function MealScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePet?.id, hasFullAccess]);
 
+  // The hero's Log button fires this with the chip's multiplier. Builds a
+  // synthetic scan result from the pantry item and calls confirmLog directly —
+  // no popup, no result-screen detour, just log the meal. Returns the
+  // confirmLog promise so the hero can await it and show success state.
+  const logHero = useCallback(async (item: PantryItem, multiplier: number) => {
+    if (!checkAccess() || !activePet) return;
+    const synthetic = pantryItemToScanResult(
+      item,
+      activePet.allergies ?? null,
+      activePet.name,
+    ) as ScanResult;
+    await confirmLog({
+      scanResult: synthetic,
+      pantryId: item.id,
+      servingCount: multiplier,
+      capturedImage: null,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePet?.id, hasFullAccess]);
+
+  // Android hardware back closes the source popup when it's open.
+  useEffect(() => {
+    if (!sourcePopupVisible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setSourcePopupVisible(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [sourcePopupVisible]);
+
   const pickImage = async (useCamera: boolean) => {
     if (!checkAccess()) return;
     
@@ -483,14 +614,26 @@ export default function MealScreen() {
           carbs_g: data.analysis.carbs_g ?? 0,
         };
 
-        // When a pantry item is selected, use its label-accurate values throughout:
-        // macro grams (for display), % values (for the verdict), and kcal/100g /
-        // moisture (for nutrient math). This ensures the preview verdict and the
-        // stored food_scans verdict are computed from identical data.
-        if (selectedPantryId) {
-          const pantryItem = foodPantry.find(p => p.id === selectedPantryId);
+        // Decide whether to trust the pantry's label values over Gemini's read.
+        //   • Explicit user selection → always trust (the user told us).
+        //   • Server auto-match with high confidence AND no food_type mismatch →
+        //     trust (the model says it's clearly this pantry item).
+        //   • Otherwise → keep Gemini's macros; the Source row on the result
+        //     screen will let the user accept the auto-match or pick another.
+        const serverMatchId = (data.analysis as { matched_pantry_id?: string | null })?.matched_pantry_id ?? null;
+        const matchConf = (data.analysis as { match_confidence?: number })?.match_confidence ?? 0;
+        const foodTypeMismatch = (data.analysis as { food_type_mismatch?: boolean })?.food_type_mismatch === true;
+        const useExplicit = !!selectedPantryId;
+        const useAutoMatch = !useExplicit && !!serverMatchId && matchConf >= 0.7 && !foodTypeMismatch;
+        const overrideFromPantryId = useExplicit ? selectedPantryId : (useAutoMatch ? serverMatchId : null);
+
+        if (overrideFromPantryId) {
+          const pantryItem = foodPantry.find(p => p.id === overrideFromPantryId);
           if (pantryItem) {
-            const macros = computePantryMacros(pantryItem, servingCount);
+            const macros = computePantryMacros(pantryItem, servingCount, {
+              species: activePet?.species,
+              bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
+            });
             normalized.calories_per_serving = macros.total_kcal;
             normalized.protein_g = macros.protein_g;
             normalized.fat_g = macros.fat_g;
@@ -504,6 +647,13 @@ export default function MealScreen() {
             normalized.fibre_pct = pantryItem.fibre_pct ?? null;
           }
         }
+
+        // Carry the match metadata forward onto the scan result so the result
+        // screen's Source row can show "Auto-matched · tap to confirm" and the
+        // "different food?" banner when food_type_mismatch was raised.
+        (normalized as any).matched_pantry_id = serverMatchId;
+        (normalized as any).match_confidence = matchConf;
+        (normalized as any).food_type_mismatch = foodTypeMismatch;
 
         // Compute health score deterministically right now so the preview
         // shows the same score that will be stored when the user logs.
@@ -856,7 +1006,10 @@ export default function MealScreen() {
       if (sPantryId) {
         const pantryItem = foodPantry.find(p => p.id === sPantryId);
         if (pantryItem) {
-          const macros = computePantryMacros(pantryItem, sCount);
+          const macros = computePantryMacros(pantryItem, sCount, {
+            species: activePet?.species,
+            bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
+          });
           totalCalories = macros.total_kcal;
           totalProtein = macros.protein_g;
           totalCarbs = macros.carbs_g;
@@ -1078,6 +1231,60 @@ export default function MealScreen() {
         (foodAnalysis as FoodAnalysis & { verdict_category: string }).verdict_category = storedVerdict.verdict_category;
       }
 
+      // 0. Silent pantry auto-save — when a fresh scan lands without a pantry
+      // match, persist it as a pantry row so future scans of the same product
+      // surface on the Quick Log rail. No UI feedback: pantry is plumbing.
+      // Dedupe against the in-memory rail by (brand, product_name) so a re-scan
+      // within the same session reuses the existing row.
+      let effectivePantryId: string | null = sPantryId;
+      const isLabeledProduct = sr.is_labeled_product === true || (!!sr.brand && !!sr.product_name);
+      if (!effectivePantryId && isLabeledProduct) {
+        const targetBrand = (sr.brand || sr.food_name || '').trim().toLowerCase();
+        const targetProduct = (sr.product_name || sr.food_name || '').trim().toLowerCase();
+        const existing = foodPantry.find(p =>
+          p.brand.trim().toLowerCase() === targetBrand &&
+          (p.product_name || '').trim().toLowerCase() === targetProduct
+        );
+        if (existing) {
+          effectivePantryId = existing.id;
+        } else {
+          const foodType = sr.food_type || (sr.is_treat ? 'treat' : 'kibble');
+          const sameTypeCount = foodPantry.filter(p => p.food_type === foodType).length;
+          const petAllergiesLower = (activePet.allergies || []).map(a => a.toLowerCase());
+          const ingredients = sr.key_ingredients || [];
+          const allergyFlags = ingredients.filter(ing =>
+            petAllergiesLower.some(a => ing.toLowerCase().includes(a))
+          );
+          try {
+            const created = await addPantryItem({
+              pet_id: activePet.id,
+              brand: sr.brand || sr.food_name || 'Unknown',
+              product_name: sr.product_name || sr.food_name || '',
+              food_type: foodType,
+              kcal_per_serving: sr.calories_per_serving || null,
+              kcal_per_100g_as_fed: sr.kcal_per_100g_as_fed ?? null,
+              moisture_pct: sr.moisture_pct ?? null,
+              serving_unit: sr.serving_unit ?? null,
+              protein_pct: sr.protein_pct ?? null,
+              fat_pct: sr.fat_pct ?? null,
+              fibre_pct: sr.fibre_pct ?? null,
+              key_ingredients: sr.key_ingredients ?? null,
+              allergy_flags: allergyFlags.length > 0 ? allergyFlags : null,
+              is_primary: sameTypeCount === 0,
+              image_url: sImage || undefined,
+              expiry_date: null,
+              is_favorite: false,
+            });
+            if (created?.id) {
+              effectivePantryId = created.id;
+            }
+          } catch {
+            // Silent failure — the scan still logs against food_scans even if
+            // the pantry insert fails; the user just won't see it on the rail.
+          }
+        }
+      }
+
       // 1. Insert into food_scans
       await supabase.from('food_scans').insert({
         pet_id: activePet.id,
@@ -1095,9 +1302,9 @@ export default function MealScreen() {
         food_analysis: foodAnalysis,
       });
 
-      // 1b. Bump scan count for selected pantry item
-      if (sPantryId) {
-        incrementPantryScan(sPantryId);
+      // 1b. Bump scan count for the pantry source (explicit pick or silent save).
+      if (effectivePantryId) {
+        incrementPantryScan(effectivePantryId);
       }
 
       // 2. Upsert today's daily_log (with treat tracking)
@@ -1127,16 +1334,30 @@ export default function MealScreen() {
       usePetContextStore.getState().updateCalories(newCalTotal);
       usePetContextStore.getState().invalidateContext();
 
+      // The tactile confirmation that the log committed (matches Activity's
+      // success haptic). The CoinToast supplies the reward; this supplies the
+      // "it's done" beat.
+      haptic.success();
+
       // Award coins for food log (before clearing state)
       if (user?.id) {
         awardCoins(user.id, 'food_log');
       }
+
+      // Record the serving multiplier against the pantry source for the
+      // learning loop (so repeated off-1× feeding can become the new usual).
+      if (effectivePantryId) {
+        recordServing(effectivePantryId, sCount);
+      }
+
+      setUsualSuggestion(null);
 
       // Immediately kill the scan result screen and return to scanner
       // User can scan next food or select from pantry
       setScanResult(null);
       setCapturedImage(null);
       setServingCount(1);
+      setShowCustomPortion(false);
       setHasLogged(false);
       setIsPendingConfirm(false);
     } catch (err: unknown) {
@@ -1164,6 +1385,33 @@ export default function MealScreen() {
     const afterMeal = budgetTarget - consumed - displayCalories;
     const pctUsed = budgetTarget > 0 ? Math.round((consumed / budgetTarget) * 100) : 0;
     const mealPct = budgetTarget > 0 ? Math.round((displayCalories / budgetTarget) * 100) : 0;
+
+    // Resolve the pantry item this result is logging against (explicit pick or
+    // confident server match) so the portion chips can speak in "bowls" when
+    // that reads more naturally than abstract multipliers.
+    const resolvedSourceId =
+      selectedPantryId ??
+      (((scanResult as any).matched_pantry_id as string | null) &&
+      (((scanResult as any).match_confidence as number | undefined) ?? 0) >= 0.5
+        ? ((scanResult as any).matched_pantry_id as string)
+        : null);
+    const resolvedSourceItem = resolvedSourceId ? foodPantry.find(p => p.id === resolvedSourceId) ?? null : null;
+    const bowlMode =
+      !!activePet?.bowl_size &&
+      !!resolvedSourceItem &&
+      (resolvedSourceItem.serving_unit === 'cup' || !resolvedSourceItem.serving_unit);
+    // Adaptive chip set: bowl fractions read better than 0.75/1/1.25 for kibble.
+    const portionOptions = bowlMode
+      ? [
+          { label: 'Quarter bowl', value: 0.25 },
+          { label: 'Half bowl', value: 0.5 },
+          { label: 'Full bowl', value: 1 },
+        ]
+      : [
+          { label: 'A little less', value: 0.75 },
+          { label: 'Usual', value: 1 },
+          { label: 'A little more', value: 1.25 },
+        ];
 
     return (
       <View style={styles.srRoot}>
@@ -1204,45 +1452,123 @@ export default function MealScreen() {
               </View>
             )}
 
+            {/* ─── Source — which pantry item this log will count against ─── */}
+            {(() => {
+              const serverMatchId = (scanResult as any).matched_pantry_id as string | null | undefined;
+              const matchConf = ((scanResult as any).match_confidence as number | undefined) ?? 0;
+              const typeMismatch = ((scanResult as any).food_type_mismatch as boolean | undefined) === true;
+              // Resolution order: explicit user pick → server auto-match → none.
+              const resolvedId = selectedPantryId ?? (serverMatchId && matchConf >= 0.5 ? serverMatchId : null);
+              const matchedItem = resolvedId ? foodPantry.find(p => p.id === resolvedId) ?? null : null;
+              const kind: 'explicit' | 'auto' | 'new' | 'unmatched' =
+                selectedPantryId ? 'explicit'
+                : (serverMatchId && matchConf >= 0.5) ? 'auto'
+                : scanResult.is_labeled_product ? 'new'
+                : 'unmatched';
+              return (
+                <ScanSourceRow
+                  matchedItem={matchedItem}
+                  kind={kind}
+                  showTypeMismatchHint={typeMismatch}
+                  onChange={() => setSourcePickerVisible(true)}
+                  onUseAsNew={() => setSelectedPantryId(null)}
+                />
+              );
+            })()}
+
             {/* ─── Portion ─── */}
             <View style={styles.sectionHead}>
               <Text style={styles.sectionLabel}>PORTION</Text>
               <View style={styles.sectionRule} />
             </View>
+            {/* Learned-portion nudge — "you've been feeding less, make it usual?" */}
+            {usualSuggestion && (
+              <View style={styles.usualBanner}>
+                <MaterialIcons name="auto-awesome" size={16} color={color.navy} />
+                <Text style={styles.usualBannerText} numberOfLines={2}>
+                  Lately you&apos;ve fed {usualSuggestion.multiplier < 1 ? 'a little less' : 'a little more'} — make this {activePet?.name || 'your pet'}&apos;s usual?
+                </Text>
+                <TouchableOpacity
+                  style={styles.usualBannerCta}
+                  onPress={applyNewUsual}
+                  disabled={applyingUsual}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.usualBannerCtaText}>{applyingUsual ? '…' : 'Update'}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Three-chip portion picker — the 95% case is one tap. Speaks in
+                bowls for cup-based foods, multipliers otherwise. */}
+            <View style={styles.portionChipsRow}>
+              {portionOptions.map((opt) => {
+                const isSelected = !showCustomPortion && Math.abs(servingCount - opt.value) < 0.01;
+                return (
+                  <TouchableOpacity
+                    key={opt.label}
+                    style={[styles.portionChip, isSelected && styles.portionChipSelected]}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setShowCustomPortion(false);
+                      setServingCount(opt.value);
+                    }}
+                  >
+                    <Text style={[styles.portionChipText, isSelected && styles.portionChipTextSelected]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              <TouchableOpacity
+                style={[styles.portionChip, showCustomPortion && styles.portionChipSelected]}
+                activeOpacity={0.85}
+                onPress={() => setShowCustomPortion((v) => !v)}
+              >
+                <Text style={[styles.portionChipText, showCustomPortion && styles.portionChipTextSelected]}>
+                  Custom
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.portionRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.portionValue}>
-                  {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(1)}
-                  <Text style={styles.portionUnit}> serving{servingCount !== 1 ? 's' : ''}</Text>
+                  {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(2)}
+                  <Text style={styles.portionUnit}>{bowlMode ? ` × ${activePet?.bowl_size} bowl` : ` × serving${servingCount !== 1 ? 's' : ''}`}</Text>
                 </Text>
-                {scanResult.serving_size && (
+                {bowlMode ? (
+                  <Text style={styles.portionHint} numberOfLines={1}>
+                    1 full bowl = ~{BOWL_SIZE_GRAMS[(activePet!.bowl_size as keyof typeof BOWL_SIZE_GRAMS)]} g
+                  </Text>
+                ) : scanResult.serving_size ? (
                   <Text style={styles.portionHint} numberOfLines={1}>
                     1 serving = {scanResult.serving_size}
                   </Text>
-                )}
-                {servingCount !== 1 && (
-                  <Text style={styles.portionHint} numberOfLines={1}>
-                    {scanResult.calories_per_serving} × {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(1)} = {displayCalories} kcal
-                  </Text>
-                )}
+                ) : null}
+                <Text style={styles.portionHint} numberOfLines={1}>
+                  {scanResult.calories_per_serving} × {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(2)} = {displayCalories} kcal
+                </Text>
               </View>
-              <View style={styles.stepper}>
-                <TouchableOpacity
-                  style={[styles.stepperBtn, servingCount <= 0.5 && { opacity: 0.3 }]}
-                  onPress={() => setServingCount(Math.max(0.5, servingCount - 0.5))}
-                  disabled={servingCount <= 0.5}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="remove" size={18} color={color.navy} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => setServingCount(servingCount + 0.5)}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="add" size={18} color={color.navy} />
-                </TouchableOpacity>
-              </View>
+              {showCustomPortion && (
+                <View style={styles.stepper}>
+                  <TouchableOpacity
+                    style={[styles.stepperBtn, servingCount <= 0.25 && { opacity: 0.3 }]}
+                    onPress={() => setServingCount(Math.max(0.25, +(servingCount - 0.25).toFixed(2)))}
+                    disabled={servingCount <= 0.25}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialIcons name="remove" size={18} color={color.navy} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.stepperBtn}
+                    onPress={() => setServingCount(+(servingCount + 0.25).toFixed(2))}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialIcons name="add" size={18} color={color.navy} />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
 
             {/* ─── Verdict — the deliberate dark moment ─── */}
@@ -1388,6 +1714,40 @@ export default function MealScreen() {
             }}
           />
         </View>
+
+        {/* "Change source" picker — pantry pills inside a bottom sheet. */}
+        <Modal visible={sourcePickerVisible} animationType="slide" transparent onRequestClose={() => setSourcePickerVisible(false)}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.sourcePickerBackdrop}
+            onPress={() => setSourcePickerVisible(false)}
+          >
+            <View style={styles.sourcePickerSheet}>
+              <View style={styles.sourcePickerHeader}>
+                <Text style={styles.sourcePickerTitle}>Change source</Text>
+                <TouchableOpacity onPress={() => setSourcePickerVisible(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <MaterialIcons name="close" size={20} color={color.slateMuted} />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.sourcePickerHint}>
+                Tap a pantry item to log against it, or use New food.
+              </Text>
+              <PantryPillSelector
+                pantryItems={foodPantry}
+                selectedId={selectedPantryId}
+                onSelect={(id) => {
+                  setSelectedPantryId(id);
+                  setSourcePickerVisible(false);
+                }}
+                onAddNew={() => {
+                  setSelectedPantryId(null);
+                  setSourcePickerVisible(false);
+                }}
+                onArchive={promptArchivePantry}
+              />
+            </View>
+          </TouchableOpacity>
+        </Modal>
       </View>
     );
   }
@@ -1451,128 +1811,223 @@ export default function MealScreen() {
           </Animated.View>
         )}
 
-        {/* ════ SCANNER HERO — the page's anchor ════ */}
-        <Animated.View entering={FadeInDown.duration(440).delay(40)} style={styles.scannerHero}>
-          {capturedImage ? (
-            <Image source={{ uri: capturedImage }} style={styles.scannerImg} />
-          ) : (
-            <View style={styles.scannerPlaceholder}>
-              {/* Faint frame ticks evoke a viewfinder */}
-              <View style={[styles.frameTick, styles.frameTickTL]} />
-              <View style={[styles.frameTick, styles.frameTickTR]} />
-              <View style={[styles.frameTick, styles.frameTickBL]} />
-              <View style={[styles.frameTick, styles.frameTickBR]} />
-              <View style={styles.scannerPhotoIcon}>
-                <MaterialIcons name="photo-camera" size={32} color={color.creamFaint} />
-              </View>
-              <Text style={styles.scannerPlaceholderTitle}>
-                Scan {activePet?.name || 'your pet'}&apos;s next meal
-              </Text>
-              <Text style={styles.scannerPlaceholderText}>
-                Pawtchi reads the label in seconds
-              </Text>
-            </View>
-          )}
+        {(() => {
+          const prediction = predictMeal(foodPantry, activePet?.name);
+          // The user can override the prediction by tapping an alternative —
+          // that item swaps into the hero spot, the previous hero falls into
+          // the alternatives list.
+          const overridden = heroOverrideId
+            ? foodPantry.find(p => p.id === heroOverrideId) ?? null
+            : null;
+          const hero = overridden ?? prediction.hero;
+          const alternatives = (() => {
+            if (!hero) return [];
+            return foodPantry.filter(p => p.id !== hero.id).slice(0, 3);
+          })();
 
-          {/* Action dock — Gallery (ghost) + Camera (big yellow round) + Reset (ghost) */}
-          <View style={styles.scannerDock}>
-            <TouchableOpacity
-              style={styles.dockGhostBtn}
-              onPress={() => pickImage(false)}
-              disabled={isAnalyzing}
-              activeOpacity={0.85}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <MaterialIcons name="photo-library" size={20} color={color.cream} />
-              <Text style={styles.dockGhostText}>Gallery</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.dockShutter}
-              onPress={() => pickImage(true)}
-              disabled={isAnalyzing}
-              activeOpacity={0.9}
-            >
-              <View style={styles.dockShutterInner}>
-                <MaterialIcons name="photo-camera" size={28} color={color.navy} />
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.dockGhostBtn}
-              onPress={() => { setCapturedImage(null); setScanResult(null); }}
-              disabled={isAnalyzing}
-              activeOpacity={0.85}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <MaterialIcons name="refresh" size={20} color={color.cream} />
-              <Text style={styles.dockGhostText}>Reset</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Analysing overlay — navy "AI is working" state, yellow accent */}
-          {isAnalyzing && (
-            <View style={styles.analyzingOverlay} pointerEvents="box-only">
-              <View style={styles.analyzingSpinnerRing}>
-                <ActivityIndicator size="large" color={color.yellow} />
-              </View>
-              <Text style={styles.analyzingText}>{loadingMessage}</Text>
-              <Text style={styles.analyzingSub}>Reading the label for {activePet?.name || 'your pet'}</Text>
-            </View>
-          )}
-        </Animated.View>
-
-        {/* Below: editorial sections continue on the warm sheet */}
-        <View style={styles.sheet}>
-
-          {/* ─── Pantry context ─── */}
-          <Animated.View entering={FadeInDown.duration(420).delay(100)}>
-            {foodPantry.length === 0 && showPantryNudge && activePet ? (
-              <View style={{ marginTop: space.xl }}>
-                <EmptyPantryNudge
-                  petId={activePet.id}
-                  petName={activePet.name}
-                  petAvatarUrl={(activePet as any).current_avatar_url}
-                  onUpdatePantry={() => router.push('/(tabs)/profile')}
-                  onDismiss={() => setShowPantryNudge(false)}
-                />
-              </View>
-            ) : (
-              foodPantry.length > 0 && (
-                <>
-                  <View style={styles.sectionHead}>
-                    <Text style={styles.sectionLabel}>PANTRY</Text>
-                    <View style={styles.sectionRule} />
-                  </View>
-                  <PantryPillSelector
-                    pantryItems={foodPantry}
-                    selectedId={selectedPantryId}
-                    onSelect={setSelectedPantryId}
-                    onAddNew={() => router.push('/(tabs)/profile')}
-                  />
-                </>
-              )
-            )}
-          </Animated.View>
-
-          {/* ─── Quick log ─── */}
-          {foodPantry.length > 0 && (
-            <Animated.View entering={FadeInDown.duration(420).delay(160)}>
-              <View style={styles.sectionHead}>
-                <Text style={styles.sectionLabel}>QUICK LOG</Text>
-                <View style={styles.sectionRule} />
-              </View>
-              <QuickLogRail
-                pantryItems={foodPantry}
-                onLog={handleQuickLog}
-                isBusy={isAnalyzing || isLogging}
+          if (!hero) {
+            // No pantry yet — only show the scan-new-food row.
+            return (
+              <AddNewFoodRow
+                petName={activePet?.name}
+                isEmpty
+                disabled={isAnalyzing || isLogging}
+                onPress={() => {
+                  if (!checkAccess()) return;
+                  setSourcePopupVisible(true);
+                }}
               />
-            </Animated.View>
-          )}
-        </View>
+            );
+          }
+
+          return (
+            <>
+              <MealHero
+                key={hero.id}
+                eyebrow={prediction.eyebrow}
+                item={hero}
+                bowlSize={activePet?.bowl_size as any}
+                isBusy={isAnalyzing || isLogging || isPendingConfirm}
+                onLog={(mult) => logHero(hero, mult)}
+              />
+
+              {alternatives.length > 0 && (
+                <Animated.View
+                  entering={FadeInDown.duration(420).delay(120)}
+                  style={styles.altsWrap}
+                >
+                  <Text style={styles.altsLabel}>OR PICK ANOTHER</Text>
+                  {alternatives.map((alt) => (
+                    <AlternativeRow
+                      key={alt.id}
+                      item={alt}
+                      onSelect={() => {
+                        setHeroOverrideId(alt.id);
+                      }}
+                    />
+                  ))}
+                </Animated.View>
+              )}
+
+              <AddNewFoodRow
+                petName={activePet?.name}
+                isEmpty={false}
+                disabled={isAnalyzing || isLogging}
+                onPress={() => {
+                  if (!checkAccess()) return;
+                  setSourcePopupVisible(true);
+                }}
+              />
+            </>
+          );
+        })()}
       </ScrollView>
+
+      {/* ─── Source popup — inline absolute overlay (NOT a Modal) ─── */}
+      {sourcePopupVisible && (
+        <View style={styles.popupRoot} pointerEvents="auto">
+          <Pressable
+            style={styles.popupBackdrop}
+            onPress={() => setSourcePopupVisible(false)}
+          />
+          <View style={styles.popupCard}>
+            <Text style={styles.popupTitle}>Add a food</Text>
+            <Text style={styles.popupHint}>Pawtchi will read the label.</Text>
+            <Pressable
+              style={({ pressed }) => [styles.popupRow, pressed && styles.popupRowPressed]}
+              onPress={() => {
+                setSourcePopupVisible(false);
+                InteractionManager.runAfterInteractions(() => pickImage(true));
+              }}
+            >
+              <View style={styles.popupRowIcon}>
+                <MaterialIcons name="photo-camera" size={22} color={color.navy} />
+              </View>
+              <View style={styles.popupRowText}>
+                <Text style={styles.popupRowTitle}>Take photo</Text>
+                <Text style={styles.popupRowSub}>Snap the back of the bag or pouch</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={color.slateFaint} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.popupRow, pressed && styles.popupRowPressed]}
+              onPress={() => {
+                setSourcePopupVisible(false);
+                InteractionManager.runAfterInteractions(() => pickImage(false));
+              }}
+            >
+              <View style={styles.popupRowIcon}>
+                <MaterialIcons name="photo-library" size={22} color={color.navy} />
+              </View>
+              <View style={styles.popupRowText}>
+                <Text style={styles.popupRowTitle}>Choose from library</Text>
+                <Text style={styles.popupRowSub}>Pick a saved label image</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={color.slateFaint} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.popupCancel, pressed && { opacity: 0.5 }]}
+              onPress={() => setSourcePopupVisible(false)}
+            >
+              <Text style={styles.popupCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      {/* ─── Analysing overlay — full screen since the scanner hero is gone ─── */}
+      {isAnalyzing && (
+        <View style={styles.analyzingFull} pointerEvents="auto">
+          <View style={styles.analyzingSpinnerRing}>
+            <ActivityIndicator size="large" color={color.yellow} />
+          </View>
+          <Text style={styles.analyzingText}>{loadingMessage}</Text>
+          <Text style={styles.analyzingSub}>Reading the label for {activePet?.name || 'your pet'}</Text>
+        </View>
+      )}
       {/* CoinToast appears automatically via useStreakStore when coins are awarded */}
     </View>
+  );
+}
+
+// ─── Inline sub-components for the new pre-scan layout ───
+
+const ALT_FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
+  kibble: 'pets',
+  wet_food: 'soup-kitchen',
+  treat: 'cookie',
+  raw: 'egg-alt',
+  supplement: 'medication',
+  human_food: 'restaurant',
+};
+
+function AlternativeRow({ item, onSelect }: { item: PantryItem; onSelect: () => void }) {
+  const icon = ALT_FOOD_TYPE_ICONS[item.food_type] || 'pets';
+  const sub = item.kcal_per_serving
+    ? `${Math.round(item.kcal_per_serving)} kcal · ${item.serving_unit || 'serving'}`
+    : (item.serving_unit || 'serving');
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.altRow, pressed && styles.altRowPressed]}
+      onPress={onSelect}
+    >
+      {item.image_url ? (
+        <ExpoImage
+          source={{ uri: item.image_url }}
+          style={styles.altThumb}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={160}
+        />
+      ) : (
+        <View style={[styles.altThumb, styles.altThumbFallback]}>
+          <MaterialIcons name={icon} size={18} color={color.navy} />
+        </View>
+      )}
+      <View style={styles.altText}>
+        <Text style={styles.altBrand} numberOfLines={1}>{item.brand}</Text>
+        <Text style={styles.altSub} numberOfLines={1}>{sub}</Text>
+      </View>
+      {item.is_favorite && (
+        <MaterialIcons name="star" size={14} color={color.alert} style={{ marginRight: 4 }} />
+      )}
+      <MaterialIcons name="chevron-right" size={20} color={color.slateFaint} />
+    </Pressable>
+  );
+}
+
+function AddNewFoodRow({
+  petName,
+  isEmpty,
+  disabled,
+  onPress,
+}: {
+  petName: string | undefined | null;
+  isEmpty: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.addNewRow,
+        isEmpty && styles.addNewRowEmpty,
+        pressed && !disabled && styles.addNewRowPressed,
+        disabled && { opacity: 0.5 },
+      ]}
+      onPress={onPress}
+      disabled={disabled}
+    >
+      <View style={styles.addNewIcon}>
+        <MaterialIcons name="add" size={20} color={color.navy} />
+      </View>
+      <Text style={styles.addNewText}>
+        {isEmpty
+          ? `Scan ${petName || 'your pet'}'s first food`
+          : 'Scan a new food'}
+      </Text>
+      <MaterialIcons name="photo-camera" size={18} color={color.slateFaint} />
+    </Pressable>
   );
 }
 
@@ -1662,125 +2117,190 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
-  // ─── Scanner hero — the page's anchor ───
-  scannerHero: {
-    backgroundColor: color.navy,
-    borderRadius: 32,
-    overflow: 'hidden',
-    marginHorizontal: space.xxl,
-    marginTop: space.lg,
-    ...shadow.raised,
-  },
-  scannerImg: {
-    width: '100%',
-    aspectRatio: 1,
-  },
-  scannerPlaceholder: {
-    width: '100%',
-    aspectRatio: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+  // ─── Alternatives stack (sits below the MealHero) ───
+  altsWrap: {
     paddingHorizontal: space.xxl,
-    position: 'relative',
+    paddingTop: space.xl,
+    gap: space.sm,
   },
-  // Four corner ticks evoke a viewfinder frame
-  frameTick: {
-    position: 'absolute',
-    width: 22,
-    height: 22,
-    borderColor: 'rgba(244, 241, 236, 0.32)',
+  altsLabel: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 2.4,
+    color: color.slateFaint,
+    marginBottom: space.sm,
   },
-  frameTickTL: { top: 18, left: 18, borderTopWidth: 1.5, borderLeftWidth: 1.5, borderTopLeftRadius: 4 },
-  frameTickTR: { top: 18, right: 18, borderTopWidth: 1.5, borderRightWidth: 1.5, borderTopRightRadius: 4 },
-  frameTickBL: { bottom: 18, left: 18, borderBottomWidth: 1.5, borderLeftWidth: 1.5, borderBottomLeftRadius: 4 },
-  frameTickBR: { bottom: 18, right: 18, borderBottomWidth: 1.5, borderRightWidth: 1.5, borderBottomRightRadius: 4 },
-  scannerPhotoIcon: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: color.navyRaised,
-    borderWidth: 1,
-    borderColor: color.hairlineOnNavy,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: space.lg,
-  },
-  scannerPlaceholderTitle: {
-    fontFamily: font.bold,
-    fontSize: 17,
-    color: color.cream,
-    letterSpacing: -0.2,
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  scannerPlaceholderText: {
-    fontFamily: font.regular,
-    fontSize: 13,
-    color: color.creamDim,
-    textAlign: 'center',
-  },
-
-  // Camera-app style action dock — gallery + big shutter + reset
-  scannerDock: {
+  altRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
-    backgroundColor: color.navyRaised,
-    borderTopWidth: 1,
-    borderTopColor: color.hairlineOnNavy,
-    paddingVertical: space.lg,
-    paddingHorizontal: space.xxl,
+    gap: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: 10,
+    backgroundColor: color.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
   },
-  dockGhostBtn: {
+  altRowPressed: {
+    backgroundColor: color.surfaceSubtle,
+  },
+  altThumb: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.md,
+    backgroundColor: color.yellowSoft,
+  },
+  altThumbFallback: {
     alignItems: 'center',
-    gap: 4,
-    width: 64,
+    justifyContent: 'center',
   },
-  dockGhostText: {
+  altText: { flex: 1, minWidth: 0 },
+  altBrand: {
+    fontFamily: font.bold,
+    fontSize: 14,
+    color: color.ink,
+  },
+  altSub: {
+    fontFamily: font.medium,
+    fontSize: 11.5,
+    color: color.slateMuted,
+    marginTop: 2,
+  },
+
+  // ─── Add-new-food row (tertiary CTA at the bottom of the list) ───
+  addNewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginHorizontal: space.xxl,
+    marginTop: space.xl,
+    paddingHorizontal: space.md,
+    paddingVertical: 14,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    borderStyle: 'dashed',
+    backgroundColor: 'transparent',
+  },
+  addNewRowEmpty: {
+    backgroundColor: color.surface,
+    borderStyle: 'solid',
+    borderColor: color.yellow,
+    ...shadow.card,
+  },
+  addNewRowPressed: {
+    backgroundColor: color.surfaceSubtle,
+  },
+  addNewIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: color.yellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addNewText: {
+    flex: 1,
     fontFamily: font.semibold,
-    fontSize: 10.5,
-    letterSpacing: 0.8,
-    color: color.creamDim,
-  },
-  dockShutter: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: color.yellow,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 4,
-    borderColor: color.navy,
-    // Camera-shutter halo
-    shadowColor: color.yellow,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  dockShutterInner: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: color.yellow,
-    alignItems: 'center',
-    justifyContent: 'center',
+    fontSize: 14,
+    color: color.ink,
   },
 
-  // ─── Sheet wrapper for PANTRY / QUICK LOG below the scanner ───
-  sheet: {
+  // ─── Centered popup modals (source + portion) ───
+  // Backdrop and card are siblings, card is centered. No flex-end edge zone,
+  // no overlap geometry. Backdrop owns "tap-outside-to-close"; card owns
+  // every interactive Pressable inside it. RN responder routing just works.
+  popupRoot: {
+    // Anchors above all screen content. zIndex ensures it sits over the
+    // status strip and ScrollView contents.
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: space.xxl,
+    zIndex: 100,
+    elevation: 100,
+  },
+  popupBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(7, 32, 42, 0.5)',
+  },
+  popupCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: color.surface,
+    borderRadius: radius.xxl,
     paddingHorizontal: space.xxl,
-    paddingTop: space.sm,
-    minHeight: 200,
+    paddingVertical: space.xl,
+    ...shadow.raised,
+  },
+  popupTitle: {
+    fontFamily: font.extrabold,
+    fontSize: 20,
+    color: color.ink,
+    letterSpacing: -0.3,
+  },
+  popupHint: {
+    fontFamily: font.medium,
+    fontSize: 13,
+    color: color.slateMuted,
+    marginTop: 2,
+    marginBottom: space.lg,
   },
 
-  analyzingOverlay: {
+  // Source popup rows
+  popupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingVertical: space.md,
+    borderTopWidth: 1,
+    borderTopColor: color.hairline,
+  },
+  popupRowPressed: {
+    backgroundColor: color.surfaceSubtle,
+  },
+  popupRowIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.md,
+    backgroundColor: color.yellowSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  popupRowText: { flex: 1 },
+  popupRowTitle: {
+    fontFamily: font.bold,
+    fontSize: 15,
+    color: color.ink,
+  },
+  popupRowSub: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slateMuted,
+    marginTop: 2,
+  },
+  popupCancel: {
+    marginTop: space.md,
+    paddingVertical: space.sm,
+    alignItems: 'center',
+  },
+  popupCancelText: {
+    fontFamily: font.semibold,
+    fontSize: 14,
+    color: color.slateMuted,
+  },
+
+
+  // Full-screen analyzing overlay — replaces the in-hero overlay since the
+  // scanner hero no longer exists.
+  analyzingFull: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: color.navy,
     justifyContent: 'center',
     alignItems: 'center',
     gap: space.md,
     paddingHorizontal: space.xxl,
+    zIndex: 999,
   },
   analyzingSpinnerRing: {
     width: 72,
@@ -1892,7 +2412,67 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
+  // ─── Learned-portion nudge ───
+  usualBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: color.yellowSoft,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.yellow,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    marginTop: space.lg,
+    marginBottom: space.sm,
+  },
+  usualBannerText: {
+    flex: 1,
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    color: color.ink,
+    lineHeight: 17,
+  },
+  usualBannerCta: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: color.navy,
+  },
+  usualBannerCtaText: {
+    fontFamily: font.bold,
+    fontSize: 12,
+    color: color.cream,
+    letterSpacing: 0.3,
+  },
+
   // ─── Portion ───
+  portionChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.sm,
+    marginBottom: space.md,
+  },
+  portionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    backgroundColor: color.surface,
+  },
+  portionChipSelected: {
+    backgroundColor: color.yellowSoft,
+    borderColor: color.yellow,
+  },
+  portionChipText: {
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.slate,
+  },
+  portionChipTextSelected: {
+    color: color.navy,
+  },
   portionRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2114,6 +2694,39 @@ const styles = StyleSheet.create({
     fontFamily: font.bold,
     fontSize: 13,
   },
+  // "Change source" picker (bottom sheet on the result screen)
+  sourcePickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(7, 32, 42, 0.45)',
+    justifyContent: 'flex-end',
+  },
+  sourcePickerSheet: {
+    backgroundColor: color.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: space.xxl,
+    paddingTop: space.lg,
+    paddingBottom: space.xxxl,
+  },
+  sourcePickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.xs,
+  },
+  sourcePickerTitle: {
+    fontFamily: font.bold,
+    fontSize: 17,
+    color: color.ink,
+    letterSpacing: -0.2,
+  },
+  sourcePickerHint: {
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    color: color.slateMuted,
+    marginBottom: space.sm,
+  },
+
   srSticky: {
     position: 'absolute',
     left: 0,

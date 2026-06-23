@@ -7,6 +7,7 @@ const REASON_LABELS: Record<string, string> = {
   activity_complete: 'Activity complete!',
   weight_log: 'Weight tracked!',
   brand_setup: 'Brands saved!',
+  vet_report_log: 'Vet report saved',
 };
 
 export interface EarnEvent {

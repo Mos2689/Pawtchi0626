@@ -21,6 +21,9 @@ export interface PantryItem {
     scan_count: number;
     first_scanned_at: string;
     last_scanned_at: string;
+    is_archived?: boolean;
+    expiry_date?: string | null;
+    is_favorite?: boolean;
 }
 
 export interface Pet {
@@ -63,6 +66,9 @@ interface ActivePetState {
     fetchPantry: (petId: string) => Promise<void>;
     addPantryItem: (item: Omit<PantryItem, 'id' | 'first_scanned_at' | 'last_scanned_at' | 'scan_count'>) => Promise<PantryItem | null>;
     incrementPantryScan: (itemId: string) => Promise<void>;
+    archivePantryItem: (itemId: string) => Promise<void>;
+    togglePantryFavorite: (itemId: string) => Promise<void>;
+    setPantryExpiry: (itemId: string, dateIso: string | null) => Promise<void>;
     clearPet: () => void;
     updatePetWeight: (weightKg: number, targetCalories: number) => void;
     unlockItem: (itemId: string) => Promise<boolean>;
@@ -113,7 +119,20 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             .eq('pet_id', petId)
             .order('is_primary', { ascending: false })
             .order('scan_count', { ascending: false });
-        set({ foodPantry: data || [] });
+        // Hide archived foods from every active pantry surface. Filtered
+        // client-side so this is safe whether or not the column exists yet.
+        set({ foodPantry: (data || []).filter((p: any) => !p.is_archived) });
+    },
+    archivePantryItem: async (itemId) => {
+        // Optimistic removal from the active rail; history (food_scans) stays.
+        set({ foodPantry: get().foodPantry.filter(p => p.id !== itemId) });
+        const { error } = await supabase
+            .from('food_pantry')
+            .update({ is_archived: true })
+            .eq('id', itemId);
+        if (error) {
+            console.error('Failed to archive pantry item:', error);
+        }
     },
     addPantryItem: async (item) => {
         const { data, error } = await supabase
@@ -134,6 +153,8 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
                 allergy_flags: item.allergy_flags,
                 is_primary: item.is_primary,
                 image_url: item.image_url,
+                expiry_date: item.expiry_date ?? null,
+                is_favorite: item.is_favorite ?? false,
             })
             .select()
             .single();
@@ -158,6 +179,48 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
                 p.id === itemId ? { ...p, scan_count: newCount, last_scanned_at: now } : p
             ),
         });
+    },
+    togglePantryFavorite: async (itemId) => {
+        const current = get().foodPantry.find(p => p.id === itemId);
+        const next = !(current?.is_favorite ?? false);
+        set({
+            foodPantry: get().foodPantry.map(p =>
+                p.id === itemId ? { ...p, is_favorite: next } : p
+            ),
+        });
+        const { error } = await supabase
+            .from('food_pantry')
+            .update({ is_favorite: next })
+            .eq('id', itemId);
+        if (error) {
+            // Roll back the optimistic flip on failure.
+            set({
+                foodPantry: get().foodPantry.map(p =>
+                    p.id === itemId ? { ...p, is_favorite: !next } : p
+                ),
+            });
+            console.error('Failed to toggle favorite:', error);
+        }
+    },
+    setPantryExpiry: async (itemId, dateIso) => {
+        const prev = get().foodPantry.find(p => p.id === itemId)?.expiry_date ?? null;
+        set({
+            foodPantry: get().foodPantry.map(p =>
+                p.id === itemId ? { ...p, expiry_date: dateIso } : p
+            ),
+        });
+        const { error } = await supabase
+            .from('food_pantry')
+            .update({ expiry_date: dateIso })
+            .eq('id', itemId);
+        if (error) {
+            set({
+                foodPantry: get().foodPantry.map(p =>
+                    p.id === itemId ? { ...p, expiry_date: prev } : p
+                ),
+            });
+            console.error('Failed to set expiry:', error);
+        }
     },
     clearPet: () => set({ activePet: null, foodPantry: [], isLoading: true, error: null }),
     updatePetWeight: (weightKg: number, targetCalories: number) => {

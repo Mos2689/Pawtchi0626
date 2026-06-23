@@ -17,8 +17,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Purchases, { PurchasesPackage } from 'react-native-purchases';
 import Constants from 'expo-constants';
-import { useFonts, Montserrat_400Regular, Montserrat_500Medium, Montserrat_600SemiBold } from '@expo-google-fonts/montserrat';
-import { BebasNeue_400Regular } from '@expo-google-fonts/bebas-neue';
+import { color, font } from '../constants/design';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useSubscription } from '../hooks/useSubscription';
 import { track } from '../lib/analytics';
@@ -28,18 +27,18 @@ import { openManageSubscription } from '../lib/manageSubscription';
 // Navy ground + electric yellow accent only. Yellow marks the ONE thing that
 // matters (§4.02) — here, the call to action. Bebas Neue display, Montserrat body
 // (§4.03). Left-aligned, one idea per surface (§4.06).
-const NAVY = '#07202A';
-const NAVY_RAISED = '#0B2A36';
-const YELLOW = '#F7F602';
-const CREAM = '#F4F1EC';
-const CREAM_DIM = 'rgba(244, 241, 236, 0.66)';
-const CREAM_FAINT = 'rgba(244, 241, 236, 0.42)';
-const HAIRLINE = 'rgba(244, 241, 236, 0.14)';
+const NAVY = color.navy;
+const NAVY_RAISED = color.navyRaised;
+const YELLOW = color.yellow;
+const CREAM = color.cream;
+const CREAM_DIM = color.creamDim;
+const CREAM_FAINT = color.creamFaint;
+const HAIRLINE = color.hairlineOnNavy;
 
-const DISPLAY = 'BebasNeue_400Regular';
-const BODY = 'Montserrat_400Regular';
-const BODY_MED = 'Montserrat_500Medium';
-const BODY_SEMI = 'Montserrat_600SemiBold';
+const DISPLAY = font.display;
+const BODY = font.regular;
+const BODY_MED = font.medium;
+const BODY_SEMI = font.semibold;
 
 const OFFERINGS_TIMEOUT_MS = 8000;
 
@@ -174,13 +173,6 @@ export default function PaywallScreen() {
     const { activePet } = useActivePetStore();
     const { restorePurchases, purchasePackage, getOfferings, status, isPro, isFreemiumActive, daysSinceCreation } = useSubscription();
 
-    const [fontsLoaded] = useFonts({
-        BebasNeue_400Regular,
-        Montserrat_400Regular,
-        Montserrat_500Medium,
-        Montserrat_600SemiBold,
-    });
-
     const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'yearly'>('yearly');
     const [purchasing, setPurchasing] = useState(false);
     const [packages, setPackages] = useState<PurchasesPackage[]>([]);
@@ -191,7 +183,9 @@ export default function PaywallScreen() {
     const petPossessive = petName ? `${petName}'s` : "your animal's";
 
     const mode = deriveMode(status, isFreemiumActive, daysSinceCreation);
-    const showDismiss = mode !== 'renewal';
+    // Always dismissible. Premium features re-open the paywall when used, so
+    // closing this never strands the user with no path to value.
+    const showDismiss = true;
 
     const headline = mode === 'renewal' ? 'PICK UP\nWHERE YOU\nLEFT OFF.' : 'NOTICE\nEVERYTHING.';
     const subcopy =
@@ -348,15 +342,6 @@ export default function PaywallScreen() {
         track('paywall_restore_tapped', {});
         restorePurchases();
     };
-
-    if (!fontsLoaded) {
-        return (
-            <View style={[styles.container, styles.center]}>
-                <StatusBar style="light" />
-                <ActivityIndicator color={YELLOW} />
-            </View>
-        );
-    }
 
     // ─── Already subscribed: never show a purchase CTA ───
     // An active subscriber who reaches this screen must not be able to buy again —

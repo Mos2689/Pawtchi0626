@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Modal, TextInput, ActivityIndicator,
+  Modal, TextInput, ActivityIndicator, Alert,
   KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,6 +25,9 @@ import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
 import { regenerateSchedule } from '../../lib/scheduleAdjuster';
 import { getReportFreshness } from '../../lib/vetReportFreshness';
+import { track } from '../../lib/analytics';
+import { haptic } from '../../lib/haptics';
+import { VetScanResultModal, type VetScanResult } from '../../components/VetScanResultModal';
 import WeeklyNutritionChart, { DayMacro } from '../../components/WeeklyNutritionChart';
 
 function getLocalYMD(d: Date): string {
@@ -134,9 +137,11 @@ export default function HealthScreen() {
 
   // Branded vet scan success/error modals
   const [showVetScanSuccess, setShowVetScanSuccess] = useState(false);
-  const [vetScanSummary, setVetScanSummary] = useState('');
+  const [vetScanResult, setVetScanResult] = useState<VetScanResult | null>(null);
   const [showVetScanError, setShowVetScanError] = useState(false);
   const [vetScanErrorMsg, setVetScanErrorMsg] = useState('');
+  // Delete-report confirm flow
+  const [reportToDelete, setReportToDelete] = useState<{ id: string; date: string } | null>(null);
 
   // Vet scan states
   const [isScanning, setIsScanning] = useState(false);
@@ -335,55 +340,227 @@ export default function HealthScreen() {
     }, [fetchHealthData])
   );
 
-  // Scan Vet Report
-  const scanVetReport = async () => {
+  // Scan Vet Report — show Take a photo / Choose from library first.
+  const scanVetReport = () => {
     if (!checkAccess()) return;
     if (!activePet) return;
+    if (isScanning) return; // prevent re-launching while a scan is in flight
+    Alert.alert(
+      'Scan a vet report',
+      'Use your camera or pick a saved image.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Choose from library', onPress: () => pickAndUploadVetReport('library') },
+        { text: 'Take a photo', onPress: () => pickAndUploadVetReport('camera') },
+      ],
+      { cancelable: true },
+    );
+  };
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.8,
-      base64: true,
-    });
+  const pickAndUploadVetReport = async (source: 'camera' | 'library') => {
+    if (!activePet) return;
+    if (isScanning) return;
 
-    if (result.canceled || !result.assets?.[0]?.base64) return;
-
+    // Lock the button before the picker so a rapid double-tap can't insert two rows.
     setIsScanning(true);
+    try {
+      let result: ImagePicker.ImagePickerResult;
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          setVetScanErrorMsg('Camera access is off. Turn it on in Settings to take a photo.');
+          setShowVetScanError(true);
+          setIsScanning(false);
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.8,
+          base64: true,
+        });
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.8,
+          base64: true,
+        });
+      }
+
+      const base64 = result.canceled ? null : result.assets?.[0]?.base64;
+      if (!base64) {
+        setIsScanning(false);
+        return;
+      }
+      // Pre-check size before round-tripping to the function (5MB raw cap).
+      if (base64.length * 0.75 > 5_000_000) {
+        setVetScanErrorMsg('That image is too large. Try a smaller photo.');
+        setShowVetScanError(true);
+        setIsScanning(false);
+        return;
+      }
+      const mimeType = result.assets?.[0]?.mimeType || 'image/jpeg';
+      console.log(`[VetScan] picked image source=${source} sizeKB=${Math.round(base64.length * 0.75 / 1024)} mime=${mimeType}`);
+
+      await runVetScan(base64, mimeType);
+    } catch (e: any) {
+      console.warn('[VetScan] failed: picker stage', e);
+      setVetScanErrorMsg(e?.message || 'Scan failed.');
+      setShowVetScanError(true);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const runVetScan = async (imageBase64: string, mimeType: string) => {
+    if (!activePet) return;
+    const startedAt = Date.now();
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
 
-      const res = await fetch(`${supabaseUrl}/functions/v1/scan-vet-report`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          imageBase64: result.assets[0].base64,
-          mimeType: 'image/jpeg',
-          petId: activePet.id,
-          petProfile: activePet,
-        }),
-      });
+      // 60s client-side timeout — twice the edge function's internal Gemini cap.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60_000);
 
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Scan failed.');
+      console.log('[VetScan] calling edge function');
+      let res: Response;
+      try {
+        res = await fetch(`${supabaseUrl}/functions/v1/scan-vet-report`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            imageBase64,
+            mimeType,
+            petId: activePet.id,
+            petProfile: activePet,
+          }),
+          signal: controller.signal,
+        });
+      } catch (fetchErr: any) {
+        if (fetchErr?.name === 'AbortError') {
+          throw new Error('Scan took too long — try again with a smaller, sharper photo.');
+        }
+        throw fetchErr;
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      const ext = data.extracted_data;
-      let summary = 'Report processed.\n';
-      if (ext.weight_kg) summary += `\nWeight: ${ext.weight_kg} kg`;
-      if (ext.body_condition_score) summary += `\nBCS: ${ext.body_condition_score}/9`;
-      if (ext.diagnoses?.length) summary += `\nDiagnoses: ${ext.diagnoses.join(', ')}`;
-      if (ext.allergies?.length) summary += `\nAllergies: ${ext.allergies.join(', ')}`;
-      if (ext.medications?.length) summary += `\nMedications: ${ext.medications.map((m: any) => m.name).join(', ')}`;
-      if (ext.next_appointment) summary += `\nNext visit: ${ext.next_appointment}`;
+      // Text-first read so we can distinguish empty / non-JSON / error-JSON
+      // bodies and produce a useful message for each.
+      const bodyText = await res.text();
+      const contentType = res.headers.get('content-type') || 'unknown';
+      console.log(`[VetScan] response status=${res.status} contentType=${contentType} bytes=${bodyText.length}`);
 
-      // Force a global refresh of the pet profile so new conditions/allergies sync to the Clinical Profile and Intelligent Layer instantly
+      if (!res.ok) {
+        // Surface the status code so server-side issues are obvious in logs.
+        throw new Error(`Scan failed (HTTP ${res.status}). Try again in a moment.`);
+      }
+      if (bodyText.length === 0) {
+        // Almost always a dropped tunnel POST. Be specific so the user knows
+        // exactly what to change.
+        throw new Error(
+          "Your upload didn't reach the server. If you're running Expo with --tunnel, that connection drops large images. Restart with `npx expo start` (LAN) and try again."
+        );
+      }
+      let data: any;
+      try {
+        data = JSON.parse(bodyText);
+      } catch {
+        console.warn('[VetScan] non-JSON response first 200 chars:', bodyText.slice(0, 200));
+        throw new Error('The server returned an unexpected response — try again, or pick a smaller photo.');
+      }
+      if (!data.success) {
+        console.warn('[VetScan] server reported failure:', data.error);
+        throw new Error(data.error || 'Scan failed.');
+      }
+      console.log(`[VetScan] parsed success=true hasExtracted=${!!data.extracted_data}`);
+
+      const ext = data.extracted_data || {};
+
+      // ── Snapshot prior state for the success summary + recalibration. ──
+      const prevWeight = activePet.current_weight_kg ?? null;
+      const prevCalories = activePet.target_daily_calories ?? 0;
+      const prevGoal = deriveGoal(prevWeight ?? 0, activePet.target_weight_kg);
+      const prevDiagnoses = new Set(activePet.medical_conditions || []);
+      const prevAllergies = new Set(activePet.allergies || []);
+
+      // ── Recalibrate calorie target + schedule when a fresh weight came in. ──
+      const newWeight: number | null = typeof ext.weight_kg === 'number' && ext.weight_kg > 0
+        ? ext.weight_kg
+        : null;
+      let newCalories: number | null = null;
+      let scheduleRegenerated = false;
+      let newGoal = prevGoal;
+      if (newWeight && activePet.species) {
+        newGoal = deriveGoal(newWeight, activePet.target_weight_kg);
+        newCalories = calculateDailyKcal(
+          newWeight,
+          activePet.species,
+          activePet.is_neutered,
+          activePet.activity_level,
+          newGoal,
+          undefined,
+          1.0,
+          activePet.target_weight_kg,
+        );
+        console.log(`[VetScan] recalibrate weight=${newWeight} prev=${prevWeight ?? 'null'} newKcal=${newCalories}`);
+        // Optimistic store update so Home + Health derive off new target instantly.
+        useActivePetStore.getState().updatePetWeight(newWeight, newCalories);
+        try {
+          // The edge function wrote current_weight_kg but not the recomputed target.
+          const { error: updErr } = await supabase.from('pets').update({
+            target_daily_calories: newCalories,
+          }).eq('id', activePet.id);
+          if (updErr) throw updErr;
+          console.log(`[VetScan] persisted target_daily_calories=${newCalories}`);
+
+          const weightDeltaKg = prevWeight !== null ? Math.abs(newWeight - prevWeight) : 0;
+          const goalFlipped = prevGoal !== newGoal;
+          if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
+            console.log(`[VetScan] schedule regenerate trigger=${goalFlipped ? 'goal' : 'delta'} weightDelta=${weightDeltaKg.toFixed(2)}`);
+            const refreshed = useActivePetStore.getState().activePet ?? activePet;
+            const ctx = usePetContextStore.getState();
+            const sched = await regenerateSchedule({
+              pet: refreshed,
+              weeklyStats: null,
+              todayCalPercent: ctx.calPercent ?? 0,
+              weightTrendDirection: ctx.weightTrend?.direction ?? null,
+            });
+            scheduleRegenerated = sched.success;
+            if (scheduleRegenerated) {
+              const newWaterPerSession = Math.round(newWeight * 50 / 3);
+              const todayStr = getLocalYMD(new Date());
+              await supabase
+                .from('activities')
+                .update({ water_ml: newWaterPerSession })
+                .eq('pet_id', activePet.id)
+                .eq('activity_type', 'water')
+                .eq('scheduled_date', todayStr)
+                .eq('status', 'pending');
+            }
+          }
+        } catch (recalErr) {
+          // Revert the optimistic write so the UI doesn't display a target
+          // the DB never accepted.
+          if (user?.id) {
+            await useActivePetStore.getState().fetchPet(user.id, { silent: true });
+          }
+          throw recalErr;
+        }
+      }
+
+      // Pull post-write pet so we can diff diagnoses/allergies the edge function merged.
       if (user?.id) {
         await useActivePetStore.getState().fetchPet(user.id, { silent: true });
       }
+      const postPet = useActivePetStore.getState().activePet ?? activePet;
+      const newDiagnoses = (postPet.medical_conditions || []).filter((d) => !prevDiagnoses.has(d));
+      const newAllergies = (postPet.allergies || []).filter((a) => !prevAllergies.has(a));
+
       if (activePet.id) {
         // Explicit post-write refresh — bypass the staleness guard.
         usePetContextStore.getState().refreshTrends(activePet.id, { force: true });
@@ -392,13 +569,98 @@ export default function HealthScreen() {
       // Refresh this screen's own lists (vet reports, weight) past the guard.
       fetchHealthData({ force: true });
 
-      setVetScanSummary(summary);
+      const weightDiff = newWeight !== null && prevWeight !== null ? newWeight - prevWeight : null;
+      const calorieDiff = newCalories !== null && prevCalories > 0 && prevCalories !== newCalories
+        ? newCalories - prevCalories
+        : null;
+      const medicationsCount = Array.isArray(ext.medications) ? ext.medications.length : 0;
+      const vaccinationsCount = Array.isArray(ext.vaccinations) ? ext.vaccinations.length : 0;
+      const bcs = typeof ext.body_condition_score === 'number' ? ext.body_condition_score : null;
+      const waterMlPerSession = scheduleRegenerated && newWeight ? Math.round(newWeight * 50 / 3) : null;
+
+      // "Useful data" gates the celebration tone + coin reward. An unreadable
+      // photo where Gemini only filled vet_notes shouldn't pay out.
+      const hasUsefulData =
+        newWeight !== null ||
+        bcs !== null ||
+        newDiagnoses.length > 0 ||
+        newAllergies.length > 0 ||
+        medicationsCount > 0 ||
+        vaccinationsCount > 0 ||
+        !!ext.next_appointment;
+
+      // Coins are awarded server-side; show the chip locally for instant feedback.
+      const coinsAwarded = hasUsefulData ? 25 : 0;
+
+      // Defensive: even when hasUsefulData is false, never surface JSON-shaped
+      // notes as the "couldn't read" hint.
+      const cantReadHint = (() => {
+        if (hasUsefulData || typeof ext.vet_notes !== 'string') return null;
+        const trimmed = ext.vet_notes.trim();
+        if (trimmed.startsWith('{') || /"[a-z_]+"\s*:/i.test(trimmed)) return null;
+        return trimmed.slice(0, 160);
+      })();
+
+      haptic.success();
+      setVetScanResult({
+        weight: newWeight,
+        bcs,
+        newDiagnoses,
+        newAllergies,
+        medicationsCount,
+        vaccinationsCount,
+        nextAppointment: ext.next_appointment || null,
+        prevWeight,
+        weightDiff,
+        prevCalories,
+        newCalories,
+        calorieDiff,
+        scheduleRegenerated,
+        waterMlPerSession,
+        coinsAwarded,
+        hasUsefulData,
+        cantReadHint,
+      });
       setShowVetScanSuccess(true);
+
+      track('vet_report_scanned', {
+        has_weight: newWeight !== null,
+        has_bcs: bcs !== null,
+        diagnoses_added: newDiagnoses.length,
+        allergies_added: newAllergies.length,
+        calorie_delta: calorieDiff ?? 0,
+        schedule_regenerated: scheduleRegenerated,
+        useful: hasUsefulData,
+      });
+
+      if (hasUsefulData && user?.id) {
+        awardCoins(user.id, 'vet_report_log', data.report_id);
+      }
+      console.log(`[VetScan] done in ${Date.now() - startedAt}ms`);
     } catch (e: any) {
+      console.warn(`[VetScan] failed after ${Date.now() - startedAt}ms:`, e?.message || e);
       setVetScanErrorMsg(e?.message || 'Scan failed.');
       setShowVetScanError(true);
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  // Delete a vet report row (used for clearing failed/duplicate scans).
+  const confirmDeleteReport = async () => {
+    if (!reportToDelete) return;
+    const id = reportToDelete.id;
+    // Optimistic removal so the timeline updates instantly.
+    setVetReports((prev) => prev.filter((r) => r.id !== id));
+    setReportToDelete(null);
+    try {
+      const { error } = await supabase.from('vet_reports').delete().eq('id', id);
+      if (error) throw error;
+    } catch (e: any) {
+      // Restore on failure.
+      fetchHealthData({ force: true });
+      setVetScanErrorMsg(e?.message || 'Could not delete the report.');
+      setShowVetScanError(true);
     }
   };
 
@@ -490,6 +752,7 @@ export default function HealthScreen() {
         : null;
 
       // Show branded success modal
+      haptic.success();
       setWeightSuccessData({
         weight,
         prevCalories,
@@ -877,6 +1140,14 @@ export default function HealthScreen() {
                             {new Date(report.report_date).toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' })}
                           </Text>
                           {d.weight_kg && <Text style={styles.timelineWeight}>{d.weight_kg} kg</Text>}
+                          <TouchableOpacity
+                            onPress={() => setReportToDelete({ id: report.id, date: report.report_date })}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            style={styles.timelineDeleteBtn}
+                            accessibilityLabel="Delete this report"
+                          >
+                            <MaterialIcons name="delete-outline" size={16} color={color.slateFaint} />
+                          </TouchableOpacity>
                         </View>
                         <Text style={styles.timelineSource}>
                           {report.image_url === 'uploaded_scan' ? 'Scanned report' : 'Manual entry'}
@@ -900,7 +1171,15 @@ export default function HealthScreen() {
                         )}
                         {d.medications?.length > 0 && (
                           <Text style={styles.timelineDetail}>
-                            <Text style={styles.timelineDetailLabel}>Meds · </Text>{d.medications.map((m: any) => `${m.name} (${m.dosage})`).join(', ')}
+                            <Text style={styles.timelineDetailLabel}>Meds · </Text>{d.medications
+                              .map((m: any) => {
+                                const name = (m?.name || '').toString().trim();
+                                const dose = (m?.dosage || '').toString().trim();
+                                if (!name) return null;
+                                return dose ? `${name} · ${dose}` : name;
+                              })
+                              .filter(Boolean)
+                              .join(', ')}
                           </Text>
                         )}
                       </View>
@@ -1037,24 +1316,31 @@ export default function HealthScreen() {
         />
       )}
 
-      {/* Branded Vet Scan Success Modal */}
-      <PawtchiSuccessModal
+      {/* Vet scan result sheet — premium calibration card */}
+      <VetScanResultModal
         visible={showVetScanSuccess}
+        result={vetScanResult}
+        pet={{
+          name: activePet?.name || 'your pet',
+          imageUrl: activePet?.image_url,
+          gender: activePet?.gender,
+          currentWeightKg: activePet?.current_weight_kg ?? null,
+          targetWeightKg: activePet?.target_weight_kg ?? null,
+          targetDailyCalories: activePet?.target_daily_calories ?? null,
+          bcs: activePet?.body_condition_score ?? null,
+          activityLevel: activePet?.activity_level ?? null,
+          totalAllergies: activePet?.allergies?.length,
+          totalConditions: activePet?.medical_conditions?.length,
+        }}
         onClose={() => {
           setShowVetScanSuccess(false);
           fetchHealthData();
         }}
-        title="Vet report scanned"
-        icon={{ name: 'description', color: color.yellow }}
-        lines={[
-          { text: vetScanSummary.replace(/\n+/g, ' '), type: 'normal' },
-        ]}
-        primaryAction={{
-          label: 'Got it',
-          onPress: () => {
-            setShowVetScanSuccess(false);
-            fetchHealthData();
-          },
+        onOpenHistory={() => {
+          setShowVetScanSuccess(false);
+          // Vet history lives inline on this screen; close + refresh scrolls it
+          // back into view at the top of the list.
+          fetchHealthData();
         }}
       />
 
@@ -1066,6 +1352,19 @@ export default function HealthScreen() {
         icon={{ name: 'error-outline', color: color.error }}
         message={vetScanErrorMsg}
         showCloseButton
+      />
+
+      {/* Delete-report confirm */}
+      <PawtchiModal
+        visible={!!reportToDelete}
+        onClose={() => setReportToDelete(null)}
+        title="Delete this report?"
+        icon={{ name: 'delete-outline', color: color.error }}
+        message="This removes the report from the timeline. It won't affect logged weights or pet profile changes already applied."
+        actions={[
+          { label: 'Cancel', onPress: () => setReportToDelete(null), variant: 'secondary' },
+          { label: 'Delete', onPress: confirmDeleteReport, variant: 'primary' },
+        ]}
       />
     </View>
   );
@@ -1359,6 +1658,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: space.sm,
+  },
+  timelineDeleteBtn: {
+    padding: 4,
   },
   timelineDate: {
     fontFamily: font.bold,

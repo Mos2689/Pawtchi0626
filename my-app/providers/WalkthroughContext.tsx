@@ -206,15 +206,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   title: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 20,
     color: Colors.light["on-surface"],
     marginBottom: 8,
   },
   description: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
+    fontFamily: 'Montserrat_500Medium',
     fontSize: 14,
     color: '#666',
     lineHeight: 20,
@@ -226,8 +224,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   skipText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 14,
     color: '#888',
   },
@@ -238,8 +235,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   doneText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     color: Colors.light.surface,
   }

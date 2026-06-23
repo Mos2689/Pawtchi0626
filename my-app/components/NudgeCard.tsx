@@ -9,14 +9,14 @@ import { useSubscription } from '../hooks/useSubscription';
 interface NudgeCardProps {}
 
 const iconMap: Record<string, { name: keyof typeof MaterialIcons.glyphMap; color: string }> = {
-  suggest_walk: { name: 'directions-walk', color: '#FFFC00' },
-  remind_log: { name: 'restaurant', color: '#FFFC00' },
+  suggest_walk: { name: 'directions-walk', color: '#F7F602' },
+  remind_log: { name: 'restaurant', color: '#F7F602' },
   remind_water: { name: 'water-drop', color: '#3091F9' },
   remind_weight: { name: 'monitor-weight', color: '#c084fc' },
   remind_activity: { name: 'sports-tennis', color: '#4ade80' },
   treat_ok: { name: 'check-circle', color: '#4ade80' },
   reduce_dinner: { name: 'restaurant-menu', color: '#fb923c' },
-  start_trial: { name: 'info-outline', color: '#FFFC00' },
+  start_trial: { name: 'info-outline', color: '#F7F602' },
 };
 
 const routeMap: Record<string, string> = {
@@ -44,12 +44,12 @@ export function NudgeCard({}: NudgeCardProps) {
   // Dynamic nudge from the context engine
   if (nudge && nudge.title) {
     const isAction = nudge.priority === 'action';
-    const icon = (nudge.actionType && iconMap[nudge.actionType]) ? iconMap[nudge.actionType] : { name: 'info-outline' as const, color: '#FFFC00' };
+    const icon = (nudge.actionType && iconMap[nudge.actionType]) ? iconMap[nudge.actionType] : { name: 'info-outline' as const, color: '#F7F602' };
     const route = (nudge.actionType && routeMap[nudge.actionType]) ? routeMap[nudge.actionType] : null;
 
     const card = (
       <LinearGradient
-        colors={isAction ? ['#0f172a', '#1e293b'] : ['#1e293b', '#334155']}
+        colors={isAction ? ['#07202A', '#0B2A36'] : ['#0B2A36', '#123544']}
         style={styles.gradient}
       >
         <View style={styles.left}>
@@ -123,16 +123,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   title: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 15,
-    color: '#FFFC00',
+    color: '#F7F602',
     marginBottom: 3,
     lineHeight: 20,
   },
   sub: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
+    fontFamily: 'Montserrat_500Medium',
     fontSize: 12,
     color: '#94a3b8',
     lineHeight: 17,

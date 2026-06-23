@@ -1,22 +1,50 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+import { getCorsHeaders } from '../_shared/cors.ts'
+import { verifyAuth } from '../_shared/auth.ts'
+import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
+import { validateImagePayload, safeParseBody } from '../_shared/validate.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_TIMEOUT_MS = 30_000;
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    const { imageBase64, mimeType, species } = await req.json();
+    // ── Security: Authenticate caller ──
+    const auth = await verifyAuth(req, corsHeaders);
+    if (auth.error) return auth.error;
+
+    // ── Security: Rate limit (10 requests/hour) ──
+    const rateLimited = await checkRateLimit(auth.userId, 'parse-onboarding-report', RATE_LIMITS['parse-onboarding-report'], corsHeaders);
+    if (rateLimited) return rateLimited;
+
+    // ── Security: Parse body with size limits ──
+    const parsed = await safeParseBody(req);
+    if (parsed.error) {
+      return new Response(
+        JSON.stringify({ success: false, error: parsed.error }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    const { imageBase64, mimeType, species } = parsed.data as Record<string, any>;
 
     if (!imageBase64) {
       throw new Error('imageBase64 is required.');
+    }
+
+    // ── Security: Validate image payload ──
+    const imageErr = validateImagePayload(imageBase64, mimeType);
+    if (imageErr) {
+      return new Response(
+        JSON.stringify({ success: false, error: imageErr }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
     }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
@@ -87,13 +115,21 @@ RULES:
       },
     };
 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
     const geminiRes = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY,
+      },
       body: JSON.stringify(geminiPayload),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text();

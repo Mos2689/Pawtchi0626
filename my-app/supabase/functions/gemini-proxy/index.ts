@@ -1,16 +1,47 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders } from '../_shared/cors.ts'
+import { getCorsHeaders } from '../_shared/cors.ts'
+import { verifyAuth } from '../_shared/auth.ts'
+import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
+import { validateImagePayload, safeParseBody } from '../_shared/validate.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000; // 30 second timeout
 
 Deno.serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const { imageBase64, mimeType, petProfile, selectedPantryItemId, todayState } = await req.json()
+    // ── Security: Authenticate caller ──
+    const auth = await verifyAuth(req, corsHeaders);
+    if (auth.error) return auth.error;
+
+    // ── Security: Rate limit (30 requests/hour) ──
+    const rateLimited = await checkRateLimit(auth.userId, 'gemini-proxy', RATE_LIMITS['gemini-proxy'], corsHeaders);
+    if (rateLimited) return rateLimited;
+
+    // ── Security: Parse body with size limits ──
+    const parsed = await safeParseBody(req);
+    if (parsed.error) {
+      return new Response(
+        JSON.stringify({ success: false, error: parsed.error }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    const { imageBase64, mimeType, petProfile, selectedPantryItemId, todayState } = parsed.data as Record<string, any>;
+
+    // ── Security: Validate image payload size ──
+    const imageErr = validateImagePayload(imageBase64, mimeType);
+    if (imageErr) {
+      return new Response(
+        JSON.stringify({ success: false, error: imageErr }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
@@ -126,8 +157,15 @@ You MUST respond with ONLY valid JSON in this exact format, no markdown, no extr
   "ingredients_of_concern": ["string array"],
   "recommendation": "string",
   "confidence": number between 0 and 1,
-  "is_labeled_product": boolean
+  "is_labeled_product": boolean,
+  "matched_pantry_id": "string id of the pantry item this scan most likely matches, or null if no confident match",
+  "match_confidence": "number between 0 and 1 — how confident you are in matched_pantry_id; 0 if no match"
 }
+
+PANTRY MATCH OUTPUT RULES:
+- If a SELECTED FOOD CONTEXT block was provided above, set matched_pantry_id to that item's id and match_confidence ≥ 0.9 unless the image clearly contradicts (e.g. a wet-food pouch was selected but the image shows dry kibble — then set matched_pantry_id to null and match_confidence to 0).
+- Otherwise, when matching a generic bowl against the Known Food Pantry, set matched_pantry_id to the matched item's id and match_confidence to your honest belief (0.6-0.9 typical).
+- If no pantry item plausibly matches (e.g. brand-new labeled food, or pantry is empty), set matched_pantry_id to null and match_confidence to 0.
 
 CLASSIFICATION RULES:
 - "is_treat": true for treats, biscuits, chews, dental sticks, jerky, training treats, rawhide, bones, snack products, table scraps, human food given as reward. False for complete meals, kibble, wet food, raw diet, prescription diet, puppy/kitten food.
@@ -258,13 +296,42 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
         analysis.confidence = analysis.confidence > 100 ? 0.5 : analysis.confidence / 100;
       }
 
+      // 6. Pantry match validation. The model may hallucinate a matched id —
+      //    silently null it if it doesn't exist on this pet's pantry, so the
+      //    client can trust the field. Also derive `food_type_mismatch` when
+      //    the selected/matched pantry item is a different food_type than the
+      //    model's classification (e.g. user selected kibble, photo is wet).
+      const pantry = Array.isArray(petProfile?.food_pantry) ? petProfile.food_pantry : [];
+      if (analysis.matched_pantry_id) {
+        const exists = pantry.some((p: any) => p?.id === analysis.matched_pantry_id);
+        if (!exists) {
+          analysis.matched_pantry_id = null;
+          analysis.match_confidence = 0;
+        }
+      } else {
+        analysis.matched_pantry_id = null;
+      }
+      if (typeof analysis.match_confidence !== 'number' || analysis.match_confidence < 0) {
+        analysis.match_confidence = 0;
+      } else if (analysis.match_confidence > 1) {
+        analysis.match_confidence = Math.min(1, analysis.match_confidence / 100);
+      }
+      const referenceId = analysis.matched_pantry_id || selectedPantryItemId || null;
+      const referenced = referenceId ? pantry.find((p: any) => p?.id === referenceId) : null;
+      analysis.food_type_mismatch = !!(
+        referenced && analysis.food_type && referenced.food_type && referenced.food_type !== analysis.food_type
+      );
+
     } catch {
       analysis = {
         raw_response: rawText,
         parse_error: true,
         food_name: 'Unknown',
         calories_per_serving: 0,
-        confidence: 0
+        confidence: 0,
+        matched_pantry_id: null,
+        match_confidence: 0,
+        food_type_mismatch: false,
       };
     }
 

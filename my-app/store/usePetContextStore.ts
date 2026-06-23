@@ -1,8 +1,20 @@
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { useActivePetStore, Pet } from './useActivePetStore';
 import { computeNudge, Nudge } from '../lib/nudgeEngine';
 import { adjustDailyTarget, deriveGoal } from '../lib/healthMath';
+
+// Persisted across app launches so a tapped nudge stays gone for the day even
+// after process death.
+const NUDGES_DISMISSED_KEY = 'nudges_dismissed_today';
+
+// Stable key for a nudge — prefer the actionType (stable across re-computes
+// when stats wiggle); fall back to the title for info-only nudges that don't
+// carry an actionType.
+function nudgeKey(n: Pick<Nudge, 'actionType' | 'title'>): string {
+  return n.actionType ? `action:${n.actionType}` : `info:${n.title}`;
+}
 
 // ---- Supporting types ----
 
@@ -90,9 +102,16 @@ interface ClinicalContext {
 
 // ---- Store interface ----
 
+interface DismissedNudgesToday {
+  date: string;       // local YMD; cleared when the day rolls over
+  keys: string[];     // nudgeKey() values dismissed today
+}
+
 interface PetContextState extends TodayData, DerivedToday, TrendData {
   clinical: ClinicalContext;
   nudge: Nudge | null;
+  dismissedNudges: DismissedNudgesToday | null;
+  _dismissedHydrated: boolean;
   isTodayLoading: boolean;
   isTrendsLoading: boolean;
   isFreemiumActive?: boolean;
@@ -113,6 +132,7 @@ interface PetContextState extends TodayData, DerivedToday, TrendData {
   updateWater: (newTotal: number) => void;
   updateWalks: (newCount: number) => void;
   dismissNudge: () => void;
+  hydrateDismissedNudges: () => Promise<void>;
   invalidateContext: () => void;
   clearContext: () => void;
 }
@@ -299,12 +319,24 @@ function buildNudgeInput(state: PetContextState) {
 
 // ---- Store ----
 
+function getAllowedNudge(computedNudge: Nudge | null, dismissed: DismissedNudgesToday | null): Nudge | null {
+  if (!computedNudge) return null;
+  if (!dismissed) return computedNudge;
+  // Stale (yesterday's) list — let everything through; the dismissNudge call
+  // will reset it for today on the next dismissal.
+  if (dismissed.date !== getLocalYMD(new Date())) return computedNudge;
+  if (dismissed.keys.includes(nudgeKey(computedNudge))) return null;
+  return computedNudge;
+}
+
 export const usePetContextStore = create<PetContextState>((set, get) => ({
   ...initialTodayData,
   ...initialDerived,
   ...initialTrends,
   clinical: initialClinical,
   nudge: null,
+  dismissedNudges: null,
+  _dismissedHydrated: false,
   isTodayLoading: true,
   isTrendsLoading: true,
   _todayFetchedAt: 0,
@@ -322,11 +354,17 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
   injectSubscriptionData: (isFreemiumActive: boolean, daysSinceCreation: number) => {
     set({ isFreemiumActive, daysSinceCreation });
     // Recompute nudge with new sub data
-    const nudge = computeNudge(buildNudgeInput(get()));
+    const computedNudge = computeNudge(buildNudgeInput(get()));
+    const nudge = getAllowedNudge(computedNudge, get().dismissedNudges);
     set({ nudge });
   },
 
   refreshToday: async (petId: string, opts) => {
+    // Hydrate the persisted "dismissed today" list on first call so a tapped
+    // nudge stays gone after process death / Fast Refresh.
+    if (!get()._dismissedHydrated) {
+      get().hydrateDismissedNudges();
+    }
     // Staleness guard: skip the network if this slice was fetched for the same pet
     // within the freshness window (unless explicitly forced after a write).
     const prev = get();
@@ -418,7 +456,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       });
 
       // Recompute nudge with fresh today data
-      const nudge = computeNudge(buildNudgeInput(get()));
+      const computedNudge = computeNudge(buildNudgeInput(get()));
+      const nudge = getAllowedNudge(computedNudge, get().dismissedNudges);
       set({ nudge });
     } catch (err) {
       console.error('[PetContext] refreshToday error:', err);
@@ -683,7 +722,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       };
       const derivedAfterTrends = computeDerived(todayDataNow, pet, weightTrend, weeklyDelta);
       set({ ...derivedAfterTrends });
-      const nudge = computeNudge(buildNudgeInput(get()));
+      const computedNudge = computeNudge(buildNudgeInput(get()));
+      const nudge = getAllowedNudge(computedNudge, get().dismissedNudges);
       set({ nudge });
     } catch (err) {
       console.error('[PetContext] refreshTrends error:', err);
@@ -698,7 +738,8 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const current = get();
     const todayData: TodayData = { ...current, todayCalories: newTotal };
     const derived = computeDerived(todayData, pet, current.weightTrend, current.weeklyDelta);
-    const nudge = computeNudge(buildNudgeInput({ ...current, todayCalories: newTotal, ...derived }));
+    const computedNudge = computeNudge(buildNudgeInput({ ...current, todayCalories: newTotal, ...derived }));
+    const nudge = getAllowedNudge(computedNudge, current.dismissedNudges);
     set({ todayCalories: newTotal, ...derived, nudge });
   },
 
@@ -715,7 +756,45 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
   },
 
   dismissNudge: () => {
-    set({ nudge: null });
+    const currentNudge = get().nudge;
+    if (!currentNudge) {
+      set({ nudge: null });
+      return;
+    }
+    const today = getLocalYMD(new Date());
+    const existing = get().dismissedNudges;
+    const keys = existing && existing.date === today ? existing.keys : [];
+    const key = nudgeKey(currentNudge);
+    const nextKeys = keys.includes(key) ? keys : [...keys, key];
+    const next: DismissedNudgesToday = { date: today, keys: nextKeys };
+    set({ nudge: null, dismissedNudges: next });
+    // Persist asynchronously — failure is logged but non-blocking.
+    AsyncStorage.setItem(NUDGES_DISMISSED_KEY, JSON.stringify(next)).catch((err) => {
+      console.warn('[PetContext] failed to persist dismissedNudges', err);
+    });
+  },
+
+  hydrateDismissedNudges: async () => {
+    if (get()._dismissedHydrated) return;
+    try {
+      const raw = await AsyncStorage.getItem(NUDGES_DISMISSED_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as DismissedNudgesToday;
+        if (parsed && typeof parsed.date === 'string' && Array.isArray(parsed.keys)) {
+          if (parsed.date === getLocalYMD(new Date())) {
+            // Same day → re-apply the dismissals and recompute the current nudge.
+            const allowed = getAllowedNudge(get().nudge, parsed);
+            set({ dismissedNudges: parsed, nudge: allowed, _dismissedHydrated: true });
+            return;
+          }
+          // Stale (different day) → drop the persisted list.
+          AsyncStorage.removeItem(NUDGES_DISMISSED_KEY).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn('[PetContext] failed to hydrate dismissedNudges', err);
+    }
+    set({ _dismissedHydrated: true });
   },
 
   // Mark today + trends stale so the next refreshToday/refreshTrends actually hits
@@ -728,6 +807,9 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     ...initialTrends,
     clinical: initialClinical,
     nudge: null,
+    // Wipe the persisted dismissals on sign-out — next user starts clean.
+    dismissedNudges: (() => { AsyncStorage.removeItem(NUDGES_DISMISSED_KEY).catch(() => {}); return null; })(),
+    _dismissedHydrated: false,
     isTodayLoading: true,
     isTrendsLoading: true,
     _todayFetchedAt: 0,

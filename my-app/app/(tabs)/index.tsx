@@ -6,10 +6,14 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import Svg from 'react-native-svg';
-import Reanimated, { FadeInDown } from 'react-native-reanimated';
-import { color, font, radius, shadow, space } from '../../constants/design';
+import Reanimated, {
+  useSharedValue, useAnimatedStyle, withSequence, withSpring,
+} from 'react-native-reanimated';
+import { color, font, radius, shadow, space, motion } from '../../constants/design';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
+import { AnimatedCounter } from '../../components/AnimatedCounter';
+import { entrance } from '../../components/motionPresets';
 import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
 import { PREVIEW_SEEN_KEY } from '../preview-home';
 
@@ -27,6 +31,7 @@ import { SecondOpinionCard } from '../../components/SecondOpinionCard';
 import { VetCheckinNudge } from '../../components/VetCheckinNudge';
 import { getMonthlyUsage, getPendingCheckin, type MonthlyUsage, type PendingCheckin } from '../../lib/askVet';
 import { track } from '../../lib/analytics';
+import { haptic } from '../../lib/haptics';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -43,6 +48,21 @@ export default function HomeScreen() {
   const { expoPushToken } = usePushNotifications();
   const { isFreemiumActive, daysSinceCreation } = useSubscription();
   const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
+
+  // Coin pill pulse — a one-shot scale bump whenever the balance grows, so an
+  // earned reward registers on the persistent header (not only the transient toast).
+  const coinPulse = useSharedValue(1);
+  const prevCoins = React.useRef(pawCoins);
+  React.useEffect(() => {
+    if (pawCoins > prevCoins.current) {
+      coinPulse.value = withSequence(
+        withSpring(1.18, motion.spring.bouncy),
+        withSpring(1, motion.spring.gentle),
+      );
+    }
+    prevCoins.current = pawCoins;
+  }, [pawCoins, coinPulse]);
+  const coinPillStyle = useAnimatedStyle(() => ({ transform: [{ scale: coinPulse.value }] }));
 
   // Sync push token silently
   React.useEffect(() => {
@@ -118,6 +138,19 @@ export default function HomeScreen() {
   const activityProgress = Math.min(activityCompletionRate, 1);
   const waterProgress = Math.min(waterPercent, 1);
 
+  // A single restrained success haptic the first time all three rings close in
+  // a session — the rings already pulse visually; this is the felt "day done".
+  const allRingsDone = calorieProgress >= 1 && activityProgress >= 1 && waterProgress >= 1;
+  const celebratedDay = React.useRef(false);
+  React.useEffect(() => {
+    if (allRingsDone && !celebratedDay.current) {
+      celebratedDay.current = true;
+      haptic.success();
+    } else if (!allRingsDone) {
+      celebratedDay.current = false;
+    }
+  }, [allRingsDone]);
+
   // Format water display
   const waterDisplay = todayWater >= 1000
     ? `${(todayWater / 1000).toFixed(1)}L`
@@ -167,12 +200,12 @@ export default function HomeScreen() {
             <Text style={styles.headerDate}>{getDateString()}</Text>
           </View>
         </View>
-        <View style={styles.coinPill}>
+        <Reanimated.View style={[styles.coinPill, coinPillStyle]}>
           <View style={styles.coinIcon}>
             <Text style={styles.coinIconText}>P</Text>
           </View>
-          <Text style={styles.coinText}>{pawCoins.toLocaleString()}</Text>
-        </View>
+          <AnimatedCounter value={pawCoins} style={styles.coinText} />
+        </Reanimated.View>
       </View>
 
       <Animated.ScrollView
@@ -221,12 +254,12 @@ export default function HomeScreen() {
         )}
 
         {/* Greeting */}
-        <Text style={styles.greeting}>
+        <Reanimated.Text entering={entrance(0)} style={styles.greeting}>
           {getGreeting()}, <Text style={styles.greetingName}>{petName}</Text>
-        </Text>
+        </Reanimated.Text>
 
         {/* Ring Hero - Centered */}
-        <View style={styles.ringsWrapper}>
+        <Reanimated.View entering={entrance(1)} style={styles.ringsWrapper}>
           <View style={styles.ringsContainer}>
             <Svg width={RING_SIZE} height={RING_SIZE}>
               <RingArc r={RING_CONFIG[0].r} color={RING_CONFIG[0].color} strokeWidth={RING_CONFIG[0].stroke} progress={calorieProgress} />
@@ -266,10 +299,10 @@ export default function HomeScreen() {
               )}
             </View>
           </View>
-        </View>
+        </Reanimated.View>
 
         {/* ─── Second Opinion — flagship membership-crest moment ─── */}
-        <Reanimated.View entering={FadeInDown.duration(420)}>
+        <Reanimated.View entering={entrance(2)}>
           <SecondOpinionCard
             remaining={askUsage?.remaining ?? null}
             resetsAt={askUsage?.resetsAt}
@@ -278,7 +311,7 @@ export default function HomeScreen() {
         </Reanimated.View>
 
         {/* ─── Today — typography on the ground, hairline-divided ─── */}
-        <Reanimated.View entering={FadeInDown.duration(420)}>
+        <Reanimated.View entering={entrance(3)}>
           <View style={styles.sectionHead}>
             <Text style={styles.sectionLabel}>TODAY</Text>
             <View style={styles.sectionRule} />
@@ -368,7 +401,7 @@ export default function HomeScreen() {
 
         {/* ─── Up next — the deliberate dark moment on the feed ─── */}
         {nextActivity && (
-          <Reanimated.View entering={FadeInDown.duration(420).delay(60)}>
+          <Reanimated.View entering={entrance(4)}>
             <TouchableOpacity
               style={styles.upNext}
               onPress={() => router.push('/(tabs)/activity')}
@@ -421,7 +454,7 @@ export default function HomeScreen() {
         />
 
         {/* ─── Meals — editorial list, no boxes ─── */}
-        <Reanimated.View entering={FadeInDown.duration(420).delay(120)}>
+        <Reanimated.View entering={entrance(5)}>
           <View style={styles.sectionHead}>
             <Text style={styles.sectionLabel}>MEALS</Text>
             <View style={styles.sectionRule} />

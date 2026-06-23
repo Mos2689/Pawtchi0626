@@ -2,9 +2,8 @@ import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Typography } from './Typography';
-import { Colors } from '../constants/Theme';
-// In a real app we'd use unplugin/icons or expo/vector-icons. Assuming expo-vector-icons is available.
-import MaterialIcons from '@expo/vector-icons/MaterialIcons'; 
+import { color, space } from '../constants/design';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 interface HeaderProps {
   title?: string;
@@ -20,7 +19,6 @@ export const Header: React.FC<HeaderProps> = ({
   rightElement 
 }) => {
   const router = useRouter();
-  const themeColors = Colors.light;
 
   const handleBack = () => {
     if (onBack) {
@@ -37,14 +35,14 @@ export const Header: React.FC<HeaderProps> = ({
       <View style={styles.left}>
         {showBack && (
           <TouchableOpacity onPress={handleBack} style={styles.iconButton}>
-            <MaterialIcons name="arrow-back" size={24} color={themeColors['on-surface']} />
+            <MaterialIcons name="arrow-back" size={24} color={color.ink} />
           </TouchableOpacity>
         )}
       </View>
 
       <View style={styles.center}>
         {title && (
-          <Typography variant="headline" weight="bold" size={20} color="on-surface" align="center">
+          <Typography variant="heading" align="center">
             {title}
           </Typography>
         )}
@@ -62,9 +60,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.8)', // rough backdrop blur fallback
+    paddingHorizontal: space.xl,
+    paddingVertical: space.lg,
+    backgroundColor: 'transparent',
     zIndex: 50,
   },
   left: {

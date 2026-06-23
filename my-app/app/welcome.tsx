@@ -1,294 +1,201 @@
-import React, { useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Animated, ActivityIndicator } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { MaterialIcons } from '@expo/vector-icons';
-import { PawtchiButton } from '../components/PawtchiButton';
-import { Colors } from '../constants/Theme';
+import { StatusBar } from 'expo-status-bar';
+import * as Haptics from 'expo-haptics';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useEvent } from 'expo';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useFocusEffect } from '@react-navigation/native';
+import { color, font, space } from '../constants/design';
 import { useAuth } from '../providers/AuthProvider';
 
-// Screen 3: Welcome
+// Streamed from the same Supabase public-assets bucket used for pet avatars.
+// Swap by replacing the file in the bucket — no app release needed.
+const INTRO_VIDEO_URL =
+  'https://mbvpjbwukhypvmgeuyyw.supabase.co/storage/v1/object/public/public-assets/download%20(6).mp4';
+
+// If the video hasn't shown a frame in this long, fall back to typography only.
+const VIDEO_FALLBACK_MS = 1500;
+
+// Welcome — the first brand moment. Atmospheric video bleeds to the edges; the
+// locked tagline NOTICE EVERYTHING is split across corners over a soft scrim.
+// Navy + cream + the one yellow (§4.02). Authed users skip straight to /(tabs).
 export default function WelcomeScreen() {
   const router = useRouter();
-  const theme = Colors.light;
   const insets = useSafeAreaInsets();
-  const { session, isLoading: authLoading } = useAuth();
+  const { session } = useAuth();
 
-  // Redirect authenticated users to tabs
+  const player = useVideoPlayer(INTRO_VIDEO_URL, (p) => {
+    try {
+      p.muted = true;
+      p.loop = true;
+    } catch {}
+  });
+
+  // Reactive status from expo-video. useEvent owns the subscription lifecycle —
+  // safe under React 18 Strict Mode double-mount, unlike a manual addListener.
+  const statusEvent = useEvent(player, 'statusChange', { status: player.status });
+  const playerStatus = statusEvent?.status ?? player.status ?? 'idle';
+  const videoReady = playerStatus === 'readyToPlay';
+  const videoErrored = playerStatus === 'error';
+
+  // Drop to the typography fallback if nothing has rendered within
+  // VIDEO_FALLBACK_MS — keeps the hero feeling intentional offline / on slow nets.
+  const [slowConnection, setSlowConnection] = useState(false);
   useEffect(() => {
-    if (!authLoading && session) {
-      router.replace('/(tabs)');
-    }
-  }, [session, authLoading]);
+    if (videoReady || videoErrored) return;
+    const id = setTimeout(() => setSlowConnection(true), VIDEO_FALLBACK_MS);
+    return () => clearTimeout(id);
+  }, [videoReady, videoErrored]);
 
-  // Floating animation for the badge
-  const bounceAnim = useRef(new Animated.Value(0)).current;
+  const videoFailed = videoErrored || (slowConnection && !videoReady);
 
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(bounceAnim, { toValue: -8, duration: 1000, useNativeDriver: true }),
-        Animated.timing(bounceAnim, { toValue: 0, duration: 1000, useNativeDriver: true })
-      ])
-    ).start();
-  }, [bounceAnim]);
+  // Play on focus, pause on blur so we don't burn CPU while elsewhere in the app.
+  // Try/catch is defensive in case the player has already been released by the
+  // time the cleanup runs during fast unmounts.
+  useFocusEffect(
+    useCallback(() => {
+      try { player.play(); } catch {}
+      return () => {
+        try { player.pause(); } catch {}
+      };
+    }, [player]),
+  );
 
-  // Show loading spinner while checking auth state
-  if (authLoading || session) {
+  // Navigation for authed users is owned by the centralized auth gate in
+  // app/_layout.tsx — this screen never redirects on `session` itself. We only
+  // render a spinner (no navigation) when a session exists, to avoid a one-frame
+  // flash of the welcome video while the gate moves an authed user into /(tabs).
+  if (session) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#FFFC00" />
+      <View style={[styles.container, styles.center]}>
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color={color.yellow} />
       </View>
     );
   }
 
+  const showVideo = videoReady && !videoFailed;
+
   return (
-    <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <Text style={[styles.logoText, { color: theme['on-surface'] }]}>PAWTCHI</Text>
-        <View style={[styles.stepBadge, { backgroundColor: theme['surface-container-low'], borderColor: 'rgba(209,209,209,0.3)' }]}>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 1 of 4</Text>
-        </View>
-      </View>
+    <View style={styles.container}>
+      <StatusBar style="light" />
 
-      <View style={styles.main}>
-        {/* Hero Image Section */}
-        <View style={styles.heroContainer}>
-            {/* Fake Blobs for background contrast effect */}
-            <View style={[styles.blob1, { backgroundColor: theme['primary-container'] }]} />
-            <View style={[styles.blob2, { backgroundColor: theme['secondary-container'] }]} />
-            
-            <View style={[styles.imageWrapper, { backgroundColor: theme['surface-container-lowest'], borderColor: 'rgba(209,209,209,0.2)' }]}>
-              <Image 
-                source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAkN5Rum1UhJY0GrQ-SI0XGTQFMypSMmRwvyQx9EowCEBo5w2TBHhq-gOflvJALEVst9HHN4AsmJheNLADTxpOVXJt359Y1xwbu6Wd7o86waH1kyzMoobybdFVb6esMPEgPLeh1L_GSXXTna9bcwrE9eOijmpfHHIwjMsUiWRkUgX55zgqmzYIjEC7RCDhvKP2dp2t12bsWR5hqRiOjBk9uhVrD99K7XIhVEYZHn7Rk5QvrdG8jRsKoKkRku9HxZL1g_T5wxv6UPi0' }} 
-                style={styles.image}
-              />
-              
-              <Animated.View style={[styles.floatingBadge, { backgroundColor: theme['tertiary-container'], borderColor: 'rgba(96,93,52,0.1)', transform: [{ translateY: bounceAnim }] }]}>
-                <MaterialIcons name="favorite" size={20} color={theme['tertiary']} />
-                <Text style={{ fontFamily: 'Plus Jakarta Sans', fontWeight: 'bold', fontSize: 14, color: theme['on-tertiary-container'], marginLeft: 8 }}>+50 XP</Text>
-              </Animated.View>
-            </View>
-        </View>
+      {/* ── Layer 1: video, full-bleed ── */}
+      {!videoFailed && (
+        <VideoView
+          player={player}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          nativeControls={false}
+          allowsFullscreen={false}
+          allowsPictureInPicture={false}
+        />
+      )}
 
-        {/* Typography */}
-        <View style={styles.textContent}>
-          <Text style={[styles.title, { color: theme['on-surface'] }]}>Welcome to PAWTCHI!</Text>
-          <Text style={[styles.body, { color: theme['on-surface-variant'] }]}>
-            Let&apos;s make pet health a game. Join thousands of happy pets on their journey to wellness.
-          </Text>
-        </View>
+      {/* ── Layer 2: scrim — keeps headline + CTA legible on every frame ── */}
+      <LinearGradient
+        colors={
+          showVideo
+            ? ['rgba(7,32,42,0.55)', 'rgba(7,32,42,0.25)', 'rgba(7,32,42,0.85)']
+            // Fallback: a richer navy curtain so the typography still feels intentional.
+            : ['rgba(7,32,42,0.92)', 'rgba(7,32,42,0.88)', 'rgba(7,32,42,0.98)']
+        }
+        locations={[0, 0.45, 1]}
+        style={StyleSheet.absoluteFill}
+      />
 
-        {/* Call to Action */}
-        <View style={styles.ctaContainer}>
-          <PawtchiButton 
-            title="Get Started"
-            variant="primary"
-            iconName="arrow-forward"
-            iconPosition="right"
-            onPress={() => router.push({ pathname: '/(auth)/login', params: { mode: 'signup' } } as any)}
-          />
-          
-          <PawtchiButton 
-            title="I already have an account"
-            variant="ghost"
+      {/* ── Layer 3: content ── */}
+      <View style={[styles.content, { paddingTop: insets.top + space.lg, paddingBottom: insets.bottom + space.xl }]}>
+        {/* Wordmark — centered top */}
+        <Animated.View entering={FadeIn.duration(500)} style={styles.wordmarkWrap}>
+          <Text style={styles.wordmark}>PAWTCHI</Text>
+        </Animated.View>
+
+        {/* Sub-tagline + CTAs */}
+        <Animated.View entering={FadeInDown.duration(500).delay(320)} style={styles.actions}>
+          <Text style={styles.tagline}>Notice everything</Text>
+
+          <TouchableOpacity
+            style={styles.cta}
+            activeOpacity={0.9}
+            onPress={() => {
+              Haptics.selectionAsync();
+              router.push({ pathname: '/(auth)/login', params: { mode: 'signup' } } as any);
+            }}
+          >
+            <Text style={styles.ctaText}>Get started</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             onPress={() => router.push({ pathname: '/(auth)/login', params: { mode: 'signin' } } as any)}
-          />
-        </View>
-      </View>
-
-      {/* Footer Indicators */}
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 24 }]}>
-        <View style={styles.indicatorContainer}>
-          <View style={[styles.indicatorActive, { backgroundColor: '#FFFC00' }]} />
-          <View style={[styles.indicatorInactive, { backgroundColor: theme['surface-container-highest'] }]} />
-          <View style={[styles.indicatorInactive, { backgroundColor: theme['surface-container-highest'] }]} />
-          <View style={[styles.indicatorInactive, { backgroundColor: theme['surface-container-highest'] }]} />
-        </View>
-        <Text style={[styles.footerText, { color: 'rgba(81,93,100,0.6)' }]}>THE RADIANT COMPANION EXPERIENCE</Text>
+            style={styles.secondary}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Text style={styles.secondaryText}>I already have an account</Text>
+          </TouchableOpacity>
+        </Animated.View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: {
-    width: '100%',
-    zIndex: 50,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingBottom: 24,
-    backgroundColor: 'transparent',
-  },
-  logoText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 28,
-    letterSpacing: -0.5,
-  },
-  stepBadge: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  stepText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  main: {
+  container: { flex: 1, backgroundColor: color.navy },
+  center: { justifyContent: 'center', alignItems: 'center' },
+
+  content: {
     flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 8,
-    alignItems: 'center',
-    justifyContent: 'space-between', // Push content evenly
+    paddingHorizontal: space.xxl,
   },
-  heroContainer: {
-    width: '100%',
-    flex: 1,
-    maxHeight: 320, // Prevent the image from consuming the entire screen
-    marginBottom: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  blob1: {
-    position: 'absolute',
-    width: '110%',
-    height: '110%',
-    borderRadius: 999,
-    opacity: 0.1,
-  },
-  blob2: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    opacity: 0.15,
-  },
-  imageWrapper: {
-    height: '100%',
-    aspectRatio: 1, // Keep it square, but size it based on the flexible height instead of full width
-    borderRadius: 24,
-    borderWidth: 1,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 32 },
-    shadowOpacity: 0.06,
-    shadowRadius: 64,
-    elevation: 10,
-  },
-  image: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  floatingBadge: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 30,
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  textContent: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  title: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
-    fontSize: 32, // Slightly reduced to fit small screens safely
-    lineHeight: 36,
-    letterSpacing: -1,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  body: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontSize: 16,
-    lineHeight: 24,
-    textAlign: 'center',
-    paddingHorizontal: 8,
-  },
-  ctaContainer: {
-    width: '100%',
-    gap: 12, // Reduced from 16
-    marginBottom: 16,
-  },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 60, // Fixed height, removed contradicting paddingVertical
-    borderRadius: 40,
-    shadowColor: '#FFFC00',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.25,
-    shadowRadius: 24,
-    elevation: 8,
-    gap: 12,
-  },
-  primaryBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: 'bold',
+
+  wordmarkWrap: { alignItems: 'center' },
+  wordmark: {
+    fontFamily: font.bold,
     fontSize: 18,
+    letterSpacing: 4,
+    color: color.cream,
   },
-  secondaryBtn: {
-    height: 48,
-    borderRadius: 40,
+
+  actions: {
+    position: 'absolute',
+    left: space.xxl,
+    right: space.xxl,
+    bottom: space.xxxl,
+    alignItems: 'center',
+  },
+  tagline: {
+    fontFamily: font.display,
+    fontSize: 44,
+    lineHeight: 44,
+    letterSpacing: 1,
+    color: color.cream,
+    textAlign: 'center',
+    marginBottom: space.xxl,
+  },
+
+  cta: {
+    height: 56,
+    borderRadius: 999, // pill, matches Feeld
+    backgroundColor: color.cream,
+    width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  secondaryBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: 'bold',
+  ctaText: {
+    fontFamily: font.bold,
     fontSize: 16,
+    color: color.navy,
+    letterSpacing: 0.2,
   },
-  footer: {
-    width: '100%',
-    alignItems: 'center',
-    gap: 24,
+
+  secondary: { marginTop: space.xl },
+  secondaryText: {
+    fontFamily: font.semibold,
+    fontSize: 14,
+    color: color.cream,
   },
-  indicatorContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  indicatorActive: {
-    height: 8,
-    width: 48,
-    borderRadius: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  indicatorInactive: {
-    height: 8,
-    width: 8,
-    borderRadius: 4,
-  },
-  footerText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
-    fontSize: 12,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  }
 });

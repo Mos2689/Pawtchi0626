@@ -12,15 +12,33 @@
 
 import type { PantryItem } from '../store/useActivePetStore';
 
-/** Default serving weights by unit type (grams). */
-export const DEFAULT_SERVING_GRAMS: Record<string, number> = {
-  pouch: 85,    // standard wet food pouch (85g for Black Hawk / Royal Canin)
-  can: 150,     // standard can size
-  tray: 100,    // wet food tray
-  sachet: 80,   // single-serve sachet
-  cup: 100,     // dry food cup (~100g for kibble)
-  piece: 10,    // individual treat piece
-  gram: 1,     // per-gram
+export type BowlSize = 'small' | 'medium' | 'large' | 'xl';
+
+/**
+ * Default serving weights by unit type (grams), species-aware where it matters.
+ * Cats eat smaller portions: their "cup" / "pouch" / "can" are ~30% smaller.
+ */
+export const DEFAULT_SERVING_GRAMS_BY_SPECIES: Record<'dog' | 'cat', Record<string, number>> = {
+  dog: {
+    pouch: 85, can: 150, tray: 100, sachet: 80, cup: 100, piece: 10, gram: 1,
+  },
+  cat: {
+    pouch: 60, can: 85, tray: 70, sachet: 55, cup: 70, piece: 5, gram: 1,
+  },
+};
+
+/** Legacy global table — kept for callers that don't know the species. */
+export const DEFAULT_SERVING_GRAMS: Record<string, number> = DEFAULT_SERVING_GRAMS_BY_SPECIES.dog;
+
+/** Bowl-size → grams of kibble in a "full bowl" (species-blind; rough but honest). */
+export const BOWL_SIZE_GRAMS: Record<BowlSize, number> = {
+  small: 100, medium: 200, large: 300, xl: 400,
+};
+
+/** Bowl-fraction labels used by the result-screen chip row. */
+export type BowlFraction = 'quarter' | 'half' | 'full';
+export const BOWL_FRACTION_RATIO: Record<BowlFraction, number> = {
+  quarter: 0.25, half: 0.5, full: 1,
 };
 
 export type MacroResult = {
@@ -50,25 +68,44 @@ export type MacroResult = {
  *
  * @param pantryItem — selected pantry item (from foodPantry store)
  * @param servings — number of servings (default 1)
+ * @param opts — optional species + bowl context. When `bowl` is set AND the
+ *   serving_unit is unspecified or `cup`, the bowl table is used instead of
+ *   the per-unit grams (this is what makes bowl_size actually drive math).
  * @returns macro grams and derived values
  */
+export interface PantryMacroOpts {
+  species?: 'dog' | 'cat';
+  /** When set, treat servings as bowl-fractions of this size (overrides unit grams for cup/unspecified). */
+  bowl?: { size: BowlSize };
+}
+
 export function computePantryMacros(
   pantryItem: PantryItem,
   servings: number = 1,
+  opts?: PantryMacroOpts,
 ): MacroResult {
   const { kcal_per_serving, kcal_per_100g_as_fed, moisture_pct, protein_pct, fat_pct, fibre_pct, serving_unit } = pantryItem;
 
   // --- Resolve serving weight ---
   const unit = serving_unit ?? '';
-  const gramsPerServing = DEFAULT_SERVING_GRAMS[unit] ?? 100;
+  const speciesTable = opts?.species ? DEFAULT_SERVING_GRAMS_BY_SPECIES[opts.species] : DEFAULT_SERVING_GRAMS;
+  // When the pet has a bowl_size and the unit is unspecified or a cup, the
+  // bowl drives the per-serving grams. Otherwise fall back to the unit table.
+  const useBowl = !!opts?.bowl && (unit === 'cup' || unit === '');
+  const gramsPerServing = useBowl
+    ? BOWL_SIZE_GRAMS[opts!.bowl!.size]
+    : (speciesTable[unit] ?? 100);
   const meal_grams = Math.round(gramsPerServing * servings);
 
   // --- Resolve kcal ---
-  // If pantry has label-accurate kcal_per_serving, use it. Otherwise fall back.
-  // Note: kcal_per_serving from label is already per-serving (e.g. 92 kcal/pouch).
-  const servingKcal = kcal_per_serving && kcal_per_serving > 0
-    ? kcal_per_serving
-    : 350; // generic fallback for pantry items without label data
+  // If we have label kcal_per_100g_as_fed and a bowl-based meal weight, prefer
+  // the density math so a "half bowl" actually scales kcal, not just one tap.
+  const labelDensity = kcal_per_100g_as_fed && kcal_per_100g_as_fed > 0 ? kcal_per_100g_as_fed : null;
+  const servingKcal = useBowl && labelDensity
+    ? Math.round(labelDensity * gramsPerServing / 100)
+    : (kcal_per_serving && kcal_per_serving > 0
+        ? kcal_per_serving
+        : 350); // generic fallback for pantry items without label data
 
   const total_kcal = Math.round(servingKcal * servings);
 

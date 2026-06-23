@@ -24,6 +24,10 @@ interface PetState {
   allergies: string[];
   medicalConditions: string[];
   bodyConditionScore: number | null;
+  // The reveal screen reads from these — populated when goal.tsx finishes.
+  targetWeightKg: number | null;
+  dailyKcal: number | null;
+  lifeStageLabel: string | null;
 
   // Actions
   setSpecies: (species: Species) => void;
@@ -41,6 +45,7 @@ interface PetState {
   setAllergies: (allergies: string[]) => void;
   setMedicalConditions: (conditions: string[]) => void;
   setBodyConditionScore: (score: number | null) => void;
+  setPlanSummary: (summary: { targetWeightKg: number; dailyKcal: number; lifeStageLabel: string }) => void;
 
   // Reset
   resetForm: () => void;
@@ -62,6 +67,9 @@ const initialState = {
   allergies: [] as string[],
   medicalConditions: [] as string[],
   bodyConditionScore: null as number | null,
+  targetWeightKg: null as number | null,
+  dailyKcal: null as number | null,
+  lifeStageLabel: null as string | null,
 };
 
 export const usePetStore = create<PetState>((set) => ({
@@ -81,5 +89,10 @@ export const usePetStore = create<PetState>((set) => ({
   setAllergies: (allergies) => set({ allergies }),
   setMedicalConditions: (medicalConditions) => set({ medicalConditions }),
   setBodyConditionScore: (bodyConditionScore) => set({ bodyConditionScore }),
+  setPlanSummary: (summary) => set({
+    targetWeightKg: summary.targetWeightKg,
+    dailyKcal: summary.dailyKcal,
+    lifeStageLabel: summary.lifeStageLabel,
+  }),
   resetForm: () => set(initialState),
 }));

@@ -8,6 +8,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { usePetStore } from '../../store/usePetStore';
 import { getBreedDefaults } from '../../lib/breedData';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { SelectableChip } from '../../components/SelectableChip';
+import { OnboardingHeader } from '../../components/OnboardingHeader';
+import { motion } from '../../constants/design';
+import {
+  stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
+} from '../../lib/onboardingFunnel';
 
 const COMMON_ALLERGENS = [
   'Chicken', 'Beef', 'Grain/Wheat', 'Dairy', 'Egg',
@@ -18,6 +24,7 @@ export default function AllergiesScreen() {
   const router = useRouter();
   const theme = Colors.light;
   const insets = useSafeAreaInsets();
+  useOnboardingStepTracking('allergies');
 
   const { species, breed, name, allergies, setAllergies } = usePetStore();
 
@@ -70,11 +77,14 @@ export default function AllergiesScreen() {
   const handleNext = () => {
     const allAllergens = Array.from(selected);
     setAllergies(allAllergens);
+    trackStepCompleted('allergies', { count: allAllergens.length, none: noneSelected });
     router.push('/onboarding/goal');
   };
 
   const handleSkip = () => {
     setAllergies([]);
+    trackFieldSkipped('allergies', 'allergens');
+    trackStepCompleted('allergies', { count: 0, none: true, skipped: true });
     router.push('/onboarding/goal');
   };
 
@@ -83,18 +93,7 @@ export default function AllergiesScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-      {/* Top Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-            <MaterialIcons name="arrow-back" size={24} color={theme['on-surface']} />
-          </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: theme['on-surface'] }]}>Pet Journey</Text>
-        </View>
-        <View style={[styles.stepBadge, { backgroundColor: '#F1F5F9' }]}>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 4 of 5</Text>
-        </View>
-      </View>
+      <OnboardingHeader step={stepIndex('allergies')} stepId="allergies" />
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
@@ -120,14 +119,12 @@ export default function AllergiesScreen() {
             </View>
             <View style={styles.breedChipsRow}>
               {breedAllergens.map(allergen => (
-                <TouchableOpacity
+                <SelectableChip
                   key={`breed-${allergen}`}
-                  style={[
-                    styles.breedChip,
-                    isChipSelected(allergen) && styles.breedChipSelected,
-                  ]}
+                  selected={isChipSelected(allergen)}
+                  style={styles.breedChip}
+                  selectedStyle={styles.breedChipSelected}
                   onPress={() => toggleAllergen(allergen)}
-                  activeOpacity={0.7}
                 >
                   <Text style={[
                     styles.breedChipText,
@@ -138,7 +135,7 @@ export default function AllergiesScreen() {
                   {isChipSelected(allergen) && (
                     <MaterialIcons name="check" size={14} color="#92400e" />
                   )}
-                </TouchableOpacity>
+                </SelectableChip>
               ))}
             </View>
           </View>
@@ -151,14 +148,12 @@ export default function AllergiesScreen() {
           </Text>
           <View style={styles.chipGrid}>
             {COMMON_ALLERGENS.filter(a => !isBreedSuggested(a)).map(allergen => (
-              <TouchableOpacity
+              <SelectableChip
                 key={allergen}
-                style={[
-                  styles.chip,
-                  isChipSelected(allergen) && styles.chipSelected,
-                ]}
+                selected={isChipSelected(allergen)}
+                style={styles.chip}
+                selectedStyle={styles.chipSelected}
                 onPress={() => toggleAllergen(allergen)}
-                activeOpacity={0.7}
               >
                 {isChipSelected(allergen) && (
                   <MaterialIcons name="check" size={16} color="#243036" />
@@ -169,13 +164,14 @@ export default function AllergiesScreen() {
                 ]}>
                   {allergen}
                 </Text>
-              </TouchableOpacity>
+              </SelectableChip>
             ))}
 
             {/* Custom allergens */}
             {customAllergens.map(allergen => (
-              <TouchableOpacity
+              <SelectableChip
                 key={`custom-${allergen}`}
+                selected
                 style={[styles.chip, styles.chipSelected]}
                 onPress={() => {
                   setCustomAllergens(prev => prev.filter(a => a !== allergen));
@@ -186,24 +182,22 @@ export default function AllergiesScreen() {
                     return next;
                   });
                 }}
-                activeOpacity={0.7}
               >
                 <MaterialIcons name="check" size={16} color="#243036" />
                 <Text style={[styles.chipText, styles.chipTextSelected]}>{allergen}</Text>
                 <MaterialIcons name="close" size={14} color="#64748b" />
-              </TouchableOpacity>
+              </SelectableChip>
             ))}
           </View>
         </View>
 
         {/* None that I know of */}
-        <TouchableOpacity
-          style={[
-            styles.noneChip,
-            noneSelected && styles.noneChipSelected,
-          ]}
+        <SelectableChip
+          selected={noneSelected}
+          style={styles.noneChip}
+          selectedStyle={styles.noneChipSelected}
+          scaleTo={motion.scale.press}
           onPress={handleNone}
-          activeOpacity={0.7}
         >
           {noneSelected && <MaterialIcons name="check-circle" size={20} color="#243036" />}
           <Text style={[
@@ -212,7 +206,7 @@ export default function AllergiesScreen() {
           ]}>
             None that I know of
           </Text>
-        </TouchableOpacity>
+        </SelectableChip>
 
         {/* Add Custom */}
         <View style={styles.customRow}>
@@ -284,8 +278,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 28,
     letterSpacing: -0.5,
   },
@@ -295,8 +288,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   stepText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     letterSpacing: 0.5,
   },
@@ -320,8 +312,7 @@ const styles = StyleSheet.create({
     borderRadius: 48,
   },
   mainHeading: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 36,
     lineHeight: 40,
     letterSpacing: -1,
@@ -329,7 +320,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   subHeading: {
-    fontFamily: 'Plus Jakarta Sans',
+    fontFamily: 'Montserrat_400Regular',
     fontSize: 18,
     textAlign: 'center',
     paddingHorizontal: 16,
@@ -349,8 +340,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   breedBannerTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     color: '#92400e',
   },
@@ -368,15 +358,14 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.7)',
     borderWidth: 1,
-    borderColor: '#fbbf24',
+    borderColor: '#FFC400',
   },
   breedChipSelected: {
     backgroundColor: '#fde68a',
     borderColor: '#f59e0b',
   },
   breedChipText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 14,
     color: '#92400e',
   },
@@ -388,8 +377,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sectionLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     marginLeft: 4,
   },
@@ -410,13 +398,12 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(209,213,225,0.3)',
   },
   chipSelected: {
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
     borderColor: '#E6E300',
     borderWidth: 2,
   },
   chipText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 14,
     color: '#64748b',
   },
@@ -442,8 +429,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   noneChipText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 15,
     color: '#64748b',
   },
@@ -463,8 +449,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(209,213,225,0.3)',
     borderRadius: 16,
     paddingHorizontal: 16,
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 15,
     backgroundColor: '#FFFFFF',
   },
@@ -472,7 +457,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 16,
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
@@ -494,8 +479,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   skipText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '600',
+    fontFamily: 'Montserrat_600SemiBold',
     fontSize: 15,
     color: '#94a3b8',
     textDecorationLine: 'underline',
@@ -516,8 +500,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   nextBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 20,
   },
 });

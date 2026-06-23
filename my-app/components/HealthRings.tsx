@@ -1,7 +1,10 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
-import Animated, { useSharedValue, useAnimatedProps, withTiming, Easing } from 'react-native-reanimated';
+import Animated, {
+  useSharedValue, useAnimatedProps, useAnimatedStyle, withTiming, withSequence, withSpring, Easing,
+} from 'react-native-reanimated';
+import { motion } from '../constants/design';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -34,15 +37,31 @@ export function RingArc({ r, color, strokeWidth, progress }: RingArcProps) {
   // dash offset from "empty" (offset = circumference) to the target. Re-runs when
   // progress changes (e.g. after logging a meal), so the ring fills smoothly.
   const animatedProgress = useSharedValue(0);
+  // A one-shot stroke "heartbeat" the moment this ring first reaches 100% — a
+  // restrained reward for closing the goal. Multiplied into strokeWidth.
+  const pulse = useSharedValue(1);
+  const wasComplete = useRef(false);
+
   useEffect(() => {
     animatedProgress.value = withTiming(clampedProgress, {
-      duration: 900,
+      duration: motion.duration.ring,
       easing: Easing.out(Easing.cubic),
     });
-  }, [clampedProgress, animatedProgress]);
+    const isComplete = clampedProgress >= 1;
+    if (isComplete && !wasComplete.current) {
+      // Fire after the fill lands so the pulse reads as "goal closed".
+      pulse.value = withSequence(
+        withTiming(1, { duration: motion.duration.ring }),
+        withSpring(1.32, motion.spring.bouncy),
+        withSpring(1, motion.spring.gentle),
+      );
+    }
+    wasComplete.current = isComplete;
+  }, [clampedProgress, animatedProgress, pulse]);
 
   const animatedProps = useAnimatedProps(() => ({
     strokeDashoffset: circumference * (1 - animatedProgress.value),
+    strokeWidth: strokeWidth * pulse.value,
   }));
 
   return (
@@ -53,7 +72,6 @@ export function RingArc({ r, color, strokeWidth, progress }: RingArcProps) {
         cy={cy}
         r={r}
         stroke={color}
-        strokeWidth={strokeWidth}
         fill="none"
         strokeLinecap="round"
         strokeDasharray={circumference}
@@ -65,9 +83,23 @@ export function RingArc({ r, color, strokeWidth, progress }: RingArcProps) {
 }
 
 export function ProgressBar({ progress, color }: { progress: number; color: string }) {
+  // Glide the fill toward its value instead of snapping (matches the rings).
+  const pct = useSharedValue(0);
+  const target = Math.min(Math.max(progress, 0), 1);
+  useEffect(() => {
+    pct.value = withTiming(target, {
+      duration: motion.duration.slow,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [target, pct]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    width: `${pct.value * 100}%`,
+  }));
+
   return (
     <View style={progressStyles.track}>
-      <View style={[progressStyles.fill, { width: `${Math.min(progress * 100, 100)}%`, backgroundColor: color }]} />
+      <Animated.View style={[progressStyles.fill, { backgroundColor: color }, animatedStyle]} />
     </View>
   );
 }

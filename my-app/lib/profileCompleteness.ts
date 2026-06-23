@@ -21,6 +21,7 @@ export interface MissingItem {
   key: FocusKey;
   label: string; // calm, brand-voice, pet-name agnostic (caller may prefix the name)
   impact: 'high' | 'med';
+  weight: number; // raw weight, exposed so the card can surface the heaviest gap first
   focus: FocusKey; // deep-link target the Profile screen understands
 }
 
@@ -61,10 +62,13 @@ const FIELDS: FieldSpec[] = [
   { key: 'breed', label: 'Add the breed', impact: 'high', weight: 2, present: (p) => !!(p.breed && p.breed.trim()) },
   { key: 'age', label: 'Add the age', impact: 'high', weight: 2, present: (p) => typeof p.age_years === 'number' && p.age_years > 0 },
   { key: 'bcs', label: 'Set the body shape', impact: 'high', weight: 2, present: (p) => typeof p.body_condition_score === 'number' && p.body_condition_score > 0 },
+  // Pantry + bowl size are weighted heaviest: every meal log, portion calc, and
+  // calorie target reads off them. A profile without them looks "filled" but
+  // can't actually run the daily loop.
+  { key: 'pantry', label: 'Add a food to the pantry', impact: 'high', weight: 3, present: (_p, ctx) => ctx.pantryCount > 0 },
+  { key: 'bowl_size', label: 'Set the bowl size', impact: 'high', weight: 3, present: (p) => !!(p.bowl_size && p.bowl_size.trim()) },
   { key: 'gender', label: 'Add the sex', impact: 'med', weight: 1, present: (p) => p.gender === 'male' || p.gender === 'female' },
   { key: 'allergies', label: 'Confirm any food sensitivities', impact: 'med', weight: 1, present: (p) => Array.isArray(p.allergies) },
-  { key: 'bowl_size', label: 'Set the bowl size', impact: 'med', weight: 1, present: (p) => !!(p.bowl_size && p.bowl_size.trim()) },
-  { key: 'pantry', label: 'Add a food to the pantry', impact: 'med', weight: 1, present: (_p, ctx) => ctx.pantryCount > 0 },
 ];
 
 export function computeCompleteness(
@@ -75,7 +79,9 @@ export function computeCompleteness(
   if (!pet) {
     return {
       score: 0,
-      missing: FIELDS.map(({ key, label, impact }) => ({ key, label, impact, focus: key })),
+      missing: FIELDS
+        .map(({ key, label, impact, weight }) => ({ key, label, impact, weight, focus: key }))
+        .sort((a, b) => (a.impact === b.impact ? b.weight - a.weight : a.impact === 'high' ? -1 : 1)),
       isAccurateEnough: false,
     };
   }
@@ -88,12 +94,13 @@ export function computeCompleteness(
     if (f.present(pet, context)) {
       presentWeight += f.weight;
     } else {
-      missing.push({ key: f.key, label: f.label, impact: f.impact, focus: f.key });
+      missing.push({ key: f.key, label: f.label, impact: f.impact, weight: f.weight, focus: f.key });
     }
   }
 
-  // High-impact first, preserving declaration order within each tier.
-  missing.sort((a, b) => (a.impact === b.impact ? 0 : a.impact === 'high' ? -1 : 1));
+  // High-impact first; within a tier, the heaviest weight surfaces first so the
+  // card always nudges toward the gap with the biggest accuracy payoff.
+  missing.sort((a, b) => (a.impact === b.impact ? b.weight - a.weight : a.impact === 'high' ? -1 : 1));
 
   const score = Math.round((presentWeight / totalWeight) * 100);
   const isAccurateEnough = !missing.some((m) => m.impact === 'high');

@@ -187,22 +187,11 @@ const tests = [
   },
 ];
 
-let passed = 0;
-let failed = 0;
-
-for (const { label, ctx, expectCategory } of tests) {
-  const result = generateVerdict(ctx);
-  const ok = result.verdict_category === expectCategory;
-  if (ok) {
-    console.log(`✅ ${label}`);
-    passed++;
-  } else {
-    console.log(`❌ ${label}`);
-    console.log(`   Expected: ${expectCategory}, Got: ${result.verdict_category}`);
-    console.log(`   Verdict: ${result.verdict}`);
-    failed++;
+describe('generateVerdict', () => {
+  for (const { label, ctx, expectCategory } of tests) {
+    test(label, () => {
+      const result = generateVerdict(ctx);
+      expect(result.verdict_category).toBe(expectCategory);
+    });
   }
-}
-
-console.log(`\n${passed}/${passed + failed} tests passed`);
-if (failed > 0) process.exit(1);
+});

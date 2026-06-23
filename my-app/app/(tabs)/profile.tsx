@@ -7,7 +7,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
-import { color, font, radius, shadow, space } from '../../constants/design';
+import { color, font, radius, shadow, space, motion } from '../../constants/design';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -18,6 +18,7 @@ import { useSubscription } from '../../hooks/useSubscription';
 import { openManageSubscription } from '../../lib/manageSubscription';
 import { useWalkthrough } from '../../providers/WalkthroughContext';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { SelectableChip } from '../../components/SelectableChip';
 import { computeCompleteness } from '../../lib/profileCompleteness';
 
 // Profile — the pet's identity card. A navy hero carries who they are; the
@@ -52,7 +53,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
 
   const { user, isSigningOut, signOut } = useAuth();
-  const { activePet, clearPet, foodPantry, addPantryItem, fetchPantry } = useActivePetStore();
+  const { activePet, clearPet, foodPantry, addPantryItem, fetchPantry, togglePantryFavorite, setPantryExpiry } = useActivePetStore();
   const { clearStreak } = useStreakStore();
   const { clearContext } = usePetContextStore();
   const { status: subStatus, daysLeft: subDaysLeft, isPro, hasFullAccess } = useSubscription();
@@ -73,6 +74,10 @@ export default function ProfileScreen() {
 
   // Pantry scan state
   const [isScanningLabel, setIsScanningLabel] = useState(false);
+
+  // Expiry date picker — opens for a specific pantry item id.
+  const [expiryPickerForId, setExpiryPickerForId] = useState<string | null>(null);
+  const [expiryDraft, setExpiryDraft] = useState<Date>(new Date());
 
   // Edit Profile State
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -95,6 +100,13 @@ export default function ProfileScreen() {
     keyboardType: 'default' | 'numeric' | 'email-address';
   } | null>(null);
   const [inlineEditValue, setInlineEditValue] = useState('');
+
+  // Chips picker — shared modal for allergies, medical conditions, parent title.
+  type ChipsKind = 'allergies' | 'medical_conditions' | 'parent_title';
+  const [chipsKind, setChipsKind] = useState<ChipsKind | null>(null);
+  const [chipsSelected, setChipsSelected] = useState<string[]>([]);
+  const [chipsCustomInput, setChipsCustomInput] = useState('');
+  const [isSavingChips, setIsSavingChips] = useState(false);
 
   // Sync with DB
   useEffect(() => {
@@ -462,6 +474,115 @@ export default function ProfileScreen() {
     }
   };
 
+  // ─── Chips picker presets + openers ───
+  const COMMON_ALLERGENS = [
+    'Chicken', 'Beef', 'Grain/Wheat', 'Dairy', 'Egg',
+    'Soy', 'Fish', 'Lamb', 'Corn', 'Pork',
+  ];
+  const COMMON_CONDITIONS = [
+    'Arthritis', 'Diabetes', 'Hip dysplasia', 'Skin allergies',
+    'Heart disease', 'Kidney disease', 'Dental disease', 'Obesity',
+    'Epilepsy', 'Thyroid issues',
+  ];
+  const PARENT_TITLE_OPTIONS = [
+    'Mom', 'Dad', 'Mama', 'Papa', 'Buddy', 'Auntie', 'Uncle', 'Pawrent',
+  ];
+
+  // Per-kind config for the shared sheet. Keeps the JSX small and the rules
+  // (single vs multi, copy, presets, custom input) all in one place.
+  const chipsPetName = activePet?.name || 'your pet';
+  const chipsConfig = chipsKind
+    ? ({
+        allergies: {
+          title: 'Known allergies',
+          subtitle: `Tap what ${chipsPetName} reacts to. Pawtchi flags these on every food scan.`,
+          icon: 'coronavirus' as const,
+          presets: COMMON_ALLERGENS,
+          allowCustom: true,
+          multi: true,
+          customPlaceholder: 'Add another allergen (e.g. Salmon)',
+          empty: 'No known allergies',
+          saveLabel: 'Save allergies',
+        },
+        medical_conditions: {
+          title: 'Medical conditions',
+          subtitle: `Active conditions Pawtchi should keep in mind for ${chipsPetName}.`,
+          icon: 'local-hospital' as const,
+          presets: COMMON_CONDITIONS,
+          allowCustom: true,
+          multi: true,
+          customPlaceholder: 'Add another condition (e.g. Pancreatitis)',
+          empty: 'No active conditions',
+          saveLabel: 'Save conditions',
+        },
+        parent_title: {
+          title: 'Parent title',
+          subtitle: `What does ${chipsPetName} call you?`,
+          icon: 'favorite-border' as const,
+          presets: PARENT_TITLE_OPTIONS,
+          allowCustom: false,
+          multi: false,
+          customPlaceholder: '',
+          empty: '',
+          saveLabel: 'Save',
+        },
+      } as const)[chipsKind]
+    : null;
+
+  const openChipsPicker = (kind: ChipsKind) => {
+    if (!activePet || !checkAccess()) return;
+    setChipsCustomInput('');
+    if (kind === 'allergies') {
+      setChipsSelected(activePet.allergies || []);
+    } else if (kind === 'medical_conditions') {
+      setChipsSelected(activePet.medical_conditions || []);
+    } else if (kind === 'parent_title') {
+      setChipsSelected(activePet.parent_title ? [activePet.parent_title] : []);
+    }
+    setChipsKind(kind);
+  };
+
+  const closeChipsPicker = () => {
+    setChipsKind(null);
+    setChipsCustomInput('');
+  };
+
+  const toggleChip = (val: string) => {
+    const trimmed = val.trim();
+    if (!trimmed) return;
+    if (chipsConfig?.multi) {
+      setChipsSelected((prev) =>
+        prev.includes(trimmed) ? prev.filter((v) => v !== trimmed) : [...prev, trimmed],
+      );
+    } else {
+      setChipsSelected([trimmed]);
+    }
+  };
+
+  const addCustomChip = () => {
+    const trimmed = chipsCustomInput.trim();
+    if (!trimmed) return;
+    if (!chipsSelected.includes(trimmed)) {
+      setChipsSelected((prev) => [...prev, trimmed]);
+    }
+    setChipsCustomInput('');
+  };
+
+  const saveChipsPicker = async () => {
+    if (!chipsKind) return;
+    setIsSavingChips(true);
+    if (chipsKind === 'parent_title') {
+      const value = chipsSelected[0] || '';
+      await updateParentTitle(value);
+    } else {
+      // De-dup while preserving order.
+      const cleaned = Array.from(new Set(chipsSelected.map((s) => s.trim()).filter(Boolean)));
+      await persistPetField(chipsKind, cleaned);
+    }
+    setIsSavingChips(false);
+    closeChipsPicker();
+  };
+
   const handleSetGender = () => {
     if (!activePet || !checkAccess()) return;
     Alert.alert(`${activePet.name || 'Your pet'}'s sex`, undefined, [
@@ -501,7 +622,7 @@ export default function ProfileScreen() {
       case 'photo': openEditModal(); break;
       case 'breed': openInlineEdit('breed', 'Breed', activePet.breed || '', 'e.g. Golden Retriever', 'default'); break;
       case 'age': openInlineEdit('age_years', 'Age (years)', activePet.age_years?.toString() || '', 'e.g. 3', 'numeric'); break;
-      case 'allergies': openInlineEdit('allergies', 'Allergies (comma separated)', (activePet.allergies || []).join(', '), 'e.g. Chicken, Beef', 'default'); break;
+      case 'allergies': openChipsPicker('allergies'); break;
       case 'gender': handleSetGender(); break;
       case 'bcs': handleSetBcs(); break;
       case 'pantry': promptAddFood(); break;
@@ -668,48 +789,89 @@ export default function ProfileScreen() {
               </Text>
             </View>
           ) : (
-            foodPantry.map((item, i) => (
-              <View key={item.id} style={[styles.pantryRow, i === foodPantry.length - 1 && styles.rowLast]}>
-                <Image
-                  source={{ uri: item.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?auto=format&fit=crop&q=80&w=200' }}
-                  style={styles.pantryThumb}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  transition={200}
-                />
-                <View style={styles.pantryInfo}>
-                  <View style={styles.pantryNameRow}>
-                    <Text style={styles.pantryBrand} numberOfLines={1}>{item.brand}</Text>
-                    {item.is_primary && (
-                      <View style={styles.primaryBadge}>
-                        <Text style={styles.primaryBadgeText}>PRIMARY</Text>
-                      </View>
-                    )}
+            foodPantry.map((item, i) => {
+              const expiryDate = item.expiry_date ? new Date(item.expiry_date) : null;
+              const daysToExpiry = expiryDate ? Math.ceil((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
+              const expiringSoon = daysToExpiry !== null && daysToExpiry >= 0 && daysToExpiry <= 7;
+              const expired = daysToExpiry !== null && daysToExpiry < 0;
+              const expiryLabel = expiryDate
+                ? `Exp ${expiryDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+                : null;
+              return (
+                <View key={item.id} style={[styles.pantryRow, i === foodPantry.length - 1 && styles.rowLast]}>
+                  <Image
+                    source={{ uri: item.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?auto=format&fit=crop&q=80&w=200' }}
+                    style={styles.pantryThumb}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                  />
+                  <View style={styles.pantryInfo}>
+                    <View style={styles.pantryNameRow}>
+                      <Text style={styles.pantryBrand} numberOfLines={1}>{item.brand}</Text>
+                      {item.is_primary && (
+                        <View style={styles.primaryBadge}>
+                          <Text style={styles.primaryBadgeText}>PRIMARY</Text>
+                        </View>
+                      )}
+                    </View>
+                    {!!item.product_name && <Text style={styles.pantryProduct} numberOfLines={1}>{item.product_name}</Text>}
+                    <View style={styles.pantryMetaRow}>
+                      {!!item.kcal_per_serving && <Text style={styles.pantryMeta}>{item.kcal_per_serving} kcal</Text>}
+                      {!!item.protein_pct && <Text style={styles.pantryMeta}>· {item.protein_pct}% protein</Text>}
+                      {expiryLabel && (
+                        <Text style={[
+                          styles.pantryMeta,
+                          { marginLeft: 4 },
+                          (expiringSoon || expired) && { color: color.error, fontFamily: font.semibold }
+                        ]}>
+                          · {expired ? 'Expired' : expiryLabel}
+                        </Text>
+                      )}
+                      {item.allergy_flags && item.allergy_flags.length > 0 && (
+                        <View style={styles.allergyFlag}>
+                          <MaterialIcons name="warning" size={11} color={color.error} />
+                          <Text style={styles.allergyFlagText} numberOfLines={1}>{item.allergy_flags.join(', ')}</Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
-                  {!!item.product_name && <Text style={styles.pantryProduct} numberOfLines={1}>{item.product_name}</Text>}
-                  <View style={styles.pantryMetaRow}>
-                    {!!item.kcal_per_serving && <Text style={styles.pantryMeta}>{item.kcal_per_serving} kcal</Text>}
-                    {!!item.protein_pct && <Text style={styles.pantryMeta}>· {item.protein_pct}% protein</Text>}
-                    {item.allergy_flags && item.allergy_flags.length > 0 && (
-                      <View style={styles.allergyFlag}>
-                        <MaterialIcons name="warning" size={11} color={color.error} />
-                        <Text style={styles.allergyFlagText} numberOfLines={1}>{item.allergy_flags.join(', ')}</Text>
-                      </View>
+                  <View style={styles.pantryActions}>
+                    {!item.is_primary && (
+                      <TouchableOpacity onPress={() => handleTogglePrimary(item.id, item.food_type)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <MaterialIcons name="star-outline" size={20} color={color.slateFaint} />
+                      </TouchableOpacity>
                     )}
-                  </View>
-                </View>
-                <View style={styles.pantryActions}>
-                  {!item.is_primary && (
-                    <TouchableOpacity onPress={() => handleTogglePrimary(item.id, item.food_type)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                      <MaterialIcons name="star-outline" size={20} color={color.slateFaint} />
+                    <TouchableOpacity
+                      onPress={() => togglePantryFavorite(item.id)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <MaterialIcons
+                        name={item.is_favorite ? 'favorite' : 'favorite-border'}
+                        size={20}
+                        color={item.is_favorite ? color.error : color.slateFaint}
+                      />
                     </TouchableOpacity>
-                  )}
-                  <TouchableOpacity onPress={() => handleDeletePantryItem(item.id, item.brand)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <MaterialIcons name="delete-outline" size={20} color={color.slateFaint} />
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setExpiryDraft(expiryDate ?? new Date());
+                        setExpiryPickerForId(item.id);
+                      }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <MaterialIcons
+                        name={item.expiry_date ? 'event' : 'event-available'}
+                        size={20}
+                        color={expiringSoon || expired ? color.error : color.slateFaint}
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleDeletePantryItem(item.id, item.brand)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <MaterialIcons name="delete-outline" size={20} color={color.slateFaint} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            ))
+              );
+            })
           )}
 
           <View style={styles.pantryFooter}>
@@ -765,7 +927,7 @@ export default function ProfileScreen() {
             label="Known allergies"
             sub={activePet?.allergies && activePet.allergies.length > 0 ? activePet.allergies.join(', ') : 'None specified'}
             trailing="edit"
-            onPress={() => openInlineEdit('allergies', 'Allergies (comma separated)', (activePet?.allergies || []).join(', '), 'e.g. Chicken, Beef', 'default')}
+            onPress={() => openChipsPicker('allergies')}
           />
           <Row
             icon="local-hospital"
@@ -773,7 +935,7 @@ export default function ProfileScreen() {
             sub={activePet?.medical_conditions && activePet.medical_conditions.length > 0 ? activePet.medical_conditions.join(', ') : 'None specified'}
             trailing="edit"
             last
-            onPress={() => openInlineEdit('medical_conditions', 'Medical Conditions', (activePet?.medical_conditions || []).join(', '), 'e.g. Arthritis, Diabetes', 'default')}
+            onPress={() => openChipsPicker('medical_conditions')}
           />
         </View>
 
@@ -785,14 +947,7 @@ export default function ProfileScreen() {
             label="Parent title"
             sub={activePet?.parent_title || 'Mom / Dad'}
             trailing="edit"
-            onPress={() => {
-              Alert.alert('Parent Title', `What does ${petName} call you?`, [
-                { text: 'Mom', onPress: () => updateParentTitle('Mom') },
-                { text: 'Dad', onPress: () => updateParentTitle('Dad') },
-                { text: 'Buddy', onPress: () => updateParentTitle('Buddy') },
-                { text: 'Cancel', style: 'cancel' }
-              ]);
-            }}
+            onPress={() => openChipsPicker('parent_title')}
           />
           <Row icon="person-outline" label="Owner profile" onPress={() => router.push('/owner' as any)} />
           <Row
@@ -899,11 +1054,13 @@ export default function ProfileScreen() {
                 const tier =
                   opt.score <= 3 ? color.viz.amber : opt.score <= 5 ? color.success : opt.score <= 7 ? color.viz.amber : color.error;
                 return (
-                  <TouchableOpacity
+                  <SelectableChip
                     key={opt.score}
-                    style={[styles.bcsOption, isSelected && styles.bcsOptionSelected]}
+                    selected={isSelected}
+                    style={styles.bcsOption}
+                    selectedStyle={styles.bcsOptionSelected}
+                    scaleTo={motion.scale.press}
                     onPress={() => setSelectedBcs(opt.score)}
-                    activeOpacity={0.85}
                   >
                     <View style={[styles.bcsScoreBadge, { backgroundColor: tier }]}>
                       <Text style={styles.bcsScoreText}>{opt.score}</Text>
@@ -917,7 +1074,7 @@ export default function ProfileScreen() {
                     {isSelected && (
                       <MaterialIcons name="check-circle" size={20} color={color.navy} />
                     )}
-                  </TouchableOpacity>
+                  </SelectableChip>
                 );
               })}
             </ScrollView>
@@ -932,6 +1089,121 @@ export default function ProfileScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Chips Picker Modal — allergies, medical conditions, parent title */}
+      <Modal visible={!!chipsKind} animationType="slide" transparent onRequestClose={closeChipsPicker}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.editModalOverlay}
+        >
+          <View style={[styles.editModalContent, { maxHeight: '88%' }]}>
+            <View style={styles.editModalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.editModalTitle}>{chipsConfig?.title}</Text>
+                {!!chipsConfig?.subtitle && (
+                  <Text style={styles.bcsSubtitle}>{chipsConfig.subtitle}</Text>
+                )}
+              </View>
+              <TouchableOpacity onPress={closeChipsPicker} style={styles.modalCloseBtn}>
+                <MaterialIcons name="close" size={22} color={color.ink} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              style={styles.bcsList}
+              contentContainerStyle={{ paddingBottom: space.lg }}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* Combined preset + custom-already-selected list. */}
+              <View style={styles.chipsGrid}>
+                {(() => {
+                  const presets = chipsConfig?.presets ?? [];
+                  const customSelected = chipsSelected.filter((s) => !presets.includes(s));
+                  const all = [...presets, ...customSelected];
+                  return all.map((label) => {
+                    const isSelected = chipsSelected.includes(label);
+                    const isCustom = !presets.includes(label);
+                    return (
+                      <SelectableChip
+                        key={label}
+                        selected={isSelected}
+                        style={styles.profileChip}
+                        selectedStyle={styles.profileChipSelected}
+                        onPress={() => toggleChip(label)}
+                      >
+                        {isSelected && (
+                          <MaterialIcons
+                            name={isCustom ? 'close' : 'check'}
+                            size={14}
+                            color={color.navy}
+                            style={{ marginRight: 4 }}
+                          />
+                        )}
+                        <Text style={[styles.profileChipText, isSelected && styles.profileChipTextSelected]}>
+                          {label}
+                        </Text>
+                      </SelectableChip>
+                    );
+                  });
+                })()}
+              </View>
+
+              {/* "No known X" quick action for multi-select kinds. */}
+              {chipsConfig?.multi && (
+                <TouchableOpacity
+                  style={[
+                    styles.profileNoneRow,
+                    chipsSelected.length === 0 && styles.profileNoneRowActive,
+                  ]}
+                  onPress={() => setChipsSelected([])}
+                  activeOpacity={0.85}
+                >
+                  <MaterialIcons
+                    name={chipsSelected.length === 0 ? 'check-circle' : 'radio-button-unchecked'}
+                    size={18}
+                    color={chipsSelected.length === 0 ? color.navy : color.slateFaint}
+                  />
+                  <Text style={styles.profileNoneText}>{chipsConfig.empty}</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Free-text add row */}
+              {chipsConfig?.allowCustom && (
+                <View style={styles.profileCustomRow}>
+                  <TextInput
+                    style={styles.profileCustomInput}
+                    value={chipsCustomInput}
+                    onChangeText={setChipsCustomInput}
+                    placeholder={chipsConfig.customPlaceholder}
+                    placeholderTextColor={color.slateFaint}
+                    returnKeyType="done"
+                    onSubmitEditing={addCustomChip}
+                  />
+                  <TouchableOpacity
+                    style={[styles.profileAddBtn, !chipsCustomInput.trim() && styles.profileAddBtnDisabled]}
+                    onPress={addCustomChip}
+                    disabled={!chipsCustomInput.trim()}
+                    activeOpacity={0.85}
+                  >
+                    <MaterialIcons name="add" size={20} color={color.navy} />
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.editModalBody}>
+              <PawtchiButton
+                title={chipsConfig?.saveLabel || 'Save'}
+                variant="primary"
+                loading={isSavingChips}
+                disabled={!chipsConfig?.multi && chipsSelected.length === 0}
+                onPress={saveChipsPicker}
+              />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Inline Edit Modal */}
@@ -1002,6 +1274,63 @@ export default function ProfileScreen() {
             mode="time"
             display="default"
             onChange={onChangeTime}
+          />
+        )
+      )}
+
+      {/* Pantry expiry date picker */}
+      {expiryPickerForId && (
+        Platform.OS === 'ios' ? (
+          <Modal transparent animationType="fade" visible={!!expiryPickerForId}>
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerSheet}>
+                <Text style={styles.pickerTitle}>Expiry date</Text>
+                <DateTimePicker
+                  value={expiryDraft}
+                  mode="date"
+                  display="spinner"
+                  minimumDate={new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)}
+                  onChange={(_event, date) => { if (date) setExpiryDraft(date); }}
+                  textColor={color.ink}
+                />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const id = expiryPickerForId;
+                      setExpiryPickerForId(null);
+                      if (id) setPantryExpiry(id, null);
+                    }}
+                    style={[styles.pickerDoneBtn, { flex: 1, backgroundColor: color.track }]}
+                  >
+                    <Text style={[styles.pickerDoneText, { color: color.slate }]}>Clear</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const id = expiryPickerForId;
+                      const iso = expiryDraft.toISOString().slice(0, 10);
+                      setExpiryPickerForId(null);
+                      if (id) setPantryExpiry(id, iso);
+                    }}
+                    style={[styles.pickerDoneBtn, { flex: 1 }]}
+                  >
+                    <Text style={styles.pickerDoneText}>Save</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        ) : (
+          <DateTimePicker
+            value={expiryDraft}
+            mode="date"
+            display="default"
+            onChange={(event, date) => {
+              const id = expiryPickerForId;
+              setExpiryPickerForId(null);
+              if (event.type === 'set' && date && id) {
+                setPantryExpiry(id, date.toISOString().slice(0, 10));
+              }
+            }}
           />
         )
       )}
@@ -1516,6 +1845,86 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     color: color.slateMuted,
     marginTop: 1,
+  },
+
+  // ─── Chips picker (allergies / conditions / parent title) ───
+  chipsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.sm,
+    paddingTop: space.xs,
+  },
+  profileChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    backgroundColor: color.surface,
+  },
+  profileChipSelected: {
+    backgroundColor: color.yellowSoft,
+    borderColor: color.yellow,
+  },
+  profileChipText: {
+    fontFamily: font.semibold,
+    fontSize: 13.5,
+    color: color.slate,
+  },
+  profileChipTextSelected: {
+    color: color.navy,
+  },
+  profileNoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.lg,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    backgroundColor: color.surface,
+  },
+  profileNoneRowActive: {
+    backgroundColor: color.yellowSoft,
+    borderColor: color.yellow,
+  },
+  profileNoneText: {
+    fontFamily: font.semibold,
+    fontSize: 13.5,
+    color: color.ink,
+  },
+  profileCustomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.lg,
+  },
+  profileCustomInput: {
+    flex: 1,
+    height: 48,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    paddingHorizontal: space.lg,
+    fontFamily: font.medium,
+    fontSize: 14,
+    color: color.ink,
+  },
+  profileAddBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.lg,
+    backgroundColor: color.yellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileAddBtnDisabled: {
+    opacity: 0.4,
   },
 
   // ─── Time picker ───

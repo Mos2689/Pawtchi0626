@@ -1,28 +1,21 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { MaterialIcons } from '@expo/vector-icons';
+import { Header } from '../components/Header';
+import { color, font, radius, space } from '../constants/design';
 
 export default function PrivacyScreen() {
     const insets = useSafeAreaInsets();
-    const router = useRouter();
 
     return (
         <View style={[styles.container, { paddingTop: insets.top }]}>
-            <View style={styles.header}>
-                <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} style={styles.backBtn}>
-                    <MaterialIcons name="arrow-back-ios" size={20} color="#0f172a" />
-                </TouchableOpacity>
-                <Text style={styles.headerTitle}>Privacy & Security</Text>
-                <View style={{ width: 40 }} />
-            </View>
+            <Header title="Privacy & Security" />
 
             <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
                 <View style={styles.legalBox}>
                     <Text style={styles.companyName}>Hey Living Club Pty Ltd</Text>
                     <Text style={styles.companyAddress}>128 Tallawong Road{'\n'}Rouse Hill, NSW, 2152</Text>
-                    <Text style={[styles.companyAddress, { marginTop: 12, color: '#FFFC00' }]}>Last Updated: April 2026</Text>
+                    <Text style={[styles.companyAddress, { marginTop: space.md, color: color.yellow }]}>Last Updated: April 2026</Text>
                 </View>
 
                 <Text style={styles.sectionTitle}>1. Data Collection & Usage</Text>
@@ -64,65 +57,42 @@ export default function PrivacyScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f8fafc',
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 24,
-        paddingBottom: 16,
-        backgroundColor: '#f8fafc',
-    },
-    backBtn: {
-        width: 40,
-        height: 40,
-        justifyContent: 'center',
-    },
-    headerTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '700',
-        fontSize: 18,
-        color: '#0f172a',
+        backgroundColor: color.surfaceSubtle,
     },
     scrollContent: {
-        padding: 24,
+        padding: space.xxl,
         paddingBottom: 40,
     },
     legalBox: {
-        backgroundColor: '#1e293b',
-        borderRadius: 20,
-        padding: 24,
-        marginBottom: 32,
+        backgroundColor: color.navy,
+        borderRadius: radius.xl,
+        padding: space.xxl,
+        marginBottom: space.xxxl,
     },
     companyName: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '900',
+        fontFamily: font.extrabold,
         fontSize: 20,
-        color: '#f8fafc',
-        marginBottom: 8,
+        color: color.cream,
+        marginBottom: space.sm,
     },
     companyAddress: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '600',
+        fontFamily: font.semibold,
         fontSize: 14,
-        color: '#94a3b8',
+        color: color.slateFaint,
         lineHeight: 22,
     },
     sectionTitle: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '800',
+        fontFamily: font.extrabold,
         fontSize: 16,
-        color: '#0f172a',
-        marginBottom: 12,
-        marginTop: 8,
+        color: color.ink,
+        marginBottom: space.md,
+        marginTop: space.sm,
     },
     paragraph: {
-        fontFamily: 'Plus Jakarta Sans',
-        fontWeight: '500',
+        fontFamily: font.medium,
         fontSize: 14,
-        color: '#475569',
+        color: color.slate,
         lineHeight: 24,
-        marginBottom: 24,
+        marginBottom: space.xxl,
     },
 });

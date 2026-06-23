@@ -91,7 +91,6 @@ export default function AskScreen() {
   const [clarify, setClarify] = useState<ClarifyPayload | null>(null);
   const [askedQuestion, setAskedQuestion] = useState('');
   const [history, setHistory] = useState<VetQuestionRecord[]>([]);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // ── Case / thread state ──
@@ -136,12 +135,11 @@ export default function AskScreen() {
     loadMeta();
   }, [loadMeta]);
 
-  // Deep-link / nudge: open an existing case (optionally straight into check-in).
-  useEffect(() => {
-    const id = params.case;
-    if (!id || !activePet || caseParamHandled.current === id) return;
-    caseParamHandled.current = id;
-    (async () => {
+  // Hydrate a case thread (head + turns) into the answer view. Used both by the
+  // deep-link/nudge path and by tapping a row in "Previous questions".
+  const openCase = useCallback(
+    async (id: string, opts?: { checkin?: boolean; source?: 'deep_link' | 'history' }) => {
+      if (!activePet) return;
       setCaseLoading(true);
       const thread = await getThread(id);
       setCaseLoading(false);
@@ -151,11 +149,21 @@ export default function AskScreen() {
       setAskedQuestion(thread.head.question);
       setTurns(thread.turns);
       setFollowupsLeft(thread.followupsLeft);
-      setCheckinMode(params.mode === 'checkin');
+      setCheckinMode(!!opts?.checkin);
       setPhase('answer');
-      if (params.mode === 'checkin') track('vet_checkin_opened', { source: 'deep_link' });
-    })();
-  }, [params.case, params.mode, activePet?.id]);
+      if (opts?.checkin) track('vet_checkin_opened', { source: opts.source ?? 'deep_link' });
+      else if (opts?.source === 'history') track('vet_history_case_opened');
+    },
+    [activePet?.id],
+  );
+
+  // Deep-link / nudge: open an existing case (optionally straight into check-in).
+  useEffect(() => {
+    const id = params.case;
+    if (!id || !activePet || caseParamHandled.current === id) return;
+    caseParamHandled.current = id;
+    openCase(id, { checkin: params.mode === 'checkin', source: 'deep_link' });
+  }, [params.case, params.mode, activePet?.id, openCase]);
 
   const remaining = usage?.remaining ?? null;
   const outOfQuestions = remaining === 0;
@@ -331,7 +339,7 @@ export default function AskScreen() {
                 </Typography>
               </View>
               <View style={styles.answerCard}>
-                <VetAnswerCard answer={answer} petName={activePet?.name} onExportReport={() => router.push('/vet-report' as any)} />
+                <VetAnswerCard answer={answer} petName={activePet?.name} onExportReport={() => router.push({ pathname: '/vet-report', params: caseId ? { caseId } : {} } as any)} />
               </View>
 
               {/* Follow-up / check-in turns, in order */}
@@ -345,7 +353,7 @@ export default function AskScreen() {
                   </View>
                   {t.answer && (
                     <View style={styles.answerCard}>
-                      <VetAnswerCard answer={t.answer} petName={activePet?.name} onExportReport={() => router.push('/vet-report' as any)} />
+                      <VetAnswerCard answer={t.answer} petName={activePet?.name} onExportReport={() => router.push({ pathname: '/vet-report', params: caseId ? { caseId } : {} } as any)} />
                     </View>
                   )}
                 </View>
@@ -460,13 +468,13 @@ export default function AskScreen() {
               <Image source={{ uri: imageUri }} style={styles.heroAvatar} contentFit="cover" cachePolicy="memory-disk" transition={200} />
             </View>
             <Typography variant="caption" color={color.slateFaint} style={{ marginTop: space.md }}>
-              ABOUT {petName.toUpperCase()}
+              A CONCERN ABOUT {petName.toUpperCase()}
             </Typography>
             <Typography variant="title" weight="bold" align="center" style={styles.heroTitle}>
-              What&apos;s on your mind?
+              Notice something off?
             </Typography>
             <Typography variant="body" color={color.slateMuted} align="center" style={styles.heroSub}>
-              Ask anything about {petName}. Pawtchi answers calmly, using what it already knows about {their} health.
+              Describe what you&apos;re seeing with {petName}. Pawtchi reads the signs against {their} health profile and tells you what to watch and when to call the vet.
             </Typography>
           </Animated.View>
 
@@ -491,7 +499,7 @@ export default function AskScreen() {
                   onChangeText={setQuestion}
                   multiline
                   maxLength={500}
-                  placeholder={`e.g. Is ${petName} at a healthy weight?`}
+                  placeholder={`e.g. ${petName} has been scratching ${their} ears more than usual`}
                   placeholderTextColor={color.slateFaint}
                 />
                 <TouchableOpacity
@@ -545,37 +553,25 @@ export default function AskScreen() {
                 <Typography variant="caption" color={color.slateFaint}>PREVIOUS QUESTIONS</Typography>
                 <View style={styles.sectionRule} />
               </View>
-              {history.map((h) => {
-                const open = expandedId === h.id;
-                return (
-                  <View key={h.id} style={styles.historyItem}>
-                    <TouchableOpacity
-                      style={styles.historyHead}
-                      activeOpacity={0.7}
-                      onPress={() => setExpandedId(open ? null : h.id)}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Typography variant="body" weight="semibold" color={color.ink} numberOfLines={open ? undefined : 2}>
-                          {h.question}
-                        </Typography>
-                        <Typography variant="caption" color={color.slateFaint} style={{ marginTop: 2 }}>
-                          {formatShortDate(h.created_at)}
-                        </Typography>
-                      </View>
-                      <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={22} color={color.slateFaint} />
-                    </TouchableOpacity>
-                    {open && h.answer && (
-                      <View style={styles.historyAnswer}>
-                        <VetAnswerCard
-                          answer={h.answer}
-                          petName={activePet?.name}
-                          onExportReport={() => router.push('/vet-report' as any)}
-                        />
-                      </View>
-                    )}
-                  </View>
-                );
-              })}
+              {history.map((h) => (
+                <View key={h.id} style={styles.historyItem}>
+                  <TouchableOpacity
+                    style={styles.historyHead}
+                    activeOpacity={0.7}
+                    onPress={() => openCase(h.id, { source: 'history' })}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Typography variant="body" weight="semibold" color={color.ink} numberOfLines={2}>
+                        {h.question}
+                      </Typography>
+                      <Typography variant="caption" color={color.slateFaint} style={{ marginTop: 2 }}>
+                        {formatShortDate(h.created_at)}
+                      </Typography>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={22} color={color.slateFaint} />
+                  </TouchableOpacity>
+                </View>
+              ))}
             </View>
           )}
         </ScrollView>
@@ -772,11 +768,4 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   historyHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm, padding: space.lg },
-  historyAnswer: {
-    paddingHorizontal: space.lg,
-    paddingBottom: space.lg,
-    paddingTop: space.xs,
-    borderTopWidth: 1,
-    borderTopColor: color.hairline,
-  },
 });

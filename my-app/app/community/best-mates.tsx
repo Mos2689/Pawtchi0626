@@ -1,14 +1,13 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Image } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { Typography } from '../../components/Typography';
 import { Header } from '../../components/Header';
-import { Colors } from '../../constants/Theme';
 import { MaterialIcons } from '@expo/vector-icons';
+import { color, font, radius, shadow, space } from '../../constants/design';
 
 // Screen 7: Best Mates Feed
 export default function BestMatesScreen() {
-  const theme = Colors.light;
 
   const mates = [
     { id: 1, name: 'Buddy & Luna', action: 'completed a 2 mile walk together', time: '1h ago', likes: 12, comments: 3 },
@@ -17,7 +16,7 @@ export default function BestMatesScreen() {
   ];
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
+    <SafeAreaView style={styles.container}>
       <Header title="Best Mates" />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -26,13 +25,13 @@ export default function BestMatesScreen() {
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storyScroll}>
             {['You', 'Buddy', 'Luna', 'Charlie', 'Bella', 'Duke'].map((name, i) => (
                 <View key={i} style={styles.storyContainer}>
-                    <View style={[styles.storyCircle, i === 0 && { borderColor: theme.outline, borderWidth: 1 }]} />
+                    <View style={[styles.storyCircle, i === 0 && { borderColor: color.slateFaint, borderWidth: 1 }]} />
                     {i === 0 && (
-                        <View style={[styles.addStoryBtn, { backgroundColor: theme.primary }]}>
-                            <MaterialIcons name="add" size={16} color={theme['on-primary']} />
+                        <View style={[styles.addStoryBtn, { backgroundColor: color.yellow }]}>
+                            <MaterialIcons name="add" size={16} color={color.navy} />
                         </View>
                     )}
-                    <Typography variant="label" size={12} weight="bold" color="on-surface" style={{ marginTop: 8 }}>{name}</Typography>
+                    <Typography variant="label" size={12} weight="bold" color="on-surface" style={{ marginTop: space.sm }}>{name}</Typography>
                 </View>
             ))}
         </ScrollView>
@@ -40,28 +39,28 @@ export default function BestMatesScreen() {
         <View style={styles.divider} />
 
         {mates.map(mate => (
-            <View key={mate.id} style={[styles.feedCard, { borderColor: theme['surface-container-highest'] }]}>
+            <View key={mate.id} style={styles.feedCard}>
                 <View style={styles.feedHeader}>
                     <View style={styles.avatar} />
-                    <View style={{ flex: 1, marginLeft: 12 }}>
+                    <View style={{ flex: 1, marginLeft: space.md }}>
                         <Typography variant="label" weight="bold" size={16}>{mate.name}</Typography>
                         <Typography variant="body" size={14} color="on-surface-variant">{mate.action}</Typography>
                     </View>
-                    <MaterialIcons name="more-horiz" size={24} color={theme['outline']} />
+                    <MaterialIcons name="more-horiz" size={24} color={color.slateFaint} />
                 </View>
                 
                 {/* Image Placeholder */}
-                <View style={[styles.feedImage, { backgroundColor: theme['surface-container-low'] }]}>
-                    <MaterialIcons name="photo" size={48} color={theme['outline-variant']} />
+                <View style={styles.feedImage}>
+                    <MaterialIcons name="photo" size={48} color={color.slateFaint} />
                 </View>
 
                 <View style={styles.feedActions}>
                     <TouchableOpacity style={styles.actionBtn}>
-                        <MaterialIcons name="favorite-border" size={24} color={theme['on-surface']} />
+                        <MaterialIcons name="favorite-border" size={24} color={color.ink} />
                         <Typography variant="label" weight="bold" style={{ marginLeft: 6 }}>{mate.likes}</Typography>
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.actionBtn}>
-                        <MaterialIcons name="chat-bubble-outline" size={24} color={theme['on-surface']} />
+                        <MaterialIcons name="chat-bubble-outline" size={24} color={color.ink} />
                         <Typography variant="label" weight="bold" style={{ marginLeft: 6 }}>{mate.comments}</Typography>
                     </TouchableOpacity>
                     <View style={{ flex: 1 }} />
@@ -78,17 +77,17 @@ export default function BestMatesScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: color.surface },
   scrollContent: { paddingBottom: 140 },
-  storyScroll: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 24, gap: 16 },
+  storyScroll: { paddingHorizontal: space.xxl, paddingTop: space.lg, paddingBottom: space.xxl, gap: space.lg },
   storyContainer: { alignItems: 'center' },
   storyCircle: {
       width: 64,
       height: 64,
       borderRadius: 32,
-      backgroundColor: '#ccc',
+      backgroundColor: color.slateFaint,
       borderWidth: 3,
-      borderColor: '#FFFC00', // theme.primary
+      borderColor: color.yellow,
   },
   addStoryBtn: {
       position: 'absolute',
@@ -100,25 +99,29 @@ const styles = StyleSheet.create({
       justifyContent: 'center',
       alignItems: 'center',
       borderWidth: 2,
-      borderColor: '#FFF',
+      borderColor: color.surface,
   },
-  divider: { height: 1, backgroundColor: '#DEE2E6', marginHorizontal: 24, marginBottom: 24 },
+  divider: { height: 1, backgroundColor: color.hairline, marginHorizontal: space.xxl, marginBottom: space.xxl },
   feedCard: {
-      marginHorizontal: 24,
-      marginBottom: 24,
+      marginHorizontal: space.xxl,
+      marginBottom: space.xxl,
       borderWidth: 1,
-      borderRadius: 24,
-      padding: 16,
+      borderColor: color.hairline,
+      borderRadius: radius.xl,
+      padding: space.lg,
+      backgroundColor: color.surface,
+      ...shadow.card,
   },
-  feedHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  avatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#ddd' },
+  feedHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: space.lg },
+  avatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: color.track },
   feedImage: {
       height: 200,
-      borderRadius: 16,
+      borderRadius: radius.lg,
+      backgroundColor: color.surfaceSubtle,
       justifyContent: 'center',
       alignItems: 'center',
-      marginBottom: 16,
+      marginBottom: space.lg,
   },
   feedActions: { flexDirection: 'row', alignItems: 'center' },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', marginRight: 24 }
+  actionBtn: { flexDirection: 'row', alignItems: 'center', marginRight: space.xxl }
 });

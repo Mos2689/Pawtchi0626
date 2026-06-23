@@ -10,10 +10,17 @@ import { usePetStore } from '../../store/usePetStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import Slider from '@react-native-community/slider';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { SelectableChip } from '../../components/SelectableChip';
+import { motion } from '../../constants/design';
+import { OnboardingHeader } from '../../components/OnboardingHeader';
 
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
 import { getBreedDefaults } from '../../lib/breedData';
 import { deriveLifeStage, getLifeStageCalorieMultiplier, getLifeStageLabel } from '../../lib/lifeStage';
+import { track } from '../../lib/analytics';
+import {
+  stepIndex, trackStepCompleted, useOnboardingStepTracking,
+} from '../../lib/onboardingFunnel';
 
 const BCS_OPTIONS = [
   { label: 'A bit thin', bcs: 3, icon: 'remove' as const },
@@ -22,11 +29,12 @@ const BCS_OPTIONS = [
   { label: 'Overweight', bcs: 9, icon: 'expand' as const },
 ];
 
-// Screen 4: Set Goal
+// Step 6 of 6 — set goal. The last input screen before the plan reveal.
 export default function GoalScreen() {
   const router = useRouter();
   const theme = Colors.light;
   const insets = useSafeAreaInsets();
+  useOnboardingStepTracking('goal');
 
   const { user } = useAuth();
   const petData = usePetStore();
@@ -164,42 +172,38 @@ export default function GoalScreen() {
     setLoading(false);
 
     if (error) {
+      track('onboarding_pet_create_failed', { reason: error.message });
       Alert.alert('Error creating profile', error.message);
     } else {
-      // Hydrate the active pet store and reset the onboarding form
+      // Hydrate the active pet store. Stash the plan summary FIRST so the
+      // reveal screen has the numbers it needs without re-fetching.
+      petData.setPlanSummary({
+        targetWeightKg: targetWeight,
+        dailyKcal,
+        lifeStageLabel,
+      });
       await useActivePetStore.getState().fetchPet(user.id);
-      usePetStore.getState().resetForm();
+      trackStepCompleted('goal', {
+        target_weight_kg: targetWeight,
+        daily_kcal: dailyKcal,
+        goal: deriveGoal(weightVal, targetWeight),
+      });
+      track('onboarding_completed', {
+        daily_kcal: dailyKcal,
+        target_weight_kg: targetWeight,
+      });
 
-      // Land on the personalized future-state preview (the "wow"). Its CTA continues
-      // into the app and triggers the paywall.
-      router.replace('/preview-home' as any);
+      // The reveal screen owns the climax — it reads the plan summary from
+      // the store, plays the labour-illusion beat, and continues to preview-home.
+      router.replace('/onboarding/reveal' as any);
     }
   };
 
   return (
     <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-      {/* Top Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <MaterialIcons name="arrow-back" size={24} color={theme['on-surface']} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: theme['on-surface'] }]}>Pet Journey</Text>
-        <View style={{ width: 40 }} />
-      </View>
+      <OnboardingHeader step={stepIndex('goal')} stepId="goal" />
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-
-        {/* Progress Indicator */}
-        <View style={styles.progressSection}>
-          <View style={styles.progressBars}>
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E6E300', width: 24 }]} />
-            <View style={[styles.progressPill, { backgroundColor: '#E5E7EB', width: 40 }]} />
-          </View>
-          <Text style={[styles.stepText, { color: theme['on-surface-variant'] }]}>Step 5 of 5</Text>
-        </View>
 
         {/* Hero Section */}
         <View style={styles.heroSection}>
@@ -224,20 +228,24 @@ export default function GoalScreen() {
             </View>
           )}
 
-          {/* Asymmetric Avatar */}
+          {/* Asymmetric Avatar — if the user skipped the photo, show their
+              pet's initials on a brand-tinted disc instead of a stock dog. The
+              dissonance of "that's not my pet" right before the commit moment
+              kills conversion. */}
           <View style={styles.avatarContainer}>
             <View style={[styles.blurBlob, { backgroundColor: 'rgba(255,252,0,0.2)' }]} />
             <View style={styles.avatarInner}>
-              <Image
-                source={{ uri: petData.imageUri || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000' }}
-                style={styles.avatarImg}
-              />
-              <View style={[styles.floatingReward, { backgroundColor: '#ffc4b3' }]}>
-                <MaterialIcons name="emoji-events" size={14} color="#862400" />
-                <Text style={[styles.rewardText, { color: '#862400' }]}>Peak health</Text>
-              </View>
+              {petData.imageUri ? (
+                <Image source={{ uri: petData.imageUri }} style={styles.avatarImg} />
+              ) : (
+                <View style={[styles.avatarImg, styles.avatarFallback]}>
+                  <Text style={styles.avatarInitials}>
+                    {(petData.name?.trim()?.[0] || (petData.species === 'cat' ? 'C' : 'D')).toUpperCase()}
+                  </Text>
+                </View>
+              )}
             </View>
-            <View style={[styles.overlapBadge, { backgroundColor: '#FFFC00', borderColor: '#FFFFFF' }]}>
+            <View style={[styles.overlapBadge, { backgroundColor: '#F7F602', borderColor: '#FFFFFF' }]}>
               <MaterialIcons name="fitness-center" size={32} color="#243036" />
             </View>
           </View>
@@ -252,16 +260,17 @@ export default function GoalScreen() {
             {BCS_OPTIONS.map((opt) => {
               const isSelected = petData.bodyConditionScore === opt.bcs;
               return (
-                <TouchableOpacity
+                <SelectableChip
                   key={opt.bcs}
+                  selected={isSelected}
                   style={[
                     styles.bcsCard,
                     isSelected
-                      ? { backgroundColor: '#FFFFFF', borderColor: '#FFFC00', borderWidth: 3 }
-                      : { backgroundColor: '#F8F9FA', borderColor: 'rgba(209,213,225,0.3)', borderWidth: 1 }
+                      ? { backgroundColor: '#FFFFFF', borderColor: '#F7F602', borderWidth: 3 }
+                      : { backgroundColor: '#F8F9FA', borderColor: 'rgba(209,213,225,0.3)', borderWidth: 1 },
                   ]}
+                  scaleTo={motion.scale.press}
                   onPress={() => petData.setBodyConditionScore(opt.bcs)}
-                  activeOpacity={0.8}
                 >
                   <MaterialIcons
                     name={opt.icon}
@@ -274,7 +283,7 @@ export default function GoalScreen() {
                   ]}>
                     {opt.label}
                   </Text>
-                </TouchableOpacity>
+                </SelectableChip>
               );
             })}
           </ScrollView>
@@ -286,7 +295,7 @@ export default function GoalScreen() {
             <Text style={[styles.weightLabel, { color: theme['on-surface-variant'] }]}>Target weight</Text>
             <View style={styles.weightValueRow}>
               {estimating ? (
-                <ActivityIndicator size="small" color="#FFFC00" style={{ transform: [{ scale: 1.5 }], marginVertical: 12 }} />
+                <ActivityIndicator size="small" color="#07202A" style={{ transform: [{ scale: 1.5 }], marginVertical: 12 }} />
               ) : (
                 <Text style={[styles.weightValue, { color: theme['on-surface'] }]}>{targetWeight.toFixed(1)}</Text>
               )}
@@ -313,7 +322,7 @@ export default function GoalScreen() {
               step={0.5}
               value={targetWeight}
               onValueChange={setTargetWeight}
-              minimumTrackTintColor="#FFFC00"
+              minimumTrackTintColor="#F7F602"
               maximumTrackTintColor="#E5E7EB"
               thumbTintColor="#243036"
             />
@@ -343,17 +352,16 @@ export default function GoalScreen() {
         {/* Final Confirmation Area */}
         <View style={styles.confirmationArea}>
           <PawtchiButton
-            title="Complete Profile"
+            title={loading ? 'Building plan…' : `Build ${petData.name?.trim() || 'the'} plan`}
             variant="primary"
-            iconName="check-circle"
+            iconName="auto-awesome"
             iconPosition="right"
             onPress={handleComplete}
             loading={loading}
-            style={{ paddingVertical: 24, shadowColor: '#FFFC00', shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.3, shadowRadius: 24, elevation: 8 }}
           />
 
           <Text style={[styles.disclaimer, { color: theme['on-surface-variant'] }]}>
-            By completing your profile, you agree to our <Text style={[styles.link, { color: theme['on-surface'], textDecorationColor: '#FFFC00' }]}>Health Guidelines</Text> and <Text style={[styles.link, { color: theme['on-surface'], textDecorationColor: '#FFFC00' }]}>Privacy Policy</Text>.
+            By completing your profile, you agree to our <Text style={[styles.link, { color: theme['on-surface'], textDecorationColor: '#F7F602' }]}>Health Guidelines</Text> and <Text style={[styles.link, { color: theme['on-surface'], textDecorationColor: '#F7F602' }]}>Privacy Policy</Text>.
           </Text>
         </View>
 
@@ -385,8 +393,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   headerTitle: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 20,
     letterSpacing: -0.5,
   },
@@ -411,8 +418,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   stepText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     letterSpacing: 1.5,
   },
@@ -421,8 +427,7 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   mainHeading: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 32,
     lineHeight: 36,
     letterSpacing: -1,
@@ -440,8 +445,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   lifeStageBadgeText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 13,
     color: '#92400e',
   },
@@ -475,6 +479,20 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  // Initials fallback — brand-tinted disc with a single big letter, used when
+  // the user skipped the photo. Honest > stock dog dissonance at commit time.
+  avatarFallback: {
+    backgroundColor: '#F7F602',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarInitials: {
+    fontFamily: 'BebasNeue_400Regular',
+    fontSize: 96,
+    lineHeight: 100,
+    color: '#07202A',
+    letterSpacing: 2,
+  },
   floatingReward: {
     position: 'absolute',
     top: 16,
@@ -492,8 +510,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   rewardText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 12,
     letterSpacing: -0.5,
   },
@@ -518,8 +535,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   bcsLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 15,
     textAlign: 'center',
   },
@@ -542,8 +558,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   bcsCardText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 12,
     textAlign: 'center',
   },
@@ -562,8 +577,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   weightLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 14,
     letterSpacing: 1.5,
   },
@@ -573,14 +587,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   weightValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 64,
     letterSpacing: -2,
   },
   weightUnit: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 20,
   },
   idealBadge: {
@@ -590,8 +602,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   idealBadgeText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 12,
   },
   sliderContainer: {
@@ -606,8 +617,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   markerText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 12,
     color: '#515d64',
   },
@@ -630,14 +640,12 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   bentoLabel: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '700',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 12,
     letterSpacing: -0.5,
   },
   bentoValue: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 24,
   },
   confirmationArea: {
@@ -651,20 +659,18 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     borderRadius: 40,
     gap: 12,
-    shadowColor: '#FFFC00',
+    shadowColor: '#F7F602',
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.3,
     shadowRadius: 24,
     elevation: 8,
   },
   completeBtnText: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '800',
+    fontFamily: 'Montserrat_800ExtraBold',
     fontSize: 20,
   },
   disclaimer: {
-    fontFamily: 'Plus Jakarta Sans',
-    fontWeight: '500',
+    fontFamily: 'Montserrat_500Medium',
     fontSize: 14,
     textAlign: 'center',
     paddingHorizontal: 32,

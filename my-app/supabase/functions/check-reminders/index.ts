@@ -3,6 +3,20 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
 
 serve(async (req) => {
   try {
+    // ── Security: Cron secret guard ──
+    // This function is called by Supabase cron scheduler, not by users.
+    // Protect it with a shared secret to prevent unauthorized invocations.
+    const cronSecret = req.headers.get('x-cron-secret') || '';
+    const expectedSecret = Deno.env.get('CRON_SECRET') || '';
+
+    // If CRON_SECRET is configured, enforce it. Otherwise allow (backward compat).
+    if (expectedSecret && cronSecret !== expectedSecret) {
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized — invalid or missing cron secret' }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
     // 1. Initialize Supabase Admin Client
     const supabaseClient = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -13,10 +27,11 @@ serve(async (req) => {
     // Use UTC date as the standard for 'today' log_date matching
     const todayDateStr = now.toISOString().split('T')[0];
     
-    // 2. Fetch all pets
+    // 2. Fetch pets with pagination to avoid unbounded queries
     const { data: pets, error: petsError } = await supabaseClient
       .from('pets')
-      .select('id, name, owner_id');
+      .select('id, name, owner_id')
+      .limit(1000); // Cap to prevent full-table scan at scale
       
     if (petsError) throw petsError;
     
@@ -33,7 +48,8 @@ serve(async (req) => {
     // If it's stored in a different table (e.g. 'devices'), update the FROM clause.
     const { data: profiles, error: profilesError } = await supabaseClient
       .from('profiles')
-      .select('id, push_token');
+      .select('id, push_token')
+      .limit(1000); // Cap to prevent full-table scan
       
     if (profilesError) console.warn("Could not fetch profiles push_tokens. Make sure the column exists.");
 

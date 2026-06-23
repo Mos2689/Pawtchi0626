@@ -76,7 +76,7 @@ const styles = StyleSheet.create({
     color: '#e2e8f0',
     fontSize: 14,
     lineHeight: 20,
-    fontFamily: 'PlusJakartaSans-Medium',
+    fontFamily: 'Montserrat_500Medium',
     marginBottom: 16,
     textAlign: 'center',
   },
@@ -91,14 +91,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: '#FFFC00',
+    backgroundColor: '#F7F602',
     borderRadius: 14,
     paddingVertical: 10,
   },
   primaryBtnText: {
     color: '#041015',
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans-Bold',
+    fontFamily: 'Montserrat_700Bold',
     fontWeight: '700',
   },
   ghostBtn: {
@@ -108,6 +108,6 @@ const styles = StyleSheet.create({
   ghostBtnText: {
     color: 'rgba(255,255,255,0.5)',
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans-Medium',
+    fontFamily: 'Montserrat_500Medium',
   },
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,9 +7,12 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import type { FoodAnalysis } from '../../lib/foodVerdict';
 import NutritionReferencePanel from '../../components/NutritionReferencePanel';
+import { usePetContextStore } from '../../store/usePetContextStore';
+import { haptic } from '../../lib/haptics';
 
 interface FoodScanDetails {
     id: string;
+    pet_id: string;
     ai_identified_food: string;
     ai_estimated_calories: number;
     ai_confidence_score: number;
@@ -68,6 +71,93 @@ export default function ScanDetailScreen() {
 
     const logDate = new Date(scan.created_at);
     const timeStr = logDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // The daily_logs row this scan rolled into (UTC date matches how it was written).
+    const scanLogDate = new Date(scan.created_at).toISOString().split('T')[0];
+
+    // Apply a calorie delta to the scan's daily_logs row, then refresh context.
+    const adjustDailyTotal = async (deltaKcal: number, treatDelta: number) => {
+        const { data: dl } = await supabase
+            .from('daily_logs')
+            .select('id, calories_consumed, treats_consumed')
+            .eq('pet_id', scan.pet_id)
+            .eq('log_date', scanLogDate)
+            .maybeSingle();
+        if (dl) {
+            await supabase.from('daily_logs').update({
+                calories_consumed: Math.max(0, (dl.calories_consumed || 0) + deltaKcal),
+                treats_consumed: Math.max(0, (dl.treats_consumed || 0) + treatDelta),
+                updated_at: new Date().toISOString(),
+            }).eq('id', dl.id);
+        }
+        // Force Home/Health/Meal to recompute on next focus.
+        usePetContextStore.getState().invalidateContext();
+    };
+
+    const handleAdjustPortion = () => {
+        const cur = scan.ai_estimated_calories || 0;
+        const opts: { label: string; mult: number }[] = [
+            { label: 'Half (½×)', mult: 0.5 },
+            { label: '1.5×', mult: 1.5 },
+            { label: 'Double (2×)', mult: 2 },
+        ];
+        Alert.alert(
+            'Adjust portion',
+            `This log is recorded as ${cur} kcal. Pick a new portion — the daily total updates to match.`,
+            [
+                ...opts.map((o) => ({
+                    text: o.label,
+                    onPress: async () => {
+                        const newCal = Math.max(1, Math.round(cur * o.mult));
+                        const delta = newCal - cur;
+                        await supabase.from('food_scans').update({
+                            ai_estimated_calories: newCal,
+                            protein_g: Math.round((scan.protein_g || 0) * o.mult),
+                            carbs_g: Math.round((scan.carbs_g || 0) * o.mult),
+                            fat_g: Math.round((scan.fat_g || 0) * o.mult),
+                        }).eq('id', scan.id);
+                        await adjustDailyTotal(delta, 0);
+                        haptic.success();
+                        setScan({
+                            ...scan,
+                            ai_estimated_calories: newCal,
+                            protein_g: Math.round((scan.protein_g || 0) * o.mult),
+                            carbs_g: Math.round((scan.carbs_g || 0) * o.mult),
+                            fat_g: Math.round((scan.fat_g || 0) * o.mult),
+                        });
+                    },
+                })),
+                { text: 'Cancel', style: 'cancel' as const },
+            ],
+        );
+    };
+
+    const handleDelete = () => {
+        Alert.alert(
+            'Delete this log',
+            'This removes the log and adjusts the daily total. It can’t be undone.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                        await supabase.from('food_scans').delete().eq('id', scan.id);
+                        await adjustDailyTotal(-(scan.ai_estimated_calories || 0), scan.is_treat ? -1 : 0);
+                        haptic.success();
+                        router.back();
+                    },
+                },
+            ],
+        );
+    };
+
+    const openMenu = () => {
+        Alert.alert(scan.ai_identified_food, undefined, [
+            { text: 'Adjust portion', onPress: handleAdjustPortion },
+            { text: 'Delete log', style: 'destructive', onPress: handleDelete },
+            { text: 'Cancel', style: 'cancel' },
+        ]);
+    };
 
     return (
         <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
@@ -79,7 +169,7 @@ export default function ScanDetailScreen() {
                     </TouchableOpacity>
                     <Text style={styles.srHeaderTitle}>Scan Details</Text>
                 </View>
-                <TouchableOpacity activeOpacity={0.7}>
+                <TouchableOpacity activeOpacity={0.7} onPress={openMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                     <MaterialIcons name="more-horiz" size={24} color="#041015" />
                 </TouchableOpacity>
             </View>
@@ -105,10 +195,10 @@ export default function ScanDetailScreen() {
                     <View style={styles.srAccentLine} />
                     <View style={styles.srFoodHeader}>
                         <Text style={styles.srFoodName}>{scan.ai_identified_food}</Text>
-                        <View style={styles.srServingBadge}>
-                            <Text style={styles.srServingCount}>1</Text>
+                        <TouchableOpacity style={styles.srServingBadge} onPress={handleAdjustPortion} activeOpacity={0.7}>
+                            <Text style={styles.srServingCount}>Edit</Text>
                             <MaterialIcons name="edit" size={14} color="#041015" />
-                        </View>
+                        </TouchableOpacity>
                     </View>
 
                     {/* Health Score */}

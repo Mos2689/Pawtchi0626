@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 
@@ -16,6 +16,8 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onAddNew?: () => void;
+  /** Long-press a non-primary pill to hide it from the rail. */
+  onArchive?: (item: PantryItem) => void;
 }
 
 const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
@@ -27,14 +29,11 @@ const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
   human_food: 'restaurant',
 };
 
-export default function PantryPillSelector({ pantryItems, selectedId, onSelect, onAddNew }: Props) {
-  // Auto-select when there's exactly 1 pantry item
-  useEffect(() => {
-    if (pantryItems.length === 1 && selectedId === null) {
-      onSelect(pantryItems[0].id);
-    }
-  }, [pantryItems.length]);
-
+export default function PantryPillSelector({ pantryItems, selectedId, onSelect, onAddNew, onArchive }: Props) {
+  // No more single-item auto-select. The Primary Meal Card above covers the
+  // "feed the usual" case explicitly; making selection always intentional
+  // prevents the silent-wrong-log failure mode when the user is scanning
+  // something different from their only pantry item.
   return (
     <View style={styles.container}>
       <View style={styles.wrapContent}>
@@ -69,6 +68,8 @@ export default function PantryPillSelector({ pantryItems, selectedId, onSelect, 
               style={[styles.pill, isSelected ? styles.pillSelected : styles.pillUnselected]}
               activeOpacity={0.7}
               onPress={() => onSelect(item.id)}
+              onLongPress={() => { if (!item.is_primary) onArchive?.(item); }}
+              delayLongPress={400}
             >
               <MaterialIcons
                 name={isSelected ? 'check-circle' : icon}
@@ -115,9 +116,9 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
   },
   pillSelected: {
-    backgroundColor: '#FFFC00',
-    borderColor: '#FFFC00',
-    shadowColor: '#FFFC00',
+    backgroundColor: '#F7F602',
+    borderColor: '#F7F602',
+    shadowColor: '#F7F602',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
@@ -125,7 +126,7 @@ const styles = StyleSheet.create({
   },
   pillText: {
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans-Bold',
+    fontFamily: 'Montserrat_700Bold',
   },
   pillTextUnselected: {
     color: '#475569',

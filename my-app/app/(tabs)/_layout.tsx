@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Tabs as ExpoTabs, useRouter } from 'expo-router';
+import { Tabs as ExpoTabs, useRouter, Redirect } from 'expo-router';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
@@ -7,6 +7,7 @@ import { usePetContextStore } from '../../store/usePetContextStore';
 import { useSubscription } from '../../hooks/useSubscription';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Theme';
+import { color, font } from '../../constants/design';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator, View } from 'react-native';
 import { Hotspot } from '../../components/walkthrough/Hotspot';
@@ -20,27 +21,14 @@ export default function TabLayout() {
   const { fetchStreak, isLoading: streakLoading } = useStreakStore();
   const { fetchContext } = usePetContextStore();
   const router = useRouter();
-  const [redirectingToOnboarding, setRedirectingToOnboarding] = useState(false);
   const { status: subStatus } = useSubscription();
 
   useEffect(() => {
-    if (!authLoading) {
-      if (!session) {
-        router.replace('/(auth)/login' as any);
-      } else {
-        fetchPet(session.user.id);
-        fetchStreak(session.user.id);
-      }
+    if (!authLoading && session) {
+      fetchPet(session.user.id);
+      fetchStreak(session.user.id);
     }
   }, [session, authLoading]);
-
-  // Redirect users without a configured pet into onboarding (via useEffect, not render body)
-  useEffect(() => {
-    if (!authLoading && session && !petLoading && !activePet && !redirectingToOnboarding) {
-      setRedirectingToOnboarding(true);
-      router.replace('/onboarding/species');
-    }
-  }, [authLoading, session, petLoading, activePet]);
 
   // Hydrate pet context store once the active pet is loaded
   useEffect(() => {
@@ -49,13 +37,41 @@ export default function TabLayout() {
     }
   }, [activePet?.id]);
 
-  // Block rendering while loading or redirecting to prevent flickering
-  if (authLoading || (session && (petLoading || streakLoading)) || redirectingToOnboarding) {
+  // ── Guard cascade ──
+  // Order matters: auth must resolve before we check session; session must
+  // exist before we wait on pet/streak (otherwise clearPet's isLoading:true
+  // during signout would trap us in a spinner forever).
+
+  // 1. Auth still resolving — show spinner
+  if (authLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#FFFC00" />
+        <ActivityIndicator size="large" color={color.navy} />
       </View>
     );
+  }
+
+  // 2. Auth resolved, no session — render nothing and let the centralized auth
+  //    gate (app/_layout.tsx) navigate to the welcome screen. This layout must
+  //    NOT redirect on `session` itself: a <Redirect> here re-fires router.replace
+  //    via useFocusEffect every commit while mounted, which is exactly what
+  //    caused "Maximum update depth exceeded". The gate is the single authority.
+  if (!session) {
+    return null;
+  }
+
+  // 3. Session exists, wait for pet & streak data
+  if (petLoading || streakLoading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color={color.navy} />
+      </View>
+    );
+  }
+
+  // 4. Data loaded but no pet configured — onboarding
+  if (!activePet) {
+    return <Redirect href="/onboarding/species" />;
   }
 
   return (
@@ -64,18 +80,19 @@ export default function TabLayout() {
       <ExpoTabs
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: theme.primary,
-          tabBarInactiveTintColor: theme['on-surface-variant'],
+          // Yellow icons fail contrast on a white bar — active is ink, the
+          // yellow lives in content CTAs (one yellow per surface).
+          tabBarActiveTintColor: color.ink,
+          tabBarInactiveTintColor: color.slateFaint,
           tabBarStyle: {
-            backgroundColor: theme.surface,
-            borderTopColor: theme['surface-container-highest'],
+            backgroundColor: color.surface,
+            borderTopColor: color.hairline,
             height: 60 + insets.bottom,
             paddingBottom: insets.bottom || 12,
             paddingTop: 12,
           },
           tabBarLabelStyle: {
-            fontFamily: 'Plus Jakarta Sans',
-            fontWeight: '600',
+            fontFamily: font.semibold,
             fontSize: 11,
             marginTop: 4,
           }
@@ -132,7 +149,7 @@ export default function TabLayout() {
               <Hotspot
                 stepKey="health_tab"
                 title="Health Dashboard"
-                description="View your pet's complete nutritional and activity history here!"
+                description="See the complete nutritional and activity history here"
                 position="top-right"
               >
                 <MaterialIcons name="monitor-heart" size={26} color={color} />
