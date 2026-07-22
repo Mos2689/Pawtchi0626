@@ -1,19 +1,25 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Pressable, ActivityIndicator, Alert, Modal, BackHandler, InteractionManager } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Pressable, Alert, Modal, BackHandler, InteractionManager } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { color, font, motion, radius, shadow, space } from '../../constants/design';
+import { color, font, motion, radius, shadow, space, makeShadow } from '../../constants/design';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { computeHealthScore } from '../../lib/healthScore';
+import { findToxicIngredients } from '../../lib/toxicIngredients';
+import { getAgeMonths } from '../../lib/lifeStage';
+import { getLocalYMD } from '../../lib/dateUtils';
 import { analyzeFood, type FoodAnalysis } from '../../lib/foodVerdict';
-import { generateVerdict } from '../../lib/generateVerdict';
+import {
+  buildVerdictBundle, deriveVerdictCategory, deterministicVerdict,
+  fetchVerdictLLM, fetchVerdictWithFallback, estimateMealGrams,
+} from '../../lib/verdictPipeline';
 import { computePantryMacros } from '../../lib/pantryMath';
 import { mapMedicalConditionsToAdjustmentKeys } from '../../lib/clinicalMapping';
 import { deriveGoal } from '../../lib/healthMath';
@@ -21,16 +27,46 @@ import { useSubscription } from '../../hooks/useSubscription';
 import PantryPillSelector from '../../components/PantryPillSelector';
 import NutritionReferencePanel from '../../components/NutritionReferencePanel';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { PawLoader } from '../../components/loader/PawLoader';
 import { AnimatedPressable } from '../../components/AnimatedPressable';
 import { ScanSourceRow } from '../../components/ScanSourceRow';
 import { MealHero } from '../../components/MealHero';
+import { BreathingPaw } from '../../components/BreathingPaw';
 import { Image as ExpoImage } from 'expo-image';
 import { BOWL_SIZE_GRAMS } from '../../lib/pantryMath';
-import { predictMeal } from '../../lib/mealPrediction';
+import { predictMeal, currentSlot } from '../../lib/mealPrediction';
 import { recordServing, getSuggestion, clearHistory } from '../../lib/portionLearning';
+import { markNearestFeedingActivityComplete } from '../../lib/feedingActivityLink';
 import { haptic } from '../../lib/haptics';
 import { pantryItemToScanResult } from '../../lib/pantryToScanResult';
+import { prepareImageForUpload } from '../../lib/imagePrep';
+import { PawtchiModal } from '../../components/PawtchiModal';
+import {
+  errorCopy, extractInvokeErrorCode, fromEdgeBody, isAppError, reportError, toAppError,
+  type ErrorContext, type ErrorCopy, type RecoveryActionId,
+} from '../../lib/appError';
 import type { PantryItem } from '../../store/useActivePetStore';
+import { trackFirebaseEvent } from '../../lib/firebaseAnalytics';
+
+async function isFirstFoodLogForUser(userId: string | undefined): Promise<boolean> {
+  if (!userId) return false;
+
+  const { data: pets, error: petsError } = await supabase
+    .from('pets')
+    .select('id')
+    .eq('owner_id', userId);
+  if (petsError || !pets?.length) return false;
+
+  const { data: existingScans, error: scansError } = await supabase
+    .from('food_scans')
+    .select('id')
+    .in('pet_id', pets.map((pet) => pet.id))
+    .limit(1);
+
+  // Fail closed: a lookup error must never turn an ordinary log into a false
+  // acquisition milestone.
+  return !scansError && existingScans?.length === 0;
+}
 
 interface ScanResult {
   food_name: string;
@@ -66,8 +102,18 @@ interface ScanResult {
 export default function MealScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { activePet, foodPantry, incrementPantryScan, archivePantryItem, addPantryItem } = useActivePetStore();
-  const { pawCoins, awardCoins } = useStreakStore();
+  // Fine-grained selectors: this 2 800-line screen must re-render only when the
+  // specific value changes, not on any unrelated store mutation (coin ticks,
+  // isTailoring, isLoading…). Zustand actions are stable references, so
+  // selecting them individually is free.
+  const activePet = useActivePetStore(s => s.activePet);
+  const foodPantry = useActivePetStore(s => s.foodPantry);
+  const incrementPantryScan = useActivePetStore(s => s.incrementPantryScan);
+  const archivePantryItem = useActivePetStore(s => s.archivePantryItem);
+  const addPantryItem = useActivePetStore(s => s.addPantryItem);
+  const recalibrating = useActivePetStore(s => s.recalibrating);
+  const pawCoins = useStreakStore(s => s.pawCoins);
+  const awardCoins = useStreakStore(s => s.awardCoins);
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
   // Subscribe to today's calorie state so the canopy reflects updates live.
@@ -109,6 +155,25 @@ export default function MealScreen() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Ai analysing...");
+
+  // Branded failure sheet — ALL failure paths on this screen land here,
+  // always via errorCopy(). OS alerts remain only for confirmations
+  // (toxin block, overage, hide-food).
+  const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  // Replays whatever operation failed — set at the entry of each top-level
+  // action (scan / confirm-log / quick-log), read by "Try again".
+  const retryRef = useRef<null | (() => void)>(null);
+  const presentFailure = useCallback((err: unknown, context: ErrorContext) => {
+    const appErr = isAppError(err) ? err : toAppError(err);
+    reportError(appErr, context);
+    setFailure(errorCopy(appErr, { context, petName: activePet?.name }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePet?.name]);
+  const handleRecovery = useCallback((action: RecoveryActionId) => {
+    setFailure(null);
+    if (action === 'retry') retryRef.current?.();
+    else if (action === 'pick_again') setSourcePopupVisible(true);
+  }, []);
 
   // Serving count multiplier — lets users adjust portions
   const [servingCount, setServingCount] = useState(1);
@@ -175,9 +240,12 @@ export default function MealScreen() {
     getSuggestion(sourceId).then((mult) => {
       if (cancelled || mult == null) return;
       setUsualSuggestion({ id: sourceId, multiplier: mult });
-      // Pre-default the chip to the learned portion (user just confirms).
-      setShowCustomPortion(false);
       setServingCount(mult);
+      const sourceItem = foodPantry.find(p => p.id === sourceId);
+      const isBowl = !!activePet?.bowl_size && !!sourceItem &&
+        (sourceItem.serving_unit === 'cup' || !sourceItem.serving_unit);
+      const presets = isBowl ? [0.25, 0.5, 1] : [0.75, 1, 1.25];
+      setShowCustomPortion(!presets.some(p => Math.abs(mult - p) < 0.01));
     });
     return () => { cancelled = true; };
   }, [scanResult, selectedPantryId]);
@@ -239,6 +307,7 @@ export default function MealScreen() {
 
   const handleQuickLog = useCallback(async (item: PantryItem) => {
     if (!checkAccess() || !activePet) return;
+    retryRef.current = () => handleQuickLog(item);
 
     setIsAnalyzing(true);
     setLoadingMessage('Preparing meal...');
@@ -271,6 +340,7 @@ export default function MealScreen() {
       const previewGoal = deriveGoal(
         activePet.current_weight_kg ?? 0,
         activePet.target_weight_kg ?? null,
+        activePet.body_condition_score,
       );
       const previewConditionKeys = mapMedicalConditionsToAdjustmentKeys(
         activePet.medical_conditions,
@@ -293,10 +363,11 @@ export default function MealScreen() {
             moisture_pct: synthetic.moisture_pct ?? null,
             kcal_per_100g_as_fed: synthetic.kcal_per_100g_as_fed ?? null,
             confidence: synthetic.confidence,
+            name_and_ingredients: [synthetic.food_name, ...(synthetic.key_ingredients ?? [])],
           },
           pet: {
             species: activePet.species as 'dog' | 'cat',
-            age_months: activePet.age_years ? Math.round(activePet.age_years * 12) : null,
+            age_months: getAgeMonths(activePet) ?? null,
             daily_kcal_target: activePet.target_daily_calories ?? null,
             allergies: activePet.allergies ?? null,
             medical_conditions: activePet.medical_conditions ?? null,
@@ -336,11 +407,14 @@ export default function MealScreen() {
             species: activePet.species,
             weight_kg: activePet.current_weight_kg,
             target_weight_kg: activePet.target_weight_kg ?? null,
-            age_months: activePet.age_years ? Math.round(activePet.age_years * 12) : null,
+            age_months: getAgeMonths(activePet) ?? null,
             activity_level: activePet.activity_level,
             is_neutered: activePet.is_neutered,
             goal: previewGoal,
             confirmed_condition_keys: previewConditionKeys,
+            breed: activePet.breed ?? null,
+            age_years: activePet.age_years ?? null,
+            body_condition_score: activePet.body_condition_score ?? null,
           },
           meal_grams: estimatedMealGrams,
         });
@@ -349,9 +423,10 @@ export default function MealScreen() {
       }
 
       // 4. Verdict — same gemini-verdict path as scan flow, with the same
-      // deterministic generateVerdict fallback.
+      // deterministic generateVerdict fallback. Context assembly + LLM/fallback
+      // order live in lib/verdictPipeline.ts (single source for all three flows).
       if (synthetic.food_analysis) {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalYMD(new Date());
         const { data: todayLog } = await supabase
           .from('daily_logs')
           .select('calories_consumed')
@@ -361,126 +436,54 @@ export default function MealScreen() {
         const caloriesConsumedToday = (todayLog?.calories_consumed as number) || 0;
 
         const preComputedScore = synthetic.health_score ?? 5;
-        let preComputedCategory: 'unsafe' | 'poor' | 'fair' | 'good' | 'excellent' = 'fair';
-        if (synthetic.is_allergy_trigger) preComputedCategory = 'unsafe';
-        else if (synthetic.is_treat) preComputedCategory = preComputedScore >= 8 ? 'excellent' : preComputedScore >= 5 ? 'fair' : 'poor';
-        else preComputedCategory = preComputedScore >= 7 ? 'good' : preComputedScore >= 4 ? 'fair' : 'poor';
-        synthetic.verdict_category = preComputedCategory;
+        synthetic.verdict_category = deriveVerdictCategory(
+          synthetic.is_allergy_trigger === true,
+          synthetic.is_treat === true,
+          preComputedScore,
+        );
 
-        const petCtxStore = usePetContextStore.getState();
-        const dailyTarget = activePet.target_daily_calories ?? 0;
-        const currentWeightKg = activePet.current_weight_kg ?? 0;
-        const targetWeightKg = activePet.target_weight_kg ?? null;
-        const weightGapKg = targetWeightKg ? Math.abs(currentWeightKg - targetWeightKg) : 0;
+        const bundle = buildVerdictBundle({
+          pet: activePet,
+          scan: {
+            food_name: synthetic.food_name,
+            food_type: synthetic.food_type ?? null,
+            is_treat: synthetic.is_treat === true,
+            is_allergy_trigger: synthetic.is_allergy_trigger === true,
+            allergy_warnings: synthetic.allergy_warnings ?? [],
+            ingredients_of_concern: synthetic.ingredients_of_concern ?? [],
+            key_ingredients: synthetic.key_ingredients ?? null,
+            calories_per_serving: synthetic.calories_per_serving,
+            recommendation: synthetic.recommendation,
+            confidence: synthetic.confidence,
+          },
+          macros: {
+            total_kcal: synthetic.calories_per_serving,
+            protein_g: synthetic.protein_g ?? 0,
+            fat_g: synthetic.fat_g ?? 0,
+            carbs_g: synthetic.carbs_g ?? 0,
+            fibre_g: 0,
+            kcal_per_100g: synthetic.kcal_per_100g_as_fed ?? null,
+            moisture_pct: synthetic.moisture_pct ?? null,
+            meal_grams: estimateMealGrams(synthetic.protein_pct, synthetic.protein_g ?? 0, synthetic.calories_per_serving),
+          },
+          foodAnalysis: synthetic.food_analysis,
+          healthScore: preComputedScore,
+          healthScoreReasons: healthReasons,
+          caloriesConsumedToday,
+          weightTrendDirection: usePetContextStore.getState().weightTrend?.direction ?? null,
+        });
 
-        const petContext = {
-          name: activePet.name,
-          species: activePet.species,
-          age_years: activePet.age_years ?? null,
-          current_weight_kg: currentWeightKg,
-          target_weight_kg: targetWeightKg,
-          activity_level: activePet.activity_level,
-          goal: previewGoal,
-          confirmed_condition_keys: previewConditionKeys,
-          daily_kcal_target: dailyTarget,
-        };
-        const scanContext = {
-          food_name: synthetic.food_name,
-          food_type: synthetic.food_type ?? null,
-          is_treat: synthetic.is_treat === true,
-          is_allergy_trigger: synthetic.is_allergy_trigger === true,
-          allergy_warnings: synthetic.allergy_warnings ?? [],
-          key_ingredients: synthetic.key_ingredients ?? null,
-          calories_per_serving: synthetic.calories_per_serving,
-        };
-        const macrosContext = {
-          total_kcal: synthetic.calories_per_serving,
-          protein_g: synthetic.protein_g ?? 0,
-          fat_g: synthetic.fat_g ?? 0,
-          carbs_g: synthetic.carbs_g ?? 0,
-          fibre_g: 0,
-          kcal_per_100g: synthetic.kcal_per_100g_as_fed ?? null,
-          moisture_pct: synthetic.moisture_pct ?? null,
-          meal_grams: synthetic.protein_pct && synthetic.protein_pct > 0 && (synthetic.protein_g ?? 0) > 0
-            ? Math.round(((synthetic.protein_g ?? 0) / synthetic.protein_pct) * 100)
-            : Math.max(1, Math.round(synthetic.calories_per_serving / 3.5)),
-        };
-        const analysisContext = {
-          health_score: preComputedScore,
-          health_score_reasons: healthReasons,
-          verdict_category: preComputedCategory,
-          nutrient_statuses: synthetic.food_analysis.nutrients.map(n => ({
-            nutrient: n.nutrient,
-            status: n.status,
-          })),
-          active_clinical_adjustments: synthetic.food_analysis.active_clinical_adjustments,
-        };
-        const weightContext = {
-          current_weight_kg: currentWeightKg,
-          target_weight_kg: targetWeightKg,
-          goal: previewGoal,
-          weight_trend_direction: petCtxStore.weightTrend?.direction ?? null,
-          weight_gap_kg: weightGapKg,
-          calories_consumed_today: caloriesConsumedToday,
-          daily_kcal_target: dailyTarget,
-          calories_remaining: dailyTarget - caloriesConsumedToday,
-          cal_percent: dailyTarget > 0 ? Math.round((caloriesConsumedToday / dailyTarget) * 100) : 0,
-          meal_pct_of_daily: dailyTarget > 0 ? Math.round((synthetic.calories_per_serving / dailyTarget) * 100) : 0,
-        };
-
-        try {
-          const { data: vData, error: vErr } = await supabase.functions.invoke('gemini-verdict', {
-            body: {
-              pet: petContext,
-              scan: scanContext,
-              macros: macrosContext,
-              analysis: analysisContext,
-              weight_context: weightContext,
-            },
-          });
-          if (vData?.success && vData.verdict) {
-            synthetic.verdict = vData.verdict;
-          } else {
-            throw new Error(vErr ?? 'no verdict');
-          }
-        } catch {
-          try {
-            const fallback = generateVerdict({
-              scanResult: {
-                food_name: synthetic.food_name,
-                food_type: synthetic.food_type ?? null,
-                is_treat: synthetic.is_treat === true,
-                is_allergy_trigger: synthetic.is_allergy_trigger === true,
-                allergy_warnings: synthetic.allergy_warnings ?? [],
-                ingredients_of_concern: synthetic.ingredients_of_concern ?? [],
-                key_ingredients: synthetic.key_ingredients ?? null,
-                calories_per_serving: synthetic.calories_per_serving,
-                health_score: preComputedScore,
-                recommendation: synthetic.recommendation,
-                confidence: synthetic.confidence,
-              },
-              foodAnalysis: synthetic.food_analysis,
-              pet: petContext,
-              weight_context: {
-                calories_consumed_today: caloriesConsumedToday,
-                calories_remaining: dailyTarget - caloriesConsumedToday,
-                cal_percent: dailyTarget > 0 ? Math.round((caloriesConsumedToday / dailyTarget) * 100) : 0,
-                weight_trend_direction: petCtxStore.weightTrend?.direction ?? null,
-                weight_gap_kg: weightGapKg,
-              },
-            });
-            synthetic.verdict = fallback.verdict;
-            synthetic.verdict_category = fallback.verdict_category;
-          } catch {
-            // verdict stays unset; result screen falls back to recommendation (empty)
-          }
+        const verdictResult = await fetchVerdictWithFallback(bundle);
+        if (verdictResult) {
+          synthetic.verdict = verdictResult.verdict;
+          synthetic.verdict_category = verdictResult.verdict_category;
         }
+        // else: verdict stays unset; result screen falls back to recommendation (empty)
       }
 
       setScanResult(synthetic);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      Alert.alert('Quick Log Failed', message);
+      presentFailure(err, 'log');
     } finally {
       setIsAnalyzing(false);
     }
@@ -545,26 +548,30 @@ export default function MealScreen() {
     }
 
     if (!result.canceled && result.assets[0]) {
-      const asset = result.assets[0];
+      // Downscale before anything touches the network — camera frames are
+      // 8–12 MP and Gemini needs ≤~1024 px. Falls back to the original asset
+      // (with the picker's base64) if the manipulator can't process the image.
+      const asset = await prepareImageForUpload(result.assets[0]);
 
-      // Image size validation — prevent oversized payloads from crashing the edge function
+      // Image size validation — backstop for the non-downscaled fallback path.
       const MAX_BASE64_LENGTH = 4 * 1024 * 1024; // ~4MB
       if (asset.base64 && asset.base64.length > MAX_BASE64_LENGTH) {
-        Alert.alert(
-          'Image Too Large',
-          'The selected image is too large. Please crop it or use a lower resolution photo.',
-          [{ text: 'OK' }]
-        );
+        setFailure({
+          title: 'That photo is too large',
+          message: 'Crop it or pick a lower-resolution photo and try again.',
+          actions: [{ label: 'OK', action: 'dismiss' }],
+        });
         return;
       }
 
       setCapturedImage(asset.uri);
       setServingCount(1); // Reset serving count for new scan
-      analyzeWithGemini(asset.base64!, asset.mimeType || 'image/jpeg');
+      analyzeWithGemini(asset.base64!, asset.mimeType);
     }
   };
 
   const analyzeWithGemini = async (base64: string, mimeType: string) => {
+    retryRef.current = () => analyzeWithGemini(base64, mimeType);
     setIsAnalyzing(true);
 
     try {
@@ -602,10 +609,13 @@ export default function MealScreen() {
 
       if (data?.success && data.analysis) {
         if (data.analysis.parse_error) {
-          Alert.alert(
-            'Partial Analysis',
-            `AI could not return structured data.\n\nRaw: ${data.analysis.raw_response?.substring(0, 200) || 'Empty response'}`
+          // The model produced unparseable output — proceeding would log a
+          // phantom placeholder meal. Treat it as a failed read instead.
+          presentFailure(
+            toAppError(new Error('scan analysis parse_error'), { errorCode: 'unreadable_image' }),
+            'food_scan',
           );
+          return;
         }
         const normalized: ScanResult = {
           ...data.analysis,
@@ -673,10 +683,11 @@ export default function MealScreen() {
                 moisture_pct: normalized.moisture_pct ?? null,
                 kcal_per_100g_as_fed: normalized.kcal_per_100g_as_fed ?? null,
                 confidence: normalized.confidence,
+                name_and_ingredients: [normalized.food_name, ...(normalized.key_ingredients ?? [])],
               },
               pet: {
                 species: activePet.species as 'dog' | 'cat',
-                age_months: activePet.age_years ? Math.round(activePet.age_years * 12) : null,
+                age_months: getAgeMonths(activePet) ?? null,
                 daily_kcal_target: activePet.target_daily_calories ?? null,
                 allergies: activePet.allergies ?? null,
                 medical_conditions: activePet.medical_conditions ?? null,
@@ -706,6 +717,7 @@ export default function MealScreen() {
             const previewGoal = deriveGoal(
               activePet.current_weight_kg ?? 0,
               activePet.target_weight_kg ?? null,
+              activePet.body_condition_score,
             );
             const previewConditionKeys = mapMedicalConditionsToAdjustmentKeys(
               activePet.medical_conditions,
@@ -727,11 +739,14 @@ export default function MealScreen() {
                 species: activePet.species,
                 weight_kg: activePet.current_weight_kg,
                 target_weight_kg: activePet.target_weight_kg ?? null,
-                age_months: activePet.age_years ? Math.round(activePet.age_years * 12) : null,
+                age_months: getAgeMonths(activePet) ?? null,
                 activity_level: activePet.activity_level,
                 is_neutered: activePet.is_neutered,
                 goal: previewGoal,
                 confirmed_condition_keys: previewConditionKeys,
+                breed: activePet.breed ?? null,
+                age_years: activePet.age_years ?? null,
+                body_condition_score: activePet.body_condition_score ?? null,
               },
               meal_grams: estimatedMealGrams,
             });
@@ -743,17 +758,10 @@ export default function MealScreen() {
         // Build a plain-English verdict via Gemini using macro scan details + pet profile.
         // Architecture: compute ALL analysis BEFORE the LLM call, then pass the
         // completed decision as context. The LLM narrates — it doesn't judge.
+        // Context assembly + LLM/fallback order live in lib/verdictPipeline.ts.
         if (normalized.food_analysis && activePet) {
-          const previewGoal = deriveGoal(
-            activePet.current_weight_kg ?? 0,
-            activePet.target_weight_kg ?? null,
-          );
-          const previewConditionKeys = mapMedicalConditionsToAdjustmentKeys(
-            activePet.medical_conditions,
-          );
-
           // Fetch today's running calorie total
-          const today = new Date().toISOString().split('T')[0];
+          const today = getLocalYMD(new Date());
           const { data: todayLog } = await supabase
             .from('daily_logs')
             .select('calories_consumed')
@@ -762,149 +770,58 @@ export default function MealScreen() {
             .maybeSingle();
           const caloriesConsumedToday = (todayLog?.calories_consumed as number) || 0;
 
-          // --- STEP 1: Compute verdict_category BEFORE the LLM call ---
           const preComputedScore = normalized.health_score ?? 5;
-          let preComputedCategory: 'unsafe' | 'poor' | 'fair' | 'good' | 'excellent' = 'fair';
-          if (normalized.is_allergy_trigger) {
-            preComputedCategory = 'unsafe';
-          } else if (normalized.is_treat) {
-            preComputedCategory = preComputedScore >= 8 ? 'excellent' : preComputedScore >= 5 ? 'fair' : 'poor';
-          } else {
-            preComputedCategory = preComputedScore >= 7 ? 'good' : preComputedScore >= 4 ? 'fair' : 'poor';
+          normalized.verdict_category = deriveVerdictCategory(
+            normalized.is_allergy_trigger === true,
+            normalized.is_treat === true,
+            preComputedScore,
+          );
+
+          const bundle = buildVerdictBundle({
+            pet: activePet,
+            scan: {
+              food_name: normalized.food_name,
+              food_type: normalized.food_type ?? null,
+              is_treat: normalized.is_treat === true,
+              is_allergy_trigger: normalized.is_allergy_trigger === true,
+              allergy_warnings: normalized.allergy_warnings ?? [],
+              ingredients_of_concern: normalized.ingredients_of_concern ?? [],
+              key_ingredients: normalized.key_ingredients ?? null,
+              calories_per_serving: normalized.calories_per_serving,
+              recommendation: normalized.recommendation,
+              confidence: normalized.confidence,
+            },
+            macros: {
+              total_kcal: normalized.calories_per_serving,
+              protein_g: normalized.protein_g ?? 0,
+              fat_g: normalized.fat_g ?? 0,
+              carbs_g: normalized.carbs_g ?? 0,
+              fibre_g: 0,
+              kcal_per_100g: normalized.kcal_per_100g_as_fed ?? null,
+              moisture_pct: normalized.moisture_pct ?? null,
+              meal_grams: estimateMealGrams(normalized.protein_pct, normalized.protein_g ?? 0, normalized.calories_per_serving),
+            },
+            foodAnalysis: normalized.food_analysis,
+            healthScore: preComputedScore,
+            healthScoreReasons: (normalized as any)._healthScoreReasons ?? [],
+            caloriesConsumedToday,
+            weightTrendDirection: usePetContextStore.getState().weightTrend?.direction ?? null,
+          });
+
+          const verdictResult = await fetchVerdictWithFallback(bundle);
+          if (verdictResult) {
+            normalized.verdict = verdictResult.verdict;
+            normalized.verdict_category = verdictResult.verdict_category;
           }
-          normalized.verdict_category = preComputedCategory;
-
-          // --- STEP 2: Read weight context from central store ---
-          const petCtxStore = usePetContextStore.getState();
-          const dailyTarget = activePet.target_daily_calories ?? 0;
-          const currentWeightKg = activePet.current_weight_kg ?? 0;
-          const targetWeightKg = activePet.target_weight_kg ?? null;
-          const weightGapKg = targetWeightKg
-            ? Math.abs(currentWeightKg - targetWeightKg)
-            : 0;
-
-          // --- STEP 3: Build complete context payloads ---
-          const petContext = {
-            name: activePet.name,
-            species: activePet.species,
-            age_years: activePet.age_years ?? null,
-            current_weight_kg: currentWeightKg,
-            target_weight_kg: targetWeightKg,
-            activity_level: activePet.activity_level,
-            goal: previewGoal,
-            confirmed_condition_keys: previewConditionKeys,
-            daily_kcal_target: dailyTarget,
-          };
-
-          const scanContext = {
-            food_name: normalized.food_name,
-            food_type: normalized.food_type ?? null,
-            is_treat: normalized.is_treat === true,
-            is_allergy_trigger: normalized.is_allergy_trigger === true,
-            allergy_warnings: normalized.allergy_warnings ?? [],
-            key_ingredients: normalized.key_ingredients ?? null,
-            calories_per_serving: normalized.calories_per_serving,
-          };
-
-          const macrosContext = {
-            total_kcal: normalized.calories_per_serving,
-            protein_g: normalized.protein_g ?? 0,
-            fat_g: normalized.fat_g ?? 0,
-            carbs_g: normalized.carbs_g ?? 0,
-            fibre_g: 0,
-            kcal_per_100g: normalized.kcal_per_100g_as_fed ?? null,
-            moisture_pct: normalized.moisture_pct ?? null,
-            meal_grams: normalized.protein_pct && normalized.protein_pct > 0 && (normalized.protein_g ?? 0) > 0
-              ? Math.round(((normalized.protein_g ?? 0) / normalized.protein_pct) * 100)
-              : Math.max(1, Math.round(normalized.calories_per_serving / 3.5)),
-          };
-
-          // Pre-computed analysis — sent to LLM so it narrates, not judges
-          const analysisContext = {
-            health_score: preComputedScore,
-            health_score_reasons: (normalized as any)._healthScoreReasons ?? [],
-            verdict_category: preComputedCategory,
-            nutrient_statuses: normalized.food_analysis.nutrients.map(n => ({
-              nutrient: n.nutrient,
-              status: n.status,
-            })),
-            active_clinical_adjustments: normalized.food_analysis.active_clinical_adjustments,
-          };
-
-          // Weight & calorie context — holistic view
-          const weightContext = {
-            current_weight_kg: currentWeightKg,
-            target_weight_kg: targetWeightKg,
-            goal: previewGoal,
-            weight_trend_direction: petCtxStore.weightTrend?.direction ?? null,
-            weight_gap_kg: weightGapKg,
-            calories_consumed_today: caloriesConsumedToday,
-            daily_kcal_target: dailyTarget,
-            calories_remaining: dailyTarget - caloriesConsumedToday,
-            cal_percent: dailyTarget > 0 ? Math.round((caloriesConsumedToday / dailyTarget) * 100) : 0,
-            meal_pct_of_daily: dailyTarget > 0 ? Math.round((normalized.calories_per_serving / dailyTarget) * 100) : 0,
-          };
-
-          // --- STEP 4: Call LLM with COMPLETE context ---
-          try {
-            const { data: verdictData, error: verdictErr } = await supabase.functions.invoke('gemini-verdict', {
-              body: {
-                pet: petContext,
-                scan: scanContext,
-                macros: macrosContext,
-                analysis: analysisContext,
-                weight_context: weightContext,
-              },
-            });
-
-            if (verdictData?.success && verdictData.verdict) {
-              normalized.verdict = verdictData.verdict;
-              // Category already set in Step 1 — no post-processing needed
-            } else {
-              throw new Error(verdictErr ?? 'Verdict call returned no content');
-            }
-          } catch {
-            // Network fallback: deterministic generateVerdict (also weight-aware)
-            try {
-              const { verdict: fallbackVerdict, verdict_category: fallbackCategory } = generateVerdict({
-                scanResult: {
-                  food_name: normalized.food_name,
-                  food_type: normalized.food_type ?? null,
-                  is_treat: normalized.is_treat === true,
-                  is_allergy_trigger: normalized.is_allergy_trigger === true,
-                  allergy_warnings: normalized.allergy_warnings ?? [],
-                  ingredients_of_concern: normalized.ingredients_of_concern ?? [],
-                  key_ingredients: normalized.key_ingredients ?? null,
-                  calories_per_serving: normalized.calories_per_serving,
-                  health_score: preComputedScore,
-                  recommendation: normalized.recommendation,
-                  confidence: normalized.confidence,
-                },
-                foodAnalysis: normalized.food_analysis,
-                pet: petContext,
-                weight_context: {
-                  calories_consumed_today: caloriesConsumedToday,
-                  calories_remaining: dailyTarget - caloriesConsumedToday,
-                  cal_percent: dailyTarget > 0 ? Math.round((caloriesConsumedToday / dailyTarget) * 100) : 0,
-                  weight_trend_direction: petCtxStore.weightTrend?.direction ?? null,
-                  weight_gap_kg: weightGapKg,
-                },
-              });
-              normalized.verdict = fallbackVerdict;
-              normalized.verdict_category = fallbackCategory;
-            } catch {
-              // completely silent — verdict remains undefined
-            }
-          }
+          // else: completely silent — verdict remains undefined
         }
 
         setScanResult(normalized);
       } else {
-        Alert.alert('Analysis Failed', data?.error || JSON.stringify(data) || 'Could not analyze image.');
+        presentFailure(fromEdgeBody(data) ?? new Error('scan returned no analysis'), 'food_scan');
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : JSON.stringify(err);
-      Alert.alert('Connection Error', message);
+      presentFailure(toAppError(err, { errorCode: await extractInvokeErrorCode(err) }), 'food_scan');
     } finally {
       setIsAnalyzing(false);
     }
@@ -924,11 +841,30 @@ export default function MealScreen() {
     const sr = overrides?.scanResult ?? scanResult;
     const sc = overrides?.servingCount ?? servingCount;
     if (!sr || !activePet) return;
+    retryRef.current = () => confirmLog(overrides);
 
     // Prevent double-taps during async checks
     setIsPendingConfirm(true);
 
-    const today = new Date().toISOString().split('T')[0];
+    // ── Acute toxin guard. Hard-block before any other check. ──
+    // findToxicIngredients is deterministic and runs against the food name and
+    // ingredient list. A xylitol / chocolate / grape match means the meal must
+    // not be logged regardless of overage / approaching-limit logic.
+    const toxinHits = findToxicIngredients(activePet.species as 'dog' | 'cat', [
+      sr.food_name,
+      ...(sr.key_ingredients ?? []),
+    ]);
+    if (toxinHits.length > 0) {
+      const toxinList = toxinHits.map((h) => `• ${h.toxin}: ${h.reason}`).join('\n');
+      Alert.alert(
+        `Unsafe for ${activePet.name}`,
+        `This food contains ingredients that are toxic to ${activePet.species === 'cat' ? 'cats' : 'dogs'}:\n\n${toxinList}\n\nDo not feed. If ${activePet.name} has already eaten any of this, contact your vet or an animal poison control hotline immediately.`,
+        [{ text: 'OK', onPress: () => setIsPendingConfirm(false) }],
+      );
+      return;
+    }
+
+    const today = getLocalYMD(new Date());
     const targetCal = activePet.target_daily_calories || 0;
 
     // Apply serving multiplier to get the actual calories being logged
@@ -986,6 +922,8 @@ export default function MealScreen() {
     setIsPendingConfirm(true);
 
     try {
+      const shouldTrackFirstFood = await isFirstFoodLogForUser(user?.id);
+
       // When a pantry item is selected, compute macros deterministically from
       // its label data — same math as analyzeWithGemini used for the preview,
       // so food_scans stores values identical to what the user confirmed.
@@ -1036,6 +974,7 @@ export default function MealScreen() {
       const goal = deriveGoal(
         activePet.current_weight_kg ?? 0,
         activePet.target_weight_kg ?? null,
+        activePet.body_condition_score,
       );
       const confirmedConditionKeys = mapMedicalConditionsToAdjustmentKeys(
         activePet.medical_conditions,
@@ -1057,11 +996,14 @@ export default function MealScreen() {
           species: activePet.species,
           weight_kg: activePet.current_weight_kg,
           target_weight_kg: activePet.target_weight_kg ?? null,
-          age_months: activePet.age_years ? Math.round(activePet.age_years * 12) : null,
+          age_months: getAgeMonths(activePet) ?? null,
           activity_level: activePet.activity_level,
           is_neutered: activePet.is_neutered,
           goal,
           confirmed_condition_keys: confirmedConditionKeys,
+          breed: activePet.breed ?? null,
+          age_years: activePet.age_years ?? null,
+          body_condition_score: activePet.body_condition_score ?? null,
         },
         meal_grams: estimatedMealGrams,
       });
@@ -1082,10 +1024,11 @@ export default function MealScreen() {
           moisture_pct: sr.moisture_pct ?? null,
           kcal_per_100g_as_fed: sr.kcal_per_100g_as_fed ?? null,
           confidence: sr.confidence,
+          name_and_ingredients: [sr.food_name, ...(sr.key_ingredients ?? [])],
         },
         pet: {
           species: activePet.species,
-          age_months: activePet.age_years ? Math.round(activePet.age_years * 12) : null,
+          age_months: getAgeMonths(activePet) ?? null,
           daily_kcal_target: activePet.target_daily_calories ?? null,
           allergies: activePet.allergies ?? null,
           medical_conditions: activePet.medical_conditions ?? null,
@@ -1095,43 +1038,29 @@ export default function MealScreen() {
       });
 
       // --- Compute verdict_category BEFORE LLM call ---
-      let storedCategory: 'unsafe' | 'poor' | 'fair' | 'good' | 'excellent' = 'fair';
-      if (sr.is_allergy_trigger) storedCategory = 'unsafe';
-      else if (sr.is_treat) storedCategory = derivedHealthScore >= 8 ? 'excellent' : derivedHealthScore >= 5 ? 'fair' : 'poor';
-      else storedCategory = derivedHealthScore >= 7 ? 'good' : derivedHealthScore >= 4 ? 'fair' : 'poor';
-
-      // Read weight context from central store
-      const execPetCtxStore = usePetContextStore.getState();
-      const execDailyTarget = activePet.target_daily_calories ?? 0;
-      const execCurrentWeight = activePet.current_weight_kg ?? 0;
-      const execTargetWeight = activePet.target_weight_kg ?? null;
-      const execWeightGap = execTargetWeight ? Math.abs(execCurrentWeight - execTargetWeight) : 0;
+      const storedCategory = deriveVerdictCategory(
+        sr.is_allergy_trigger,
+        sr.is_treat === true,
+        derivedHealthScore,
+      );
       const execConsumedToday = existingLog?.calories_consumed ?? 0;
 
-      // Generate plain-English verdict via Gemini (with deterministic fallback).
-      let storedVerdict = null as { verdict: string; verdict_category: string } | null;
-      try {
-        const petCtx = {
-          name: activePet.name,
-          species: activePet.species,
-          age_years: activePet.age_years ?? null,
-          current_weight_kg: execCurrentWeight,
-          target_weight_kg: execTargetWeight,
-          activity_level: activePet.activity_level,
-          goal,
-          confirmed_condition_keys: confirmedConditionKeys,
-          daily_kcal_target: execDailyTarget,
-        };
-        const scanCtx = {
+      // Assemble the shared verdict contexts (lib/verdictPipeline.ts).
+      const verdictBundle = buildVerdictBundle({
+        pet: activePet,
+        scan: {
           food_name: sr.food_name,
           food_type: sr.food_type ?? null,
           is_treat: sr.is_treat === true,
           is_allergy_trigger: sr.is_allergy_trigger,
           allergy_warnings: sr.allergy_warnings ?? [],
+          ingredients_of_concern: sr.ingredients_of_concern ?? [],
           key_ingredients: sr.key_ingredients ?? null,
           calories_per_serving: sr.calories_per_serving,
-        };
-        const macrosCtx = {
+          recommendation: sr.recommendation,
+          confidence: sr.confidence,
+        },
+        macros: {
           total_kcal: totalCalories,
           protein_g: totalProtein,
           fat_g: totalFat,
@@ -1140,89 +1069,20 @@ export default function MealScreen() {
           kcal_per_100g: sr.kcal_per_100g_as_fed ?? null,
           moisture_pct: sr.moisture_pct ?? null,
           meal_grams: estimatedMealGrams,
-        };
+        },
+        foodAnalysis,
+        healthScore: derivedHealthScore,
+        healthScoreReasons: derivedReasons,
+        caloriesConsumedToday: execConsumedToday,
+        weightTrendDirection: usePetContextStore.getState().weightTrend?.direction ?? null,
+      });
 
-        // Pre-computed analysis — LLM narrates, doesn't judge
-        const analysisCtx = {
-          health_score: derivedHealthScore,
-          health_score_reasons: derivedReasons,
-          verdict_category: storedCategory,
-          nutrient_statuses: foodAnalysis.nutrients.map(n => ({
-            nutrient: n.nutrient,
-            status: n.status,
-          })),
-          active_clinical_adjustments: foodAnalysis.active_clinical_adjustments,
-        };
-
-        // Weight & calorie context
-        const weightCtx = {
-          current_weight_kg: execCurrentWeight,
-          target_weight_kg: execTargetWeight,
-          goal,
-          weight_trend_direction: execPetCtxStore.weightTrend?.direction ?? null,
-          weight_gap_kg: execWeightGap,
-          calories_consumed_today: execConsumedToday,
-          daily_kcal_target: execDailyTarget,
-          calories_remaining: execDailyTarget - execConsumedToday,
-          cal_percent: execDailyTarget > 0 ? Math.round((execConsumedToday / execDailyTarget) * 100) : 0,
-          meal_pct_of_daily: execDailyTarget > 0 ? Math.round((totalCalories / execDailyTarget) * 100) : 0,
-        };
-
-        const { data: vData, error: vErr } = await supabase.functions.invoke('gemini-verdict', {
-          body: {
-            pet: petCtx,
-            scan: scanCtx,
-            macros: macrosCtx,
-            analysis: analysisCtx,
-            weight_context: weightCtx,
-          },
-        });
-        if (vData?.success && vData.verdict) {
-          storedVerdict = { verdict: vData.verdict, verdict_category: storedCategory };
-        } else {
-          throw new Error(vErr ?? 'no verdict');
-        }
-      } catch {
-        // Network fallback: deterministic generateVerdict (also weight-aware)
-        try {
-          const fallback = generateVerdict({
-            scanResult: {
-              food_name: sr.food_name,
-              food_type: sr.food_type ?? null,
-              is_treat: sr.is_treat === true,
-              is_allergy_trigger: sr.is_allergy_trigger,
-              allergy_warnings: sr.allergy_warnings ?? [],
-              ingredients_of_concern: sr.ingredients_of_concern ?? [],
-              calories_per_serving: sr.calories_per_serving,
-              health_score: derivedHealthScore,
-              recommendation: sr.recommendation,
-              confidence: sr.confidence,
-            },
-            foodAnalysis,
-            pet: {
-              name: activePet.name,
-              species: activePet.species,
-              goal,
-              activity_level: activePet.activity_level,
-              confirmed_condition_keys: confirmedConditionKeys,
-              age_years: activePet.age_years ?? null,
-              current_weight_kg: activePet.current_weight_kg,
-              target_weight_kg: activePet.target_weight_kg ?? null,
-              daily_kcal_target: activePet.target_daily_calories ?? null,
-            },
-            weight_context: {
-              calories_consumed_today: execConsumedToday,
-              calories_remaining: execDailyTarget - execConsumedToday,
-              cal_percent: execDailyTarget > 0 ? Math.round((execConsumedToday / execDailyTarget) * 100) : 0,
-              weight_trend_direction: execPetCtxStore.weightTrend?.direction ?? null,
-              weight_gap_kg: execWeightGap,
-            },
-          });
-          storedVerdict = { verdict: fallback.verdict, verdict_category: fallback.verdict_category };
-        } catch {
-          // silent — verdict left undefined
-        }
-      }
+      // Store the deterministic verdict NOW — the log must never wait on an
+      // LLM round trip. The Gemini narration is fetched in the background
+      // after the insert and upgrades the stored row when it lands (the same
+      // text the old blocking path would have stored; the failure mode — the
+      // deterministic verdict persists — is the old fallback path).
+      const storedVerdict = deterministicVerdict(verdictBundle);
 
       // Attach verdict to foodAnalysis before storing — preserves the text even
       // if the pet profile changes later (historical scans stay accurate).
@@ -1286,7 +1146,7 @@ export default function MealScreen() {
       }
 
       // 1. Insert into food_scans
-      await supabase.from('food_scans').insert({
+      const { data: insertedScan, error: scanInsertError } = await supabase.from('food_scans').insert({
         pet_id: activePet.id,
         image_url: sImage || '',
         ai_identified_food: sr.food_name,
@@ -1300,32 +1160,74 @@ export default function MealScreen() {
         health_score: derivedHealthScore,
         ingredients: sr.key_ingredients || sr.ingredients || [],
         food_analysis: foodAnalysis,
-      });
+      }).select('id').single();
+      if (scanInsertError) throw scanInsertError;
+
+      // 1a. Background verdict upgrade — fetch the Gemini narration without
+      // holding the log open, then swap it into the stored row. Fire-and-forget:
+      // on any failure the deterministic verdict already stored stands (same
+      // outcome as the old fallback path).
+      const insertedScanId: string | null = insertedScan?.id ?? null;
+      if (insertedScanId) {
+        fetchVerdictLLM(verdictBundle)
+          .then(async (llmVerdict) => {
+            if (!llmVerdict) return;
+            const upgraded = {
+              ...foodAnalysis,
+              verdict: llmVerdict,
+              verdict_category: storedCategory,
+            };
+            await supabase
+              .from('food_scans')
+              .update({ food_analysis: upgraded })
+              .eq('id', insertedScanId);
+          })
+          .catch(() => {});
+      }
 
       // 1b. Bump scan count for the pantry source (explicit pick or silent save).
       if (effectivePantryId) {
         incrementPantryScan(effectivePantryId);
       }
 
-      // 2. Upsert today's daily_log (with treat tracking)
+      // 2. Upsert today's daily_log (with treat tracking) — atomic increment
+      // via the log_intake RPC so two quick logs can't interleave and lose
+      // calories. Falls back to the original read-modify-write when the
+      // function isn't deployed yet.
       const isTreat = sr.is_treat === true;
-      if (existingLog) {
-        const updateData: Record<string, unknown> = {
-          calories_consumed: (existingLog.calories_consumed || 0) + totalCalories,
-          updated_at: new Date().toISOString(),
-        };
-        if (isTreat) {
-          updateData.treats_consumed = (existingLog.treats_consumed || 0) + 1;
+      const { error: intakeErr } = await supabase.rpc('log_intake', {
+        p_pet_id: activePet.id,
+        p_log_date: today,
+        p_kcal_delta: totalCalories,
+        p_treat_delta: isTreat ? 1 : 0,
+        p_water_delta: 0,
+        p_walk_delta: 0,
+      });
+      if (intakeErr) {
+        let fallbackError: unknown = null;
+        if (existingLog) {
+          const updateData: Record<string, unknown> = {
+            calories_consumed: (existingLog.calories_consumed || 0) + totalCalories,
+            updated_at: new Date().toISOString(),
+          };
+          if (isTreat) {
+            updateData.treats_consumed = (existingLog.treats_consumed || 0) + 1;
+          }
+          const { error } = await supabase.from('daily_logs').update(updateData).eq('id', existingLog.id);
+          fallbackError = error;
+        } else {
+          const { error } = await supabase.from('daily_logs').insert({
+            pet_id: activePet.id,
+            log_date: today,
+            calories_consumed: totalCalories,
+            treats_consumed: isTreat ? 1 : 0,
+          });
+          fallbackError = error;
         }
-        await supabase.from('daily_logs').update(updateData).eq('id', existingLog.id);
-      } else {
-        await supabase.from('daily_logs').insert({
-          pet_id: activePet.id,
-          log_date: today,
-          calories_consumed: totalCalories,
-          treats_consumed: isTreat ? 1 : 0,
-        });
+        if (fallbackError) throw fallbackError;
       }
+
+      if (shouldTrackFirstFood) trackFirebaseEvent('first_food_logged');
 
       // Update context store with new calorie total. updateCalories keeps the
       // headline number instant; invalidateContext forces the next Home focus to
@@ -1342,6 +1244,17 @@ export default function MealScreen() {
       // Award coins for food log (before clearing state)
       if (user?.id) {
         awardCoins(user.id, 'food_log');
+      }
+
+      // Auto-complete the matching feeding activity on the day's timeline so
+      // logged meals visibly close their scheduled card. Fire-and-forget;
+      // failures shouldn't disrupt the meal-log flow.
+      if (activePet?.id && !scanResult?.is_treat) {
+        markNearestFeedingActivityComplete({
+          petId: activePet.id,
+          loggedAt: new Date(),
+          slot: currentSlot(),
+        }).catch(() => {});
       }
 
       // Record the serving multiplier against the pantry source for the
@@ -1361,8 +1274,7 @@ export default function MealScreen() {
       setHasLogged(false);
       setIsPendingConfirm(false);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      Alert.alert('Log Error', message);
+      presentFailure(err, 'log');
     } finally {
       setIsLogging(false);
       setIsPendingConfirm(false);
@@ -1403,14 +1315,14 @@ export default function MealScreen() {
     // Adaptive chip set: bowl fractions read better than 0.75/1/1.25 for kibble.
     const portionOptions = bowlMode
       ? [
-          { label: 'Quarter bowl', value: 0.25 },
-          { label: 'Half bowl', value: 0.5 },
+          { label: '¼ bowl', value: 0.25 },
+          { label: '½ bowl', value: 0.5 },
           { label: 'Full bowl', value: 1 },
         ]
       : [
-          { label: 'A little less', value: 0.75 },
+          { label: 'Less', value: 0.75 },
           { label: 'Usual', value: 1 },
-          { label: 'A little more', value: 1.25 },
+          { label: 'More', value: 1.25 },
         ];
 
     return (
@@ -1514,7 +1426,7 @@ export default function MealScreen() {
                       setServingCount(opt.value);
                     }}
                   >
-                    <Text style={[styles.portionChipText, isSelected && styles.portionChipTextSelected]}>
+                    <Text style={[styles.portionChipText, isSelected && styles.portionChipTextSelected]} numberOfLines={1}>
                       {opt.label}
                     </Text>
                   </TouchableOpacity>
@@ -1525,7 +1437,7 @@ export default function MealScreen() {
                 activeOpacity={0.85}
                 onPress={() => setShowCustomPortion((v) => !v)}
               >
-                <Text style={[styles.portionChipText, showCustomPortion && styles.portionChipTextSelected]}>
+                <Text style={[styles.portionChipText, showCustomPortion && styles.portionChipTextSelected]} numberOfLines={1}>
                   Custom
                 </Text>
               </TouchableOpacity>
@@ -1779,13 +1691,20 @@ export default function MealScreen() {
         <View style={styles.statusRow}>
           <View style={styles.statusLeft}>
             <Text style={styles.statusEyebrow}>MEAL</Text>
-            <Text style={styles.statusValue} numberOfLines={1}>
-              {dailyTarget > 0
-                ? overBudget
-                  ? `${Math.abs(remaining)} kcal over today`
-                  : `${remaining} kcal left today`
-                : 'Scan a food label'}
-            </Text>
+            {recalibrating ? (
+              <View style={styles.recalChip}>
+                <BreathingPaw size={14} />
+                <Text style={styles.recalChipText}>Recalibrating target…</Text>
+              </View>
+            ) : (
+              <Text style={styles.statusValue} numberOfLines={1}>
+                {dailyTarget > 0
+                  ? overBudget
+                    ? `${Math.abs(remaining)} kcal over today`
+                    : `${remaining} kcal left today`
+                  : 'Scan a food label'}
+              </Text>
+            )}
           </View>
           <View style={styles.coinChip}>
             <View style={styles.coinDot} />
@@ -1847,6 +1766,8 @@ export default function MealScreen() {
                 eyebrow={prediction.eyebrow}
                 item={hero}
                 bowlSize={activePet?.bowl_size as any}
+                species={(activePet?.species as any) ?? 'dog'}
+                dailyKcalTarget={activePet?.target_daily_calories ?? 0}
                 isBusy={isAnalyzing || isLogging || isPendingConfirm}
                 onLog={(mult) => logHero(hero, mult)}
               />
@@ -1935,16 +1856,20 @@ export default function MealScreen() {
         </View>
       )}
 
-      {/* ─── Analysing overlay — full screen since the scanner hero is gone ─── */}
-      {isAnalyzing && (
-        <View style={styles.analyzingFull} pointerEvents="auto">
-          <View style={styles.analyzingSpinnerRing}>
-            <ActivityIndicator size="large" color={color.yellow} />
-          </View>
-          <Text style={styles.analyzingText}>{loadingMessage}</Text>
-          <Text style={styles.analyzingSub}>Reading the label for {activePet?.name || 'your pet'}</Text>
-        </View>
-      )}
+      {/* Branded failure sheet — every failure path on this screen. */}
+      <PawtchiModal
+        visible={failure != null}
+        onClose={() => setFailure(null)}
+        title={failure?.title ?? ''}
+        message={failure?.message}
+        icon={{ name: 'wb-cloudy', color: color.alertDeep }}
+        actions={(failure?.actions ?? []).map(a => ({
+          label: a.label,
+          onPress: () => handleRecovery(a.action),
+        }))}
+      />
+
+      <PawLoader visible={isAnalyzing} />
       {/* CoinToast appears automatically via useStreakStore when coins are awarded */}
     </View>
   );
@@ -2019,14 +1944,13 @@ function AddNewFoodRow({
       disabled={disabled}
     >
       <View style={styles.addNewIcon}>
-        <MaterialIcons name="add" size={20} color={color.navy} />
+        <MaterialIcons name="add" size={28} color={color.navy} />
       </View>
       <Text style={styles.addNewText}>
         {isEmpty
           ? `Scan ${petName || 'your pet'}'s first food`
           : 'Scan a new food'}
       </Text>
-      <MaterialIcons name="photo-camera" size={18} color={color.slateFaint} />
     </Pressable>
   );
 }
@@ -2059,6 +1983,17 @@ const styles = StyleSheet.create({
   statusValue: {
     fontFamily: font.bold,
     fontSize: 16,
+    color: color.navy,
+    letterSpacing: -0.2,
+  },
+  recalChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  recalChipText: {
+    fontFamily: font.bold,
+    fontSize: 14,
     color: color.navy,
     letterSpacing: -0.2,
   },
@@ -2167,15 +2102,15 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // ─── Add-new-food row (tertiary CTA at the bottom of the list) ───
+  // ─── Add-new-food row (centered vertical CTA) ───
   addNewRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
+    justifyContent: 'center',
+    gap: space.sm,
     marginHorizontal: space.xxl,
     marginTop: space.xl,
     paddingHorizontal: space.md,
-    paddingVertical: 14,
+    paddingVertical: space.xl,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: color.hairline,
@@ -2192,18 +2127,18 @@ const styles = StyleSheet.create({
     backgroundColor: color.surfaceSubtle,
   },
   addNewIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: color.yellow,
     alignItems: 'center',
     justifyContent: 'center',
   },
   addNewText: {
-    flex: 1,
     fontFamily: font.semibold,
     fontSize: 14,
     color: color.ink,
+    textAlign: 'center',
   },
 
   // ─── Centered popup modals (source + portion) ───
@@ -2301,17 +2236,6 @@ const styles = StyleSheet.create({
     gap: space.md,
     paddingHorizontal: space.xxl,
     zIndex: 999,
-  },
-  analyzingSpinnerRing: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: color.navyRaised,
-    borderWidth: 1,
-    borderColor: color.hairlineOnNavy,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: space.sm,
   },
   analyzingText: {
     fontFamily: font.bold,
@@ -2454,24 +2378,28 @@ const styles = StyleSheet.create({
     marginBottom: space.md,
   },
   portionChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: radius.pill,
+    flexGrow: 1,
+    flexBasis: '22%',
+    paddingHorizontal: 6,
+    paddingVertical: 10,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: color.hairline,
     backgroundColor: color.surface,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
   },
   portionChipSelected: {
-    backgroundColor: color.yellowSoft,
-    borderColor: color.yellow,
+    borderColor: color.navy,
+    backgroundColor: color.navy,
   },
   portionChipText: {
     fontFamily: font.semibold,
-    fontSize: 13,
-    color: color.slate,
+    fontSize: 12.5,
+    color: color.ink,
   },
   portionChipTextSelected: {
-    color: color.navy,
+    color: color.cream,
   },
   portionRow: {
     flexDirection: 'row',
@@ -2738,11 +2666,7 @@ const styles = StyleSheet.create({
     paddingBottom: space.lg,
     // Real elevation so the bar lifts off the warm sheet beneath it.
     // Negative y so the shadow falls UP onto the content above.
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 12,
+    ...makeShadow(-6, 14, 0.06),
   },
 });
 

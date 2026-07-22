@@ -1,7 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { usePetContextStore } from '../store/usePetContextStore';
 import { useSubscription } from '../hooks/useSubscription';
@@ -47,98 +46,71 @@ export function NudgeCard({}: NudgeCardProps) {
     const icon = (nudge.actionType && iconMap[nudge.actionType]) ? iconMap[nudge.actionType] : { name: 'info-outline' as const, color: '#F7F602' };
     const route = (nudge.actionType && routeMap[nudge.actionType]) ? routeMap[nudge.actionType] : null;
 
-    const card = (
-      <LinearGradient
-        colors={isAction ? ['#07202A', '#0B2A36'] : ['#0B2A36', '#123544']}
-        style={styles.gradient}
-      >
-        <View style={styles.left}>
-          <View style={styles.iconContainer}>
-            <MaterialIcons name={icon.name} size={28} color={icon.color} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.title, !isAction && { color: '#e2e8f0' }]}>{nudge.title}</Text>
-            {nudge.message && <Text style={styles.sub}>{nudge.message}</Text>}
-          </View>
+    const body = (
+      <>
+        <View style={styles.iconContainer}>
+          <MaterialIcons name={icon.name} size={20} color={icon.color} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.title}>{nudge.title}</Text>
+          {nudge.message && <Text style={styles.sub}>{nudge.message}</Text>}
         </View>
         {isAction && route && (
-          <View style={styles.arrowContainer}>
-            <MaterialIcons name="arrow-forward-ios" size={16} color="#94a3b8" />
-          </View>
+          <MaterialIcons name="chevron-right" size={18} color="#94a3b8" />
         )}
-      </LinearGradient>
+      </>
     );
 
     if (isAction && route) {
       return (
         <TouchableOpacity
-          style={[styles.container, { marginBottom: 20 }]}
+          style={styles.row}
           onPress={() => {
             dismissNudge();
             router.push(route as any);
           }}
-          activeOpacity={0.9}
+          activeOpacity={0.8}
         >
-          {card}
+          {body}
         </TouchableOpacity>
       );
     }
 
-    return <View style={[styles.container, { marginBottom: 20 }]}>{card}</View>;
+    return <View style={styles.row}>{body}</View>;
   }
 
   return null;
 }
 
 const styles = StyleSheet.create({
-  container: {
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 8,
-    overflow: 'hidden',
-  },
-  gradient: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 18,
-    borderRadius: 20,
-  },
-  left: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    flex: 1,
-    paddingRight: 12,
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: '#0B2A36',
   },
   iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(255,252,0,0.1)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   title: {
-    fontFamily: 'Montserrat_800ExtraBold',
+    fontFamily: 'Montserrat_700Bold',
     fontSize: 15,
     color: '#F7F602',
-    marginBottom: 3,
-    lineHeight: 20,
+    letterSpacing: -0.2,
   },
   sub: {
     fontFamily: 'Montserrat_500Medium',
     fontSize: 12,
     color: '#94a3b8',
-    lineHeight: 17,
-  },
-  arrowContainer: {
-    width: 32,
-    height: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
+    marginTop: 2,
+    lineHeight: 16,
   },
 });

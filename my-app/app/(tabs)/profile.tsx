@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { withTimeout } from '../../lib/withTimeout';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, Linking } from 'react-native';
+import { PawLoader } from '../../components/loader/PawLoader';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -9,6 +11,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 
 import { color, font, radius, shadow, space, motion } from '../../constants/design';
 import { supabase } from '../../lib/supabase';
+import { resolvePetImage } from '../../lib/petFallbackImage';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { BOWL_SIZES } from '../../constants/brandData';
@@ -20,10 +23,34 @@ import { useWalkthrough } from '../../providers/WalkthroughContext';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
 import { computeCompleteness } from '../../lib/profileCompleteness';
+import { useOwnerPrefsStore } from '../../store/useOwnerPrefsStore';
+import { RoutineSheet } from '../../components/RoutineSheet';
+import type { OwnerPrefsRow } from '../../lib/routineDefaults';
+import { prepareImageForUpload } from '../../lib/imagePrep';
+import { PawtchiModal } from '../../components/PawtchiModal';
+import {
+  appError, errorCopy, extractInvokeErrorCode, fromEdgeBody, isAppError, reportError, toAppError,
+  type ErrorContext, type ErrorCopy,
+} from '../../lib/appError';
+import { useFocusEffect } from '@react-navigation/native';
+import { WalksignCrest } from '../../components/walksign/WalksignCrest';
+import {
+  WALKSIGN_COPY,
+  buildStatusLine,
+} from '../../lib/walksign/copy';
+import type { WalksignId } from '../../lib/walksign/types';
+import { maybeEvaluateWalksign } from '../../lib/walksign/walksignSync';
+import { track } from '../../lib/analytics';
 
 // Profile — the pet's identity card. A navy hero carries who they are; the
 // light sections below are quiet, single-recipe rows. One yellow per surface:
 // the "complete profile" action in the hero.
+
+// Strip ':SS' tail from 'HH:MM:SS' for display.
+function stripSeconds(t: string | null | undefined): string {
+  if (!t) return '--:--';
+  return t.length >= 5 ? t.slice(0, 5) : t;
+}
 
 // Friendly body-shape label from the 1–9 BCS scale.
 function bcsLabel(score?: number | null): string {
@@ -53,12 +80,54 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
 
   const { user, isSigningOut, signOut } = useAuth();
-  const { activePet, clearPet, foodPantry, addPantryItem, fetchPantry, togglePantryFavorite, setPantryExpiry } = useActivePetStore();
-  const { clearStreak } = useStreakStore();
-  const { clearContext } = usePetContextStore();
+  // Fine-grained selectors — re-render only on the fields this screen reads,
+  // not on any unrelated store mutation. Actions are stable references.
+  const activePet = useActivePetStore(s => s.activePet);
+  const clearPet = useActivePetStore(s => s.clearPet);
+  const foodPantry = useActivePetStore(s => s.foodPantry);
+  const addPantryItem = useActivePetStore(s => s.addPantryItem);
+  const fetchPantry = useActivePetStore(s => s.fetchPantry);
+  const togglePantryFavorite = useActivePetStore(s => s.togglePantryFavorite);
+  const setPantryExpiry = useActivePetStore(s => s.setPantryExpiry);
+  const clearStreak = useStreakStore(s => s.clearStreak);
+  const clearContext = usePetContextStore(s => s.clearContext);
   const { status: subStatus, daysLeft: subDaysLeft, isPro, hasFullAccess } = useSubscription();
   // Subscribers manage their plan in the store; everyone else sees the purchase paywall.
   const openBilling = () => (isPro ? openManageSubscription() : router.push('/paywall' as any));
+
+  // Routine sheet — re-opened with current prefs for inline editing.
+  const ownerPrefs = useOwnerPrefsStore(s => s.prefs);
+  const fetchPrefs = useOwnerPrefsStore(s => s.fetchPrefs);
+  const upsertPrefs = useOwnerPrefsStore(s => s.upsertPrefs);
+  const [routineSheetOpen, setRoutineSheetOpen] = useState(false);
+
+  // Branded failure sheet — all failure paths on this screen land here via
+  // errorCopy(). OS alerts remain only for confirmations and success notes.
+  const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  const presentFailure = (err: unknown, context: ErrorContext) => {
+    const appErr = isAppError(err) ? err : toAppError(err);
+    reportError(appErr, context);
+    setFailure(errorCopy(appErr, { context, petName: activePet?.name }));
+  };
+  const [routineSubmitting, setRoutineSubmitting] = useState(false);
+  useEffect(() => { if (user?.id) fetchPrefs(user.id); }, [user?.id, fetchPrefs]);
+  const handleRoutineSubmit = async (row: OwnerPrefsRow) => {
+    if (!user?.id) return;
+    setRoutineSubmitting(true);
+    const ok = await upsertPrefs(user.id, row);
+    setRoutineSubmitting(false);
+    setRoutineSheetOpen(false);
+    if (!ok) {
+      setFailure({
+        title: 'The routine didn’t save',
+        message: 'Nothing was lost — try saving again in a moment.',
+        actions: [{ label: 'OK', action: 'dismiss' }],
+      });
+    }
+  };
+  const routineSubtitle = ownerPrefs
+    ? `Wake ${stripSeconds(ownerPrefs.wake_time)} · Sleep ${stripSeconds(ownerPrefs.bedtime)}`
+    : 'Not set';
   const { replayWalkthrough } = useWalkthrough();
   const { focus } = useLocalSearchParams<{ focus?: string }>();
 
@@ -185,14 +254,12 @@ export default function ProfileScreen() {
 
   const handleScanFoodLabel = async (useCamera: boolean) => {
     if (!checkAccess()) return;
-    setIsScanningLabel(true);
     try {
       let result;
       if (useCamera) {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
         if (!permission.granted) {
-          Alert.alert('Permission Required', 'Camera access is needed to scan food labels.');
-          setIsScanningLabel(false);
+          presentFailure(appError('permission', 'camera permission denied (pantry scan)'), 'food_scan');
           return;
         }
         result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7, allowsEditing: true });
@@ -201,28 +268,42 @@ export default function ProfileScreen() {
       }
 
       if (result.canceled || !result.assets[0]) {
-        setIsScanningLabel(false);
         return;
       }
 
-      const asset = result.assets[0];
-      const { data, error } = await supabase.functions.invoke('gemini-proxy', {
-        body: {
-          imageBase64: asset.base64!,
-          mimeType: asset.mimeType || 'image/jpeg',
-          petProfile: { ...activePet, food_pantry: foodPantry },
-        },
-      });
+      setIsScanningLabel(true);
+      // Downscale before the network round trip; falls back to the picker's
+      // original base64 when the manipulator can't process the image.
+      const asset = await prepareImageForUpload(result.assets[0]);
+      const { data, error } = await withTimeout(
+        supabase.functions.invoke('gemini-proxy', {
+          body: {
+            imageBase64: asset.base64!,
+            mimeType: asset.mimeType,
+            petProfile: { ...activePet, food_pantry: foodPantry },
+          },
+        }),
+        45_000,
+        'gemini-proxy',
+      );
 
       if (error || !data?.success || !data.analysis) {
-        Alert.alert('Scan Failed', data?.error || 'Could not analyze the food label.');
+        presentFailure(
+          fromEdgeBody(data)
+            ?? toAppError(error ?? new Error('scan returned no analysis'), { errorCode: await extractInvokeErrorCode(error) }),
+          'food_scan',
+        );
         setIsScanningLabel(false);
         return;
       }
 
       const a = data.analysis;
       if (!a.brand && !a.product_name && !a.food_name) {
-        Alert.alert('No Label Found', 'Could not identify a food product. Try scanning the label on the packaging.');
+        setFailure({
+          title: 'No label found',
+          message: 'Couldn’t identify a food product. Try scanning the label on the packaging.',
+          actions: [{ label: 'OK', action: 'dismiss' }],
+        });
         setIsScanningLabel(false);
         return;
       }
@@ -261,8 +342,7 @@ export default function ProfileScreen() {
         Alert.alert('Added to Pantry', `${a.brand || a.food_name} has been saved.`);
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      Alert.alert('Error', message);
+      presentFailure(err, 'food_scan');
     } finally {
       setIsScanningLabel(false);
     }
@@ -311,8 +391,8 @@ export default function ProfileScreen() {
               const { error } = await supabase.functions.invoke('delete-account', {});
               if (error) throw error;
               await signOut();
-            } catch (e: any) {
-              Alert.alert('Error', e.message || 'Account deletion failed. Please try again.');
+            } catch (e: unknown) {
+              presentFailure(e, 'account');
             }
           },
         },
@@ -374,7 +454,10 @@ export default function ProfileScreen() {
       quality: 0.8,
     });
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      setEditImageUri(result.assets[0].uri);
+      // Downscale now so the storage upload later ships ~100 KB, not a full
+      // camera-roll frame. Falls back to the original uri on failure.
+      const prepared = await prepareImageForUpload(result.assets[0]);
+      setEditImageUri(prepared.uri);
     }
   };
 
@@ -414,7 +497,7 @@ export default function ProfileScreen() {
     setIsUpdatingProfile(false);
 
     if (error) {
-      Alert.alert('Error', error.message);
+      presentFailure(error, 'account');
     } else {
       setEditModalVisible(false);
       useActivePetStore.getState().fetchPet(user.id, { silent: true });
@@ -455,7 +538,7 @@ export default function ProfileScreen() {
     setIsUpdatingProfile(false);
 
     if (error) {
-      Alert.alert('Error', error.message);
+      presentFailure(error, 'account');
       useActivePetStore.getState().fetchPet(user.id, { silent: true }); // rollback
     } else {
       setInlineEditVisible(false);
@@ -639,6 +722,23 @@ export default function ProfileScreen() {
   }, [focus, activePet?.id]);
 
   const petName = activePet?.name || 'My Pet';
+
+  // ── Walksign identity (dogs only) ──
+  const walksignId: WalksignId | null =
+    activePet?.species === 'dog' && activePet?.walksign
+      ? (activePet.walksign as WalksignId)
+      : null;
+  const [walksignModalOpen, setWalksignModalOpen] = useState(false);
+  // Re-run the sticky state machine on focus — staleness-guarded inside, so
+  // this is a cheap no-op most visits but catches life transitions (a dog
+  // ages into seniority with no walk to trigger the evaluation).
+  useFocusEffect(
+    React.useCallback(() => {
+      if (activePet?.id && activePet.species === 'dog') {
+        maybeEvaluateWalksign(activePet.id).catch(() => {});
+      }
+    }, [activePet?.id, activePet?.species]),
+  );
   const breedLine = [
     activePet?.breed || (activePet?.species ? activePet.species : null),
     activePet?.age_years ? `${activePet.age_years} years` : null,
@@ -679,7 +779,7 @@ export default function ProfileScreen() {
         <Text style={[styles.rowLabel, danger && { color: color.error }]}>{label}</Text>
         {!!sub && <Text style={styles.rowSub} numberOfLines={2}>{sub}</Text>}
       </View>
-      {loading && <ActivityIndicator size="small" color={danger ? color.error : color.navy} />}
+      <PawLoader visible={loading} message={`Updating ${label.toLowerCase()}…`} />
       {!loading && trailing === 'chevron' && <MaterialIcons name="chevron-right" size={20} color={color.slateFaint} />}
       {!loading && trailing === 'edit' && <MaterialIcons name="edit" size={17} color={color.slateFaint} />}
     </TouchableOpacity>
@@ -704,7 +804,7 @@ export default function ProfileScreen() {
           <View style={styles.heroIdentity}>
             <TouchableOpacity onPress={openEditModal} activeOpacity={0.9} style={styles.heroAvatarWrap}>
               <Image
-                source={{ uri: activePet?.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000&auto=format&fit=crop' }}
+                source={{ uri: resolvePetImage(activePet?.image_url, activePet?.species, 1000) }}
                 style={styles.heroAvatar}
                 contentFit="cover"
                 cachePolicy="memory-disk"
@@ -720,6 +820,24 @@ export default function ProfileScreen() {
               )}
             </View>
           </View>
+
+          {/* ─── Walksign — the identity Pawtchi discovered ─── */}
+          {walksignId && (
+            <TouchableOpacity
+              style={styles.walksignRow}
+              activeOpacity={0.85}
+              onPress={() => setWalksignModalOpen(true)}
+            >
+              <WalksignCrest sign={walksignId} size={40} color={color.cream} />
+              <View style={styles.walksignTextBlock}>
+                <Text style={styles.walksignName}>{WALKSIGN_COPY[walksignId].displayName}</Text>
+                <Text style={styles.walksignStatus}>
+                  {buildStatusLine(activePet?.walksign_status === 'confirmed' ? 'confirmed' : 'provisional', null)}
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={color.creamFaint} />
+            </TouchableOpacity>
+          )}
 
           {/* The one yellow action on this surface */}
           {!completeness.isAccurateEnough ? (
@@ -882,6 +1000,7 @@ export default function ProfileScreen() {
               iconName="add-a-photo"
               onPress={promptAddFood}
               loading={isScanningLabel}
+              loadingMessage="Scanning food label…"
             />
           </View>
         </View>
@@ -951,6 +1070,13 @@ export default function ProfileScreen() {
           />
           <Row icon="person-outline" label="Owner profile" onPress={() => router.push('/owner' as any)} />
           <Row
+            icon="schedule"
+            label="Routine"
+            sub={routineSubtitle}
+            trailing="edit"
+            onPress={() => setRoutineSheetOpen(true)}
+          />
+          <Row
             icon="credit-card"
             label={isPro ? 'Manage subscription' : 'Billing & subscription'}
             sub={subStatus === 'active' ? 'Pawtchi Plus — active' : subStatus === 'trial' ? `Trial — ${subDaysLeft} days left` : 'Upgrade to Pawtchi Plus'}
@@ -981,6 +1107,51 @@ export default function ProfileScreen() {
           />
         </View>
       </ScrollView>
+
+      {/* Walksign detail — the full manifesto */}
+      {walksignId && (
+        <PawtchiModal
+          visible={walksignModalOpen}
+          onClose={() => setWalksignModalOpen(false)}
+          title={WALKSIGN_COPY[walksignId].displayName}
+          actions={[
+            { label: 'Close', onPress: () => setWalksignModalOpen(false) },
+          ]}
+        >
+          <View style={styles.walksignModalBody}>
+            <WalksignCrest sign={walksignId} size={88} color={color.ink} />
+            <Text style={styles.walksignModalTagline}>{WALKSIGN_COPY[walksignId].tagline}</Text>
+            <Text style={styles.walksignModalManifesto}>{WALKSIGN_COPY[walksignId].manifesto}</Text>
+            <Text style={styles.walksignModalCaption}>A Pawtchi Walksign</Text>
+          </View>
+        </PawtchiModal>
+      )}
+
+      <RoutineSheet
+        visible={routineSheetOpen}
+        onClose={() => setRoutineSheetOpen(false)}
+        petName={activePet?.name?.trim() || 'your pet'}
+        species={activePet?.species === 'cat' ? 'cat' : 'dog'}
+        existingPrefs={ownerPrefs}
+        primaryLabel="Save changes"
+        onSubmit={handleRoutineSubmit}
+        isSubmitting={routineSubmitting}
+      />
+
+      {/* Branded failure sheet — every failure path on this screen. */}
+      <PawtchiModal
+        visible={failure != null}
+        onClose={() => setFailure(null)}
+        title={failure?.title ?? ''}
+        message={failure?.message}
+        icon={{ name: 'wb-cloudy', color: color.alertDeep }}
+        actions={(failure?.actions ?? []).some((a) => a.action === 'open_settings')
+          ? [
+              { label: 'Open Settings', onPress: () => { setFailure(null); Linking.openSettings().catch(() => {}); } },
+              { label: 'Not now', onPress: () => setFailure(null), variant: 'ghost' },
+            ]
+          : [{ label: 'OK', onPress: () => setFailure(null) }]}
+      />
 
       {/* Edit Profile Modal */}
       <Modal visible={editModalVisible} animationType="slide" transparent={true}>
@@ -1415,6 +1586,60 @@ const styles = StyleSheet.create({
     color: color.creamDim,
     marginTop: 4,
     textTransform: 'capitalize',
+  },
+
+  // Walksign identity row (navy hero) + detail modal
+  walksignRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+    borderRadius: radius.lg,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+    marginTop: space.lg,
+  },
+  walksignTextBlock: { flex: 1 },
+  walksignName: {
+    fontFamily: font.display,
+    fontSize: 18,
+    letterSpacing: 0.5,
+    color: color.cream,
+  },
+  walksignStatus: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    color: color.creamFaint,
+    marginTop: 2,
+  },
+  walksignModalBody: {
+    alignItems: 'center',
+    gap: space.sm,
+    marginBottom: space.lg,
+  },
+  walksignModalTagline: {
+    fontFamily: font.semibold,
+    fontSize: 13.5,
+    color: color.slate,
+    textAlign: 'center',
+    marginTop: space.sm,
+  },
+  walksignModalManifesto: {
+    fontFamily: font.regular,
+    fontSize: 13.5,
+    lineHeight: 20,
+    color: color.slateMuted,
+    textAlign: 'center',
+  },
+  walksignModalCaption: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 2,
+    color: color.slateFaint,
+    textTransform: 'uppercase',
+    marginTop: space.sm,
   },
 
   // Completion — the surface's one yellow action

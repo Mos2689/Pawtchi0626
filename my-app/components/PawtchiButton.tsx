@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle, View } from 'react-native';
+import { Text, StyleSheet, ViewStyle, TextStyle, View, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { color, font, radius } from '../constants/design';
 import { AnimatedPressable } from './AnimatedPressable';
@@ -14,6 +14,7 @@ interface PawtchiButtonProps {
   size?: ButtonSize;
   disabled?: boolean;
   loading?: boolean;
+  loadingMessage?: string | string[];
   style?: ViewStyle | ViewStyle[];
   textStyle?: TextStyle | TextStyle[];
   iconName?: keyof typeof MaterialIcons.glyphMap;
@@ -28,6 +29,7 @@ export const PawtchiButton: React.FC<PawtchiButtonProps> = ({
   size = 'large',
   disabled = false,
   loading = false,
+  loadingMessage,
   style,
   textStyle,
   iconName,

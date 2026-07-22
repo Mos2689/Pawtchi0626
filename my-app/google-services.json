@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "711347088929",
+    "project_id": "pawtchiau",
+    "storage_bucket": "pawtchiau.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:711347088929:android:9568a11572cc919308bd60",
+        "android_client_info": {
+          "package_name": "com.pawtchi.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC3etSmzDOsgU5E1TYUeaTuN7sQaC1zLOk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -43,7 +43,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.xl,
     paddingVertical: 14,
     paddingHorizontal: 16,
-    marginBottom: 24,
     ...shadow.raised,
   },
   chip: {

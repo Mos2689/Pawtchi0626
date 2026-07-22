@@ -10,7 +10,7 @@ import { color, font, radius, space } from '../constants/design';
 // beats urgent, never an exclamation). Yellow marks the one action.
 export function TrialBanner() {
     const { status, daysLeft } = useSubscription();
-    const { activePet } = useActivePetStore();
+    const activePet = useActivePetStore(s => s.activePet);
     const router = useRouter();
 
     // Only show when trial is active and ≤ 5 days left

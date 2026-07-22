@@ -2,10 +2,11 @@ import React, { useEffect } from 'react';
 import { Text, View, StyleSheet, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useIsFocused } from '@react-navigation/native';
 import Animated, {
-  useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing,
+  useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, cancelAnimation,
 } from 'react-native-reanimated';
-import { color, font, radius, shadow, space } from '../constants/design';
+import { color, font, radius, shadow } from '../constants/design';
 import { PulseMark } from './PulseMark';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -30,14 +31,23 @@ export function SecondOpinionCard({ remaining, resetsAt, onPress }: SecondOpinio
   const breathe = useSharedValue(1);
   const press = useSharedValue(1);
   const resting = remaining === 0;
+  const isFocused = useIsFocused();
 
+  // The breathe loop is infinite — run it only while this screen is focused so
+  // it doesn't burn UI-thread frames from behind another tab. Same curve and
+  // timing as before when visible.
   useEffect(() => {
+    if (!isFocused) return;
     breathe.value = withRepeat(
       withTiming(1.04, { duration: 3200, easing: Easing.inOut(Easing.ease) }),
       -1,
       true,
     );
-  }, []);
+    return () => {
+      cancelAnimation(breathe);
+      breathe.value = 1;
+    };
+  }, [isFocused, breathe]);
 
   const cardStyle = useAnimatedStyle(() => ({ transform: [{ scale: press.value }] }));
   const markStyle = useAnimatedStyle(() => ({ transform: [{ scale: breathe.value }] }));
@@ -63,18 +73,15 @@ export function SecondOpinionCard({ remaining, resetsAt, onPress }: SecondOpinio
       }}
     >
       <Animated.View style={[styles.chip, markStyle, resting && styles.chipResting]}>
-        <PulseMark size={26} ringColor={color.yellow} strokeColor={color.yellow} animated resting={resting} />
+        <PulseMark size={22} ringColor={color.yellow} strokeColor={color.yellow} animated resting={resting} />
       </Animated.View>
 
       <View style={styles.copy}>
-        <Text style={styles.eyebrow}>EXPERT GUIDANCE</Text>
         <Text style={styles.title}>Second opinion</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
+        <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
       </View>
-
-      <View style={styles.go}>
-        <MaterialIcons name="arrow-forward" size={16} color={color.navy} />
-      </View>
+      
+      <MaterialIcons name="chevron-right" size={20} color={color.ink} style={{ opacity: 0.6 }} />
     </AnimatedPressable>
   );
 }
@@ -83,20 +90,19 @@ const styles = StyleSheet.create({
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.lg,
-    backgroundColor: color.surface,
-    borderRadius: radius.xl,
+    gap: 12,
+    height: 56,
+    backgroundColor: color.yellow,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: color.hairline,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    marginBottom: 24,
+    borderColor: color.yellow,
+    paddingHorizontal: 12,
     ...shadow.card,
   },
   chip: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     backgroundColor: color.navy,
     alignItems: 'center',
     justifyContent: 'center',
@@ -105,33 +111,17 @@ const styles = StyleSheet.create({
   },
   chipResting: { opacity: 0.6 },
   copy: { flex: 1, minWidth: 0 },
-  eyebrow: {
-    fontFamily: font.semibold,
-    fontSize: 9.5,
-    letterSpacing: 1.6,
-    color: color.slateFaint,
-    marginBottom: 3,
-  },
   title: {
     fontFamily: font.bold,
-    fontSize: 16,
+    fontSize: 15,
     color: color.ink,
     letterSpacing: -0.3,
   },
   subtitle: {
     fontFamily: font.medium,
-    fontSize: 12,
-    color: color.slateMuted,
-    marginTop: 2,
-  },
-  go: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: color.surfaceSubtle,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    alignItems: 'center',
-    justifyContent: 'center',
+    fontSize: 11,
+    color: color.ink,
+    opacity: 0.7,
+    marginTop: 1,
   },
 });

@@ -1,13 +1,15 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Text, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Text } from 'react-native';
 import { Image } from 'expo-image';
 import { Typography } from '../../components/Typography';
 import { Header } from '../../components/Header';
+import { PawLoader } from '../../components/loader/PawLoader';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useStreakStore } from '../../store/useStreakStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useAuth } from '../../providers/AuthProvider';
+import { makeShadow } from '../../constants/design';
 import * as Haptics from 'expo-haptics';
 import Animated, { 
   useSharedValue, 
@@ -258,8 +260,13 @@ const RewardCard = ({
 // ------------------------------------------------------------------
 export default function ShopScreen() {
   const { user } = useAuth();
-  const { pawCoins, deductCoins } = useStreakStore();
-  const { activePet, unlockItem, toggleEquipItem, isTailoring } = useActivePetStore();
+  // Fine-grained selectors — re-render only on the fields this screen reads.
+  const pawCoins = useStreakStore(s => s.pawCoins);
+  const deductCoins = useStreakStore(s => s.deductCoins);
+  const activePet = useActivePetStore(s => s.activePet);
+  const unlockItem = useActivePetStore(s => s.unlockItem);
+  const toggleEquipItem = useActivePetStore(s => s.toggleEquipItem);
+  const isTailoring = useActivePetStore(s => s.isTailoring);
 
   const handlePurchase = async (itemId: string, cost: number) => {
     if (!user || !activePet) return;
@@ -309,12 +316,7 @@ export default function ShopScreen() {
                 cachePolicy="memory-disk"
                 transition={200}
               />
-              {isTailoring && (
-                <View style={[StyleSheet.absoluteFill, styles.tailoringOverlay]}>
-                  <ActivityIndicator size="large" color="#F7F602" />
-                  <Typography variant="label" weight="bold" style={{ marginTop: 8, color: '#F7F602' }}>Tailoring...</Typography>
-                </View>
-              )}
+              <PawLoader visible={isTailoring} message="Tailoring avatar…" />
             </View>
             <View style={styles.fittingRoomBadge}>
               <MaterialIcons name="auto-fix-high" size={16} color="#000" />
@@ -402,11 +404,7 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
     overflow: 'hidden',
     backgroundColor: '#F8F9FA',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 20,
-    elevation: 10,
+    ...makeShadow(10, 20, 0.1, '#000'),
   },
   fittingRoomImage: {
     width: '100%',
@@ -428,11 +426,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 2,
     borderColor: '#1A1A1A',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 5,
+    ...makeShadow(4, 5, 0.2, '#000'),
   },
 
   // Hero Nudge
@@ -444,11 +438,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
     marginBottom: 24,
-    shadowColor: '#F7F602',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 4,
+    ...makeShadow(8, 16, 0.2, '#F7F602'),
   },
   heroContent: {
     zIndex: 10,
@@ -534,11 +524,7 @@ const styles = StyleSheet.create({
   cardBase: {
     backgroundColor: '#ffffff',
     borderRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 16,
-    elevation: 2,
+    ...makeShadow(4, 16, 0.04, '#000'),
     overflow: 'hidden',
   },
   

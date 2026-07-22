@@ -4,6 +4,7 @@ import { getCorsHeaders } from "../_shared/cors.ts";
 import { verifyAuth } from "../_shared/auth.ts";
 import { checkRateLimit, RATE_LIMITS } from "../_shared/rateLimit.ts";
 import { safeParseBody } from "../_shared/validate.ts";
+import { errorResponse, logInternal } from "../_shared/errors.ts";
 import React from "npm:react@18.2.0";
 import { render } from "npm:@react-email/render@0.0.10";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -14,7 +15,7 @@ import { WeeklySummaryEmail } from "../_shared/emails/WeeklySummaryEmail.tsx";
 
 const resend = new Resend(Deno.env.get("RESEND_API_KEY"));
 
-serve(async (req) => {
+serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   // Handle CORS preflight requests
@@ -34,19 +35,15 @@ serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ error: parsed.error }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      logInternal('send-email', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const { to, subject, template, templateData, html, text } = parsed.data as Record<string, any>;
 
     if (!to || (!template && !html)) {
-      return new Response(
-        JSON.stringify({ error: "Missing required fields. Provide 'to' and either a 'template' or raw 'html'." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      logInternal('send-email', "missing 'to' or template/html");
+      return errorResponse('invalid_input', corsHeaders);
     }
 
     // ── Security: Validate recipient ──
@@ -59,10 +56,8 @@ serve(async (req) => {
       const userEmail = userData?.user?.email;
 
       if (userEmail && to.toLowerCase() !== userEmail.toLowerCase()) {
-        return new Response(
-          JSON.stringify({ error: "You can only send emails to your own registered email address." }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        logInternal('send-email', 'recipient does not match authenticated user');
+        return errorResponse('forbidden', corsHeaders);
       }
     }
 
@@ -90,11 +85,8 @@ serve(async (req) => {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (error: any) {
-    console.error("Resend error:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  } catch (error: unknown) {
+    logInternal('send-email', error, 'unhandled');
+    return errorResponse('server_error', corsHeaders);
   }
 });

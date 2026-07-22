@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { errorResponse } from './errors.ts'
 
 /**
  * Verify the caller's JWT from the Authorization header.
@@ -15,12 +16,7 @@ export async function verifyAuth(req: Request, corsHeaders: Record<string, strin
 > {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) {
-    return {
-      error: new Response(
-        JSON.stringify({ success: false, error: 'Missing Authorization header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      ),
-    };
+    return { error: errorResponse('auth_required', corsHeaders) };
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -28,12 +24,7 @@ export async function verifyAuth(req: Request, corsHeaders: Record<string, strin
 
   if (!supabaseUrl || !supabaseAnonKey) {
     console.error('[auth] SUPABASE_URL or SUPABASE_ANON_KEY not configured');
-    return {
-      error: new Response(
-        JSON.stringify({ success: false, error: 'Server misconfiguration' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      ),
-    };
+    return { error: errorResponse('server_error', corsHeaders) };
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -44,12 +35,7 @@ export async function verifyAuth(req: Request, corsHeaders: Record<string, strin
   const { data: { user }, error } = await supabase.auth.getUser();
 
   if (error || !user) {
-    return {
-      error: new Response(
-        JSON.stringify({ success: false, error: 'Invalid or expired token' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      ),
-    };
+    return { error: errorResponse('auth_required', corsHeaders) };
   }
 
   return { userId: user.id };

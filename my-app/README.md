@@ -42,6 +42,24 @@ To learn more about developing your project with Expo, look at the following res
 - [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
 - [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
 
+## Release feature flags
+
+Release-level features are configured in `constants/featureFlags.json`.
+`walkTracking` is the only switch for the tracked Walk experience: runtime
+entry points and startup jobs read it through `constants/features.ts`, while
+`app.config.ts` derives the matching iOS/Android permissions and Expo plugin
+settings from the same value.
+
+After changing a native feature flag, regenerate a local native project with:
+
+```bash
+npx expo prebuild --clean
+```
+
+EAS builds evaluate `app.config.ts` automatically. Disabling Walk also blocks
+new tracking, hides its UI and data reads, and clears a stale active session
+left by an older enabled build.
+
 ## Join the community
 
 Join our community of developers creating universal apps.

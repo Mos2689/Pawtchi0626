@@ -3,30 +3,42 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput } from 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Colors } from '../../constants/Theme';
 import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { usePetStore } from '../../store/usePetStore';
 import { getBreedDefaults } from '../../lib/breedData';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
 import { OnboardingHeader } from '../../components/OnboardingHeader';
-import { motion } from '../../constants/design';
+import { color, font, radius, space, motion } from '../../constants/design';
 import {
   stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
+import { track } from '../../lib/analytics';
 
 const COMMON_ALLERGENS = [
   'Chicken', 'Beef', 'Grain/Wheat', 'Dairy', 'Egg',
   'Soy', 'Fish', 'Lamb', 'Corn', 'Pork',
 ];
 
+// "chicken" / "chicken and beef" / "chicken, beef and 2 more"
+function formatAllergenList(items: string[]): string {
+  const lower = items.map((a) => a.toLowerCase());
+  if (lower.length === 1) return lower[0];
+  if (lower.length === 2) return `${lower[0]} and ${lower[1]}`;
+  return `${lower[0]}, ${lower[1]} and ${lower.length - 2} more`;
+}
+
+// Step 5 of 6 — food sensitivities. The data feeds the label scanner, and the
+// shield preview below the chips makes that payoff visible the moment the
+// first allergen is picked.
 export default function AllergiesScreen() {
   const router = useRouter();
-  const theme = Colors.light;
   const insets = useSafeAreaInsets();
   useOnboardingStepTracking('allergies');
 
   const { species, breed, name, allergies, setAllergies } = usePetStore();
+  const petName = name.trim() || 'your pet';
 
   const breedDefaults = getBreedDefaults(species, breed);
   const breedAllergens = breedDefaults?.commonAllergens ?? [];
@@ -45,8 +57,10 @@ export default function AllergiesScreen() {
       const next = new Set(prev);
       if (next.has(allergen)) {
         next.delete(allergen);
+        track('onboarding_option_selected', { step: 'allergies', option: 'allergen', action: 'remove', value: allergen });
       } else {
         next.add(allergen);
+        track('onboarding_option_selected', { step: 'allergies', option: 'allergen', action: 'add', value: allergen });
       }
       if (next.size > 0) setNoneSelected(false);
       if (next.size === 0) setNoneSelected(true);
@@ -58,6 +72,7 @@ export default function AllergiesScreen() {
     setNoneSelected(true);
     setSelected(new Set());
     setCustomAllergens([]);
+    track('onboarding_option_selected', { step: 'allergies', option: 'none' });
   };
 
   const addCustomAllergen = () => {
@@ -71,6 +86,7 @@ export default function AllergiesScreen() {
       });
       setNoneSelected(false);
       setCustomInput('');
+      track('onboarding_option_selected', { step: 'allergies', option: 'custom_allergen', action: 'add', value: trimmed });
     }
   };
 
@@ -78,41 +94,38 @@ export default function AllergiesScreen() {
     const allAllergens = Array.from(selected);
     setAllergies(allAllergens);
     trackStepCompleted('allergies', { count: allAllergens.length, none: noneSelected });
-    router.push('/onboarding/goal');
+    router.push('/onboarding/body-check');
   };
 
   const handleSkip = () => {
     setAllergies([]);
     trackFieldSkipped('allergies', 'allergens');
     trackStepCompleted('allergies', { count: 0, none: true, skipped: true });
-    router.push('/onboarding/goal');
+    router.push('/onboarding/body-check');
   };
 
   const isChipSelected = (allergen: string) => selected.has(allergen);
   const isBreedSuggested = (allergen: string) => breedAllergens.includes(allergen);
+  const selectedList = Array.from(selected);
 
   return (
-    <View style={[styles.container, { backgroundColor: '#FFFFFF' }]}>
-      <OnboardingHeader step={stepIndex('allergies')} stepId="allergies" />
+    <View style={styles.container}>
+      <OnboardingHeader step={stepIndex('allergies')} stepId="allergies" onSkip={handleSkip} />
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-
-        {/* Headline */}
-        <View style={styles.headlineSection}>
-          <View style={[styles.blurBlob, { backgroundColor: 'rgba(255,252,0,0.1)' }]} />
-          <Text style={[styles.mainHeading, { color: theme['on-surface'] }]}>
-            Any food sensitivities?
+        <Animated.View entering={FadeInDown.duration(420)}>
+          <Text style={styles.eyebrow}>STEP {stepIndex('allergies')}</Text>
+          <Text style={styles.title}>Any food{'\n'}sensitivities?</Text>
+          <Text style={styles.subtitle}>
+            We&apos;ll flag these whenever you scan a food label for {petName}.
           </Text>
-          <Text style={[styles.subHeading, { color: theme['on-surface-variant'] }]}>
-            We'll flag these when you scan food labels for {name || 'your pet'}.
-          </Text>
-        </View>
+        </Animated.View>
 
         {/* Breed-aware suggestion banner */}
         {breedAllergens.length > 0 && breed && (
-          <View style={styles.breedBanner}>
+          <Animated.View entering={FadeInDown.duration(420).delay(60)} style={styles.breedBanner}>
             <View style={styles.breedBannerHeader}>
-              <MaterialIcons name="info-outline" size={18} color="#92400e" />
+              <MaterialIcons name="info-outline" size={16} color={color.alertDeep} />
               <Text style={styles.breedBannerTitle}>
                 Common sensitivities for {breed}
               </Text>
@@ -124,6 +137,7 @@ export default function AllergiesScreen() {
                   selected={isChipSelected(allergen)}
                   style={styles.breedChip}
                   selectedStyle={styles.breedChipSelected}
+                  scaleTo={motion.scale.chip}
                   onPress={() => toggleAllergen(allergen)}
                 >
                   <Text style={[
@@ -133,38 +147,38 @@ export default function AllergiesScreen() {
                     {allergen}
                   </Text>
                   {isChipSelected(allergen) && (
-                    <MaterialIcons name="check" size={14} color="#92400e" />
+                    <MaterialIcons name="check" size={14} color={color.alertDeep} />
                   )}
                 </SelectableChip>
               ))}
             </View>
-          </View>
+          </Animated.View>
         )}
 
-        {/* Common Allergen Chips */}
+        {/* Common allergen chips */}
         <View style={styles.section}>
-          <Text style={[styles.sectionLabel, { color: theme['on-surface-variant'] }]}>
-            Common Allergens
-          </Text>
+          <Text style={styles.sectionLabel}>Common allergens</Text>
           <View style={styles.chipGrid}>
-            {COMMON_ALLERGENS.filter(a => !isBreedSuggested(a)).map(allergen => (
-              <SelectableChip
-                key={allergen}
-                selected={isChipSelected(allergen)}
-                style={styles.chip}
-                selectedStyle={styles.chipSelected}
-                onPress={() => toggleAllergen(allergen)}
-              >
-                {isChipSelected(allergen) && (
-                  <MaterialIcons name="check" size={16} color="#243036" />
-                )}
-                <Text style={[
-                  styles.chipText,
-                  isChipSelected(allergen) && styles.chipTextSelected,
-                ]}>
-                  {allergen}
-                </Text>
-              </SelectableChip>
+            {COMMON_ALLERGENS.filter(a => !isBreedSuggested(a)).map((allergen, i) => (
+              <Animated.View key={allergen} entering={FadeInDown.duration(300).delay(90 + i * 30)}>
+                <SelectableChip
+                  selected={isChipSelected(allergen)}
+                  style={styles.chip}
+                  selectedStyle={styles.chipSelected}
+                  scaleTo={motion.scale.chip}
+                  onPress={() => toggleAllergen(allergen)}
+                >
+                  {isChipSelected(allergen) && (
+                    <MaterialIcons name="check" size={16} color={color.navy} />
+                  )}
+                  <Text style={[
+                    styles.chipText,
+                    isChipSelected(allergen) && styles.chipTextSelected,
+                  ]}>
+                    {allergen}
+                  </Text>
+                </SelectableChip>
+              </Animated.View>
             ))}
 
             {/* Custom allergens */}
@@ -173,6 +187,7 @@ export default function AllergiesScreen() {
                 key={`custom-${allergen}`}
                 selected
                 style={[styles.chip, styles.chipSelected]}
+                scaleTo={motion.scale.chip}
                 onPress={() => {
                   setCustomAllergens(prev => prev.filter(a => a !== allergen));
                   setSelected(prev => {
@@ -181,39 +196,23 @@ export default function AllergiesScreen() {
                     if (next.size === 0) setNoneSelected(true);
                     return next;
                   });
+                  track('onboarding_option_selected', { step: 'allergies', option: 'custom_allergen', action: 'remove', value: allergen });
                 }}
               >
-                <MaterialIcons name="check" size={16} color="#243036" />
+                <MaterialIcons name="check" size={16} color={color.navy} />
                 <Text style={[styles.chipText, styles.chipTextSelected]}>{allergen}</Text>
-                <MaterialIcons name="close" size={14} color="#64748b" />
+                <MaterialIcons name="close" size={14} color={color.slateMuted} />
               </SelectableChip>
             ))}
           </View>
         </View>
 
-        {/* None that I know of */}
-        <SelectableChip
-          selected={noneSelected}
-          style={styles.noneChip}
-          selectedStyle={styles.noneChipSelected}
-          scaleTo={motion.scale.press}
-          onPress={handleNone}
-        >
-          {noneSelected && <MaterialIcons name="check-circle" size={20} color="#243036" />}
-          <Text style={[
-            styles.noneChipText,
-            noneSelected && styles.noneChipTextSelected,
-          ]}>
-            None that I know of
-          </Text>
-        </SelectableChip>
-
-        {/* Add Custom */}
+        {/* Add custom */}
         <View style={styles.customRow}>
           <TextInput
             style={styles.customInput}
-            placeholder="Add other allergen..."
-            placeholderTextColor="#94a3b8"
+            placeholder="Add another allergen"
+            placeholderTextColor={color.slateFaint}
             value={customInput}
             onChangeText={setCustomInput}
             onSubmitEditing={addCustomAllergen}
@@ -225,29 +224,59 @@ export default function AllergiesScreen() {
             disabled={!customInput.trim()}
             activeOpacity={0.7}
           >
-            <MaterialIcons name="add" size={20} color="#243036" />
+            <MaterialIcons name="add" size={20} color={color.navy} />
           </TouchableOpacity>
         </View>
 
+        {/* None that I know of */}
+        <SelectableChip
+          selected={noneSelected}
+          style={styles.noneChip}
+          selectedStyle={styles.noneChipSelected}
+          scaleTo={motion.scale.press}
+          onPress={handleNone}
+        >
+          {noneSelected && <MaterialIcons name="check-circle" size={20} color={color.success} />}
+          <Text style={[
+            styles.noneChipText,
+            noneSelected && styles.noneChipTextSelected,
+          ]}>
+            None that I know of
+          </Text>
+        </SelectableChip>
+
+        {/* Shield preview — the payoff for picking allergens, made visible now */}
+        {selectedList.length > 0 && (
+          <Animated.View entering={FadeInDown.duration(motion.duration.slow)} style={styles.shieldCard}>
+            <View style={styles.shieldIcon}>
+              <MaterialIcons name="verified-user" size={18} color={color.navy} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.shieldTitle}>
+                {name.trim() ? `${name.trim()}'s label shield` : 'The label shield'}
+              </Text>
+              <Text style={styles.shieldSub}>
+                Scan any food label and Pawtchi will flag{' '}
+                <Text style={styles.shieldFlag}>{formatAllergenList(selectedList)}</Text> for {petName}.
+              </Text>
+            </View>
+          </Animated.View>
+        )}
       </ScrollView>
 
-      {/* Sticky Footer */}
+      {/* Sticky footer — one exit; Skip lives quietly in the header */}
       <View style={styles.stickyFooterContainer}>
         <LinearGradient
-          colors={['transparent', 'rgba(255,255,255,0.95)', '#FFFFFF']}
-          style={[styles.footerGradient, { paddingBottom: insets.bottom + 40 }]}
+          colors={['transparent', 'rgba(255,255,255,0.95)', color.surface]}
+          style={[styles.footerGradient, { paddingBottom: insets.bottom + space.xl }]}
           locations={[0, 0.4, 1]}
         >
-          <TouchableOpacity onPress={handleSkip} activeOpacity={0.7}>
-            <Text style={styles.skipText}>Skip for now</Text>
-          </TouchableOpacity>
           <PawtchiButton
             title="Next"
             variant="primary"
-            iconName="chevron-right"
+            iconName="arrow-forward"
             iconPosition="right"
             onPress={handleNext}
-            style={{ width: 250, maxWidth: '100%', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 15, elevation: 8 }}
           />
         </LinearGradient>
       </View>
@@ -256,93 +285,56 @@ export default function AllergiesScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingBottom: 16,
-    backgroundColor: 'rgba(255,255,255,0.8)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(238,238,238,0.5)',
-    zIndex: 50,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  backBtn: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 28,
-    letterSpacing: -0.5,
-  },
-  stepBadge: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
-  },
-  stepText: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 14,
-    letterSpacing: 0.5,
-  },
+  container: { flex: 1, backgroundColor: color.surface },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 200,
+    paddingHorizontal: space.xxl,
+    paddingBottom: 180,
   },
-  headlineSection: {
-    width: '100%',
-    marginBottom: 32,
-    alignItems: 'center',
+
+  eyebrow: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 2.4,
+    color: color.slateFaint,
+    marginTop: space.lg,
+    marginBottom: space.sm,
   },
-  blurBlob: {
-    position: 'absolute',
-    top: -24,
-    right: -16,
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-  },
-  mainHeading: {
-    fontFamily: 'Montserrat_800ExtraBold',
-    fontSize: 36,
+  title: {
+    fontFamily: font.display,
+    fontSize: 40,
     lineHeight: 40,
-    letterSpacing: -1,
-    marginBottom: 8,
-    textAlign: 'center',
+    letterSpacing: 0.5,
+    color: color.ink,
   },
-  subHeading: {
-    fontFamily: 'Montserrat_400Regular',
-    fontSize: 18,
-    textAlign: 'center',
-    paddingHorizontal: 16,
+  subtitle: {
+    fontFamily: font.regular,
+    fontSize: 14.5,
+    lineHeight: 21,
+    color: color.slateMuted,
+    marginTop: space.md,
+    marginBottom: space.xxl,
+    maxWidth: 320,
   },
+
   breedBanner: {
-    backgroundColor: '#fef3c7',
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 24,
+    backgroundColor: color.alertSoft,
+    borderRadius: radius.xl,
+    padding: space.lg,
+    marginBottom: space.xl,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: 'rgba(217, 119, 6, 0.25)',
   },
   breedBannerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 12,
+    marginBottom: space.md,
   },
   breedBannerTitle: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 14,
-    color: '#92400e',
+    fontFamily: font.bold,
+    fontSize: 13.5,
+    color: color.alertDeep,
   },
   breedChipsRow: {
     flexDirection: 'row',
@@ -355,30 +347,32 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.7)',
+    borderRadius: radius.pill,
+    backgroundColor: color.surface,
     borderWidth: 1,
-    borderColor: '#FFC400',
+    borderColor: color.alert,
   },
   breedChipSelected: {
-    backgroundColor: '#fde68a',
-    borderColor: '#f59e0b',
+    backgroundColor: color.alertSoft,
+    borderWidth: 2,
   },
   breedChipText: {
-    fontFamily: 'Montserrat_600SemiBold',
-    fontSize: 14,
-    color: '#92400e',
+    fontFamily: font.semibold,
+    fontSize: 13.5,
+    color: color.alertDeep,
   },
   breedChipTextSelected: {
-    fontWeight: '700',
+    fontFamily: font.bold,
   },
+
   section: {
-    marginBottom: 20,
-    gap: 12,
+    marginBottom: space.xl,
+    gap: space.md,
   },
   sectionLabel: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 14,
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slate,
     marginLeft: 4,
   },
   chipGrid: {
@@ -390,82 +384,117 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 16,
+    paddingHorizontal: space.lg,
     paddingVertical: 10,
-    borderRadius: 20,
-    backgroundColor: '#F8F9FA',
+    borderRadius: radius.pill,
+    backgroundColor: color.surfaceSubtle,
     borderWidth: 1,
-    borderColor: 'rgba(209,213,225,0.3)',
+    borderColor: color.hairline,
   },
   chipSelected: {
-    backgroundColor: '#F7F602',
-    borderColor: '#E6E300',
+    backgroundColor: color.surface,
+    borderColor: color.yellow,
     borderWidth: 2,
   },
   chipText: {
-    fontFamily: 'Montserrat_600SemiBold',
+    fontFamily: font.semibold,
     fontSize: 14,
-    color: '#64748b',
+    color: color.slateMuted,
   },
   chipTextSelected: {
-    color: '#243036',
-    fontWeight: '700',
+    fontFamily: font.bold,
+    color: color.ink,
   },
+
   noneChip: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: '#F8F9FA',
+    borderRadius: radius.lg,
+    backgroundColor: color.surfaceSubtle,
     borderWidth: 1,
-    borderColor: 'rgba(209,213,225,0.3)',
-    marginBottom: 20,
+    borderColor: color.hairline,
+    marginBottom: space.xl,
   },
   noneChipSelected: {
-    backgroundColor: '#f0fdf4',
-    borderColor: '#86efac',
+    backgroundColor: color.successSoft,
+    borderColor: color.success,
     borderWidth: 2,
   },
   noneChipText: {
-    fontFamily: 'Montserrat_600SemiBold',
+    fontFamily: font.semibold,
     fontSize: 15,
-    color: '#64748b',
+    color: color.slateMuted,
   },
   noneChipTextSelected: {
-    color: '#166534',
-    fontWeight: '700',
+    fontFamily: font.bold,
+    color: color.success,
   },
+
   customRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: space.md,
     alignItems: 'center',
+    marginBottom: space.xl,
   },
   customInput: {
     flex: 1,
     height: 48,
     borderWidth: 1,
-    borderColor: 'rgba(209,213,225,0.3)',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    fontFamily: 'Montserrat_600SemiBold',
+    borderColor: color.hairline,
+    borderRadius: radius.lg,
+    paddingHorizontal: space.lg,
+    fontFamily: font.medium,
     fontSize: 15,
-    backgroundColor: '#FFFFFF',
+    color: color.ink,
+    backgroundColor: color.surfaceSubtle,
   },
   addBtn: {
     width: 48,
     height: 48,
-    borderRadius: 16,
-    backgroundColor: '#F7F602',
+    borderRadius: radius.lg,
+    backgroundColor: color.yellow,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
   },
+
+  shieldCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.md,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    padding: space.lg,
+  },
+  shieldIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.md,
+    backgroundColor: color.yellowSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shieldTitle: {
+    fontFamily: font.bold,
+    fontSize: 14,
+    color: color.ink,
+  },
+  shieldSub: {
+    fontFamily: font.regular,
+    fontSize: 12.5,
+    lineHeight: 18,
+    color: color.slateMuted,
+    marginTop: 3,
+  },
+  shieldFlag: {
+    fontFamily: font.bold,
+    color: color.error,
+  },
+
   stickyFooterContainer: {
     position: 'absolute',
     bottom: 0,
@@ -473,34 +502,7 @@ const styles = StyleSheet.create({
     right: 0,
   },
   footerGradient: {
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    alignItems: 'center',
-    gap: 12,
-  },
-  skipText: {
-    fontFamily: 'Montserrat_600SemiBold',
-    fontSize: 15,
-    color: '#94a3b8',
-    textDecorationLine: 'underline',
-  },
-  nextBtn: {
-    width: 250,
-    maxWidth: '100%',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 20,
-    borderRadius: 40,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 15,
-    elevation: 8,
-    gap: 8,
-  },
-  nextBtnText: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 20,
+    paddingHorizontal: space.xxl,
+    paddingTop: space.xxl,
   },
 });

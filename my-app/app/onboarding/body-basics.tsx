@@ -6,10 +6,14 @@ import {
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  FadeIn, FadeInDown,
+  useSharedValue, useAnimatedStyle, withTiming, interpolateColor,
+} from 'react-native-reanimated';
 
-import { color, font, radius, space, motion } from '../../constants/design';
+import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
 import { usePetStore } from '../../store/usePetStore';
+import { validateWeight } from '../../lib/weightBounds';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
 import { AnimatedPressable } from '../../components/AnimatedPressable';
@@ -17,6 +21,8 @@ import { OnboardingHeader } from '../../components/OnboardingHeader';
 import {
   stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
+import { track } from '../../lib/analytics';
+import { startBcsPhotoEstimate } from '../../lib/bcsPhotoEstimateClient';
 
 const DOG_BREEDS = [
   'Mixed Breed',
@@ -37,6 +43,12 @@ const CAT_BREEDS = [
   'Russian Blue', 'Burmese', 'Birman', 'Other',
 ];
 
+// Age is picked, not typed — bounded lists make impossible ages (e.g. 200
+// years) unrepresentable instead of validated after the fact. 25 years covers
+// the documented lifespan of both species.
+const AGE_YEARS_OPTIONS = Array.from({ length: 26 }, (_, i) => i); // 0–25
+const AGE_MONTHS_OPTIONS = Array.from({ length: 12 }, (_, i) => i); // 0–11
+
 // Step 3 of 6 — body basics. Five light fields on one screen, no scroll fatigue.
 export default function BodyBasicsScreen() {
   const router = useRouter();
@@ -54,7 +66,20 @@ export default function BodyBasicsScreen() {
 
   const [breedModalVisible, setBreedModalVisible] = useState(false);
   const [breedSearch, setBreedSearch] = useState('');
+  const [ageModalVisible, setAgeModalVisible] = useState(false);
   const [weightError, setWeightError] = useState<string | null>(null);
+  const [weightErrorLevel, setWeightErrorLevel] = useState<'soft' | 'error'>('error');
+
+  // Highlight flash on the breed field when a pick returns from the modal —
+  // continuity of object between the sheet and the screen.
+  const breedFlash = useSharedValue(0);
+  const breedFlashStyle = useAnimatedStyle(() => ({
+    backgroundColor: interpolateColor(
+      breedFlash.value,
+      [0, 1],
+      [color.surfaceSubtle, color.yellowSoft],
+    ),
+  }));
 
   const closeBreedModal = () => {
     setBreedModalVisible(false);
@@ -64,7 +89,22 @@ export default function BodyBasicsScreen() {
   const pickBreed = (value: string) => {
     // Haptic comes from the SelectableChip / AnimatedPressable surface.
     setBreed(value);
+    track('onboarding_option_selected', { step: 'body_basics', option: 'breed', value });
     closeBreedModal();
+    breedFlash.value = 1;
+    breedFlash.value = withTiming(0, { duration: motion.duration.slow });
+  };
+
+  // Validate on blur so typos surface while the field is still in mind,
+  // not as a rejection at Continue time. Soft warnings inform, never block.
+  const handleWeightBlur = () => {
+    if (!weight.trim()) return;
+    const w = parseFloat(weight);
+    const validation = validateWeight(w, species === 'cat' ? 'cat' : 'dog', breed);
+    if (validation.status !== 'ok') {
+      setWeightError(validation.message ?? null);
+      setWeightErrorLevel(validation.status === 'invalid' ? 'error' : 'soft');
+    }
   };
 
   // Filter the preset list against the search query, and decide whether to
@@ -81,13 +121,61 @@ export default function BodyBasicsScreen() {
 
   const petName = name.trim() || 'your pet';
 
+  // Compact display for the merged Age field: "2 yrs 3 mo", "5 mo", "3 yrs".
+  // Both explicitly zero reads as a newborn rather than as empty.
+  const hasAge = ageYears !== '' || ageMonths !== '';
+  const ageLabel = (() => {
+    if (!hasAge) return null;
+    const y = parseInt(ageYears) || 0;
+    const m = parseInt(ageMonths) || 0;
+    if (y === 0 && m === 0) return 'Under 1 mo';
+    const parts: string[] = [];
+    if (y > 0) parts.push(`${y} ${y === 1 ? 'yr' : 'yrs'}`);
+    if (m > 0) parts.push(`${m} mo`);
+    return parts.join(' ');
+  })();
+
+  const closeAgeModal = () => {
+    setAgeModalVisible(false);
+    if (hasAge) {
+      track('onboarding_option_selected', {
+        step: 'body_basics', option: 'age', value: `${ageYears || '0'}y ${ageMonths || '0'}m`,
+      });
+    }
+  };
+
+  // The calorie engine's inputs, made visible — endowed progress without
+  // spoiling the output (the kcal number stays the reveal's climax).
+  const engineInputs = [
+    { key: 'weight', done: !!parseFloat(weight) },
+    { key: 'age', done: !!(ageYears || ageMonths) },
+    { key: 'breed', done: !!breed },
+    { key: 'sex', done: !!gender },
+  ];
+  const engineCount = engineInputs.filter((i) => i.done).length;
+
   const handleContinue = () => {
     // Require weight — it's the math input for the whole plan
     const w = parseFloat(weight);
     if (!w || w <= 0) {
       setWeightError(`What does ${petName} weigh? (kg)`);
+      setWeightErrorLevel('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       return;
+    }
+    // Species + breed-aware sanity bounds. Catch typos (e.g. 150kg Chihuahua,
+    // 0.1kg Lab) before they feed into RER → kcal → portion plan.
+    const validation = validateWeight(w, species === 'cat' ? 'cat' : 'dog', breed);
+    if (validation.status === 'invalid') {
+      setWeightError(validation.message ?? 'Please double-check the weight.');
+      setWeightErrorLevel('error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      return;
+    }
+    // Soft warnings are allowed but logged for the user — we don't block.
+    if (validation.status === 'soft' && validation.message) {
+      setWeightError(validation.message);
+      setWeightErrorLevel('soft');
     }
     if (!breed) trackFieldSkipped('body_basics', 'breed');
     if (!ageYears && !ageMonths) trackFieldSkipped('body_basics', 'age');
@@ -99,6 +187,10 @@ export default function BodyBasicsScreen() {
       has_sex: !!gender,
       weight_kg: w,
     });
+    // Photo body-condition read — fire-and-forget so the result is usually
+    // waiting by the time the goal screen's shape picker renders. Never
+    // blocks or throws; failures land as "no suggestion" on that screen.
+    startBcsPhotoEstimate();
     router.push('/onboarding/energy' as any);
   };
 
@@ -127,61 +219,66 @@ export default function BodyBasicsScreen() {
           {/* Breed */}
           <Animated.View entering={FadeInDown.duration(420).delay(60)} style={styles.formGroup}>
             <Text style={styles.label}>Breed <Text style={styles.optional}>(optional)</Text></Text>
-            <TouchableOpacity
-              style={styles.selectWrap}
-              onPress={() => setBreedModalVisible(true)}
-              activeOpacity={0.85}
-            >
-              <Text style={[styles.selectText, !breed && styles.selectPlaceholder]}>
-                {breed || 'Pick a breed'}
-              </Text>
-              <MaterialIcons name="expand-more" size={20} color={color.slateMuted} />
-            </TouchableOpacity>
+            <Animated.View style={[styles.selectWrap, breedFlashStyle]}>
+              <TouchableOpacity
+                style={styles.selectInner}
+                onPress={() => setBreedModalVisible(true)}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.selectText, !breed && styles.selectPlaceholder]}>
+                  {breed || 'Pick a breed'}
+                </Text>
+                <MaterialIcons name="expand-more" size={20} color={color.slateMuted} />
+              </TouchableOpacity>
+            </Animated.View>
           </Animated.View>
 
-          {/* Age + weight — 3-column grid */}
+          {/* Age (picked, not typed) + weight — 2-column grid */}
           <Animated.View entering={FadeInDown.duration(420).delay(120)} style={styles.gridRow}>
-            <View style={styles.gridCell}>
-              <Text style={styles.label}>Years</Text>
-              <TextInput
-                style={styles.numInput}
-                placeholder="2"
-                placeholderTextColor={color.slateFaint}
-                keyboardType="numeric"
-                value={ageYears}
-                onChangeText={setAgeYears}
-                textAlign="center"
-              />
-            </View>
-            <View style={styles.gridCell}>
-              <Text style={styles.label}>Months</Text>
-              <TextInput
-                style={styles.numInput}
-                placeholder="0"
-                placeholderTextColor={color.slateFaint}
-                keyboardType="numeric"
-                value={ageMonths}
-                onChangeText={(val) => {
-                  const n = parseInt(val) || 0;
-                  setAgeMonths(n > 11 ? '11' : val);
+            <View style={[styles.gridCell, styles.gridCellWide]}>
+              <Text style={styles.label}>Age</Text>
+              <TouchableOpacity
+                style={styles.ageSelect}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setAgeModalVisible(true);
                 }}
-                textAlign="center"
-              />
+                activeOpacity={0.85}
+              >
+                <Text
+                  style={[styles.ageSelectText, !ageLabel && styles.selectPlaceholder]}
+                  numberOfLines={1}
+                >
+                  {ageLabel ?? 'Add age'}
+                </Text>
+                <MaterialIcons name="expand-more" size={18} color={color.slateMuted} />
+              </TouchableOpacity>
             </View>
             <View style={styles.gridCell}>
               <Text style={styles.label}>Weight (kg)</Text>
               <TextInput
-                style={[styles.numInput, weightError && styles.numInputError]}
+                style={[
+                  styles.numInput,
+                  weightError && (weightErrorLevel === 'error' ? styles.numInputError : styles.numInputWarn),
+                ]}
                 placeholder="12.5"
                 placeholderTextColor={color.slateFaint}
                 keyboardType="decimal-pad"
                 value={weight}
                 onChangeText={(v) => { if (weightError) setWeightError(null); setWeight(v); }}
+                onBlur={handleWeightBlur}
                 textAlign="center"
               />
             </View>
           </Animated.View>
-          {weightError && <Text style={styles.errorText}>{weightError}</Text>}
+          {weightError && (
+            <Text style={[styles.errorText, weightErrorLevel === 'soft' && styles.warnText]}>
+              {weightError}
+            </Text>
+          )}
+          <Animated.Text entering={FadeInDown.duration(420).delay(150)} style={styles.fieldJustification}>
+            Weight anchors every portion · age sets the life stage.
+          </Animated.Text>
 
           {/* Sex */}
           <Animated.View entering={FadeInDown.duration(420).delay(180)} style={styles.formGroup}>
@@ -193,7 +290,11 @@ export default function BodyBasicsScreen() {
                   <TouchableOpacity
                     key={g}
                     style={[styles.choiceCard, selected && styles.choiceCardSelected]}
-                    onPress={() => { Haptics.selectionAsync(); setGender(g); }}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setGender(g);
+                      track('onboarding_option_selected', { step: 'body_basics', option: 'sex', value: g });
+                    }}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons
@@ -218,14 +319,29 @@ export default function BodyBasicsScreen() {
             </View>
             <Switch
               value={isNeutered}
-              onValueChange={(v) => { Haptics.selectionAsync(); setIsNeutered(v); }}
+              onValueChange={(v) => {
+                Haptics.selectionAsync();
+                setIsNeutered(v);
+                track('onboarding_option_selected', { step: 'body_basics', option: 'desexed', value: v });
+              }}
               trackColor={{ false: color.track, true: color.yellow }}
-              thumbColor="#FFFFFF"
+              thumbColor={color.surface}
             />
           </Animated.View>
         </ScrollView>
 
         <View style={styles.sticky}>
+          <View style={styles.engineRow}>
+            <MaterialIcons name="auto-awesome" size={13} color={color.navy} />
+            <Animated.Text key={engineCount} entering={FadeIn.duration(motion.duration.base)} style={styles.engineText}>
+              Calorie engine · {engineCount} of {engineInputs.length} inputs
+            </Animated.Text>
+            <View style={styles.engineDots}>
+              {engineInputs.map((input) => (
+                <View key={input.key} style={[styles.engineDot, input.done && styles.engineDotOn]} />
+              ))}
+            </View>
+          </View>
           <PawtchiButton
             title="Continue"
             variant="primary"
@@ -257,7 +373,7 @@ export default function BodyBasicsScreen() {
                 style={styles.breedSearchInput}
                 value={breedSearch}
                 onChangeText={setBreedSearch}
-                placeholder="Search or type your own breed"
+                placeholder="Search or type and Add+ your own breed"
                 placeholderTextColor={color.slateFaint}
                 autoCorrect={false}
                 returnKeyType="done"
@@ -313,6 +429,75 @@ export default function BodyBasicsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Age picker — bounded lists, same sheet language as the breed picker.
+          Both columns visible at once so "2 yrs 3 mo" is one visit, not two. */}
+      <Modal visible={ageModalVisible} animationType="slide" transparent onRequestClose={closeAgeModal}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>How old is {petName}?</Text>
+              <TouchableOpacity onPress={closeAgeModal}>
+                <MaterialIcons name="close" size={22} color={color.ink} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.ageColumns}>
+              <View style={styles.ageColumn}>
+                <Text style={styles.ageColumnLabel}>Years</Text>
+                <ScrollView
+                  style={styles.ageColumnScroll}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {AGE_YEARS_OPTIONS.map((y) => {
+                    const selected = ageYears === String(y);
+                    return (
+                      <SelectableChip
+                        key={y}
+                        selected={selected}
+                        style={[styles.ageItem, selected && styles.ageItemSelected]}
+                        scaleTo={motion.scale.press}
+                        onPress={() => setAgeYears(selected ? '' : String(y))}
+                      >
+                        <Text style={[styles.ageItemText, selected && styles.ageItemTextSelected]}>
+                          {y}
+                        </Text>
+                      </SelectableChip>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              <View style={styles.ageColumn}>
+                <Text style={styles.ageColumnLabel}>Months</Text>
+                <ScrollView
+                  style={styles.ageColumnScroll}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {AGE_MONTHS_OPTIONS.map((m) => {
+                    const selected = ageMonths === String(m);
+                    return (
+                      <SelectableChip
+                        key={m}
+                        selected={selected}
+                        style={[styles.ageItem, selected && styles.ageItemSelected]}
+                        scaleTo={motion.scale.press}
+                        onPress={() => setAgeMonths(selected ? '' : String(m))}
+                      >
+                        <Text style={[styles.ageItemText, selected && styles.ageItemTextSelected]}>
+                          {m}
+                        </Text>
+                      </SelectableChip>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </View>
+
+            <PawtchiButton title="Done" variant="primary" onPress={closeAgeModal} />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -359,15 +544,18 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
   },
   selectWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     backgroundColor: color.surfaceSubtle,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: color.hairline,
-    paddingHorizontal: space.lg,
     height: 56,
+  },
+  selectInner: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.lg,
   },
   selectText: {
     fontFamily: font.medium,
@@ -382,6 +570,24 @@ const styles = StyleSheet.create({
     marginBottom: space.lg,
   },
   gridCell: { flex: 1 },
+  gridCellWide: { flex: 1.35 },
+  ageSelect: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    height: 56,
+    paddingHorizontal: 14,
+  },
+  ageSelectText: {
+    flex: 1,
+    fontFamily: font.bold,
+    fontSize: 15.5,
+    color: color.ink,
+  },
   numInput: {
     backgroundColor: color.surfaceSubtle,
     borderRadius: radius.lg,
@@ -393,6 +599,7 @@ const styles = StyleSheet.create({
     color: color.ink,
   },
   numInputError: { borderColor: color.error },
+  numInputWarn: { borderColor: color.alert },
 
   errorText: {
     fontFamily: font.medium,
@@ -400,6 +607,14 @@ const styles = StyleSheet.create({
     color: color.error,
     marginTop: -8,
     marginBottom: space.md,
+  },
+  warnText: { color: color.alert },
+  fieldJustification: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    color: color.slateFaint,
+    marginTop: -6,
+    marginBottom: space.lg,
   },
 
   choiceRow: { flexDirection: 'row', gap: 8 },
@@ -454,11 +669,32 @@ const styles = StyleSheet.create({
     paddingTop: space.md,
     paddingBottom: space.xxl,
     backgroundColor: color.surface,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 12,
+    ...makeShadow(-6, 14, 0.06),
+  },
+  engineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginBottom: space.md,
+  },
+  engineText: {
+    fontFamily: font.semibold,
+    fontSize: 11.5,
+    color: color.navy,
+  },
+  engineDots: {
+    flexDirection: 'row',
+    gap: 5,
+    marginLeft: 'auto',
+  },
+  engineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: color.track,
+  },
+  engineDotOn: {
+    backgroundColor: color.yellow,
   },
 
   // Modal
@@ -523,5 +759,47 @@ const styles = StyleSheet.create({
     color: color.slateFaint,
     paddingVertical: space.lg,
     textAlign: 'center',
+  },
+
+  // Age picker sheet
+  ageColumns: {
+    flexDirection: 'row',
+    gap: space.md,
+    marginBottom: space.lg,
+  },
+  ageColumn: { flex: 1 },
+  ageColumnLabel: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slate,
+    textAlign: 'center',
+    marginBottom: space.sm,
+  },
+  ageColumnScroll: {
+    maxHeight: 300,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: color.hairline,
+  },
+  ageItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    marginHorizontal: 6,
+    marginVertical: 2,
+    borderRadius: radius.md,
+  },
+  ageItemSelected: {
+    backgroundColor: color.yellow,
+  },
+  ageItemText: {
+    fontFamily: font.medium,
+    fontSize: 16,
+    color: color.slate,
+  },
+  ageItemTextSelected: {
+    fontFamily: font.bold,
+    color: color.navy,
   },
 });

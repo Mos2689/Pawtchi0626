@@ -7,7 +7,13 @@
 // insight set. Pure → unit-testable.
 
 import type { SizeCategory } from './breedData';
+import { getBreedDefaults } from './breedData';
 import type { LifeStage } from './lifeStage';
+
+// Brachycephalic ("flat-faced") breeds where mild excess weight is acutely
+// risky — BOAS exacerbation, anaesthesia mortality, heatstroke. Keep this
+// regex in sync with BREED_HINTS line ~47.
+const BRACHYCEPHALIC_PATTERN = /bulldog|pug|boxer|shih.?tzu|boston terrier|cavalier|pekingese|persian|himalayan|exotic|british shorthair|brachycephalic/i;
 
 export type WatchOutIcon =
   | 'restaurant'        // food, portion, treats
@@ -30,6 +36,12 @@ export interface WatchOutInput {
   bcs: number | null;
   /** Current weight in kg minus target weight in kg (positive = above goal). */
   weightVsTargetKg: number | null;
+  /**
+   * Absolute current weight in kg. Optional — used to flag brachycephalic
+   * breeds carrying >15% over their breed reference even when BCS reads 5/9,
+   * because owners of these breeds reliably under-score body condition.
+   */
+  currentWeightKg?: number | null;
 }
 
 // ─── The catalog — every entry is calm, specific, ≤ 3 sentences ───
@@ -130,6 +142,41 @@ function fromSizeAndLifeStage(species: 'dog' | 'cat', size: SizeCategory | null,
   return out;
 }
 
+/**
+ * Brachycephalic + over-breed-reference nudge.
+ *
+ * Frenchies / Pugs / Bulldogs in clinical practice are reliably under-scored
+ * by owners (they always look "muscular"). Combined with the BCS-5-maintain
+ * rule in deriveGoal, an actually-overweight brachycephalic dog can sit on a
+ * maintenance plan indefinitely. For these breeds, even mild excess weight is
+ * acutely dangerous — BOAS exacerbation, heatstroke, anaesthesia risk.
+ *
+ * Doesn't override the kcal target; surfaces a watch-out asking the owner to
+ * check in with a vet.
+ */
+function fromBrachycephalicOverweight(
+  breed: string | null,
+  species: 'dog' | 'cat',
+  currentWeightKg: number | null | undefined,
+): WatchOut[] {
+  if (!breed || species !== 'dog') return [];
+  if (typeof currentWeightKg !== 'number' || currentWeightKg <= 0) return [];
+  if (!BRACHYCEPHALIC_PATTERN.test(breed)) return [];
+
+  const defaults = getBreedDefaults('dog', breed, currentWeightKg);
+  if (!defaults) return [];
+  // Use the wider of the male/female upper bounds as the "is this above breed
+  // reference?" threshold. We don't know the dog's sex here and we'd rather
+  // false-negative than false-positive the warning.
+  const upper = Math.max(defaults.weightRange.male[1], defaults.weightRange.female[1]);
+  if (currentWeightKg <= upper * 1.15) return [];
+
+  return [{
+    icon: 'monitor-heart',
+    text: 'flat-faced breeds often look muscular even when carrying extra weight; even mild excess makes breathing harder, so a vet weigh-in is worth booking.',
+  }];
+}
+
 function fromBodyAndWeight(bcs: number | null, weightVsTargetKg: number | null): WatchOut[] {
   const out: WatchOut[] = [];
   if (typeof bcs === 'number' && bcs >= 7) {
@@ -165,9 +212,11 @@ function dedupe(items: WatchOut[]): WatchOut[] {
 }
 
 export function getBreedWatchOuts(input: WatchOutInput): WatchOut[] {
-  // Priority: body-condition signals first (most actionable for this pet today),
-  // then breed-specific traits, then size + life-stage backstops.
+  // Priority: brachycephalic safety nudge first (potentially acute), then body
+  // condition signals (actionable today), then breed-specific traits, then
+  // size + life-stage backstops.
   const ordered = [
+    ...fromBrachycephalicOverweight(input.breed, input.species, input.currentWeightKg),
     ...fromBodyAndWeight(input.bcs, input.weightVsTargetKg),
     ...fromBreed(input.breed),
     ...fromSizeAndLifeStage(input.species, input.sizeCategory, input.lifeStage),

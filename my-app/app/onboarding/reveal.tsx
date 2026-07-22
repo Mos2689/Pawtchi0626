@@ -1,48 +1,68 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Image, ScrollView, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Share, TouchableOpacity, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
-import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
+import Animated, {
+  FadeIn, FadeInDown, FadeInUp, FadeOut,
+  useSharedValue, useAnimatedStyle, withSequence, withTiming,
+} from 'react-native-reanimated';
 
-import { color, font, radius, space } from '../../constants/design';
+import { color, font, radius, space, motion } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { PortionPlateCard } from '../../components/PortionPlateCard';
 import { WatchOutsCard } from '../../components/WatchOutsCard';
+import { CountUpText } from '../../components/CountUpText';
+import { WeightJourneyBar } from '../../components/WeightJourneyBar';
 import { usePetStore } from '../../store/usePetStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { haptic } from '../../lib/haptics';
+import { PAWTCHI_INVITE_URL } from '../../lib/referral';
 import { track } from '../../lib/analytics';
 import { derivePortionPlan } from '../../lib/portionMath';
 import { getBreedWatchOuts } from '../../lib/breedWatchOuts';
 import { getBreedDefaults, sizeCategoryFromWeight } from '../../lib/breedData';
-import { deriveLifeStage } from '../../lib/lifeStage';
+import { deriveLifeStage, getLifeStageCalorieMultiplier } from '../../lib/lifeStage';
+import { deriveGoal } from '../../lib/healthMath';
+import { deriveKcalReceipt } from '../../lib/kcalReceipt';
+import { stageCount } from '../../lib/idealWeight';
+import { SAFE_PCT_PER_WEEK } from '../../lib/weightLossRate';
+import { WalksignCrest } from '../../components/walksign/WalksignCrest';
+import { WALKSIGN_COPY, buildProvisionalNote, buildRevealTitle } from '../../lib/walksign/copy';
+import type { WalksignId } from '../../lib/walksign/types';
 
 // The reveal — the missing climax. The whole onboarding exists to compute one
 // magic number: the daily calorie plan. Old flow ran calculateDailyKcal
 // invisibly in handleComplete and routed away. The user never saw the thing
 // they invested 6 steps to receive.
 //
-// Two psychological levers do real work here:
+// Three psychological levers do real work here:
 //  1. Labour illusion — a ~1.6s "Building Bunny's plan…" beat. Perceived effort
 //     increases perceived value (the Harvard Norton/Mochon study replicated in
 //     onboarding many times over).
-//  2. Reciprocity — by handing the user a personalized deliverable BEFORE the
+//  2. Explanation effect — the receipt card itemizes the ACTUAL factor chain
+//     from calculateDailyKcal (basal need → routine → breed → life stage →
+//     safety floors). Stated reasons dramatically increase trust and
+//     compliance; the labour beat pays off into visible evidence.
+//  3. Reciprocity — by handing the user a personalized deliverable BEFORE the
 //     paywall, we shift their stance from "is this worth paying for?" to
 //     "they already gave me something tailored to my pet."
 //
 // The numbers come from the pet store (stashed by goal.tsx) — no re-fetch.
-const REVEAL_DELAY_MS = 1600;
-
-function lifeStageHint(label: string | null): string | null {
-  if (!label) return null;
-  const lower = label.toLowerCase();
-  if (lower.includes('puppy') || lower.includes('kitten')) return 'higher energy needs while growing';
-  if (lower.includes('senior')) return 'gentler movement, watchful eyes';
-  if (lower.includes('adult')) return 'steady targets, real consistency';
-  return null;
-}
+//
+// The build beat is a sequential checklist, not a loop — each phase appears,
+// completes, and stays completed. Loops read as fake; sequences read as work.
+const BUILD_PHASES = [
+  'Reading the breed file',
+  'Tuning for life stage',
+  'Sizing the daily plate',
+  'Plotting movement targets',
+];
+// Dogs get one more beat — the Walksign's first reading rides the same
+// labour-illusion sequence rather than adding a second loading moment.
+const WALKSIGN_PHASE = 'Reading the first signs';
+const PHASE_MS = 400;
 
 export default function RevealScreen() {
   const router = useRouter();
@@ -50,10 +70,22 @@ export default function RevealScreen() {
 
   const {
     name, breed, species, weight, ageYears, ageMonths, bodyConditionScore,
-    targetWeightKg, dailyKcal, lifeStageLabel, imageUri, resetForm,
+    isNeutered, activityLevel, reproductiveStatus, pregnancyWeeks,
+    targetWeightKg, dailyKcal, lifeStageLabel,
+    idealWeightKg, healthyBandLow, healthyBandHigh,
+    resetForm,
   } = usePetStore();
-  const { activePet } = useActivePetStore();
+  const activePet = useActivePetStore(s => s.activePet);
   const petName = name?.trim() || activePet?.name?.trim() || 'your pet';
+
+  // The provisional Walksign, stamped on the pet row at creation (dogs only).
+  // fetchPet ran before navigation, so it's already in the store — no fetch.
+  const walksignId: WalksignId | null =
+    activePet?.species === 'dog' && activePet?.walksign
+      ? (activePet.walksign as WalksignId)
+      : null;
+  const buildPhases = walksignId ? [...BUILD_PHASES, WALKSIGN_PHASE] : BUILD_PHASES;
+  const revealDelayMs = PHASE_MS * buildPhases.length + 200;
 
   // ── Personalised insights, derived on-device (no fetch, no cost) ──
   const weightKg = parseFloat(weight) || activePet?.current_weight_kg || 0;
@@ -61,7 +93,8 @@ export default function RevealScreen() {
   const breedDefaults = getBreedDefaults(speciesVal, breed, weightKg);
   const sizeCategory = breedDefaults?.sizeCategory ?? sizeCategoryFromWeight(speciesVal, weightKg);
   const lifeStage = deriveLifeStage(speciesVal, parseInt(ageYears) || 0, parseInt(ageMonths) || 0, sizeCategory);
-  const portion = dailyKcal ? derivePortionPlan({ dailyKcal, currentWeightKg: weightKg }) : null;
+  const portionGoal = deriveGoal(weightKg, targetWeightKg ?? null, bodyConditionScore);
+  const portion = dailyKcal ? derivePortionPlan({ dailyKcal, currentWeightKg: weightKg, goal: portionGoal }) : null;
   const watchOuts = getBreedWatchOuts({
     species: speciesVal,
     breed,
@@ -69,7 +102,74 @@ export default function RevealScreen() {
     lifeStage,
     bcs: bodyConditionScore,
     weightVsTargetKg: targetWeightKg != null && weightKg > 0 ? weightKg - targetWeightKg : null,
+    currentWeightKg: weightKg > 0 ? weightKg : null,
   });
+
+  const frameLabel =
+    breed && breed !== 'Mixed Breed' && breed !== 'Mixed Breed / Domestic Shorthair' && breed !== 'Other'
+      ? breed
+      : speciesVal === 'cat' ? 'cat' : 'dog';
+  const breedName = frameLabel === breed ? breed : null;
+
+  // ── The receipt: re-walk the kcal factor chain with the same inputs
+  // goal.tsx fed to calculateDailyKcal. Guarded — if the receipt total drifts
+  // from the stored plan number, we hide the math rather than show a
+  // contradiction. ──
+  const totalAgeMonths = (parseInt(ageYears) || 0) * 12 + (parseInt(ageMonths) || 0);
+  const lifeStageMultiplier = getLifeStageCalorieMultiplier(lifeStage, speciesVal);
+  const receipt = useMemo(() => {
+    if (dailyKcal == null || weightKg <= 0) return null;
+    return deriveKcalReceipt({
+      species: speciesVal,
+      weightKg,
+      targetWeightKg,
+      isNeutered,
+      activityLevel: activityLevel || 'normal',
+      goal: portionGoal,
+      ageMonths: totalAgeMonths || undefined,
+      lifeStageMultiplier,
+      lifeStageLabel,
+      metabolicModifier: breedDefaults?.metabolicModifier ?? 1.0,
+      breedName,
+      bcs: bodyConditionScore,
+      reproductiveStatus,
+      pregnancyWeeks,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dailyKcal, weightKg, speciesVal, targetWeightKg, isNeutered, activityLevel, portionGoal, totalAgeMonths, lifeStageMultiplier, lifeStageLabel, breedName, bodyConditionScore, reproductiveStatus, pregnancyWeeks]);
+  const receiptOk = receipt != null && dailyKcal != null && receipt.totalKcal === dailyKcal;
+  useEffect(() => {
+    if (receipt != null && dailyKcal != null && receipt.totalKcal !== dailyKcal) {
+      track('plan_receipt_mismatch', { receipt_total: receipt.totalKcal, plan_kcal: dailyKcal });
+    }
+  }, [receipt, dailyKcal]);
+
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const expandTracked = useRef<Set<string>>(new Set());
+  const toggleRow = (id: string) => {
+    haptic.tap();
+    setExpandedRow((cur) => (cur === id ? null : id));
+    if (!expandTracked.current.has(id)) {
+      expandTracked.current.add(id);
+      track('plan_receipt_row_expanded', { row: id });
+    }
+  };
+
+  // ── Journey continuity: the same map the user set on the goal step. ──
+  const band = healthyBandLow != null && healthyBandHigh != null
+    ? { low: healthyBandLow, high: healthyBandHigh }
+    : null;
+  const showJourney = idealWeightKg != null && targetWeightKg != null && weightKg > 0;
+  const journeyAtIdeal = showJourney
+    && Math.abs(idealWeightKg - weightKg) < 0.05
+    && Math.abs(targetWeightKg - weightKg) < 0.05;
+  const milestoneIsStop = showJourney
+    && Math.abs(targetWeightKg - idealWeightKg) >= 0.1
+    && Math.abs(targetWeightKg - weightKg) >= 0.05;
+  const totalStages = showJourney ? stageCount(weightKg, idealWeightKg) : 1;
+  const milestoneWeeks = showJourney && Math.abs(targetWeightKg - weightKg) >= 0.05
+    ? Math.ceil((Math.abs(targetWeightKg - weightKg) / weightKg) * 100 / SAFE_PCT_PER_WEEK[speciesVal])
+    : 0;
 
   const scrolledTracked = useRef(false);
   const insightsTracked = useRef(false);
@@ -87,32 +187,66 @@ export default function RevealScreen() {
   };
 
   const [building, setBuilding] = useState(true);
-  const [phaseLine, setPhaseLine] = useState('Reading the breed file');
+  // Number of completed phases; the row at this index is the one in progress.
+  const [phaseCount, setPhaseCount] = useState(0);
 
-  // Rotate phase lines so the wait feels productive, not idle.
   useEffect(() => {
     track('plan_reveal_viewed', {
       daily_kcal: dailyKcal ?? null,
       target_weight_kg: targetWeightKg ?? null,
     });
-    const phases = [
-      'Reading the breed file',
-      'Tuning for life stage',
-      'Sizing the daily plate',
-      'Plotting movement targets',
-    ];
-    let i = 0;
     const interval = setInterval(() => {
-      i = (i + 1) % phases.length;
-      setPhaseLine(phases[i]);
-    }, 400);
+      setPhaseCount((c) => Math.min(c + 1, buildPhases.length));
+    }, PHASE_MS);
     const t = setTimeout(() => {
       clearInterval(interval);
       setBuilding(false);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }, REVEAL_DELAY_MS);
+    }, revealDelayMs);
     return () => { clearInterval(interval); clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dailyKcal, targetWeightKg]);
+
+  // The identity beat has its own view event — the plan and the sign are
+  // different gifts.
+  useEffect(() => {
+    if (!building && walksignId) {
+      track('walksign_reveal_viewed', { sign: walksignId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [building]);
+
+  // Glow bloom behind the hero number — fires once, when the count-up lands.
+  const glowOpacity = useSharedValue(0);
+  const glowScale = useSharedValue(0.85);
+  const glowStyle = useAnimatedStyle(() => ({
+    opacity: glowOpacity.value,
+    transform: [{ scale: glowScale.value }],
+  }));
+  const handleCountDone = () => {
+    haptic.success();
+    glowOpacity.value = withSequence(
+      withTiming(1, { duration: motion.duration.fast }),
+      withTiming(0, { duration: motion.duration.ring }),
+    );
+    glowScale.value = withSequence(
+      withTiming(1.1, { duration: motion.duration.fast }),
+      withTiming(1.3, { duration: motion.duration.ring }),
+    );
+  };
+
+  const handleShare = async () => {
+    track('plan_reveal_shared', {});
+    // Journey framing shares better than a bare number — the story is the artifact.
+    const journeyPart = showJourney && !journeyAtIdeal
+      ? `, on the way from ${weightKg.toFixed(1)} to ${idealWeightKg.toFixed(1)} kg in safe stages`
+      : targetWeightKg ? `, aiming for ${targetWeightKg.toFixed(1)} kg` : '';
+    const summary = `${petName}'s daily plan on Pawtchi: ${dailyKcal} kcal a day${journeyPart}.`;
+    try {
+      await Share.share({ message: `${summary} ${PAWTCHI_INVITE_URL}` });
+    } catch {
+      // User dismissed the sheet or sharing is unavailable — nothing to do.
+    }
+  };
 
   const handleContinue = () => {
     track('plan_reveal_continued', {});
@@ -120,34 +254,41 @@ export default function RevealScreen() {
     router.replace('/preview-home' as any);
   };
 
-  // Derived headline numbers — read directly from the store
-  const moveTarget = 45; // matches the home ring default; could be made dynamic later
-  const breedLine = breed ? `tuned for a ${lifeStageLabel?.toLowerCase() || ''} ${breed}`.trim() : null;
-  const stageHint = lifeStageHint(lifeStageLabel);
-
   return (
     <View style={[styles.container, { paddingTop: insets.top + space.lg }]}>
       <StatusBar style="light" />
 
       {building ? (
-        // Phase 1 — labour illusion
-        <Animated.View key="building" entering={FadeIn.duration(400)} style={styles.buildingWrap}>
-          <View style={styles.buildingSpinnerRing}>
-            <ActivityIndicator color={color.yellow} size="large" />
-          </View>
+        // Phase 1 — labour evidence: each build step appears, completes, stays.
+        <Animated.View
+          key="building"
+          entering={FadeIn.duration(400)}
+          exiting={FadeOut.duration(motion.duration.base)}
+          style={styles.buildingWrap}
+        >
           <Text style={styles.buildingTitle}>
             Building {petName}&apos;s{'\n'}plan…
           </Text>
-          <Animated.Text
-            key={phaseLine}
-            entering={FadeIn.duration(280)}
-            style={styles.buildingPhase}
-          >
-            {phaseLine}
-          </Animated.Text>
+          <View style={[styles.phaseList, { minHeight: buildPhases.length * 32 }]}>
+            {buildPhases.map((phase, i) => {
+              if (i > phaseCount) return null;
+              const done = i < phaseCount;
+              return (
+                <Animated.View key={phase} entering={FadeInDown.duration(280)} style={styles.phaseRow}>
+                  {done ? (
+                    <MaterialIcons name="check" size={16} color={color.yellow} />
+                  ) : (
+                    <View style={styles.phaseDot} />
+                  )}
+                  <Text style={[styles.phaseText, done && styles.phaseTextDone]}>{phase}</Text>
+                </Animated.View>
+              );
+            })}
+          </View>
         </Animated.View>
       ) : (
-        // Phase 2 — the reveal (hero stays the climax; insights live below the fold)
+        // Phase 2 — the reveal. Consultation arc: verdict → reasoning →
+        // journey → what happens next → tonight's actions.
         <>
           <ScrollView
             style={styles.revealScroll}
@@ -161,59 +302,144 @@ export default function RevealScreen() {
             </Animated.View>
 
             <Animated.View entering={FadeInUp.duration(600).delay(120)} style={styles.heroBlock}>
-              <Text style={styles.heroNumber}>
-                {dailyKcal ?? '—'}
-                <Text style={styles.heroUnit}> kcal</Text>
-              </Text>
-              <Text style={styles.heroSub}>a day, calibrated to {petName}</Text>
-            </Animated.View>
-
-            {/* Stat strip — the supporting numbers that make the kcal feel earned */}
-            <Animated.View entering={FadeInDown.duration(500).delay(260)} style={styles.statRow}>
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{moveTarget}<Text style={styles.statUnit}> min</Text></Text>
-                <Text style={styles.statLabel}>moving</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{targetWeightKg ? targetWeightKg.toFixed(1) : '—'}<Text style={styles.statUnit}> kg</Text></Text>
-                <Text style={styles.statLabel}>goal weight</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>7<Text style={styles.statUnit}> days</Text></Text>
-                <Text style={styles.statLabel}>plan ready</Text>
-              </View>
-            </Animated.View>
-
-            {/* Provenance line — turns the number from "magic" into "earned" */}
-            <Animated.View entering={FadeInDown.duration(500).delay(380)} style={styles.provenanceRow}>
-              <View style={styles.avatarMini}>
-                {imageUri ? (
-                  <Image source={{ uri: imageUri }} style={styles.avatarImg} />
+              {/* The number six screens existed to compute — earned on screen,
+                  not printed. Ticks under the thumb, blooms when it lands. */}
+              <Animated.View pointerEvents="none" style={[styles.heroGlow, glowStyle]} />
+              <View style={styles.heroRow}>
+                {dailyKcal != null ? (
+                  <CountUpText
+                    value={dailyKcal}
+                    duration={motion.duration.ring}
+                    delay={motion.duration.base}
+                    style={styles.heroNumber}
+                    hapticTicks
+                    onDone={handleCountDone}
+                  />
                 ) : (
-                  <View style={[styles.avatarImg, styles.avatarFallback]}>
-                    <Text style={styles.avatarInitials}>
-                      {(petName?.[0] || (species === 'cat' ? 'C' : 'D')).toUpperCase()}
-                    </Text>
-                  </View>
+                  <Text style={styles.heroNumber}>—</Text>
                 )}
+                <Text style={styles.heroUnitText}>kcal</Text>
               </View>
-              <View style={{ flex: 1 }}>
-                {breedLine && <Text style={styles.provenanceLine}>{breedLine}</Text>}
-                {stageHint && <Text style={styles.provenanceHint}>{stageHint}</Text>}
-              </View>
+              <Text style={styles.heroSub}>
+                a day — built from what you told us about {petName}
+              </Text>
             </Animated.View>
 
-            {/* Curiosity gap — signals there's more without cluttering the hero */}
-            {(portion || watchOuts.length > 0) && (
-              <Animated.View entering={FadeIn.duration(500).delay(640)} style={styles.whyMore}>
-                <Text style={styles.whyMoreText}>What this plan means for {petName}</Text>
-                <MaterialIcons name="keyboard-arrow-down" size={22} color={color.yellow} />
+            {/* The receipt — the labour beat pays off into evidence. Each row
+                is one factor from the ACTUAL math, expandable to one calm
+                sentence of veterinary reasoning. */}
+            {receiptOk && receipt && (
+              <Animated.View entering={FadeInDown.duration(500).delay(240)} style={styles.panelCard}>
+                <Text style={styles.cardLabel}>THE MATH, SHOWN</Text>
+                {receipt.rows.map((row, i) => (
+                  <Animated.View key={row.id} entering={FadeInDown.duration(360).delay(320 + i * 90)}>
+                    <TouchableOpacity
+                      style={[styles.receiptRow, i > 0 && styles.receiptRowBorder]}
+                      activeOpacity={0.7}
+                      onPress={() => toggleRow(row.id)}
+                    >
+                      <MaterialIcons
+                        name={row.icon as any}
+                        size={16}
+                        color={row.kind === 'safety' ? color.viz.green : color.creamDim}
+                        style={styles.receiptIcon}
+                      />
+                      <View style={styles.receiptBody}>
+                        <Text style={styles.receiptTitle}>{row.title}</Text>
+                        <Text style={styles.receiptSub}>{row.subtitle}</Text>
+                      </View>
+                      {row.effect === '✓' ? (
+                        <MaterialIcons name="check" size={16} color={color.viz.green} />
+                      ) : (
+                        <Text style={styles.receiptEffect}>{row.effect}</Text>
+                      )}
+                    </TouchableOpacity>
+                    {expandedRow === row.id && (
+                      <Animated.View entering={FadeIn.duration(motion.duration.fast)}>
+                        <Text style={styles.receiptDetail}>{row.detail}</Text>
+                      </Animated.View>
+                    )}
+                  </Animated.View>
+                ))}
+                <View style={styles.receiptTotalRow}>
+                  <Text style={styles.receiptTotalLabel}>{petName}&apos;s daily target</Text>
+                  <Text style={styles.receiptTotalValue}>{dailyKcal!.toLocaleString()} kcal</Text>
+                </View>
               </Animated.View>
             )}
 
-            {/* Insight cards — the "oh, I didn't know that" payoff */}
+            {/* The Walksign — the identity beat. The plan is what Pawtchi
+                computed; this is who Pawtchi met. Honest provisional framing:
+                the sign is a first reading until real walks confirm it. */}
+            {walksignId && (
+              <Animated.View entering={FadeInDown.duration(500).delay(360)} style={[styles.panelCard, styles.walksignCard]}>
+                <Text style={styles.cardLabel}>{buildRevealTitle(petName).toUpperCase()}</Text>
+                <View style={styles.walksignCrestWrap}>
+                  <WalksignCrest sign={walksignId} size={96} color={color.cream} />
+                </View>
+                <Text style={styles.walksignName}>{WALKSIGN_COPY[walksignId].displayName}</Text>
+                <Text style={styles.walksignTagline}>{WALKSIGN_COPY[walksignId].tagline}</Text>
+                <Text style={styles.walksignNote}>{buildProvisionalNote(petName)}</Text>
+              </Animated.View>
+            )}
+
+            {/* Journey continuity — the same map from the goal step, so the
+                promise and the tracking share one visual language. */}
+            {showJourney && (
+              <Animated.View entering={FadeInDown.duration(500).delay(420)} style={styles.panelCard}>
+                <Text style={styles.cardLabel}>THE JOURNEY, CONTINUED</Text>
+                <Text style={styles.cardSub}>the map you set — home tracks it from tomorrow</Text>
+                <WeightJourneyBar
+                  variant="dark"
+                  currentKg={weightKg}
+                  milestoneKg={targetWeightKg!}
+                  idealKg={idealWeightKg!}
+                  band={band}
+                  zoneLabel={`Healthy ${frameLabel} range`}
+                />
+                <View style={styles.milestoneChip}>
+                  <MaterialIcons name="flag" size={14} color={color.yellow} />
+                  {journeyAtIdeal ? (
+                    <Text style={styles.milestoneChipText}>
+                      Right in the healthy zone — we&apos;ll keep it that way
+                    </Text>
+                  ) : milestoneIsStop ? (
+                    <Text style={styles.milestoneChipText}>
+                      Milestone <Text style={styles.milestoneChipBold}>1{totalStages >= 2 && totalStages <= 5 ? ` of ~${totalStages}` : ''}</Text>
+                      {' '}· first stop <Text style={styles.milestoneChipBold}>{targetWeightKg!.toFixed(1)} kg</Text>
+                      {milestoneWeeks > 0 ? ` · ~${milestoneWeeks} week${milestoneWeeks === 1 ? '' : 's'}` : ''}
+                    </Text>
+                  ) : (
+                    <Text style={styles.milestoneChipText}>
+                      Straight to ideal{milestoneWeeks > 0 ? ` · about ${milestoneWeeks} week${milestoneWeeks === 1 ? '' : 's'} at a safe pace` : ''}
+                    </Text>
+                  )}
+                </View>
+              </Animated.View>
+            )}
+
+            {/* The living-plan promise — truthful: adjustDailyTarget flexes
+                daily targets ±10% off weight trends, and milestones re-run
+                the math. This is the reason to come back. */}
+            <Animated.View entering={FadeInDown.duration(500).delay(520)} style={styles.panelCard}>
+              <Text style={styles.cardLabel}>A PLAN THAT ADAPTS</Text>
+              <View style={styles.adaptRow}>
+                <MaterialIcons name="sync" size={15} color={color.viz.green} style={styles.adaptIcon} />
+                <Text style={styles.adaptText}>
+                  Daily targets flex with {petName}&apos;s weight trend — never more than ±10%
+                </Text>
+              </View>
+              <View style={styles.adaptRow}>
+                <MaterialIcons name="flag" size={15} color={color.viz.green} style={styles.adaptIcon} />
+                <Text style={styles.adaptText}>
+                  {milestoneIsStop && targetWeightKg != null
+                    ? `At ${targetWeightKg.toFixed(1)} kg we re-run the math and set the next milestone together`
+                    : `Every weigh-in re-runs the math as ${petName} progresses`}
+                </Text>
+              </View>
+            </Animated.View>
+
+            {/* Tonight's actions — supporting tier, below the reasoning */}
             {portion && (
               <View style={styles.insightBlock}>
                 <PortionPlateCard petName={petName} plan={portion} />
@@ -223,6 +449,20 @@ export default function RevealScreen() {
               <View style={styles.insightBlock}>
                 <WatchOutsCard petName={petName} items={watchOuts} />
               </View>
+            )}
+
+            {/* Quiet share at peak pride — emotional share only, no rewards */}
+            {dailyKcal != null && (
+              <Animated.View entering={FadeIn.duration(500).delay(800)}>
+                <TouchableOpacity
+                  onPress={handleShare}
+                  style={styles.shareBtn}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <MaterialIcons name="ios-share" size={16} color={color.creamDim} />
+                  <Text style={styles.shareText}>Share {petName}&apos;s plan</Text>
+                </TouchableOpacity>
+              </Animated.View>
             )}
           </ScrollView>
 
@@ -250,18 +490,7 @@ const styles = StyleSheet.create({
   },
 
   // Phase 1 — building (fills + centres)
-  buildingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.xl, paddingHorizontal: space.xxl },
-  buildingSpinnerRing: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: color.navyRaised,
-    borderWidth: 1,
-    borderColor: color.hairlineOnNavy,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: space.md,
-  },
+  buildingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.xxl, paddingHorizontal: space.xxl },
   buildingTitle: {
     fontFamily: font.display,
     fontSize: 44,
@@ -270,12 +499,36 @@ const styles = StyleSheet.create({
     color: color.cream,
     textAlign: 'center',
   },
-  buildingPhase: {
+  phaseList: {
+    alignSelf: 'stretch',
+    gap: space.md,
+    paddingHorizontal: space.xxxl,
+    // Fixed height for all four rows so the title doesn't shift as they land.
+    minHeight: 4 * 32,
+  },
+  phaseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    height: 24,
+  },
+  phaseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginHorizontal: 4,
+    borderWidth: 1.5,
+    borderColor: color.creamFaint,
+  },
+  phaseText: {
     fontFamily: font.semibold,
-    fontSize: 13,
-    letterSpacing: 1.4,
-    color: color.yellow,
+    fontSize: 12.5,
+    letterSpacing: 1.2,
+    color: color.creamFaint,
     textTransform: 'uppercase',
+  },
+  phaseTextDone: {
+    color: color.cream,
   },
 
   // Phase 2 — reveal
@@ -283,18 +536,7 @@ const styles = StyleSheet.create({
   revealContent: {
     paddingHorizontal: space.xxl,
     paddingTop: space.xl,
-    gap: space.xxl,
-  },
-  whyMore: {
-    alignItems: 'center',
-    gap: 2,
-    marginTop: -space.sm,
-  },
-  whyMoreText: {
-    fontFamily: font.semibold,
-    fontSize: 12,
-    letterSpacing: 0.6,
-    color: color.creamDim,
+    gap: space.xl,
   },
   insightBlock: { marginTop: -space.sm },
   stickyBar: {
@@ -316,6 +558,20 @@ const styles = StyleSheet.create({
     textAlign: 'left',
   },
   heroBlock: { alignItems: 'flex-start' },
+  heroGlow: {
+    position: 'absolute',
+    top: -12,
+    left: -24,
+    width: 260,
+    height: 130,
+    borderRadius: 65,
+    backgroundColor: color.yellowSoft,
+  },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: space.sm,
+  },
   heroNumber: {
     fontFamily: font.display,
     fontSize: 96,
@@ -323,9 +579,12 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     color: color.cream,
   },
-  heroUnit: {
+  heroUnitText: {
+    fontFamily: font.display,
     fontSize: 32,
+    lineHeight: 40,
     color: color.creamFaint,
+    paddingBottom: 6,
   },
   heroSub: {
     fontFamily: font.regular,
@@ -335,75 +594,170 @@ const styles = StyleSheet.create({
     marginTop: space.md,
   },
 
-  statRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: space.lg,
-    borderTopWidth: 1,
-    borderTopColor: color.hairlineOnNavy,
-    borderBottomWidth: 1,
-    borderBottomColor: color.hairlineOnNavy,
+  // Shared navy panel card
+  panelCard: {
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+    borderRadius: radius.xl,
+    padding: space.lg,
   },
-  stat: { flex: 1 },
-  statDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: color.hairlineOnNavy,
-    marginHorizontal: space.sm,
+  cardLabel: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 2,
+    color: color.yellow,
   },
-  statValue: {
-    fontFamily: font.display,
-    fontSize: 26,
-    lineHeight: 26,
-    letterSpacing: 0.4,
-    color: color.cream,
-  },
-  statUnit: {
-    fontSize: 13,
+  cardSub: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
     color: color.creamFaint,
-  },
-  statLabel: {
-    fontFamily: font.medium,
-    fontSize: 11,
-    letterSpacing: 0.4,
-    color: color.creamFaint,
-    marginTop: 4,
+    marginTop: 2,
+    marginBottom: space.md,
   },
 
-  provenanceRow: {
+  // Walksign beat
+  walksignCard: { alignItems: 'center' },
+  walksignCrestWrap: { marginTop: space.lg, marginBottom: space.md },
+  walksignName: {
+    fontFamily: font.display,
+    fontSize: 36,
+    lineHeight: 38,
+    letterSpacing: 1,
+    color: color.cream,
+    textAlign: 'center',
+  },
+  walksignTagline: {
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.creamDim,
+    textAlign: 'center',
+    marginTop: space.sm,
+  },
+  walksignNote: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    color: color.creamFaint,
+    textAlign: 'center',
+    marginTop: space.md,
+  },
+
+  // Receipt rows
+  receiptRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
+    gap: 10,
+    paddingVertical: 11,
   },
-  avatarMini: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: color.yellow,
+  receiptRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(244, 241, 236, 0.08)',
   },
-  avatarImg: { width: '100%', height: '100%' },
-  avatarFallback: {
-    backgroundColor: color.yellow,
-    alignItems: 'center',
-    justifyContent: 'center',
+  receiptIcon: {
+    width: 18,
   },
-  avatarInitials: {
-    fontFamily: font.display,
-    fontSize: 22,
-    color: color.navy,
+  receiptBody: {
+    flex: 1,
   },
-  provenanceLine: {
+  receiptTitle: {
     fontFamily: font.semibold,
     fontSize: 13,
     color: color.cream,
-    textTransform: 'capitalize',
   },
-  provenanceHint: {
+  receiptSub: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    color: color.creamFaint,
+    marginTop: 1,
+  },
+  receiptEffect: {
+    fontFamily: font.bold,
+    fontSize: 12.5,
+    color: color.creamDim,
+  },
+  receiptDetail: {
     fontFamily: font.regular,
     fontSize: 12,
+    lineHeight: 18,
     color: color.creamDim,
-    marginTop: 2,
+    paddingLeft: 28,
+    paddingBottom: space.md,
+  },
+  receiptTotalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: color.hairlineOnNavy,
+  },
+  receiptTotalLabel: {
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    color: color.creamDim,
+  },
+  receiptTotalValue: {
+    fontFamily: font.display,
+    fontSize: 20,
+    lineHeight: 22,
+    letterSpacing: 0.5,
+    color: color.yellow,
+  },
+
+  // Journey card extras
+  milestoneChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: color.yellowSoft,
+    borderRadius: radius.md,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: space.sm,
+  },
+  milestoneChipText: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.cream,
+    flexShrink: 1,
+    textAlign: 'center',
+  },
+  milestoneChipBold: {
+    fontFamily: font.bold,
+    color: color.cream,
+  },
+
+  // Adapts card
+  adaptRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginTop: space.md,
+  },
+  adaptIcon: {
+    marginTop: 1,
+    width: 18,
+  },
+  adaptText: {
+    flex: 1,
+    fontFamily: font.regular,
+    fontSize: 12.5,
+    lineHeight: 18,
+    color: color.creamDim,
+  },
+
+  shareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+    alignSelf: 'center',
+    paddingVertical: space.sm,
+  },
+  shareText: {
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.creamDim,
   },
 });

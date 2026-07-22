@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -9,33 +9,54 @@ import Svg from 'react-native-svg';
 import Reanimated, {
   useSharedValue, useAnimatedStyle, withSequence, withSpring,
 } from 'react-native-reanimated';
-import { color, font, radius, shadow, space, motion } from '../../constants/design';
+import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
 import { AnimatedCounter } from '../../components/AnimatedCounter';
 import { entrance } from '../../components/motionPresets';
+import { PawLoader } from '../../components/loader/PawLoader';
 import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
 import { PREVIEW_SEEN_KEY } from '../preview-home';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
+import { computeWaterTargetMl } from '../../lib/hydration';
+import { resolvePetImage } from '../../lib/petFallbackImage';
 import { useAuth } from '../../providers/AuthProvider';
-import { supabase } from '../../lib/supabase';
-import { usePushNotifications } from '../../hooks/usePushNotifications';
 import { useSubscription } from '../../hooks/useSubscription';
 import { NudgeCard } from '../../components/NudgeCard';
 import { TrialBanner } from '../../components/TrialBanner';
+import { VetTunedNutritionBanner } from '../../components/VetTunedNutritionBanner';
+import { CatRefusingFoodCard } from '../../components/CatRefusingFoodCard';
+import { SevereObesityVetBanner } from '../../components/SevereObesityVetBanner';
+import { GrowthPhaseBanner } from '../../components/GrowthPhaseBanner';
+import { MerRecalibrationBanner } from '../../components/MerRecalibrationBanner';
+import { getAgeMonths } from '../../lib/lifeStage';
+import { deriveGoal as deriveGoalFn } from '../../lib/healthMath';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SecondOpinionCard } from '../../components/SecondOpinionCard';
+import { WalkPostCard } from '../../components/WalkPostCard';
+import { useTodayWalks } from '../../hooks/useTodayWalks';
+import { MilestoneJourneyCard } from '../../components/MilestoneJourneyCard';
 import { VetCheckinNudge } from '../../components/VetCheckinNudge';
 import { getMonthlyUsage, getPendingCheckin, type MonthlyUsage, type PendingCheckin } from '../../lib/askVet';
 import { track } from '../../lib/analytics';
 import { haptic } from '../../lib/haptics';
+import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import { WalksignCrest } from '../../components/walksign/WalksignCrest';
+import { WalksignMomentModal } from '../../components/walksign/WalksignMomentModal';
+import { PawPrintTeaser } from '../../components/pawprints/PawPrintTeaser';
+import { MilestoneCelebration } from '../../components/pawprints/MilestoneCelebration';
+import {
+  clearPendingWalksignCelebration,
+  readPendingWalksignCelebration,
+  type PendingWalksignCelebration,
+} from '../../lib/walksign/walksignSync';
+import type { WalksignId } from '../../lib/walksign/types';
 
 export default function HomeScreen() {
   const router = useRouter();
-  const scrollY = React.useRef(new Animated.Value(0)).current;
   const insets = useSafeAreaInsets();
   // Fine-grained selectors: re-render only when the specific value changes, not on
   // any unrelated store mutation (pantry, isLoading, etc.).
@@ -45,8 +66,9 @@ export default function HomeScreen() {
   const pawCoins = useStreakStore(s => s.pawCoins);
   const fetchStreak = useStreakStore(s => s.fetchStreak);
   const { user } = useAuth();
-  const { expoPushToken } = usePushNotifications();
-  const { isFreemiumActive, daysSinceCreation } = useSubscription();
+  const { isFreemiumActive, daysSinceCreation, hasFullAccess } = useSubscription();
+  // Today's tracked walks — surfaced as shareable post cards under Second Opinion.
+  const { walks: todayWalks } = useTodayWalks(activePet?.id);
   const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
 
   // Coin pill pulse — a one-shot scale bump whenever the balance grows, so an
@@ -64,16 +86,6 @@ export default function HomeScreen() {
   }, [pawCoins, coinPulse]);
   const coinPillStyle = useAnimatedStyle(() => ({ transform: [{ scale: coinPulse.value }] }));
 
-  // Sync push token silently
-  React.useEffect(() => {
-    if (user?.id && expoPushToken) {
-      supabase.rpc('register_push_token', { push_token: expoPushToken })
-        .then(({ error }) => {
-          if (error) console.error("Failed to sync push token:", error.message);
-        });
-    }
-  }, [user?.id, expoPushToken]);
-
   React.useEffect(() => {
     injectSubscriptionData(isFreemiumActive, daysSinceCreation);
   }, [isFreemiumActive, daysSinceCreation, injectSubscriptionData]);
@@ -90,6 +102,7 @@ export default function HomeScreen() {
   const targetCal = adjustedTarget || baseTargetCal;
   const activityCompletionRate = usePetContextStore(s => s.activityCompletionRate);
   const todayActivityMinutes = usePetContextStore(s => s.todayActivityMinutes);
+  const todayActivityTargetMinutes = usePetContextStore(s => s.todayActivityTargetMinutes);
   const todayProtein = usePetContextStore(s => s.todayProtein);
   const todayCarbs = usePetContextStore(s => s.todayCarbs);
   const todayFats = usePetContextStore(s => s.todayFats);
@@ -133,9 +146,30 @@ export default function HomeScreen() {
     if (activePet?.id) getPendingCheckin(activePet.id).then(setPendingCheckin).catch(() => {});
   }, [activePet?.id]));
 
+  // A Walksign confirmation/transition staged by walksignSync waits for the
+  // next Home focus — the celebration lands when the user is present, not
+  // mid-walk-save.
+  const [walksignMoment, setWalksignMoment] = React.useState<PendingWalksignCelebration | null>(null);
+  useFocusEffect(useCallback(() => {
+    if (!activePet?.id) return;
+    readPendingWalksignCelebration().then(pending => {
+      if (pending && pending.petId === activePet.id) setWalksignMoment(pending);
+    }).catch(() => {});
+  }, [activePet?.id]));
+  const dismissWalksignMoment = useCallback(() => {
+    setWalksignMoment(null);
+    clearPendingWalksignCelebration();
+  }, []);
+
   // Computed values
   const calorieProgress = Math.min(calPercent / 100, 1);
-  const activityProgress = Math.min(activityCompletionRate, 1);
+  // Moving goal = today's scheduled minutes, so completing the plan always
+  // closes the ring. 45 min is the generic-adult fallback when no plan exists
+  // (and completion-rate keeps the ring meaningful for plans of untimed tasks).
+  const movingTargetMin = todayActivityTargetMinutes > 0 ? todayActivityTargetMinutes : 45;
+  const activityProgress = todayActivityTargetMinutes > 0
+    ? Math.min(todayActivityMinutes / todayActivityTargetMinutes, 1)
+    : Math.min(activityCompletionRate, 1);
   const waterProgress = Math.min(waterPercent, 1);
 
   // A single restrained success haptic the first time all three rings close in
@@ -155,9 +189,7 @@ export default function HomeScreen() {
   const waterDisplay = todayWater >= 1000
     ? `${(todayWater / 1000).toFixed(1)}L`
     : `${todayWater}ml`;
-  const waterTarget = activePet?.current_weight_kg
-    ? Math.round(activePet.current_weight_kg * 50)
-    : 0;
+  const waterTarget = computeWaterTargetMl(activePet?.current_weight_kg, activePet?.diet_type);
   const waterTargetDisplay = waterTarget >= 1000
     ? `${(waterTarget / 1000).toFixed(1)}L`
     : `${waterTarget}ml`;
@@ -182,13 +214,58 @@ export default function HomeScreen() {
   return (
     <View style={styles.container}>
       <TrialBanner />
+      <VetTunedNutritionBanner
+        petId={activePet?.id ?? null}
+        petName={petName}
+        medicalConditions={activePet?.medical_conditions ?? null}
+      />
+      <SevereObesityVetBanner
+        petId={activePet?.id ?? null}
+        petName={petName}
+        bcs={activePet?.body_condition_score ?? null}
+        severeObesityVetConfirmedAt={activePet?.severe_obesity_vet_confirmed_at ?? null}
+      />
+      <GrowthPhaseBanner
+        petId={activePet?.id ?? null}
+        petName={petName}
+        ageMonths={activePet ? getAgeMonths(activePet) : undefined}
+        currentWeightKg={activePet?.current_weight_kg ?? null}
+        targetWeightKg={activePet?.target_weight_kg ?? null}
+      />
+      <MerRecalibrationBanner
+        petId={activePet?.id ?? null}
+        petName={petName}
+        observedMer={usePetContextStore(s => s.observedMer)}
+      />
+      <CatRefusingFoodCard
+        species={activePet?.species}
+        goal={deriveGoalFn(
+          activePet?.current_weight_kg ?? 0,
+          activePet?.target_weight_kg,
+          activePet?.body_condition_score,
+        )}
+        todayCalories={todayCalories}
+        petName={petName}
+      />
+
+      {/* One-shot Walksign confirmation / transition moment */}
+      <WalksignMomentModal
+        celebration={walksignMoment}
+        petName={activePet?.name}
+        petGender={activePet?.gender}
+        onClose={dismissWalksignMoment}
+      />
+
+      {/* Paw Print milestone celebrations — queued by walk sync, one at a
+          time, landing here after the walk fully wraps (never mid-walk). */}
+      <MilestoneCelebration />
 
       {/* Header - Always visible at top */}
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <View style={styles.headerLeft}>
           <View style={styles.avatarMini}>
             <Image
-              source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=200' }}
+              source={{ uri: activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 200) }}
               style={styles.avatarMiniImg}
               contentFit="cover"
               cachePolicy="memory-disk"
@@ -211,11 +288,6 @@ export default function HomeScreen() {
       <Animated.ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        onScroll={Animated.event(
-          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: true }
-        )}
-        scrollEventThrottle={16}
       >
         {/* Pending Second Opinion check-in — takes priority over the generic nudge */}
         {pendingCheckin && (
@@ -254,9 +326,17 @@ export default function HomeScreen() {
         )}
 
         {/* Greeting */}
-        <Reanimated.Text entering={entrance(0)} style={styles.greeting}>
-          {getGreeting()}, <Text style={styles.greetingName}>{petName}</Text>
-        </Reanimated.Text>
+        <Reanimated.View entering={entrance(0)} style={styles.greetingRow}>
+          <Text style={styles.greeting}>
+            {getGreeting()}, <Text style={styles.greetingName}>{petName}</Text>
+          </Text>
+          {/* The Walksign crest rides beside the name — identity, not a widget. */}
+          {activePet?.species === 'dog' && activePet?.walksign && (
+            <View style={styles.walksignBadge}>
+              <WalksignCrest sign={activePet.walksign as WalksignId} size={26} color={color.ink} />
+            </View>
+          )}
+        </Reanimated.View>
 
         {/* Ring Hero - Centered */}
         <Reanimated.View entering={entrance(1)} style={styles.ringsWrapper}>
@@ -271,18 +351,13 @@ export default function HomeScreen() {
             <View style={styles.petPhotoContainer}>
               <View style={styles.petPhoto}>
                 <Image
-                  source={{ uri: activePet?.current_avatar_url || activePet?.image_url || 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000&auto=format&fit=crop' }}
+                  source={{ uri: activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 1000) }}
                   style={styles.petPhotoImg}
                   contentFit="cover"
                   cachePolicy="memory-disk"
                   transition={200}
                 />
-                {isTailoring && (
-                  <View style={styles.tailoringOverlay}>
-                    <ActivityIndicator size="large" color="#F7F602" />
-                    <Text style={styles.tailoringText}>Tailoring...</Text>
-                  </View>
-                )}
+                <PawLoader visible={isTailoring} message="Tailoring avatar…" />
               </View>
               {/* Streak Badge */}
               {currentStreak > 0 && (
@@ -301,14 +376,8 @@ export default function HomeScreen() {
           </View>
         </Reanimated.View>
 
-        {/* ─── Second Opinion — flagship membership-crest moment ─── */}
-        <Reanimated.View entering={entrance(2)}>
-          <SecondOpinionCard
-            remaining={askUsage?.remaining ?? null}
-            resetsAt={askUsage?.resetsAt}
-            onPress={() => router.push('/ask' as any)}
-          />
-        </Reanimated.View>
+        {/* ─── Weight journey — the milestone map, brought home ─── */}
+        <MilestoneJourneyCard />
 
         {/* ─── Today — typography on the ground, hairline-divided ─── */}
         <Reanimated.View entering={entrance(3)}>
@@ -328,7 +397,7 @@ export default function HomeScreen() {
                 {todayActivityMinutes > 0 ? todayActivityMinutes : '0'}
                 <Text style={styles.statUnit}> min</Text>
               </Text>
-              <Text style={styles.statTarget}>of 45 min moving</Text>
+              <Text style={styles.statTarget}>of {movingTargetMin} min moving</Text>
               <ProgressBar progress={activityProgress} color={color.viz.move} />
             </View>
             <View style={styles.statDivider} />
@@ -389,69 +458,116 @@ export default function HomeScreen() {
             activeOpacity={0.85}
           >
             <View style={styles.streakNudgeIcon}>
-              <MaterialIcons name="replay" size={22} color="#553e00" />
+              <MaterialIcons name="replay" size={20} color="#92400e" />
             </View>
             <View style={styles.streakNudgeContent}>
               <Text style={styles.streakNudgeTitle}>You had a {longestStreak}-day streak</Text>
               <Text style={styles.streakNudgeSubtitle}>Log something today to start a new one</Text>
             </View>
-            <MaterialIcons name="chevron-right" size={20} color="#b45309" />
+            <MaterialIcons name="chevron-right" size={18} color="#b45309" />
           </TouchableOpacity>
         )}
 
-        {/* ─── Up next — the deliberate dark moment on the feed ─── */}
+        {/* ─── Up next — flat editorial row, in column with TODAY / MEALS ─── */}
         {nextActivity && (
           <Reanimated.View entering={entrance(4)}>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>UP NEXT</Text>
+              <View style={styles.sectionRule} />
+              <Text style={styles.sectionMeta}>
+                {nextActivity.scheduled_time ? nextActivity.scheduled_time.slice(0, 5) : ''}
+              </Text>
+            </View>
             <TouchableOpacity
-              style={styles.upNext}
+              style={styles.upNextRow}
               onPress={() => router.push('/(tabs)/activity')}
-              activeOpacity={0.92}
+              activeOpacity={0.8}
             >
-              <View style={styles.upNextHead}>
-                <Text style={styles.upNextEyebrow}>UP NEXT</Text>
-                <Text style={styles.upNextTime}>
-                  {nextActivity.scheduled_time ? nextActivity.scheduled_time.slice(0, 5) : ''}
-                </Text>
+              <View style={styles.upNextIcon}>
+                <MaterialIcons
+                  name={
+                    nextActivity.activity_type === 'walk' ? 'directions-walk'
+                      : nextActivity.activity_type === 'play' ? 'sports-baseball'
+                        : nextActivity.activity_type === 'water' ? 'water-drop'
+                          : nextActivity.activity_type === 'training' ? 'school'
+                            : nextActivity.activity_type === 'grooming' ? 'content-cut'
+                              : 'star'
+                  }
+                  size={20}
+                  color={nextActivity.activity_type === 'water' ? '#60a5fa' : color.yellow}
+                />
               </View>
-              <View style={styles.upNextBody}>
-                <View style={styles.upNextIcon}>
-                  <MaterialIcons
-                    name={
-                      nextActivity.activity_type === 'walk' ? 'directions-walk'
-                        : nextActivity.activity_type === 'play' ? 'sports-baseball'
-                          : nextActivity.activity_type === 'water' ? 'water-drop'
-                            : nextActivity.activity_type === 'training' ? 'school'
-                              : nextActivity.activity_type === 'grooming' ? 'content-cut'
-                                : 'star'
-                    }
-                    size={22}
-                    color={nextActivity.activity_type === 'water' ? '#60a5fa' : color.yellow}
-                  />
-                </View>
-                <View style={styles.upNextText}>
-                  <Text style={styles.upNextTitle}>{nextActivity.title}</Text>
-                  <Text style={styles.upNextMeta}>
-                    {[
+              <View style={styles.upNextText}>
+                <Text style={styles.upNextTitle}>{nextActivity.title}</Text>
+                <Text style={styles.upNextMeta}>
+                  {(() => {
+                    const parts = [
                       nextActivity.duration_minutes ? `${nextActivity.duration_minutes} min` : null,
                       nextActivity.intensity || null,
-                    ].filter(Boolean).join(' · ')}
-                  </Text>
-                </View>
-                <View style={styles.upNextPlay}>
-                  <MaterialIcons name="play-arrow" size={18} color={color.navy} />
-                </View>
+                    ].filter(Boolean);
+                    if (parts.length > 0) return parts.join(' · ');
+                    if (nextActivity.notes) return nextActivity.notes;
+                    switch (nextActivity.activity_type) {
+                      case 'water': return 'Hydration break';
+                      case 'meal':
+                      case 'dinner':
+                      case 'breakfast':
+                      case 'lunch': return 'Mealtime';
+                      case 'grooming': return 'Grooming';
+                      case 'training': return 'Training session';
+                      case 'walk': return 'Time to move';
+                      case 'play': return 'Playtime';
+                      default: return 'Tap to start';
+                    }
+                  })()}
+                </Text>
               </View>
+              {WALK_TRACKING_ENABLED && nextActivity.activity_type === 'walk' ? (
+                <TouchableOpacity
+                  style={styles.upNextTrackBtn}
+                  onPress={() => router.push((hasFullAccess ? '/walk' : '/paywall') as any)}
+                  activeOpacity={0.85}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                >
+                  <MaterialIcons name="play-arrow" size={16} color={color.navy} />
+                  <Text style={styles.upNextTrackBtnText}>Track</Text>
+                </TouchableOpacity>
+              ) : (
+                <MaterialIcons name="chevron-right" size={18} color={color.creamDim} />
+              )}
             </TouchableOpacity>
           </Reanimated.View>
         )}
 
-        {/* Primary CTA */}
-        <PawtchiButton
-          title="Log meal or activity"
-          iconName="add"
-          onPress={() => router.push('/(tabs)/meal')}
-          style={{ marginBottom: 24 }}
-        />
+        {/* Primary CTA — Second Opinion */}
+        <Reanimated.View entering={entrance(4)} style={styles.ctaRow}>
+          <SecondOpinionCard
+            remaining={askUsage?.remaining ?? null}
+            resetsAt={askUsage?.resetsAt}
+            onPress={() => router.push('/ask' as any)}
+          />
+        </Reanimated.View>
+
+        {/* ─── Today's tracked walks — shareable post cards ─── */}
+        {WALK_TRACKING_ENABLED && activePet && todayWalks.length > 0 && (
+          <Reanimated.View entering={entrance(4.5)}>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>TODAY&apos;S WALKS</Text>
+              <View style={styles.sectionRule} />
+              <Text style={styles.sectionMeta}>{todayWalks.length} tracked</Text>
+            </View>
+            {todayWalks.map((walk, i) => (
+              <WalkPostCard key={walk.id} walk={walk} pet={activePet} index={i} />
+            ))}
+          </Reanimated.View>
+        )}
+
+        {/* ─── Paw Prints — gallery teaser (self-hiding until ≥2 walks) ─── */}
+        {WALK_TRACKING_ENABLED && activePet && (
+          <Reanimated.View entering={entrance(4.7)} style={{ marginBottom: space.lg }}>
+            <PawPrintTeaser />
+          </Reanimated.View>
+        )}
 
         {/* ─── Meals — editorial list, no boxes ─── */}
         <Reanimated.View entering={entrance(5)}>
@@ -528,6 +644,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
 
+  // Primary CTA
+  ctaRow: {
+    width: '100%',
+  },
+
   // Header
   header: {
     flexDirection: 'row',
@@ -598,19 +719,31 @@ const styles = StyleSheet.create({
   },
 
   // Scroll Content
+  // One consistent vertical rhythm for every top-level section — a single
+  // `gap` governs the spacing between blocks so no section sets its own
+  // ad-hoc marginTop/marginBottom (those only create drift). Intra-section
+  // spacing (label → content) still lives inside each block.
   scrollContent: {
     paddingHorizontal: 20,
+    paddingTop: space.md,
     paddingBottom: 120,
+    gap: space.xxl,
   },
 
   // Greeting
+  greetingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
   greeting: {
     fontFamily: 'Montserrat_700Bold',
     fontSize: 26,
     color: '#475569',
-    marginTop: 16,
-    marginBottom: 24,
     letterSpacing: -0.5,
+  },
+  walksignBadge: {
+    marginTop: 2,
   },
   greetingName: {
     fontFamily: 'Montserrat_800ExtraBold',
@@ -620,7 +753,6 @@ const styles = StyleSheet.create({
   // Rings
   ringsWrapper: {
     alignItems: 'center',
-    marginBottom: 24,
   },
   ringsContainer: {
     width: RING_SIZE,
@@ -641,11 +773,7 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: '#FFFFFF',
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 20,
-    elevation: 10,
+    ...makeShadow(4, 20, 0.12, '#000'),
   },
   petPhotoImg: {
     width: '100%',
@@ -677,11 +805,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1.5,
     borderColor: '#e5e7eb',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 3,
+    ...makeShadow(2, 4, 0.08, '#000'),
   },
   streakBadgeText: {
     fontFamily: 'Montserrat_800ExtraBold',
@@ -694,7 +818,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: space.md,
     marginBottom: space.lg,
-    marginTop: space.sm,
   },
   sectionLabel: {
     fontFamily: font.semibold,
@@ -746,7 +869,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    marginBottom: space.xl,
   },
   macroDot: {
     width: 7,
@@ -768,7 +890,6 @@ const styles = StyleSheet.create({
     paddingVertical: space.lg,
     borderTopWidth: 1,
     borderTopColor: '#ece9e2',
-    marginTop: space.sm,
   },
   inviteIcon: {
     width: 34,
@@ -796,12 +917,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#07202A',
     borderRadius: 20,
     padding: 18,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 8,
+    ...makeShadow(8, 20, 0.15, '#000'),
   },
   previewIcon: {
     width: 44,
@@ -832,7 +948,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     borderTopWidth: 1,
     borderTopColor: '#ece9e2',
-    marginBottom: space.lg,
   },
   treatBannerWarning: {
     backgroundColor: color.errorSoft,
@@ -874,10 +989,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
     backgroundColor: '#fef3c7',
-    borderRadius: radius.lg,
-    padding: space.lg,
-    marginBottom: space.lg,
   },
   streakNudgeIcon: {
     width: 36,
@@ -892,60 +1007,39 @@ const styles = StyleSheet.create({
   },
   streakNudgeTitle: {
     fontFamily: font.bold,
-    fontSize: 13.5,
+    fontSize: 15,
     color: '#92400e',
+    letterSpacing: -0.2,
   },
   streakNudgeSubtitle: {
     fontFamily: font.medium,
-    fontSize: 11.5,
+    fontSize: 12,
     color: '#b45309',
-    marginTop: 1,
+    marginTop: 2,
   },
 
   // ─── Up next — the dark navy moment ───
-  upNext: {
+  upNextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
     backgroundColor: color.navy,
-    borderRadius: 28,
-    padding: space.xxl,
-    marginBottom: space.xl,
-    ...shadow.raised,
-  },
-  upNextHead: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: space.lg,
-  },
-  upNextEyebrow: {
-    fontFamily: font.semibold,
-    fontSize: 10.5,
-    letterSpacing: 2.4,
-    color: color.yellow,
-  },
-  upNextTime: {
-    fontFamily: font.bold,
-    fontSize: 12,
-    color: color.creamDim,
-  },
-  upNextBody: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.lg,
   },
   upNextIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: radius.lg,
-    backgroundColor: color.navyRaised,
-    borderWidth: 1,
-    borderColor: color.hairlineOnNavy,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.08)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   upNextText: { flex: 1, minWidth: 0 },
   upNextTitle: {
     fontFamily: font.bold,
-    fontSize: 16,
+    fontSize: 15,
     color: color.cream,
     letterSpacing: -0.2,
   },
@@ -953,15 +1047,24 @@ const styles = StyleSheet.create({
     fontFamily: font.medium,
     fontSize: 12,
     color: color.creamDim,
-    marginTop: 4,
+    marginTop: 2,
   },
-  upNextPlay: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: color.yellow,
-    justifyContent: 'center',
+  // One-tap tracked walk — the yellow marks the one thing that matters here.
+  upNextTrackBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 2,
+    backgroundColor: color.yellow,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingLeft: 8,
+    paddingRight: 12,
+  },
+  upNextTrackBtnText: {
+    fontFamily: font.bold,
+    fontSize: 12.5,
+    color: color.navy,
+    letterSpacing: -0.1,
   },
 
   // ─── Meals — editorial rows ───
@@ -969,7 +1072,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: space.xxl,
     gap: 8,
-    marginBottom: space.lg,
   },
   emptyMealsText: {
     fontFamily: font.regular,

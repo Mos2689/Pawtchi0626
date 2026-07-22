@@ -3,11 +3,16 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { safeParseBody, isValidUUID } from '../_shared/validate.ts'
+import { waterPerSessionMl } from '../_shared/hydration.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000;
 
 // Interfaces for structured output
+type DaySlotName = 'morning' | 'midday' | 'evening';
+type Intensity = 'low' | 'moderate' | 'high';
+
 interface ActivityArchetype {
   activity_type: string;
   title: string;
@@ -15,6 +20,102 @@ interface ActivityArchetype {
   why_its_good: string;
   intensity: string;
   duration_minutes: number;
+  /** Which daily slot this suits — morning=physical, midday=mental, evening=social. */
+  slot?: string;
+}
+
+/** Structured exercise restriction passed from the app (lib/activityRestrictions.ts). */
+interface ActivityRestrictionInput {
+  label: string;
+  maxIntensity: Intensity;
+}
+
+const INTENSITY_ORDER: Record<Intensity, number> = { low: 0, moderate: 1, high: 2 };
+
+function normalizeIntensity(value: string | undefined): Intensity {
+  return value === 'low' || value === 'high' ? value : 'moderate';
+}
+
+/** Downgrade an intensity to a ceiling, preserving anything already below it. */
+function capIntensity(value: Intensity, ceiling: Intensity): Intensity {
+  return INTENSITY_ORDER[value] > INTENSITY_ORDER[ceiling] ? ceiling : value;
+}
+
+// ── Owner-aware slot solver (mirror of my-app/lib/scheduleSlots.ts) ──
+// Inlined here because Deno edge functions don't share the TS import path
+// with the app code. Keep both copies in sync if behaviour changes.
+
+interface OwnerPrefs {
+  wake_time: string | null;
+  bedtime: string | null;
+  work_start: string | null;
+  work_end: string | null;
+  weekend_shifts_hours: number | null;
+}
+
+interface DaySlots {
+  breakfast: string;
+  morningActivity: string;
+  middayHydration: string;
+  lunch: string | null;
+  middayActivity: string;
+  eveningHydration: string;
+  dinner: string;
+  eveningActivity: string;
+  windDown: string;
+}
+
+function parseTime(t: string | null, fallback: string): number {
+  const src = t ?? fallback;
+  const [h, m] = src.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+function formatTime(minutes: number): string {
+  const wrapped = ((minutes % 1440) + 1440) % 1440;
+  const h = Math.floor(wrapped / 60);
+  const m = wrapped % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+}
+
+function resolveSlots(prefs: OwnerPrefs | null, isWeekend: boolean, species: string): DaySlots {
+  const defaultWake = species === 'cat' ? '06:30' : '07:00';
+  const wake = parseTime(prefs?.wake_time ?? null, defaultWake);
+  const bedtime = parseTime(prefs?.bedtime ?? null, '22:30');
+  const workStart = prefs?.work_start ? parseTime(prefs.work_start, '09:00') : null;
+  const workEnd = prefs?.work_end ? parseTime(prefs.work_end, '17:30') : null;
+
+  const shiftHours = Math.max(-2, Math.min(4, prefs?.weekend_shifts_hours ?? 0));
+  const shift = isWeekend ? shiftHours * 60 : 0;
+
+  const breakfast = wake + 30;
+  const morningActivity = workStart !== null ? workStart - 75 : wake + 45;
+  const midday = workStart !== null && workEnd !== null ? Math.round((workStart + workEnd) / 2) : 12 * 60;
+  const middayActivity = midday + 30;
+  const eveningHydrationBase = workEnd !== null ? workEnd + 15 : 17 * 60;
+  const dinner = workEnd !== null ? workEnd + 60 : 18 * 60 + 30;
+  const eveningActivity = dinner + 75;
+  const windDown = bedtime - 60;
+  const lunch = species === 'cat' ? midday - 15 : null;
+
+  return {
+    breakfast: formatTime(breakfast + shift),
+    morningActivity: formatTime(morningActivity + shift),
+    middayHydration: formatTime(midday + shift),
+    lunch: lunch !== null ? formatTime(lunch + shift) : null,
+    middayActivity: formatTime(middayActivity + shift),
+    eveningHydration: formatTime(eveningHydrationBase + shift),
+    dinner: formatTime(dinner + shift),
+    eveningActivity: formatTime(eveningActivity + shift),
+    windDown: formatTime(windDown + shift),
+  };
+}
+
+function isWeekendDay(dateStr: string): boolean {
+  // YYYY-MM-DD → parsed as local. Sun=0, Sat=6.
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const day = new Date(y, m - 1, d).getDay();
+  return day === 0 || day === 6;
 }
 
 // Activity calorie burn rates (kcal/kg per hour) — veterinary exercise science
@@ -53,7 +154,8 @@ function estimateActivityBurn(
 function computeBurnSummary(
   rows: Record<string, unknown>[],
   weightKg: number,
-  targetDailyCalories: number
+  targetDailyCalories: number,
+  dailyDeficitKcal: number,
 ): {
   weeklyBurnKcal: number;
   dailyBurnKcal: number;
@@ -86,12 +188,16 @@ function computeBurnSummary(
   const activityDays = new Set(rows.map(r => r.scheduled_date as string)).size || 1;
   const weeklyBurnKcal = Math.round(totalKcal * 10) / 10;
   const dailyBurnKcal = Math.round(weeklyBurnKcal / activityDays);
-  const targetDeficitPerWeek = targetDailyCalories > 0 ? targetDailyCalories * 7 * 0.20 : 0; // ~20% deficit for weight loss
+  // Real planned deficit (estimated maintenance − prescribed target), supplied
+  // by the app from its kcal engine. Zero for maintain/gain plans, in which
+  // case the "% of deficit" framing is suppressed entirely — activity isn't
+  // servicing a deficit that doesn't exist.
+  const targetDeficitPerWeek = dailyDeficitKcal > 0 ? dailyDeficitKcal * 7 : 0;
   const activityContributionPercent = targetDailyCalories > 0
     ? Math.round((dailyBurnKcal / targetDailyCalories) * 100)
     : 0;
   const deficitContributionPercent = targetDeficitPerWeek > 0
-    ? Math.round((weeklyBurnKcal / targetDeficitPerWeek) * 100)
+    ? Math.min(100, Math.round((weeklyBurnKcal / targetDeficitPerWeek) * 100))
     : 0;
 
   return {
@@ -105,7 +211,7 @@ function computeBurnSummary(
   };
 }
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -124,30 +230,77 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('generate-schedule', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
-    const { petProfile, daysToGenerate, performanceContext } = parsed.data as Record<string, any>;
+    const { petProfile, daysToGenerate, performanceContext, localDate, localTime, activityRestrictions, dailyDeficitKcal } = parsed.data as Record<string, any>;
     const numDays = daysToGenerate || 7;
     const petId = petProfile?.id;
-    if (!petId) throw new Error('Pet ID is required.');
-    if (!isValidUUID(petId)) throw new Error('Invalid Pet ID format.');
+    if (!petId || !isValidUUID(petId)) {
+      logInternal('generate-schedule', 'missing or malformed pet id');
+      return errorResponse('invalid_input', corsHeaders);
+    }
+
+    // ── The caller's local calendar date. The server's UTC "today" can be a
+    // day off for most of the world (an evening generation in the Americas
+    // lands under tomorrow's date; an early-morning one in Asia under
+    // yesterday's). The app reads activities by LOCAL date, so the plan must
+    // be anchored to the client's date, not the server's. ──
+    const startDate: string = typeof localDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(localDate)
+      ? localDate
+      : new Date().toISOString().split('T')[0];
+
+    // The caller's local wall-clock time (HH:MM[:SS]). When present, day-0
+    // rows whose slot has already passed are dropped: a fresh plan "begins
+    // now", and a mid-day regeneration can't insert a second pending
+    // Breakfast/Midday row next to the one already completed this morning.
+    // (The pending-only wipe before insert — see LAYER 4 — preserves the
+    // completed rows this drop leaves standing.)
+    const startTime: string | null = typeof localTime === 'string' && /^\d{2}:\d{2}(:\d{2})?$/.test(localTime)
+      ? (localTime.length === 5 ? `${localTime}:00` : localTime)
+      : null;
+
+    // ── Structured exercise restrictions from clinical conditions. These are
+    // enforced in code below (intensity ceiling), not just fed to the LLM. ──
+    const restrictions: ActivityRestrictionInput[] = Array.isArray(activityRestrictions)
+      ? activityRestrictions
+          .filter((r: any) => r && typeof r.label === 'string')
+          .map((r: any) => ({
+            label: String(r.label).slice(0, 120),
+            maxIntensity: normalizeIntensity(r.maxIntensity),
+          }))
+          .slice(0, 10)
+      : [];
+    const restrictionCeiling: Intensity | null = restrictions.length > 0
+      ? restrictions.reduce<Intensity>(
+          (min, r) => (INTENSITY_ORDER[r.maxIntensity] < INTENSITY_ORDER[min] ? r.maxIntensity : min),
+          'high',
+        )
+      : null;
+
+    // Real planned daily deficit from the app's kcal engine (0 = not a
+    // hypocaloric plan). Clamped to a sane range to reject garbage input.
+    const deficitKcal: number = typeof dailyDeficitKcal === 'number' && Number.isFinite(dailyDeficitKcal)
+      ? Math.max(0, Math.min(2000, Math.round(dailyDeficitKcal)))
+      : 0;
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured.')
+      logInternal('generate-schedule', 'GEMINI_API_KEY is not configured.');
+      return errorResponse('server_error', corsHeaders);
     }
 
     // ==========================================
     // LAYER 1: DETERMINISTIC HEALTH MATH
     // ==========================================
-    // Water Calculation: ~50ml per kg of body weight
+    // Water Calculation: ~50ml/kg total requirement, diet-aware — wet-fed
+    // pets get most of their water from food, so their DRINKING target is
+    // lower (see _shared/hydration.ts). Session = target/3; the builder
+    // schedules exactly 3 hydration tasks so a completed day meets the target.
     const weightKg = parseFloat(petProfile?.current_weight_kg || '10');
-    const totalWaterDaily = Math.round(weightKg * 50);
-    const waterPerSession = Math.round(totalWaterDaily / 3);
+    const dietType: string[] | null = Array.isArray(petProfile?.diet_type) ? petProfile.diet_type : null;
+    const waterPerSession = waterPerSessionMl(weightKg, dietType);
 
     const hasMedicalConditions = petProfile?.medical_conditions && petProfile.medical_conditions.length > 0;
     const isNeutered = petProfile?.is_neutered ?? true;
@@ -155,6 +308,33 @@ Deno.serve(async (req) => {
     const ageYears = petProfile?.age_years ?? 3;
     const targetDailyCalories = petProfile?.target_daily_calories ?? 0;
     const species = petProfile?.species || 'dog';
+    const mealGramsPerServing: number | null = petProfile?.meal_grams_per_serving ?? null;
+
+    // ── Fetch owner routine prefs for slot solver ──
+    // Null prefs → slot solver returns species-aware defaults (07:00 wake etc),
+    // matching the legacy hardcoded behaviour. Existing users see no regression.
+    const SUPABASE_URL_FOR_PREFS = Deno.env.get('SUPABASE_URL')!;
+    const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    let ownerPrefs: OwnerPrefs | null = null;
+    try {
+      const prefsRes = await fetch(
+        `${SUPABASE_URL_FOR_PREFS}/rest/v1/owner_preferences?owner_id=eq.${auth.userId}&select=wake_time,bedtime,work_start,work_end,weekend_shifts_hours`,
+        {
+          headers: {
+            apikey: SUPABASE_SERVICE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          },
+        },
+      );
+      if (prefsRes.ok) {
+        const rows = await prefsRes.json();
+        if (Array.isArray(rows) && rows.length > 0) ownerPrefs = rows[0] as OwnerPrefs;
+      } else {
+        console.warn('[generate-schedule] owner_preferences fetch non-ok:', prefsRes.status);
+      }
+    } catch (e) {
+      console.warn('[generate-schedule] owner_preferences fetch failed (using defaults):', e);
+    }
 
     // ── BCS-based intensity modifier (Purina Body Condition System) ──
     // Direct fat reserve signal — more accurate than weight-gap heuristic
@@ -289,6 +469,7 @@ ${mentalPhysicalBalance}
 
 - Medical Conditions: ${petProfile?.medical_conditions?.join(', ') || 'None'}
 - Allergies: ${petProfile?.allergies?.join(', ') || 'None'}
+${restrictions.length > 0 ? `\nEXERCISE RESTRICTIONS (clinical — MUST be respected in every archetype):\n${restrictions.map(r => `- ${r.label} (max intensity: ${r.maxIntensity})`).join('\n')}` : ''}
 ${performanceRules}
 
 VOICE RULES — apply to all generated text:
@@ -307,7 +488,7 @@ RULES (CRITICAL):
 5. activity_type MUST be one of: walk, play, grooming, training, other. (Do NOT generate water or medicine, code handles that).
 6. Duration MUST respect the age rule (puppies: 5 min/month age max; seniors: max 30 min). Never exceed the age-based cap.
 7. For BCS 7+ pets, every activity MUST be explicitly LOW-IMPACT with joint protection mentioned.
-8. Use the "why_its_good" field to indicate which daily slot this activity suits (morning=physical, midday=mental, evening=social).
+8. Set the "slot" field to the daily slot this activity suits: "morning" (physical exercise), "midday" (mental enrichment), or "evening" (social/gentle). Generate a MIX across all three slots — at least 2 archetypes per slot.
 
 Respond ONLY with valid JSON matching this schema:
 {
@@ -318,7 +499,8 @@ Respond ONLY with valid JSON matching this schema:
       "how_to_do_it": "Actionable instructions...",
       "why_its_good": "Empathetic reason based on profile...",
       "intensity": "(low|moderate|high)",
-      "duration_minutes": 15
+      "duration_minutes": 15,
+      "slot": "(morning|midday|evening)"
     }
   ]
 }`;
@@ -350,8 +532,8 @@ Respond ONLY with valid JSON matching this schema:
 
     const data = await geminiRes.json();
     if (data.error) {
-      console.error('[generate-schedule] Gemini API error:', JSON.stringify(data.error));
-      throw new Error(data.error.message || 'Gemini API error');
+      logInternal('generate-schedule', `upstream error: ${JSON.stringify(data.error).substring(0, 300)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -361,16 +543,21 @@ Respond ONLY with valid JSON matching this schema:
       parsedArchetypes = JSON.parse(cleaned);
     } catch (_e) {
       console.error('[generate-schedule] JSON parse failed. Raw:', rawText.substring(0, 500));
-      throw new Error('Failed to parse AI archetype response.');
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const archetypes = parsedArchetypes.archetypes || [];
-    if (archetypes.length === 0) throw new Error('AI returned 0 archetypes.');
+    if (archetypes.length === 0) {
+      logInternal('generate-schedule', 'model returned 0 archetypes');
+      return errorResponse('ai_unavailable', corsHeaders);
+    }
 
-    // ── Duration sanity check: enforce age-based limits ──
-    // Puppies: 5 min/month of age (e.g., 6mo puppy = 30 min max)
-    // Seniors: max 30 min per session (joint protection)
-    // All others: capped at 90 min to prevent unrealistic suggestions
+    // ── ENFORCEMENT: the safety rules above are also in the prompt, but the
+    // prompt is a request — this is the guarantee. Every archetype is clamped
+    // in code so an LLM miss can never schedule an unsafe session. ──
+
+    // Duration ceiling — puppies: 5 min/month of age; seniors: 30 min
+    // (joint protection); adults: 90 min sanity cap.
     let maxDuration: number;
     if (ageYears < 1) {
       maxDuration = Math.round(ageYears * 12 * 5);
@@ -379,11 +566,40 @@ Respond ONLY with valid JSON matching this schema:
     } else {
       maxDuration = 90;
     }
+    // BCS 7+ session cap (same formula the prompt quotes): protects joints
+    // carrying excess load. Tighter of the two caps wins.
+    if (bcs >= 7) {
+      maxDuration = Math.min(maxDuration, Math.min(20 + (9 - bcs) * 3, 35));
+    }
+
+    // Intensity ceiling — tightest of: clinical restrictions, BCS extremes
+    // (overweight joints / underweight energy reserves), senior age.
+    let intensityCeiling: Intensity = 'high';
+    if (restrictionCeiling) intensityCeiling = capIntensity(intensityCeiling, restrictionCeiling);
+    if (bcs >= 7 || bcs <= 3) intensityCeiling = capIntensity(intensityCeiling, 'moderate');
+    if (ageYears >= 8) intensityCeiling = capIntensity(intensityCeiling, 'moderate');
+
+    const VALID_SLOTS: DaySlotName[] = ['morning', 'midday', 'evening'];
     for (const arch of archetypes) {
+      // Normalize + clamp intensity.
+      const normalized = normalizeIntensity(arch.intensity);
+      const clamped = capIntensity(normalized, intensityCeiling);
+      if (clamped !== normalized) {
+        console.log(`[generate-schedule] Intensity of "${arch.title}" clamped ${normalized} → ${clamped}`);
+      }
+      arch.intensity = clamped;
+
+      // Normalize slot; infer from intensity when the LLM omitted it
+      // (high-energy → morning, gentle → evening, the rest → midday).
+      if (!VALID_SLOTS.includes(arch.slot as DaySlotName)) {
+        arch.slot = clamped === 'high' ? 'morning' : clamped === 'low' ? 'evening' : 'midday';
+      }
+
+      // Clamp duration.
       if (arch.duration_minutes > maxDuration) {
         const original = arch.duration_minutes;
         arch.duration_minutes = maxDuration;
-        console.log(`[generate-schedule] Capped "${arch.title}" from ${original}min to ${maxDuration}min (age=${ageYears}yr)`);
+        console.log(`[generate-schedule] Capped "${arch.title}" from ${original}min to ${maxDuration}min (age=${ageYears}yr, bcs=${bcs})`);
       }
       // Sanity floor: never go below 5 min
       if (arch.duration_minutes < 5) {
@@ -406,148 +622,182 @@ Respond ONLY with valid JSON matching this schema:
     // ==========================================
     const rows: Record<string, unknown>[] = [];
 
-    // Helper to get date string in YYYY-MM-DD format
-    const getDateStr = (d: Date) => d.toISOString().split('T')[0];
+    // Calendar-safe date arithmetic on YYYY-MM-DD strings (no TZ drift).
+    const addDaysYMD = (ymd: string, days: number): string => {
+      const [y, m, d] = ymd.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d + days)).toISOString().split('T')[0];
+    };
 
-    // Build one day's worth of activities (water + activity slots)
-    const buildDayRows = (dateStr: string, archetypes: ActivityArchetype[], hasMedicalConditions: boolean, dayIndex: number): Record<string, unknown>[] => {
+    // Build one day's worth of activities. Slot times now come from the
+    // owner-aware resolveSlots() rather than hardcoded clock literals.
+    const feedingPortionNote = mealGramsPerServing && mealGramsPerServing > 0
+      ? `Recommended portion: ~${mealGramsPerServing}g of their daily food.`
+      : `Use the portion size shown on the food bag for ${petProfile?.name ?? 'your pet'}'s weight.`;
+
+    // ── Deterministic archetype picker ──
+    // The prompt's recovery/slot/variety rules are enforced HERE, not left to
+    // chance: slot-matched pools, round-robin rotation for day-to-day variety,
+    // no repeated archetype within a day, and no 'high' session once the two
+    // previous days both contained one (joint/muscle recovery).
+    const poolsBySlot: Record<DaySlotName, ActivityArchetype[]> = { morning: [], midday: [], evening: [] };
+    for (const a of archetypes) poolsBySlot[a.slot as DaySlotName].push(a);
+    const slotCursor: Record<DaySlotName, number> = { morning: 0, midday: 0, evening: 0 };
+    let consecutiveHighDays = 0;
+
+    const pickArchetype = (slot: DaySlotName, usedToday: Set<string>, allowHigh: boolean): ActivityArchetype => {
+      const pool = poolsBySlot[slot].length > 0 ? poolsBySlot[slot] : archetypes;
+      const n = pool.length;
+      for (let i = 0; i < n; i++) {
+        const cand = pool[(slotCursor[slot] + i) % n];
+        if (usedToday.has(cand.title)) continue;
+        if (!allowHigh && cand.intensity === 'high') continue;
+        slotCursor[slot] = (slotCursor[slot] + i + 1) % n;
+        return cand;
+      }
+      // Tiny pool and everything excluded — relax the no-repeat rule but keep
+      // the recovery rule: a high pick on a recovery day is served downgraded.
+      const fallback = pool.find(c => allowHigh || c.intensity !== 'high') ?? pool[0];
+      if (!allowHigh && fallback.intensity === 'high') {
+        return { ...fallback, intensity: 'moderate' };
+      }
+      return fallback;
+    };
+
+    const buildDayRows = (dateStr: string): Record<string, unknown>[] => {
       const dayRows: Record<string, unknown>[] = [];
+      const slots = resolveSlots(ownerPrefs, isWeekendDay(dateStr), species);
+      const now = new Date().toISOString();
+      const usedToday = new Set<string>();
+      const allowHigh = consecutiveHighDays < 2;
+      let dayHasHigh = false;
 
-      // 1. Morning Routine
-      dayRows.push({
+      // Helper to push a row with shared defaults.
+      const push = (row: Record<string, unknown>) => dayRows.push({
         pet_id: petId,
-        activity_type: 'water',
-        title: 'Morning Hydration',
-        notes: `Ensure fresh water is available to start the day. Recommended: ${waterPerSession}ml`,
-        water_ml: waterPerSession,
+        water_ml: null,
         duration_minutes: null,
         intensity: null,
         scheduled_date: dateStr,
-        scheduled_time: '08:00:00',
         status: 'pending',
+        is_ai_generated: true,
+        created_at: now,
+        ...row,
+      });
+
+      const pushActivity = (slot: DaySlotName, scheduledTime: string) => {
+        const arc = pickArchetype(slot, usedToday, allowHigh);
+        usedToday.add(arc.title);
+        if (arc.intensity === 'high') dayHasHigh = true;
+        push({
+          activity_type: arc.activity_type,
+          title: arc.title,
+          notes: `${arc.how_to_do_it}\n\nWhy it's good: ${arc.why_its_good}`,
+          duration_minutes: arc.duration_minutes,
+          intensity: arc.intensity,
+          scheduled_time: scheduledTime,
+          is_core_task: false,
+        });
+      };
+
+      // ── Breakfast feeding ──
+      push({
+        activity_type: 'feeding',
+        title: 'Breakfast',
+        notes: feedingPortionNote,
+        scheduled_time: slots.breakfast,
         is_core_task: true,
-        is_ai_generated: true,
-        created_at: new Date().toISOString(),
       });
 
-      const morningArc = archetypes[Math.floor(Math.random() * archetypes.length)];
-      dayRows.push({
-        pet_id: petId,
-        activity_type: morningArc.activity_type,
-        title: morningArc.title,
-        notes: `${morningArc.how_to_do_it}\n\nWhy it's good: ${morningArc.why_its_good}`,
-        water_ml: null,
-        duration_minutes: morningArc.duration_minutes,
-        intensity: morningArc.intensity,
-        scheduled_date: dateStr,
-        scheduled_time: '09:00:00',
-        status: 'pending',
-        is_core_task: false,
-        is_ai_generated: true,
-        created_at: new Date().toISOString(),
+      // ── Morning fill (1st of 3 hydration sessions) ──
+      // waterPerSession = dailyTarget / 3, so THREE sessions must exist for a
+      // fully completed day to reach the daily water target. The old plan only
+      // scheduled midday + evening — completing everything topped out at 67%.
+      push({
+        activity_type: 'water',
+        title: 'Morning Fill',
+        notes: `Start the day with a fresh bowl of water. Recommended: ${waterPerSession}ml`,
+        water_ml: waterPerSession,
+        scheduled_time: formatTime(parseTime(slots.breakfast, '07:30') + 15),
+        is_core_task: true,
       });
 
-      // 2. Midday Routine
-      dayRows.push({
-        pet_id: petId,
+      // ── Morning activity (physical) ──
+      pushActivity('morning', slots.morningActivity);
+
+      // ── Midday hydration ──
+      push({
         activity_type: 'water',
         title: 'Midday Refresh',
         notes: `Replenish water bowl. Keeping hydrated aids digestion. Recommended: ${waterPerSession}ml`,
         water_ml: waterPerSession,
-        duration_minutes: null,
-        intensity: null,
-        scheduled_date: dateStr,
-        scheduled_time: '13:00:00',
-        status: 'pending',
+        scheduled_time: slots.middayHydration,
         is_core_task: true,
-        is_ai_generated: true,
-        created_at: new Date().toISOString(),
       });
 
-      const middayArc = archetypes[Math.floor(Math.random() * archetypes.length)];
-      dayRows.push({
-        pet_id: petId,
-        activity_type: middayArc.activity_type,
-        title: middayArc.title,
-        notes: `${middayArc.how_to_do_it}\n\nWhy it's good: ${middayArc.why_its_good}`,
-        water_ml: null,
-        duration_minutes: middayArc.duration_minutes,
-        intensity: middayArc.intensity,
-        scheduled_date: dateStr,
-        scheduled_time: '14:30:00',
-        status: 'pending',
-        is_core_task: false,
-        is_ai_generated: true,
-        created_at: new Date().toISOString(),
-      });
+      // ── Optional lunch feeding (cats only by default) ──
+      if (slots.lunch) {
+        push({
+          activity_type: 'feeding',
+          title: 'Lunch',
+          notes: feedingPortionNote,
+          scheduled_time: slots.lunch,
+          is_core_task: true,
+        });
+      }
 
-      // 3. Evening Routine
-      dayRows.push({
-        pet_id: petId,
+      // ── Midday activity (mental enrichment) ──
+      pushActivity('midday', slots.middayActivity);
+
+      // ── Evening hydration ──
+      push({
         activity_type: 'water',
         title: 'Evening Hydration',
         notes: `Final water top-off for the day. Recommended: ${waterPerSession}ml`,
         water_ml: waterPerSession,
-        duration_minutes: null,
-        intensity: null,
-        scheduled_date: dateStr,
-        scheduled_time: '18:30:00',
-        status: 'pending',
+        scheduled_time: slots.eveningHydration,
         is_core_task: true,
-        is_ai_generated: true,
-        created_at: new Date().toISOString(),
       });
 
-      if (hasMedicalConditions && dayIndex % 2 === 0) {
-        // Schedule medicine every other day (or daily) if they have conditions
-        dayRows.push({
-          pet_id: petId,
+      // ── Dinner feeding ──
+      push({
+        activity_type: 'feeding',
+        title: 'Dinner',
+        notes: feedingPortionNote,
+        scheduled_time: slots.dinner,
+        is_core_task: true,
+      });
+
+      // ── Evening activity (social/gentle) ──
+      // Pets with medical conditions keep their evening session — gentle,
+      // structured movement is usually what they need most.
+      pushActivity('evening', slots.eveningActivity);
+
+      // ── Daily meds check (wind-down) — medication is a daily routine, not
+      // an every-other-day one, and it no longer displaces the evening activity.
+      if (hasMedicalConditions) {
+        push({
           activity_type: 'medicine',
           title: 'Health Check & Meds',
-          notes: `Check in on their ${petProfile.medical_conditions[0]} and administer sorted meds as needed.`,
-          water_ml: null,
-          duration_minutes: null,
-          intensity: null,
-          scheduled_date: dateStr,
-          scheduled_time: '19:30:00',
-          status: 'pending',
+          notes: `Check in on their ${petProfile.medical_conditions[0]} and administer scheduled meds as needed.`,
+          scheduled_time: slots.windDown,
           is_core_task: true,
-          is_ai_generated: true,
-          created_at: new Date().toISOString(),
-        });
-      } else {
-        const eveningArc = archetypes[Math.floor(Math.random() * archetypes.length)];
-        dayRows.push({
-          pet_id: petId,
-          activity_type: eveningArc.activity_type,
-          title: eveningArc.title,
-          notes: `${eveningArc.how_to_do_it}\n\nWhy it's good: ${eveningArc.why_its_good}`,
-          water_ml: null,
-          duration_minutes: eveningArc.duration_minutes,
-          intensity: eveningArc.intensity,
-          scheduled_date: dateStr,
-          scheduled_time: '20:00:00',
-          status: 'pending',
-          is_core_task: false,
-          is_ai_generated: true,
-          created_at: new Date().toISOString(),
         });
       }
+
+      // Recovery-rule bookkeeping for the next day.
+      consecutiveHighDays = dayHasHigh ? consecutiveHighDays + 1 : 0;
 
       return dayRows;
     };
 
-    // Day 0 = TODAY (so user immediately sees activities after generation)
-    const todayStr = getDateStr(new Date());
-    rows.push(...buildDayRows(todayStr, archetypes, hasMedicalConditions, 0));
-
-    // Days 1 through numDays-1 = tomorrow onward
-    let currentDate = new Date();
-    currentDate.setDate(currentDate.getDate() + 1);
-    for (let day = 0; day < numDays - 1; day++) {
-      const dateStr = currentDate.toISOString().split('T')[0];
-      rows.push(...buildDayRows(dateStr, archetypes, hasMedicalConditions, day + 1));
-      currentDate.setDate(currentDate.getDate() + 1);
+    // Day 0 = the CLIENT's today (so the user immediately sees activities,
+    // on the correct local calendar day), then numDays-1 days onward.
+    for (let day = 0; day < numDays; day++) {
+      let dayRows = buildDayRows(addDaysYMD(startDate, day));
+      if (day === 0 && startTime) {
+        dayRows = dayRows.filter(r => (r.scheduled_time as string) >= startTime);
+      }
+      rows.push(...dayRows);
     }
 
     console.log(`[generate-schedule] Built ${rows.length} total activities from Archetypes & Math`);
@@ -556,7 +806,7 @@ Respond ONLY with valid JSON matching this schema:
     // LAYER 3.5: ACTIVITY BURN FEEDBACK LOOP
     // Compute estimated calorie burn so user sees activity's contribution
     // ==========================================
-    const burnSummary = computeBurnSummary(rows, weightKg, targetDailyCalories);
+    const burnSummary = computeBurnSummary(rows, weightKg, targetDailyCalories, deficitKcal);
     console.log(`[generate-schedule] Burn summary: ${burnSummary.weeklyBurnKcal} kcal/wk, ${burnSummary.dailyBurnKcal} kcal/day, ${burnSummary.deficitContributionPercent}% of deficit`);
 
     // ==========================================
@@ -564,6 +814,34 @@ Respond ONLY with valid JSON matching this schema:
     // ==========================================
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    // ── Idempotency: wipe the existing PENDING AI plan across the same date
+    // range before inserting the fresh one. Without this, a second generation
+    // (re-tapping "Generate", the auto-adjuster, or a client retry after a
+    // response that failed *after* the insert already committed) stacks a
+    // duplicate plan — two "Evening Hydration" rows, etc. Completed/skipped
+    // rows are preserved (history), and manual logs (is_ai_generated=false)
+    // are untouched. Runs here, right before insert, so a failed Gemini call
+    // never destroys the user's current plan. ──
+    const endDate = addDaysYMD(startDate, numDays - 1);
+    const wipeRes = await fetch(
+      `${supabaseUrl}/rest/v1/activities?pet_id=eq.${petId}` +
+        `&is_ai_generated=eq.true&status=eq.pending` +
+        `&scheduled_date=gte.${startDate}&scheduled_date=lte.${endDate}`,
+      {
+        method: 'DELETE',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          Prefer: 'return=minimal',
+        },
+      },
+    );
+    if (!wipeRes.ok) {
+      const wipeErr = await wipeRes.text();
+      logInternal('generate-schedule', `pending wipe failed: ${wipeErr.substring(0, 300)}`);
+      return errorResponse('server_error', corsHeaders);
+    }
 
     const insertRes = await fetch(`${supabaseUrl}/rest/v1/activities`, {
       method: 'POST',
@@ -578,8 +856,8 @@ Respond ONLY with valid JSON matching this schema:
 
     if (!insertRes.ok) {
       const errText = await insertRes.text();
-      console.error('[generate-schedule] Insert error:', errText);
-      throw new Error('Failed to insert schedule: ' + errText);
+      logInternal('generate-schedule', `schedule insert failed: ${errText.substring(0, 300)}`);
+      return errorResponse('server_error', corsHeaders);
     }
 
     console.log('[generate-schedule] Schedule created successfully!');
@@ -604,11 +882,8 @@ Respond ONLY with valid JSON matching this schema:
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[generate-schedule] Error:', message);
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-    );
+    logInternal('generate-schedule', error, 'unhandled');
+    const isAbort = error instanceof Error && error.name === 'AbortError';
+    return errorResponse(isAbort ? 'ai_unavailable' : 'server_error', corsHeaders);
   }
 });

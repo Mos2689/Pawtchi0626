@@ -1,23 +1,41 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image,
-  KeyboardAvoidingView, Platform, ActivityIndicator,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import * as Haptics from 'expo-haptics';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import { prepareImageForUpload } from '../../lib/imagePrep';
+import Animated, {
+  FadeIn, FadeInDown, ZoomIn,
+  useSharedValue, useAnimatedStyle, useAnimatedProps,
+  withSequence, withSpring, withTiming, Easing,
+} from 'react-native-reanimated';
+import Svg, { Circle } from 'react-native-svg';
 
-import { color, font, radius, space } from '../../constants/design';
+import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
+import { haptic } from '../../lib/haptics';
 import { usePetStore } from '../../store/usePetStore';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { SelectableChip } from '../../components/SelectableChip';
 import { OnboardingHeader } from '../../components/OnboardingHeader';
+import { PawLoader } from '../../components/loader/PawLoader';
 import { supabase } from '../../lib/supabase';
+import { withTimeout } from '../../lib/withTimeout';
+import {
+  errorCopy, extractInvokeErrorCode, fromEdgeBody, isAppError, reportError, toAppError,
+} from '../../lib/appError';
 import { track } from '../../lib/analytics';
 import {
   stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
+// Ring geometry for the photo-arrival sweep around the 128px avatar.
+const RING_R = 66;
+const RING_C = 2 * Math.PI * RING_R;
 
 // Step 2 of 6 — the emotional commitment. Name + photo first; this is what
 // makes Bunny *Bunny* in the user's head. The vet-scan autofill rides along as
@@ -30,20 +48,45 @@ export default function IdentityScreen() {
     species,
     name, setName,
     imageUri, setImageUri,
+    firstDog, setFirstDog,
     // The fields the vet scan can populate downstream:
     setBreed, setGender, setIsNeutered, setWeight, setAgeYears, setAgeMonths,
-    setAllergies, setMedicalConditions, setBodyConditionScore,
+    setAllergies, setMedicalConditions, setBodyConditionScore, setBcsSource,
   } = usePetStore();
 
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanFilled, setScanFilled] = useState<number | null>(null);
+  const [scanFilledFields, setScanFilledFields] = useState<string[]>([]);
   const [nameError, setNameError] = useState<string | null>(null);
 
   const trimmedName = name.trim();
   const canContinue = trimmedName.length > 0;
 
+  // The title greets the pet by name once one exists — debounced so it flips
+  // when the user pauses, not on every keystroke.
+  const [hasName, setHasName] = useState(trimmedName.length > 0);
+  useEffect(() => {
+    const t = setTimeout(() => setHasName(trimmedName.length > 0), 300);
+    return () => clearTimeout(t);
+  }, [trimmedName]);
+
+  // No autofocus: the keyboard covered the photo picker and Continue button on
+  // mount, hiding half the screen. It opens only when the user taps the field.
+
+  // Photo-arrival ceremony: yellow ring sweeps around the avatar while the
+  // surface pops — the pet "arrives" rather than appearing.
+  const ringProgress = useSharedValue(imageUri ? 1 : 0);
+  const avatarPop = useSharedValue(1);
+  const ringProps = useAnimatedProps(() => ({
+    strokeDashoffset: RING_C * (1 - ringProgress.value),
+  }));
+  const avatarPopStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: avatarPop.value }],
+  }));
+
   const pickAvatar = async () => {
+    track('ui_button_tapped', { button_name: 'pick_avatar', screen: 'identity' });
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
@@ -51,8 +94,20 @@ export default function IdentityScreen() {
       quality: 0.8,
     });
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      Haptics.selectionAsync();
-      setImageUri(result.assets[0].uri);
+      // Downscale now so whatever uploads this later ships ~100 KB, not a
+      // full camera-roll frame. Falls back to the original uri on failure.
+      const prepared = await prepareImageForUpload(result.assets[0]);
+      setImageUri(prepared.uri);
+      haptic.success();
+      ringProgress.value = 0;
+      ringProgress.value = withTiming(1, {
+        duration: motion.duration.ring,
+        easing: Easing.out(Easing.cubic),
+      });
+      avatarPop.value = withSequence(
+        withSpring(1.06, motion.spring.bouncy),
+        withSpring(1, motion.spring.gentle),
+      );
     }
   };
 
@@ -60,11 +115,12 @@ export default function IdentityScreen() {
     track('onboarding_vet_scan_started', { source });
     setScanError(null);
     setScanFilled(null);
+    setScanFilledFields([]);
 
     const options: ImagePicker.ImagePickerOptions = {
       base64: true,
-      quality: 0.7,
-      allowsEditing: true,
+      quality: 0.6,
+      allowsEditing: false,
       mediaTypes: ['images'],
     };
 
@@ -80,38 +136,55 @@ export default function IdentityScreen() {
       result = await ImagePicker.launchImageLibraryAsync(options);
     }
     if (result.canceled || !result.assets?.[0]?.base64) return;
-    const asset = result.assets[0];
+    // Downscale before the network round trip; falls back to the picker's
+    // original base64 when the manipulator can't process the image.
+    const asset = await prepareImageForUpload(result.assets[0]);
 
     setScanning(true);
     try {
       const base64 = asset.base64!;
-      const mimeType = asset.uri.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      const { data, error } = await supabase.functions.invoke('parse-onboarding-report', {
-        body: { imageBase64: base64, mimeType, species: species || 'dog' },
-      });
+      const mimeType = asset.downscaled
+        ? asset.mimeType
+        : asset.uri.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      const { data, error } = await withTimeout(
+        supabase.functions.invoke('parse-onboarding-report', {
+          body: { imageBase64: base64, mimeType, species: species || 'dog' },
+        }),
+        45_000,
+        'parse-onboarding-report',
+      );
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to parse report');
+      if (!data?.success) throw fromEdgeBody(data) ?? new Error('scan returned no data');
 
       const extracted = data.data || {};
       let filled = 0;
-      if (extracted.name) { setName(extracted.name); filled++; }
-      if (extracted.breed) { setBreed(extracted.breed); filled++; }
-      if (extracted.gender) { setGender(extracted.gender); filled++; }
-      if (extracted.is_neutered !== null && extracted.is_neutered !== undefined) setIsNeutered(extracted.is_neutered);
-      if (extracted.weight_kg) { setWeight(String(Math.round(extracted.weight_kg * 10) / 10)); filled++; }
-      if (extracted.age_years !== null && extracted.age_years !== undefined) { setAgeYears(String(extracted.age_years)); filled++; }
+      const filledLabels: string[] = [];
+      if (extracted.name) { setName(extracted.name); filled++; filledLabels.push('name'); }
+      if (extracted.breed) { setBreed(extracted.breed); filled++; filledLabels.push('breed'); }
+      if (extracted.gender) { setGender(extracted.gender); filled++; filledLabels.push('sex'); }
+      if (extracted.is_neutered !== null && extracted.is_neutered !== undefined) { setIsNeutered(extracted.is_neutered); filledLabels.push('desexed'); }
+      if (extracted.weight_kg) { setWeight(String(Math.round(extracted.weight_kg * 10) / 10)); filled++; filledLabels.push('weight'); }
+      if (extracted.age_years !== null && extracted.age_years !== undefined) { setAgeYears(String(extracted.age_years)); filled++; filledLabels.push('age'); }
       if (extracted.age_months !== null && extracted.age_months !== undefined) setAgeMonths(String(extracted.age_months));
-      if (extracted.allergies && extracted.allergies.length > 0) setAllergies(extracted.allergies);
-      if (extracted.medical_conditions && extracted.medical_conditions.length > 0) setMedicalConditions(extracted.medical_conditions);
-      if (extracted.body_condition_score) setBodyConditionScore(extracted.body_condition_score);
+      if (extracted.allergies && extracted.allergies.length > 0) { setAllergies(extracted.allergies); filledLabels.push('allergies'); }
+      if (extracted.medical_conditions && extracted.medical_conditions.length > 0) { setMedicalConditions(extracted.medical_conditions); filledLabels.push('conditions'); }
+      if (extracted.body_condition_score) {
+        setBodyConditionScore(extracted.body_condition_score);
+        setBcsSource('vet_report');
+        filledLabels.push('body condition');
+      }
 
       setScanFilled(filled);
+      setScanFilledFields(filledLabels);
       track('onboarding_vet_scan_succeeded', { filled });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (err: any) {
-      const message = err?.message || 'We had trouble reading that image.';
-      track('onboarding_vet_scan_failed', { reason: message });
-      setScanError(message);
+      haptic.success();
+    } catch (err: unknown) {
+      const appErr = isAppError(err)
+        ? err
+        : toAppError(err, { errorCode: await extractInvokeErrorCode(err) });
+      reportError(appErr, 'vet_scan');
+      track('onboarding_vet_scan_failed', { reason: appErr.kind });
+      setScanError(errorCopy(appErr, { context: 'vet_scan', petName: name }).message);
     } finally {
       setScanning(false);
     }
@@ -120,10 +193,11 @@ export default function IdentityScreen() {
   const handleContinue = () => {
     if (!canContinue) {
       setNameError(`What do you call your ${species || 'pet'}?`);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      haptic.warning();
       return;
     }
     if (!imageUri) trackFieldSkipped('identity', 'photo');
+    if (species === 'dog' && firstDog === null) trackFieldSkipped('identity', 'first_dog');
     trackStepCompleted('identity', { has_photo: !!imageUri, used_vet_scan: scanFilled !== null });
     router.push('/onboarding/body-basics' as any);
   };
@@ -144,7 +218,19 @@ export default function IdentityScreen() {
         >
           <Animated.View entering={FadeInDown.duration(420)}>
             <Text style={styles.eyebrow}>STEP {stepIndex('identity')}</Text>
-            <Text style={styles.title}>Who are we{'\n'}meeting?</Text>
+            {/* The handover moment: the app learns the name and immediately
+                starts using it. Key on the flip so the swap crossfades once. */}
+            <View style={styles.titleWrap}>
+              <Animated.Text
+                key={hasName ? 'named' : 'anon'}
+                entering={FadeIn.duration(motion.duration.base)}
+                style={styles.title}
+                numberOfLines={2}
+                adjustsFontSizeToFit
+              >
+                {hasName ? `Hi, ${trimmedName}.` : `Who are we\nmeeting?`}
+              </Animated.Text>
+            </View>
             <Text style={styles.subtitle}>
               A name and a photo — so Pawtchi talks to your pet, not to "your pet."
             </Text>
@@ -152,19 +238,37 @@ export default function IdentityScreen() {
 
           {/* Avatar — the emotional anchor of this step */}
           <Animated.View entering={FadeInDown.duration(420).delay(60)} style={styles.avatarBlock}>
-            <TouchableOpacity onPress={pickAvatar} activeOpacity={0.85} style={styles.avatarPicker}>
-              {imageUri ? (
-                <Image source={{ uri: imageUri }} style={styles.avatarImg} />
-              ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <MaterialIcons name="add-a-photo" size={32} color={color.slateFaint} />
-                  <Text style={styles.avatarHint}>Add a photo</Text>
+            <Animated.View style={avatarPopStyle}>
+              <TouchableOpacity onPress={pickAvatar} activeOpacity={0.85} style={styles.avatarPicker}>
+                {imageUri ? (
+                  <Image source={{ uri: imageUri }} style={styles.avatarImg} />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <MaterialIcons name="add-a-photo" size={32} color={color.slateFaint} />
+                    <Text style={styles.avatarHint}>Add a photo</Text>
+                  </View>
+                )}
+                {imageUri && (
+                  <Svg width={144} height={144} viewBox="0 0 144 144" style={styles.avatarRing} pointerEvents="none">
+                    <AnimatedCircle
+                      cx={72}
+                      cy={72}
+                      r={RING_R}
+                      stroke={color.yellow}
+                      strokeWidth={3}
+                      strokeLinecap="round"
+                      fill="none"
+                      strokeDasharray={`${RING_C}`}
+                      animatedProps={ringProps}
+                      transform="rotate(-90 72 72)"
+                    />
+                  </Svg>
+                )}
+                <View style={styles.avatarBadge}>
+                  <MaterialIcons name={imageUri ? 'edit' : 'add'} size={14} color={color.navy} />
                 </View>
-              )}
-              <View style={styles.avatarBadge}>
-                <MaterialIcons name={imageUri ? 'edit' : 'add'} size={14} color={color.navy} />
-              </View>
-            </TouchableOpacity>
+              </TouchableOpacity>
+            </Animated.View>
           </Animated.View>
 
           {/* Name — the required field */}
@@ -177,12 +281,43 @@ export default function IdentityScreen() {
                 placeholderTextColor={color.slateFaint}
                 value={name}
                 onChangeText={(v) => { if (nameError) setNameError(null); setName(v); }}
-                autoFocus={!imageUri && !trimmedName}
                 returnKeyType="done"
               />
             </View>
             {nameError && <Text style={styles.errorText}>{nameError}</Text>}
           </Animated.View>
+
+          {/* First dog — one quiet, skippable fact. It seeds the Walksign's
+              Newbond reading; skipping it costs nothing downstream. */}
+          {species === 'dog' && (
+            <Animated.View entering={FadeInDown.duration(420).delay(150)} style={styles.formGroup}>
+              <Text style={styles.label}>
+                {trimmedName ? `Is ${trimmedName} your first dog?` : 'Your first dog?'}
+              </Text>
+              <View style={styles.firstDogRow}>
+                <SelectableChip
+                  selected={firstDog === true}
+                  onPress={() => setFirstDog(firstDog === true ? null : true)}
+                  style={styles.firstDogChip}
+                  selectedStyle={styles.firstDogChipSelected}
+                >
+                  <Text style={[styles.firstDogChipText, firstDog === true && styles.firstDogChipTextSelected]}>
+                    My first
+                  </Text>
+                </SelectableChip>
+                <SelectableChip
+                  selected={firstDog === false}
+                  onPress={() => setFirstDog(firstDog === false ? null : false)}
+                  style={styles.firstDogChip}
+                  selectedStyle={styles.firstDogChipSelected}
+                >
+                  <Text style={[styles.firstDogChipText, firstDog === false && styles.firstDogChipTextSelected]}>
+                    There have been others
+                  </Text>
+                </SelectableChip>
+              </View>
+            </Animated.View>
+          )}
 
           {/* Vet-scan autofill — quiet, optional, inline */}
           <Animated.View entering={FadeInDown.duration(420).delay(180)} style={styles.scanCard}>
@@ -197,11 +332,29 @@ export default function IdentityScreen() {
                 </Text>
               </View>
             </View>
-            {scanFilled !== null && !scanError && (
+            {scanFilled !== null && !scanError && scanFilledFields.length > 0 && (
+              <View style={styles.scanChipsWrap}>
+                {scanFilledFields.map((field, i) => (
+                  <Animated.View
+                    key={field}
+                    entering={ZoomIn.springify()
+                      .damping(motion.spring.bouncy.damping)
+                      .stiffness(motion.spring.bouncy.stiffness)
+                      .delay(i * 80)}
+                    style={styles.scanChip}
+                  >
+                    <MaterialIcons name="check" size={12} color={color.success} />
+                    <Text style={styles.scanChipText}>{field}</Text>
+                  </Animated.View>
+                ))}
+                <Text style={styles.scanReviewNote}>Review on the next screens.</Text>
+              </View>
+            )}
+            {scanFilled !== null && scanFilledFields.length === 0 && !scanError && (
               <View style={styles.scanSuccess}>
                 <MaterialIcons name="check-circle" size={14} color={color.success} />
                 <Text style={styles.scanSuccessText}>
-                  {scanFilled} detail{scanFilled === 1 ? '' : 's'} filled — review on the next screens.
+                  No details found in that image — you can fill them in on the next screens.
                 </Text>
               </View>
             )}
@@ -218,14 +371,8 @@ export default function IdentityScreen() {
                 disabled={scanning}
                 activeOpacity={0.85}
               >
-                {scanning ? (
-                  <ActivityIndicator color={color.navy} size="small" />
-                ) : (
-                  <>
-                    <MaterialIcons name="photo-library" size={15} color={color.navy} />
-                    <Text style={styles.scanBtnText}>Photo library</Text>
-                  </>
-                )}
+                <MaterialIcons name="photo-library" size={15} color={color.navy} />
+                <Text style={styles.scanBtnText}>Photo library</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.scanBtn, scanning && styles.scanBtnDisabled]}
@@ -252,6 +399,7 @@ export default function IdentityScreen() {
           />
         </View>
       </KeyboardAvoidingView>
+      <PawLoader visible={scanning} message="Scanning vet report…" />
     </View>
   );
 }
@@ -267,6 +415,11 @@ const styles = StyleSheet.create({
     color: color.slateFaint,
     marginTop: space.lg,
     marginBottom: space.sm,
+  },
+  titleWrap: {
+    // Two display lines — fixed so the greeting swap doesn't shift the layout.
+    minHeight: 80,
+    justifyContent: 'flex-end',
   },
   title: {
     fontFamily: font.display,
@@ -304,6 +457,11 @@ const styles = StyleSheet.create({
     fontFamily: font.medium,
     fontSize: 11,
     color: color.slateFaint,
+  },
+  avatarRing: {
+    position: 'absolute',
+    top: -8,
+    left: -8,
   },
   avatarBadge: {
     position: 'absolute',
@@ -349,6 +507,32 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
 
+  // First-dog chips
+  firstDogRow: { flexDirection: 'row', gap: 8 },
+  firstDogChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    borderRadius: radius.pill,
+    paddingHorizontal: space.lg,
+    paddingVertical: 10,
+  },
+  firstDogChipSelected: {
+    backgroundColor: color.navy,
+    borderColor: color.navy,
+  },
+  firstDogChipText: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slate,
+  },
+  firstDogChipTextSelected: {
+    color: color.cream,
+  },
+
   // Vet-scan card
   scanCard: {
     marginTop: space.lg,
@@ -391,7 +575,34 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: font.semibold,
     fontSize: 12,
-    color: '#15803d',
+    color: color.success,
+  },
+  scanChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: space.md,
+  },
+  scanChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: color.successSoft,
+    borderRadius: radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  scanChipText: {
+    fontFamily: font.semibold,
+    fontSize: 11.5,
+    color: color.success,
+  },
+  scanReviewNote: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    color: color.slateFaint,
+    marginLeft: 2,
   },
   scanError: {
     flexDirection: 'row',
@@ -407,7 +618,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: font.semibold,
     fontSize: 12,
-    color: '#991b1b',
+    color: color.error,
   },
   scanActions: {
     flexDirection: 'row',
@@ -439,10 +650,6 @@ const styles = StyleSheet.create({
     paddingTop: space.md,
     paddingBottom: space.xxl,
     backgroundColor: color.surface,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 12,
+    ...makeShadow(-6, 14, 0.06),
   },
 });

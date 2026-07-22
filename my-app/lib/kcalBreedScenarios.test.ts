@@ -29,13 +29,14 @@ function fullDailyKcal(opts: {
   ageMonths?: number;
   isNeutered: boolean;
   activityLevel: 'sedentary' | 'normal' | 'active' | 'highly_active';
+  bcs?: number;
 }): number {
   const totalMonths = (opts.ageMonths ?? 0) + opts.ageYears * 12;
   const breedDefaults = getBreedDefaults(opts.species, opts.breed ?? null, opts.weightKg);
   const sizeCategory = breedDefaults?.sizeCategory ?? sizeCategoryFromWeight(opts.species, opts.weightKg);
   const lifeStage = deriveLifeStage(opts.species, opts.ageYears, opts.ageMonths ?? 0, sizeCategory);
-  const lifeStageMultiplier = getLifeStageCalorieMultiplier(lifeStage);
-  const goal = deriveGoal(opts.weightKg, opts.targetWeightKg ?? null);
+  const lifeStageMultiplier = getLifeStageCalorieMultiplier(lifeStage, opts.species);
+  const goal = deriveGoal(opts.weightKg, opts.targetWeightKg ?? null, opts.bcs);
 
   return calculateDailyKcal(
     opts.weightKg,
@@ -46,6 +47,8 @@ function fullDailyKcal(opts: {
     totalMonths,
     lifeStageMultiplier,
     opts.targetWeightKg ?? null,
+    breedDefaults?.metabolicModifier ?? 1.0,
+    opts.bcs,
   );
 }
 
@@ -284,7 +287,7 @@ describe('Life stage calorie adjustments', () => {
   test('Geriatric cat (16yr) gets 0.80 multiplier', () => {
     const lifeStage = deriveLifeStage('cat', 16, 0);
     expect(lifeStage).toBe('geriatric');
-    expect(getLifeStageCalorieMultiplier(lifeStage)).toBe(0.80);
+    expect(getLifeStageCalorieMultiplier(lifeStage, 'dog')).toBe(0.80);
   });
 
   test('Giant breed (Rottweiler) hits senior earlier than small breed', () => {
@@ -618,13 +621,264 @@ describe('Edge cases', () => {
     expect(kcal).toBeGreaterThan(0);
   });
 
-  test('Cat weight-loss factor is 0.8 (more restrictive than dog 1.0)', () => {
+  test('Cat weight-loss factor is 0.8 but floored at RER(target) — AAHA minimum', () => {
+    // Cat 0.8× would drop below RER(target); the AAHA floor holds at RER(target).
+    // Dog 1.0× already equals RER(target); no change.
     const catLoss = calculateDailyKcal(6, 'cat', true, 'normal', 'lose', undefined, 1.0, 4);
-    const catRER = calculateRER(4);
-    expect(catLoss).toBe(Math.round(catRER * 0.8));
+    expect(catLoss).toBe(Math.round(calculateRER(4)));
 
     const dogLoss = calculateDailyKcal(35, 'dog', true, 'normal', 'lose', undefined, 1.0, 28);
-    const dogRER = calculateRER(28);
-    expect(dogLoss).toBe(Math.round(dogRER * 1.0));
+    expect(dogLoss).toBe(Math.round(calculateRER(28)));
+  });
+});
+
+// ═══════════════════════════════════════════
+// 12. SENIOR + ACTIVITY STACKING (clinical-upgrade audit)
+// ═══════════════════════════════════════════
+// The senior life-stage multiplier (0.90) intentionally stacks with the
+// sedentary activity reduction (× 0.8). These tests lock in the expected
+// stacked values so future engine tweaks can't silently change them.
+// We assert sanity bounds, not "exactly 10%", because the reviewer's strict
+// framing would have falsely demanded mutually-exclusive multipliers.
+describe('Senior + activity stacking — locked behavior', () => {
+  // 25kg neutered Lab — life-stage thresholds: large size → senior at 8yr, geriatric at 10yr.
+  const labOpts = {
+    species: 'dog' as const,
+    breed: 'Labrador Retriever',
+    weightKg: 25,
+    isNeutered: true,
+  };
+
+  test('Adult Lab (5yr, normal) is the baseline', () => {
+    const kcal = fullDailyKcal({ ...labOpts, ageYears: 5, activityLevel: 'normal' });
+    expect(kcal).toBeGreaterThan(1100);
+    expect(kcal).toBeLessThan(1300);
+  });
+
+  test('Senior Lab (8yr, normal) is ~10% below adult, modifier-aware', () => {
+    // Lab carries metabolicModifier 0.95 — applies in both branches, cancels in ratio.
+    const adult = fullDailyKcal({ ...labOpts, ageYears: 5, activityLevel: 'normal' });
+    const senior = fullDailyKcal({ ...labOpts, ageYears: 8, activityLevel: 'normal' });
+    const ratio = senior / adult;
+    expect(ratio).toBeLessThanOrEqual(0.91);
+    expect(ratio).toBeGreaterThanOrEqual(0.85);
+  });
+
+  test('Geriatric Lab (11yr, normal) applies 0.80 life-stage cleanly', () => {
+    const adult = fullDailyKcal({ ...labOpts, ageYears: 5, activityLevel: 'normal' });
+    const geriatric = fullDailyKcal({ ...labOpts, ageYears: 11, activityLevel: 'normal' });
+    const ratio = geriatric / adult;
+    expect(ratio).toBeLessThanOrEqual(0.81);
+    expect(ratio).toBeGreaterThanOrEqual(0.75);
+  });
+
+  test('Sedentary stacks with senior — intentional, but bounded', () => {
+    const adultNormal = fullDailyKcal({ ...labOpts, ageYears: 5, activityLevel: 'normal' });
+    const seniorSed = fullDailyKcal({ ...labOpts, ageYears: 8, activityLevel: 'sedentary' });
+    const ratio = seniorSed / adultNormal;
+    // Locked stack: ~0.8 (sed) × 0.9 (senior) = ~0.72 of baseline.
+    expect(ratio).toBeLessThanOrEqual(0.76);
+    expect(ratio).toBeGreaterThanOrEqual(0.68);
+    // Sanity floor: even the most-restricted profile must still feed the dog.
+    expect(seniorSed).toBeGreaterThan(600);
+  });
+
+  test('Active senior is closer to adult-normal than sedentary senior', () => {
+    const seniorActive = fullDailyKcal({ ...labOpts, ageYears: 8, activityLevel: 'active' });
+    const seniorSed = fullDailyKcal({ ...labOpts, ageYears: 8, activityLevel: 'sedentary' });
+    expect(seniorActive).toBeGreaterThan(seniorSed * 1.4);
+  });
+});
+
+// ═══════════════════════════════════════════
+// 13. BREED METABOLIC MODIFIER
+// ═══════════════════════════════════════════
+describe('Breed metabolic modifier — thrifty-breed correction', () => {
+  test('Labrador (modifier 0.95) gets ~5% less than a no-modifier dog of same profile', () => {
+    // Both 25kg, neutered, normal activity, adult — only difference is the breed modifier.
+    const lab = calculateDailyKcal(25, 'dog', true, 'normal', 'maintain', 60, 1.0, null, 0.95);
+    const generic = calculateDailyKcal(25, 'dog', true, 'normal', 'maintain', 60, 1.0, null, 1.0);
+    expect(lab).toBeLessThan(generic);
+    const ratio = lab / generic;
+    expect(ratio).toBeCloseTo(0.95, 2);
+  });
+
+  test('Lab breed defaults expose the metabolicModifier', () => {
+    const lab = getBreedDefaults('dog', 'Labrador Retriever');
+    expect(lab?.metabolicModifier).toBe(0.95);
+  });
+
+  test('Golden Retriever shares the 0.95 modifier', () => {
+    const golden = getBreedDefaults('dog', 'Golden Retriever');
+    expect(golden?.metabolicModifier).toBe(0.95);
+  });
+
+  test('Frenchie/Pug/Bulldog do NOT set a modifier (their thriftiness is via sedentary activity)', () => {
+    // Setting a modifier on top of typicalActivityLevel='sedentary' would double-count.
+    expect(getBreedDefaults('dog', 'French Bulldog')?.metabolicModifier).toBeUndefined();
+    expect(getBreedDefaults('dog', 'Pug')?.metabolicModifier).toBeUndefined();
+    expect(getBreedDefaults('dog', 'Bulldog')?.metabolicModifier).toBeUndefined();
+  });
+
+  test('Modifier is overridden by RER(target) floor when it would drop below', () => {
+    // Historically the thrifty modifier reduced weight-loss targets 5%. That's
+    // clinically unsafe on the loss path — AAHA's absolute floor is RER(target),
+    // so a Labrador (0.95×) with dog factor 1.0× computes to 0.95×RER(target)
+    // which the floor lifts back to RER(target). Both variants collapse to the
+    // floor and become equal.
+    const lossWithMod = calculateDailyKcal(35, 'dog', true, 'normal', 'lose', undefined, 1.0, 28, 0.95);
+    const lossNoMod = calculateDailyKcal(35, 'dog', true, 'normal', 'lose', undefined, 1.0, 28, 1.0);
+    expect(lossWithMod).toBe(Math.round(calculateRER(28)));
+    expect(lossNoMod).toBe(Math.round(calculateRER(28)));
+  });
+});
+
+// ═══════════════════════════════════════════
+// 14. STRICT TREAT CAP (weight-loss mode)
+// ═══════════════════════════════════════════
+describe('Strict treat cap — weight-loss mode tightens 10% → 5%', () => {
+  test('goal=maintain uses 10% cap (vet default)', () => {
+    const plan = derivePortionPlan({ dailyKcal: 1400, currentWeightKg: 30, goal: 'maintain' });
+    expect(plan.treatCapPercent).toBe(0.10);
+    expect(plan.treatKcal).toBe(140);
+  });
+
+  test('goal=lose tightens to 5% cap', () => {
+    const plan = derivePortionPlan({ dailyKcal: 1400, currentWeightKg: 30, goal: 'lose' });
+    expect(plan.treatCapPercent).toBe(0.05);
+    expect(plan.treatKcal).toBe(70);
+  });
+
+  test('No goal → falls back to 10% (back-compat with existing call sites)', () => {
+    const plan = derivePortionPlan({ dailyKcal: 1400, currentWeightKg: 30 });
+    expect(plan.treatCapPercent).toBe(0.10);
+  });
+
+  test('Strict mode leaves more kcal for meals', () => {
+    const strict = derivePortionPlan({ dailyKcal: 1400, currentWeightKg: 30, goal: 'lose' });
+    const relaxed = derivePortionPlan({ dailyKcal: 1400, currentWeightKg: 30, goal: 'maintain' });
+    expect(strict.mealKcal).toBeGreaterThan(relaxed.mealKcal);
+  });
+
+  test('gain mode keeps the relaxed 10% cap', () => {
+    const plan = derivePortionPlan({ dailyKcal: 1400, currentWeightKg: 30, goal: 'gain' });
+    expect(plan.treatCapPercent).toBe(0.10);
+  });
+});
+
+// ═══════════════════════════════════════════
+// 15. BCS-AWARE GOAL + WEIGHT-LOSS SAFETY FLOOR
+// ═══════════════════════════════════════════
+// Locks in the fix for the Frenchie 15kg / 479-kcal production case: the
+// BCS ≤ 5 safety floor in calculateDailyKcal prevents sub-RER prescriptions.
+// deriveGoal semantics: BCS overrules small slider nudges, but deliberate or
+// estimator-driven targets beyond the nudge window follow the target — an
+// 8 kg adult Lab's staged recovery target must derive as 'gain' even at BCS 5.
+describe('BCS-aware deriveGoal', () => {
+  test('BCS 5 maintains for nudges; deliberate larger targets follow the slider', () => {
+    expect(deriveGoal(15, 14.6, 5)).toBe('maintain'); // nudge within window
+    expect(deriveGoal(15, 13, 5)).toBe('lose');  // deliberate −13% — floor still protects kcal
+    expect(deriveGoal(15, 10, 5)).toBe('lose');
+  });
+
+  test('BCS 5 staged recovery target derives as gain (8 kg Lab case)', () => {
+    expect(deriveGoal(8, 9, 5)).toBe('gain');
+  });
+
+  test('BCS ≥ 6 with target below current ⇒ lose', () => {
+    expect(deriveGoal(15, 13, 6)).toBe('lose');
+    expect(deriveGoal(15, 12, 7)).toBe('lose');
+  });
+
+  test('BCS ≤ 4 with target above current ⇒ gain', () => {
+    expect(deriveGoal(15, 17, 4)).toBe('gain');
+  });
+
+  test('No BCS — falls back to the original 0.5kg threshold', () => {
+    expect(deriveGoal(35, 28)).toBe('lose');
+    expect(deriveGoal(30, 30.3)).toBe('maintain');
+  });
+});
+
+describe('Weight-loss safety floor (BCS ≤ 5)', () => {
+  test('Frenchie 15kg BCS 5, deliberate 13kg target — floored at RER(current), never 479', () => {
+    // The owner deliberately set a −13% target on a "just right" dog. The
+    // goal follows the target now, but the BCS ≤ 5 floor keeps the
+    // prescription at ≥ RER(current) ≈ 534, not the raw RER(13) ≈ 479.
+    const kcal = fullDailyKcal({
+      species: 'dog', breed: 'French Bulldog', weightKg: 15, targetWeightKg: 13,
+      ageYears: 5, isNeutered: true, activityLevel: 'normal', bcs: 5,
+    });
+    expect(kcal).toBeGreaterThanOrEqual(Math.round(calculateRER(15)));
+    expect(kcal).toBeLessThanOrEqual(900);
+  });
+
+  test('Frenchie 15kg BCS 5, nudge target 14.6 — stays at full maintenance', () => {
+    const kcal = fullDailyKcal({
+      species: 'dog', breed: 'French Bulldog', weightKg: 15, targetWeightKg: 14.6,
+      ageYears: 5, isNeutered: true, activityLevel: 'normal', bcs: 5,
+    });
+    expect(kcal).toBeGreaterThanOrEqual(700);
+    expect(kcal).toBeLessThanOrEqual(900);
+  });
+
+  test('Forced lose mode + BCS ≤ 5 — floor clamps result at RER(currentWeight)', () => {
+    // If a caller bypasses deriveGoal and forces lose mode with a low BCS,
+    // the floor prevents a sub-RER prescription.
+    const kcal = calculateDailyKcal(
+      15, 'dog', true, 'normal', 'lose', 60, 1.0, 10, 1.0, 5,
+    );
+    expect(kcal).toBeGreaterThanOrEqual(Math.round(calculateRER(15)));
+  });
+
+  test('High BCS (≥ 6) preserves the clinical RER(target) formula — floor does NOT apply', () => {
+    const kcal = calculateDailyKcal(
+      18, 'dog', true, 'normal', 'lose', 60, 1.0, 13, 1.0, 8,
+    );
+    // RER(13) × 1.0 ≈ 479. Intentional clinical weight-loss case.
+    expect(kcal).toBeLessThan(calculateRER(18));
+  });
+
+  test('Regression: Lab 35→28 (no BCS) still uses today\'s strict path', () => {
+    const kcal = fullDailyKcal({
+      species: 'dog', breed: 'Labrador Retriever', weightKg: 35,
+      targetWeightKg: 28, ageYears: 5, isNeutered: true, activityLevel: 'normal',
+    });
+    expect(kcal).toBeLessThan(900);
+    expect(kcal).toBeGreaterThan(700);
+  });
+});
+
+// ═══════════════════════════════════════════
+// 16. CAT WEIGHT-LOSS RAMP (hepatic lipidosis prevention)
+// ═══════════════════════════════════════════
+// Cats that crash-diet refuse food and develop hepatic lipidosis (often fatal).
+// For the first 14 days on a new lose plan we floor the kcal target at 95% of
+// estimated maintenance(current), so the cut isn't a step function on day 1.
+describe('Cat weight-loss ramp', () => {
+  const baseArgs = [7, 'cat', true, 'normal', 'lose', 60, 1.0, 5, 1.0, 7] as const;
+
+  test('Day 0 — ramp floor active, kcal ≈ 95% of maintenance(current)', () => {
+    const day0 = calculateDailyKcal(...baseArgs, 0);
+    const noRamp = calculateDailyKcal(...baseArgs);
+    expect(day0).toBeGreaterThan(noRamp); // ramp eases the deficit
+  });
+
+  test('Day 7 — still on ramp', () => {
+    const day7 = calculateDailyKcal(...baseArgs, 7);
+    const noRamp = calculateDailyKcal(...baseArgs);
+    expect(day7).toBeGreaterThan(noRamp);
+  });
+
+  test('Day 14 — ramp ends, target lands at strict RER(target) × 0.8', () => {
+    const day14 = calculateDailyKcal(...baseArgs, 14);
+    const noRamp = calculateDailyKcal(...baseArgs);
+    expect(day14).toBe(noRamp);
+  });
+
+  test('Dogs are unaffected by daysSincePlanStart (cat-specific)', () => {
+    const dogDay0 = calculateDailyKcal(35, 'dog', true, 'normal', 'lose', 60, 1.0, 28, 1.0, 7, 0);
+    const dogNoRamp = calculateDailyKcal(35, 'dog', true, 'normal', 'lose', 60, 1.0, 28, 1.0, 7);
+    expect(dogDay0).toBe(dogNoRamp);
   });
 });

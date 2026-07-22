@@ -1,0 +1,68 @@
+<!--
+  Pawtchi — "Magic Link" email template.
+
+  Paste into: Supabase Dashboard → Authentication → Email Templates →
+  Magic Link → Message (HTML). Subject: Your Pawtchi sign-in code
+
+  Uses {{ .Token }} (6-digit code) → app verifies with
+  supabase.auth.verifyOtp({ email, token, type: 'email' }).
+
+  APP SUPPORT STATUS: not currently used — the app signs in with email +
+  password, not magic links. Branded here for consistency / future use. To
+  enable, add a signInWithOtp() entry point and a code-entry screen. See README.md.
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0;padding:0;background-color:#F8F7F4;">
+  <tr>
+    <td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#FFFFFF;border-radius:20px;overflow:hidden;border:1px solid #ECEAE4;">
+        <tr>
+          <td style="background-color:#07202A;padding:30px 32px 26px 32px;" align="center">
+            <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:26px;font-weight:800;letter-spacing:5px;color:#FFFFFF;line-height:1;">PAWTCHI</div>
+            <div style="height:3px;width:34px;background-color:#F7F602;border-radius:2px;margin:12px auto 0 auto;"></div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:36px 32px 8px 32px;">
+            <h1 style="margin:0 0 12px 0;font-family:'Helvetica Neue',Arial,sans-serif;font-size:24px;font-weight:800;color:#07202A;letter-spacing:-0.2px;">Your sign-in code</h1>
+            <p style="margin:0 0 24px 0;font-family:'Helvetica Neue',Arial,sans-serif;font-size:15px;line-height:23px;color:#4A5A62;">
+              Enter this code in the Pawtchi app to sign in and pick up where you left off.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 32px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F8F7F4;border:1px solid #ECEAE4;border-radius:14px;">
+              <tr>
+                <td align="center" style="padding:22px 16px;">
+                  <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#64748b;margin-bottom:10px;">Your sign-in code</div>
+                  <div style="font-family:'SF Mono','Roboto Mono',Menlo,Consolas,monospace;font-size:38px;font-weight:700;letter-spacing:10px;color:#07202A;line-height:1;">{{ .Token }}</div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 32px 4px 32px;">
+            <p style="margin:0 0 16px 0;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:20px;color:#64748b;">
+              This code expires in one hour. For your security, do not share it with anyone.
+            </p>
+            <p style="margin:0;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:20px;color:#64748b;">
+              If you did not try to sign in, you can ignore this email — nothing has changed.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 0 32px;">
+            <div style="height:1px;background-color:#ECEAE4;"></div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 32px 32px 32px;" align="center">
+            <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#07202A;">Notice everything</div>
+            <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:12px;color:#A9A498;margin-top:8px;">Team Pawtchi · team@pawtchi.com</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>

@@ -11,6 +11,7 @@ import React, {
 import { Platform } from 'react-native';
 import Purchases, { CustomerInfo, PurchasesPackage, PURCHASES_ERROR_CODE } from 'react-native-purchases';
 import { useAuth } from './AuthProvider';
+import { trackFirebaseEvent } from '../lib/firebaseAnalytics';
 
 // Subscription status types
 export type SubscriptionStatus = 'loading' | 'trial' | 'active' | 'expired' | 'none';
@@ -197,6 +198,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
     const restorePurchases = useCallback(async () => {
         try {
+            if (!(await Purchases.isConfigured())) return;
             const customerInfo = await Purchases.restorePurchases();
             processRef.current(customerInfo);
         } catch (e) {
@@ -206,8 +208,29 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
     const purchasePackage = useCallback(async (pkg: PurchasesPackage): Promise<boolean> => {
         try {
-            const { customerInfo } = await Purchases.purchasePackage(pkg);
+            if (!(await Purchases.isConfigured())) return false;
+            const { customerInfo, productIdentifier, transaction } = await Purchases.purchasePackage(pkg);
             processRef.current(customerInfo);
+
+            const entitlement = customerInfo.entitlements.active[ENTITLEMENT_ID];
+            const isVerified =
+                entitlement?.verification === 'VERIFIED' ||
+                entitlement?.verification === 'VERIFIED_ON_DEVICE';
+
+            // The RevenueCat response is the confirmation boundary. Firebase
+            // receives no customer or pet data—only the approved value fields.
+            if (entitlement && isVerified) {
+                if (entitlement.periodType === 'TRIAL') {
+                    trackFirebaseEvent('trial_started');
+                } else {
+                    trackFirebaseEvent('purchase', {
+                        transaction_id: transaction.transactionIdentifier,
+                        currency: pkg.product.currencyCode,
+                        value: pkg.product.price,
+                        product_id: productIdentifier,
+                    });
+                }
+            }
             return true;
         } catch (e: any) {
             if (e?.userCancelled) {
@@ -244,6 +267,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
     const getOfferings = useCallback(async (): Promise<PurchasesPackage[]> => {
         try {
+            if (!(await Purchases.isConfigured())) return [];
             const offerings = await Purchases.getOfferings();
             if (offerings.current) {
                 return offerings.current.availablePackages;

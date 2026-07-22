@@ -41,6 +41,122 @@ export const BOWL_FRACTION_RATIO: Record<BowlFraction, number> = {
   quarter: 0.25, half: 0.5, full: 1,
 };
 
+// ─── Portion presets ──────────────────────────────────────────────────────────
+// One central function maps (unit, species, bowlSize) to a chip set. The
+// MealHero is a pure consumer — the multiplier sent to onLog is always
+// `gramsFed / gramsPerUnit`, so kcal math stays single-sourced regardless of
+// which vocabulary the chips speak.
+
+export type PortionMode = 'fraction' | 'count' | 'weight';
+
+export interface PortionPreset {
+  label: string;          // top line on chip — '½ pouch' / '2 pieces' / '50 g'
+  gramsFed: number;       // canonical grams this preset represents
+}
+
+export interface PortionPresets {
+  mode: PortionMode;
+  /** Grams that 1.0× of this item represents (bowl_g for cup+bowl, else species table). */
+  gramsPerUnit: number;
+  /** Display word — 'bowl', 'pouch', 'piece', 'g', 'serving'. */
+  unitLabel: string;
+  presets: PortionPreset[];
+  /** Range + step for the Custom stepper, expressed in chip-native units (unit-multiplier for fraction/count, grams for weight). */
+  stepper: { min: number; max: number; step: number };
+}
+
+const FRACTION_UNITS = new Set(['cup', 'pouch', 'can', 'sachet', 'tray', '']);
+
+/**
+ * Resolve the chip set + stepper for a given serving unit.
+ *
+ * @param unit          item.serving_unit ('cup' | 'pouch' | 'can' | … | null)
+ * @param species       'dog' | 'cat' — picks the species-aware gram table
+ * @param bowlSize      if set AND unit is cup/empty, bowl table drives gramsPerUnit
+ * @param weightContext optional context for weight-mode chip derivation:
+ *                      - labelGramsPerServing: kcal_per_serving × 100 / kcal_per_100g_as_fed when both exist
+ *                      - perMealKcalTarget:    pet's daily kcal target ÷ meals/day (fallback when label is missing)
+ *                      - kcalPer100g:          item kcal_per_100g_as_fed (used to convert per-meal kcal → grams)
+ */
+export function getPortionPresets(
+  unit: string | null | undefined,
+  species: 'dog' | 'cat',
+  bowlSize?: BowlSize | null,
+  weightContext?: {
+    labelGramsPerServing?: number | null;
+    perMealKcalTarget?: number | null;
+    kcalPer100g?: number | null;
+  },
+): PortionPresets {
+  const u = (unit ?? '').toLowerCase();
+  const speciesTable = DEFAULT_SERVING_GRAMS_BY_SPECIES[species];
+
+  // gram unit → weight mode
+  if (u === 'gram' || u === 'g') {
+    const labelBaseline = weightContext?.labelGramsPerServing && weightContext.labelGramsPerServing > 0
+      ? weightContext.labelGramsPerServing
+      : null;
+    const fallbackBaseline = (() => {
+      const kcal = weightContext?.perMealKcalTarget;
+      const dens = weightContext?.kcalPer100g;
+      if (kcal && kcal > 0 && dens && dens > 0) return (kcal / dens) * 100;
+      return null;
+    })();
+    const baselineRaw = labelBaseline ?? fallbackBaseline ?? 50;
+    const baseline = Math.max(5, Math.round(baselineRaw / 5) * 5);
+    const half = Math.max(5, Math.round((baseline * 0.5) / 5) * 5);
+    const oneAndHalf = Math.max(5, Math.round((baseline * 1.5) / 5) * 5);
+    return {
+      mode: 'weight',
+      gramsPerUnit: 1, // weight mode: the multiplier sent to onLog is grams (since species 'gram' = 1g)
+      unitLabel: 'g',
+      presets: [
+        { label: `${half} g`,        gramsFed: half },
+        { label: `${baseline} g`,    gramsFed: baseline },
+        { label: `${oneAndHalf} g`,  gramsFed: oneAndHalf },
+        { label: 'Custom',           gramsFed: baseline },
+      ],
+      stepper: { min: 5, max: 500, step: 5 },
+    };
+  }
+
+  // piece → count mode
+  if (u === 'piece') {
+    const grams = speciesTable.piece ?? 10;
+    return {
+      mode: 'count',
+      gramsPerUnit: grams,
+      unitLabel: 'piece',
+      presets: [
+        { label: '1 piece',  gramsFed: grams * 1 },
+        { label: '2 pieces', gramsFed: grams * 2 },
+        { label: '3 pieces', gramsFed: grams * 3 },
+        { label: 'Custom',   gramsFed: grams * 1 },
+      ],
+      stepper: { min: 1, max: 20, step: 1 },
+    };
+  }
+
+  // everything else → fraction mode (cup/bowl, pouch, can, sachet, tray, null)
+  const useBowl = !!bowlSize && (u === 'cup' || u === '');
+  const gramsPerUnit = useBowl
+    ? BOWL_SIZE_GRAMS[bowlSize as BowlSize]
+    : (speciesTable[u] ?? 100);
+  const unitLabel = useBowl ? 'bowl' : (u || 'serving');
+  return {
+    mode: 'fraction',
+    gramsPerUnit,
+    unitLabel,
+    presets: [
+      { label: `¼ ${unitLabel}`,    gramsFed: Math.round(gramsPerUnit * 0.25) },
+      { label: `½ ${unitLabel}`,    gramsFed: Math.round(gramsPerUnit * 0.5)  },
+      { label: `Full ${unitLabel}`, gramsFed: gramsPerUnit                    },
+      { label: `1½ ${unitLabel}`,   gramsFed: Math.round(gramsPerUnit * 1.5)  },
+    ],
+    stepper: { min: 0.25, max: 4, step: 0.25 },
+  };
+}
+
 export type MacroResult = {
   /** Grams of protein in the selected serving(s) */
   protein_g: number;

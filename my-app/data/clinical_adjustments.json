@@ -11,6 +11,10 @@
         "crude_fat": {
           "target_max_g_per_1000kcal": 25,
           "rationale": "Lower-fat diet supports calorie restriction without sacrificing protein. WSAVA Body Condition guidelines recommend 9% DM fat ceiling on weight-loss diets, ≈25 g/1000 kcal at typical kibble energy density."
+        },
+        "crude_protein": {
+          "target_min_g_per_1000kcal": 75,
+          "rationale": "AAHA weight-management guidelines recommend ≥5 g protein/kg ideal BW/day to protect lean mass during restriction. At typical weight-loss diet energy density this is ≈75 g/1000 kcal."
         }
       },
       "mer_override": {
@@ -30,6 +34,18 @@
         }
       },
       "source": "ACVIM Consensus Statement on Pancreatitis in Dogs (2021); AAHA Nutritional Assessment Guidelines"
+    },
+    "large_breed_puppy": {
+      "label": "Large-breed puppy growth",
+      "auto_apply_when_lifestage_is_puppy_and_size_in": ["large", "giant"],
+      "nutrient_adjustments": {
+        "calcium": {
+          "target_min_g_per_1000kcal": 2.5,
+          "target_max_g_per_1000kcal": 4.5,
+          "rationale": "Large- and giant-breed puppies are vulnerable to developmental orthopedic disease from excess calcium. AAFCO 2014 large-breed-growth profile caps calcium at 1.8% DM (≈4.5 g/1000 kcal) — strictly tighter than the all-life-stage range."
+        }
+      },
+      "source": "AAFCO 2014 Large-Breed Growth Profile; WSAVA Global Nutrition Guidelines"
     }
   },
   "_deferred_conditions": {

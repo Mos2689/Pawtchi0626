@@ -2,7 +2,7 @@
   "expo": {
     "name": "Pawtchi",
     "slug": "pawtchi",
-    "version": "1.0.12",
+    "version": "1.0.18",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "pawtchi",
@@ -11,12 +11,16 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "1.0.17",
+      "buildNumber": "54",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Pawtchi uses your camera to scan your pet's food and analyse its nutritional content.",
         "NSPhotoLibraryUsageDescription": "Pawtchi uses your photo library to let you set your pet's profile picture.",
         "NSPhotoLibraryAddUsageDescription": "Pawtchi may save scanned food images to your photo library.",
+        "LSApplicationQueriesSchemes": [
+          "instagram",
+          "instagram-stories"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       },
       "splash": {
@@ -28,7 +32,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 25,
+      "versionCode": 31,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.RECORD_AUDIO"
@@ -62,7 +66,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": false
+          "photosPermission": "Pawtchi uses your photo library to let you set your pet's profile picture."
         }
       ],
       [
@@ -86,7 +90,21 @@
         }
       ],
       "expo-tracking-transparency",
-      "expo-video"
+      "expo-video",
+      "expo-localization",
+      "expo-font",
+      "@maplibre/maplibre-react-native",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static",
+            "extraPods": [
+              { "name": "GoogleUtilities", "modular_headers": true }
+            ]
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

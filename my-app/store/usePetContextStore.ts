@@ -3,7 +3,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { useActivePetStore, Pet } from './useActivePetStore';
 import { computeNudge, Nudge } from '../lib/nudgeEngine';
-import { adjustDailyTarget, deriveGoal } from '../lib/healthMath';
+import { adjustDailyTarget, deriveGoal, calculateRER } from '../lib/healthMath';
+import { computeObservedMer, type ObservedMerResult, MIN_DAYS_FOR_RECALIB } from '../lib/observedMer';
+import { deriveActivityRestrictionLabels } from '../lib/activityRestrictions';
+import { computeWaterTargetMl } from '../lib/hydration';
+import { getLocalYMD, localDayStartUtcISO } from '../lib/dateUtils';
+import { track } from '../lib/analytics';
 
 // Persisted across app launches so a tapped nudge stays gone for the day even
 // after process death.
@@ -52,6 +57,10 @@ interface TodayData {
   todayScans: FoodScanSummary[];
   nextActivity: ActivitySummary | null;
   todayActivityMinutes: number;
+  /** Sum of scheduled (non-skipped) walk/play/training minutes today. The
+   *  Home "moving" stat measures completed minutes against THIS, so a fully
+   *  completed plan always closes the ring (was a hardcoded 45). */
+  todayActivityTargetMinutes: number;
   activityCompletionRate: number;
   todayProtein: number;
   todayCarbs: number;
@@ -90,6 +99,14 @@ interface TrendData {
   daysSinceLastFoodLog: number | null;
   // New: Exercise-calorie imbalance ratio (burned / consumed)
   exerciseCalorieRatio: number | null;
+  /**
+   * Personalized MER v0 — implied maintenance calories back-fit from the pet's
+   * observed weight trend and calorie logs. Populated in refreshTrends. Null
+   * until we have enough history OR when the calculator returns any status
+   * other than 'recalibration_suggested'/'stable' (i.e. gating branches keep
+   * the field null so the UI doesn't render anything).
+   */
+  observedMer: ObservedMerResult | null;
 }
 
 interface ClinicalContext {
@@ -141,6 +158,77 @@ interface PetContextState extends TodayData, DerivedToday, TrendData {
 // navigation within this window skips the network; writes call invalidateContext().
 const CONTEXT_STALE_MS = 30_000;
 
+// ---- Single-round-trip dashboard fetch ----
+//
+// get_pet_dashboard returns the RAW ROWS of all 15 today+trends queries in one
+// payload; the reduction logic below stays byte-identical and only the
+// transport collapses (15 PostgREST requests → 1 per refresh). refreshToday and
+// refreshTrends fire concurrently from fetchContext, so the in-flight promise
+// is shared between them and cleared as soon as it settles (no staleness
+// window). Resolves null whenever the RPC is missing or errors — callers then
+// run the original per-table fan-out unchanged.
+
+interface DashboardPayload {
+  today_log: { calories_consumed: number | null; water_ml: number | null; walks_count: number | null; treats_consumed: number | null } | null;
+  today_scans: any[];
+  next_activity: any | null;
+  today_activities: any[];
+  logs7: any[];
+  acts_this: any[];
+  acts_last: any[];
+  water7: any[];
+  weight2: any[];
+  treats7: any[];
+  treat_scans7: any[];
+  acts_intensity: any[];
+  food_last: any[];
+  logs28: any[];
+  weight_logs28: any[];
+}
+
+let _dashInflight: { petId: string; promise: Promise<DashboardPayload | null> } | null = null;
+
+function fetchDashboard(petId: string): Promise<DashboardPayload | null> {
+  if (_dashInflight && _dashInflight.petId === petId) {
+    return _dashInflight.promise;
+  }
+  const promise = (async (): Promise<DashboardPayload | null> => {
+    try {
+      // Same boundary math (and helpers) the per-table queries used — the SQL
+      // does no timezone work of its own.
+      const now = new Date();
+      const todayStr = getLocalYMD(now);
+      const sevenAgo = new Date(now);
+      sevenAgo.setDate(sevenAgo.getDate() - 7);
+      const fourteenAgo = new Date(now);
+      fourteenAgo.setDate(fourteenAgo.getDate() - 14);
+      const twentyEightAgo = new Date(now);
+      twentyEightAgo.setDate(twentyEightAgo.getDate() - 28);
+
+      const { data, error } = await supabase.rpc('get_pet_dashboard', {
+        p_pet_id: petId,
+        p_today: todayStr,
+        p_seven_ago: getLocalYMD(sevenAgo),
+        p_fourteen_ago: getLocalYMD(fourteenAgo),
+        p_twenty_eight_ago: getLocalYMD(twentyEightAgo),
+        p_day_start_utc: localDayStartUtcISO(),
+        p_seven_ago_utc: localDayStartUtcISO(sevenAgo),
+        p_twenty_eight_ago_utc: localDayStartUtcISO(twentyEightAgo),
+      });
+      if (error || !data) return null;
+      return data as DashboardPayload;
+    } catch {
+      return null;
+    }
+  })();
+  _dashInflight = { petId, promise };
+  // Clear as soon as it settles — the promise is shared only while in flight.
+  promise.finally(() => {
+    if (_dashInflight?.promise === promise) _dashInflight = null;
+  });
+  return promise;
+}
+
 // ---- Initial state ----
 
 const initialTodayData: TodayData = {
@@ -152,6 +240,7 @@ const initialTodayData: TodayData = {
   todayScans: [],
   nextActivity: null,
   todayActivityMinutes: 0,
+  todayActivityTargetMinutes: 0,
   activityCompletionRate: 0,
   todayProtein: 0,
   todayCarbs: 0,
@@ -184,6 +273,7 @@ const initialTrends: TrendData = {
   daysUnderTarget: null,
   consecutiveHighIntensityDays: 0,
   daysSinceLastFoodLog: null,
+  observedMer: null,
   exerciseCalorieRatio: null,
 };
 
@@ -197,33 +287,13 @@ const initialClinical: ClinicalContext = {
 
 // ---- Helpers ----
 
-function getLocalYMD(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 function deriveClinical(pet: Pet | null): ClinicalContext {
   if (!pet) return initialClinical;
 
   const conditions = pet.medical_conditions || [];
-  const restrictions: string[] = [];
-
-  const restrictionMap: Record<string, string> = {
-    'arthritis': 'no high-impact activities',
-    'hip dysplasia': 'no jumping or stairs',
-    'heart disease': 'limit vigorous exercise',
-    'obesity': 'gradual activity increase only',
-    'ivdd': 'no jumping, limit stairs',
-  };
-
-  for (const condition of conditions) {
-    const lower = condition.toLowerCase();
-    for (const [key, restriction] of Object.entries(restrictionMap)) {
-      if (lower.includes(key)) restrictions.push(restriction);
-    }
-  }
+  // Shared with generate-schedule payloads — lib/activityRestrictions.ts is
+  // the single source of truth for condition → restriction mapping.
+  const restrictions = deriveActivityRestrictionLabels(conditions);
 
   return {
     allergies: pet.allergies || [],
@@ -242,12 +312,14 @@ export function computeDerived(
 ): DerivedToday {
   const baseTarget = pet?.target_daily_calories || 0;
   const weightKg = pet?.current_weight_kg || 0;
-  const waterTarget = Math.round(weightKg * 50);
+  // Diet-aware: wet-fed pets get most water from food (lib/hydration.ts).
+  const waterTarget = computeWaterTargetMl(weightKg, pet?.diet_type);
 
   // Dynamic daily budget: adjust base target based on activity + weight trends + weekly balance
   const goal = deriveGoal(
     pet?.current_weight_kg || 0,
     pet?.target_weight_kg,
+    pet?.body_condition_score,
   );
   const { adjustedTarget, reason } = adjustDailyTarget(
     baseTarget,
@@ -306,6 +378,15 @@ function buildNudgeInput(state: PetContextState) {
     weeklyTreatCalPercent: state.weeklyTreatCalPercent,
     daysSinceLastWeighIn: state.daysSinceLastWeighIn,
     hasWeightGoal: state.hasWeightGoal,
+    goalDirection: (() => {
+      const pet = useActivePetStore.getState().activePet;
+      if (!pet) return null;
+      return deriveGoal(
+        pet.current_weight_kg || 0,
+        pet.target_weight_kg,
+        pet.body_condition_score,
+      );
+    })(),
     weeklyDelta: state.weeklyDelta,
     daysUnderTarget: state.daysUnderTarget,
     topContributorScan,
@@ -376,49 +457,86 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const today = getLocalYMD(new Date());
 
     try {
-      const [logRes, scansRes, activityRes, completedActsRes] = await Promise.all([
-        supabase
-          .from('daily_logs')
-          .select('calories_consumed, water_ml, walks_count, treats_consumed')
-          .eq('pet_id', petId)
-          .eq('log_date', today)
-          .single(),
-        supabase
-          .from('food_scans')
-          .select('id, ai_identified_food, ai_estimated_calories, created_at, is_treat, protein_g, carbs_g, fat_g, image_url')
-          .eq('pet_id', petId)
-          .gte('created_at', `${today}T00:00:00`)
-          .order('created_at', { ascending: false })
-          .limit(5),
-        supabase
-          .from('activities')
-          .select('id, activity_type, title, scheduled_time, status, duration_minutes, intensity, distance_km, notes')
-          .eq('pet_id', petId)
-          .eq('scheduled_date', today)
-          .eq('status', 'pending')
-          .order('scheduled_time', { ascending: true })
-          .limit(1)
-          .single(),
-        // Fetch today's activity stats for nudge engine
-        supabase
-          .from('activities')
-          .select('duration_minutes, status')
-          .eq('pet_id', petId)
-          .eq('scheduled_date', today)
-          .in('activity_type', ['walk', 'play', 'training']),
-      ]);
+      // .maybeSingle() instead of .single() on rows that may not exist yet.
+      // .single() returns an error on 0 rows (PGRST116); the destructuring
+      // works the same but `.error` would be populated and could mask future
+      // bugs. .maybeSingle() returns { data: null, error: null } cleanly.
+      //
+      // The food_scans filter uses localDayStartUtcISO() instead of the naive
+      // `${today}T00:00:00` because the column is timestamptz. The naive
+      // pattern is interpreted as UTC by Postgres and silently excludes scans
+      // whose created_at falls in the user's first few local hours east of UTC
+      // (e.g. IST owners logging between 00:00 and 05:30 had their scans drop
+      // off the home tab even though daily_logs.calories_consumed updated
+      // correctly).
+      const todayStart = localDayStartUtcISO();
+
+      // Preferred path: one get_pet_dashboard round trip (shared with a
+      // concurrent refreshTrends). Fallback: the original 4-query fan-out.
+      const dash = await fetchDashboard(petId);
+      let logData: DashboardPayload['today_log'];
+      let scansData: any[] | null;
+      let activityData: any | null;
+      let allActsData: any[] | null;
+      if (dash) {
+        logData = dash.today_log;
+        scansData = dash.today_scans;
+        activityData = dash.next_activity;
+        allActsData = dash.today_activities;
+      } else {
+        const [logRes, scansRes, activityRes, completedActsRes] = await Promise.all([
+          supabase
+            .from('daily_logs')
+            .select('calories_consumed, water_ml, walks_count, treats_consumed')
+            .eq('pet_id', petId)
+            .eq('log_date', today)
+            .maybeSingle(),
+          supabase
+            .from('food_scans')
+            .select('id, ai_identified_food, ai_estimated_calories, created_at, is_treat, protein_g, carbs_g, fat_g, image_url')
+            .eq('pet_id', petId)
+            .gte('created_at', todayStart)
+            .order('created_at', { ascending: false })
+            .limit(5),
+          supabase
+            .from('activities')
+            .select('id, activity_type, title, scheduled_time, status, duration_minutes, intensity, distance_km, notes')
+            .eq('pet_id', petId)
+            .eq('scheduled_date', today)
+            .eq('status', 'pending')
+            .order('scheduled_time', { ascending: true })
+            .limit(1)
+            .maybeSingle(),
+          // Fetch today's activity stats for nudge engine
+          supabase
+            .from('activities')
+            .select('duration_minutes, status')
+            .eq('pet_id', petId)
+            .eq('scheduled_date', today)
+            .in('activity_type', ['walk', 'play', 'training']),
+        ]);
+        logData = logRes.data;
+        scansData = scansRes.data;
+        activityData = activityRes.data;
+        allActsData = completedActsRes.data;
+      }
 
       // Compute today's activity minutes and completion rate
-      const allActs = completedActsRes.data || [];
+      const allActs = allActsData || [];
       const completedActs = allActs.filter((a: any) => a.status === 'completed');
       const todayActivityMinutes = completedActs.reduce(
         (sum: number, a: any) => sum + (a.duration_minutes || 0), 0
       );
+      // Today's movement goal = what the plan actually scheduled (skipped rows
+      // excluded — a consciously skipped task shouldn't hold the ring open).
+      const todayActivityTargetMinutes = allActs
+        .filter((a: any) => a.status !== 'skipped')
+        .reduce((sum: number, a: any) => sum + (a.duration_minutes || 0), 0);
       const activityCompletionRate = allActs.length > 0
         ? completedActs.length / allActs.length
         : 0;
 
-      const scans = (scansRes.data as FoodScanSummary[]) || [];
+      const scans = (scansData as FoodScanSummary[]) || [];
       const treatCaloriesConsumed = scans
         .filter((s) => s.is_treat === true)
         .reduce((sum, s) => sum + (s.ai_estimated_calories || 0), 0);
@@ -428,15 +546,31 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       const todayCarbs = Math.round(scans.reduce((sum, s) => sum + (s.carbs_g || 0), 0));
       const todayFats = Math.round(scans.reduce((sum, s) => sum + (s.fat_g || 0), 0));
 
+      // Diagnostic: if daily_logs says calories were consumed today but the
+      // food_scans query returned zero rows, the two read paths disagree —
+      // which is exactly the timezone-filter bug that produced the "headline
+      // updates but meals list is empty" screenshots. Fires once per
+      // inconsistent refresh so we can catch any future regression in PostHog.
+      if (logData && (logData.calories_consumed ?? 0) > 0 && scans.length === 0) {
+        try {
+          track('today_data_inconsistent', {
+            pet_id: petId,
+            calories_consumed: logData.calories_consumed,
+            scans_returned: 0,
+          });
+        } catch { /* analytics best-effort */ }
+      }
+
       const todayData: TodayData = {
-        todayCalories: logRes.data?.calories_consumed || 0,
-        todayWater: logRes.data?.water_ml || 0,
-        todayWalks: logRes.data?.walks_count || 0,
-        treatsConsumed: logRes.data?.treats_consumed || 0,
+        todayCalories: logData?.calories_consumed || 0,
+        todayWater: logData?.water_ml || 0,
+        todayWalks: logData?.walks_count || 0,
+        treatsConsumed: logData?.treats_consumed || 0,
         treatCaloriesConsumed,
         todayScans: scans,
-        nextActivity: (activityRes.data as ActivitySummary) || null,
+        nextActivity: (activityData as ActivitySummary) || null,
         todayActivityMinutes,
+        todayActivityTargetMinutes,
         activityCompletionRate,
         todayProtein,
         todayCarbs,
@@ -483,102 +617,165 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     const fourteenAgo = new Date(now);
     fourteenAgo.setDate(fourteenAgo.getDate() - 14);
     const fourteenStr = getLocalYMD(fourteenAgo);
+    // Observed-MER window: 28-day history for the personalized-MER back-fit.
+    const twentyEightAgo = new Date(now);
+    twentyEightAgo.setDate(twentyEightAgo.getDate() - 28);
+    const twentyEightStr = getLocalYMD(twentyEightAgo);
+    const twentyEightAgoUtc = localDayStartUtcISO(twentyEightAgo);
+    // Proper UTC ISO boundary for timestamptz comparisons — see localDayStartUtcISO.
+    const sevenAgoUtc = localDayStartUtcISO(sevenAgo);
 
     try {
-      // For consecutive high-intensity days: get all completed activities with intensity for last 7 days
-      const [logs7Res, actsThisRes, actsLastRes, waterRes, weightRes, treats7Res, treatScans7Res, actsIntensityRes, foodLogsRes] = await Promise.all([
-        supabase
-          .from('daily_logs')
-          .select('calories_consumed, log_date')
-          .eq('pet_id', petId)
-          .gte('log_date', sevenStr)
-          .lte('log_date', todayStr),
-        supabase
-          .from('activities')
-          .select('duration_minutes')
-          .eq('pet_id', petId)
-          .eq('status', 'completed')
-          .in('activity_type', ['walk', 'play', 'training'])
-          .gte('scheduled_date', sevenStr)
-          .lte('scheduled_date', todayStr),
-        supabase
-          .from('activities')
-          .select('duration_minutes, intensity, scheduled_date')
-          .eq('pet_id', petId)
-          .eq('status', 'completed')
-          .in('activity_type', ['walk', 'play', 'training'])
-          .gte('scheduled_date', fourteenStr)
-          .lt('scheduled_date', sevenStr),
-        supabase
-          .from('daily_logs')
-          .select('water_ml')
-          .eq('pet_id', petId)
-          .gte('log_date', sevenStr)
-          .lte('log_date', todayStr),
-        supabase
-          .from('weight_logs')
-          .select('weight_kg, logged_at')
-          .eq('pet_id', petId)
-          .order('logged_at', { ascending: false })
-          .limit(2),
-        // Treats over 7 days for average calculation
-        supabase
-          .from('daily_logs')
-          .select('treats_consumed')
-          .eq('pet_id', petId)
-          .gte('log_date', sevenStr)
-          .lte('log_date', todayStr),
-        // Treat scans over 7 days for calorie percentage
-        supabase
-          .from('food_scans')
-          .select('ai_estimated_calories, is_treat')
-          .eq('pet_id', petId)
-          .eq('is_treat', true)
-          .gte('created_at', `${sevenStr}T00:00:00`),
-        // Intensity data for consecutive high-intensity days (last 7 days)
-        supabase
-          .from('activities')
-          .select('intensity, duration_minutes, scheduled_date')
-          .eq('pet_id', petId)
-          .eq('status', 'completed')
-          .in('activity_type', ['walk', 'play', 'training'])
-          .gte('scheduled_date', sevenStr)
-          .lte('scheduled_date', todayStr),
-        // Food scan logs for churn detection
-        supabase
-          .from('food_scans')
-          .select('created_at')
-          .eq('pet_id', petId)
-          .order('created_at', { ascending: false })
-          .limit(1),
-      ]);
+      // Preferred path: one get_pet_dashboard round trip (shared with a
+      // concurrent refreshToday). Fallback: the original 11-query fan-out.
+      const dash = await fetchDashboard(petId);
+      let logs7Data: any[] | null;
+      let actsThisData: any[] | null;
+      let actsLastData: any[] | null;
+      let waterData: any[] | null;
+      let weightData: any[] | null;
+      let treats7Data: any[] | null;
+      let treatScans7Data: any[] | null;
+      let actsIntensityData: any[] | null;
+      let foodLogsData_: any[] | null;
+      let logs28Data: any[] | null;
+      let weightLogs28Data: any[] | null;
+      if (dash) {
+        logs7Data = dash.logs7;
+        actsThisData = dash.acts_this;
+        actsLastData = dash.acts_last;
+        waterData = dash.water7;
+        weightData = dash.weight2;
+        treats7Data = dash.treats7;
+        treatScans7Data = dash.treat_scans7;
+        actsIntensityData = dash.acts_intensity;
+        foodLogsData_ = dash.food_last;
+        logs28Data = dash.logs28;
+        weightLogs28Data = dash.weight_logs28;
+      } else {
+        // For consecutive high-intensity days: get all completed activities with intensity for last 7 days
+        const [logs7Res, actsThisRes, actsLastRes, waterRes, weightRes, treats7Res, treatScans7Res, actsIntensityRes, foodLogsRes, logs28Res, weightLogs28Res] = await Promise.all([
+          supabase
+            .from('daily_logs')
+            .select('calories_consumed, log_date')
+            .eq('pet_id', petId)
+            .gte('log_date', sevenStr)
+            .lte('log_date', todayStr),
+          supabase
+            .from('activities')
+            .select('duration_minutes')
+            .eq('pet_id', petId)
+            .eq('status', 'completed')
+            .in('activity_type', ['walk', 'play', 'training'])
+            .gte('scheduled_date', sevenStr)
+            .lte('scheduled_date', todayStr),
+          supabase
+            .from('activities')
+            .select('duration_minutes, intensity, scheduled_date')
+            .eq('pet_id', petId)
+            .eq('status', 'completed')
+            .in('activity_type', ['walk', 'play', 'training'])
+            .gte('scheduled_date', fourteenStr)
+            .lt('scheduled_date', sevenStr),
+          supabase
+            .from('daily_logs')
+            .select('water_ml')
+            .eq('pet_id', petId)
+            .gte('log_date', sevenStr)
+            .lte('log_date', todayStr),
+          supabase
+            .from('weight_logs')
+            .select('weight_kg, logged_at')
+            .eq('pet_id', petId)
+            .order('logged_at', { ascending: false })
+            .limit(2),
+          // Treats over 7 days for average calculation
+          supabase
+            .from('daily_logs')
+            .select('treats_consumed')
+            .eq('pet_id', petId)
+            .gte('log_date', sevenStr)
+            .lte('log_date', todayStr),
+          // Treat scans over 7 days for calorie percentage.
+          // Uses localDayStartUtcISO(sevenAgo) so timezone-east-of-UTC owners
+          // don't lose the boundary day to the UTC interpretation of the bare
+          // ${sevenStr}T00:00:00 string.
+          supabase
+            .from('food_scans')
+            .select('ai_estimated_calories, is_treat')
+            .eq('pet_id', petId)
+            .eq('is_treat', true)
+            .gte('created_at', sevenAgoUtc),
+          // Intensity data for consecutive high-intensity days (last 7 days)
+          supabase
+            .from('activities')
+            .select('intensity, duration_minutes, scheduled_date')
+            .eq('pet_id', petId)
+            .eq('status', 'completed')
+            .in('activity_type', ['walk', 'play', 'training'])
+            .gte('scheduled_date', sevenStr)
+            .lte('scheduled_date', todayStr),
+          // Food scan logs for churn detection
+          supabase
+            .from('food_scans')
+            .select('created_at')
+            .eq('pet_id', petId)
+            .order('created_at', { ascending: false })
+            .limit(1),
+          // Observed-MER: 28-day daily calorie logs (density > 70% needed to trust the back-fit).
+          supabase
+            .from('daily_logs')
+            .select('calories_consumed, log_date')
+            .eq('pet_id', petId)
+            .gte('log_date', twentyEightStr)
+            .lte('log_date', todayStr),
+          // Observed-MER: 28-day weight-log time series (slope drives the back-fit).
+          supabase
+            .from('weight_logs')
+            .select('weight_kg, logged_at')
+            .eq('pet_id', petId)
+            .gte('logged_at', twentyEightAgoUtc)
+            .order('logged_at', { ascending: true }),
+        ]);
+        logs7Data = logs7Res.data;
+        actsThisData = actsThisRes.data;
+        actsLastData = actsLastRes.data;
+        waterData = waterRes.data;
+        weightData = weightRes.data;
+        treats7Data = treats7Res.data;
+        treatScans7Data = treatScans7Res.data;
+        actsIntensityData = actsIntensityRes.data;
+        foodLogsData_ = foodLogsRes.data;
+        logs28Data = logs28Res.data;
+        weightLogs28Data = weightLogs28Res.data;
+      }
 
       // Nutrition score: days within ±10% of target
       let nutritionScore: TrendData['nutritionScore'] = null;
-      if (logs7Res.data && pet?.target_daily_calories) {
+      if (logs7Data && pet?.target_daily_calories) {
         const target = pet.target_daily_calories;
-        const onTarget = logs7Res.data.filter(
+        const onTarget = logs7Data.filter(
           (l: any) => l.calories_consumed >= target * 0.9 && l.calories_consumed <= target * 1.1
         ).length;
-        nutritionScore = { onTarget, total: logs7Res.data.length || 7 };
+        nutritionScore = { onTarget, total: logs7Data.length || 7 };
       }
 
       // Activity score: this week vs last week minutes
-      const thisWeek = (actsThisRes.data || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
-      const lastWeek = (actsLastRes.data || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
+      const thisWeek = (actsThisData || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
+      const lastWeek = (actsLastData || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
       const activityScore = { thisWeek, lastWeek };
 
       // Hydration score: 7-day average vs target
-      const waterLogs = waterRes.data || [];
+      const waterLogs = waterData || [];
       const totalWater = waterLogs.reduce((s: number, l: any) => s + (l.water_ml || 0), 0);
       const daysWithData = waterLogs.filter((l: any) => l.water_ml > 0).length || 1;
       const avgMl = Math.round(totalWater / daysWithData);
-      const targetMl = Math.round((pet?.current_weight_kg || 10) * 50);
+      const targetMl = computeWaterTargetMl(pet?.current_weight_kg || 10, pet?.diet_type);
       const hydrationScore = { avgMl, targetMl };
 
       // Weight trend: compare last 2 entries
       let weightTrend: TrendData['weightTrend'] = null;
-      const wData = weightRes.data || [];
+      const wData = weightData || [];
       if (wData.length >= 2) {
         const latest = Number(wData[0].weight_kg);
         const previous = Number(wData[1].weight_kg);
@@ -603,15 +800,15 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         Math.abs(pet.target_weight_kg - pet.current_weight_kg) > 0.5);
 
       // Average treats per day over 7 days
-      const treatsData = treats7Res.data || [];
+      const treatsData = treats7Data || [];
       const totalTreats = treatsData.reduce((s: number, l: any) => s + (l.treats_consumed || 0), 0);
       const avgTreatsPerDay = treatsData.length > 0 ? totalTreats / treatsData.length : null;
 
       // Weekly treat calorie percentage
-      const weeklyTreatCals = (treatScans7Res.data || []).reduce(
+      const weeklyTreatCals = (treatScans7Data || []).reduce(
         (s: number, scan: any) => s + (scan.ai_estimated_calories || 0), 0
       );
-      const weeklyTotalCals = (logs7Res.data || []).reduce(
+      const weeklyTotalCals = (logs7Data || []).reduce(
         (s: number, l: any) => s + (l.calories_consumed || 0), 0
       );
       const weeklyTreatCalPercent = weeklyTotalCals > 0
@@ -621,7 +818,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       // Rolling 7-day calorie balance (consumed − target × 7)
       const baseTarget = pet?.target_daily_calories || 0;
       const weeklyTarget = baseTarget > 0 ? baseTarget * 7 : null;
-      const weeklyCaloriesConsumed = (logs7Res.data?.length || 0) > 0 ? weeklyTotalCals : null;
+      const weeklyCaloriesConsumed = (logs7Data?.length || 0) > 0 ? weeklyTotalCals : null;
       const weeklyDelta = weeklyTarget !== null && weeklyCaloriesConsumed !== null
         ? weeklyCaloriesConsumed - weeklyTarget
         : null;
@@ -629,13 +826,13 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       // Days under target in the last 3 days (chronic under-eating signal).
       // Counts only days with actual log data; missing days are not assumed under.
       let daysUnderTarget: number | null = null;
-      if (baseTarget > 0 && logs7Res.data) {
+      if (baseTarget > 0 && logs7Data) {
         const last3Dates = [0, 1, 2].map(i => {
           const d = new Date(now);
           d.setDate(d.getDate() - i);
           return getLocalYMD(d);
         });
-        const last3Logs = logs7Res.data.filter((l: any) => last3Dates.includes(l.log_date));
+        const last3Logs = logs7Data.filter((l: any) => last3Dates.includes(l.log_date));
         if (last3Logs.length > 0) {
           daysUnderTarget = last3Logs.filter((l: any) =>
             (l.calories_consumed || 0) < baseTarget * 0.7
@@ -645,7 +842,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
 
       // Consecutive high-intensity days: count back from today
       let consecutiveHighIntensityDays = 0;
-      const intensityData = (actsIntensityRes ?? { data: [] }).data as any[];
+      const intensityData = (actsIntensityData ?? []) as any[];
       if (intensityData.length > 0) {
         const sortedDates = [...new Set(intensityData.map((a: any) => a.scheduled_date))].sort().reverse();
         for (const date of sortedDates) {
@@ -663,7 +860,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
 
       // Days since last food log (churn detection)
       let daysSinceLastFoodLog: number | null = null;
-      const foodLogsData = (foodLogsRes ?? { data: [] }).data as any[];
+      const foodLogsData = (foodLogsData_ ?? []) as any[];
       if (foodLogsData.length > 0) {
         const lastLog = foodLogsData[0];
         if (lastLog.created_at) {
@@ -675,12 +872,43 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
 
       // Exercise-calorie imbalance ratio (burned vs consumed today)
       let exerciseCalorieRatio: number | null = null;
-      const todayTotalCals = (logs7Res.data || []).find((l: any) => l.log_date === todayStr);
-      const todayMinsCalc = (actsThisRes.data || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
+      const todayTotalCals = (logs7Data || []).find((l: any) => l.log_date === todayStr);
+      const todayMinsCalc = (actsThisData || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
       if (todayTotalCals && todayTotalCals.calories_consumed > 0) {
         // Rough estimate: ~60 kcal burned per 10 min of activity
         const burnedEstimate = Math.round(todayMinsCalc * 6);
         exerciseCalorieRatio = Math.round((burnedEstimate / todayTotalCals.calories_consumed) * 100) / 100;
+      }
+
+      // Observed-MER back-fit. Only computed when we have a pet with a target
+      // and a current weight; result carries its own gating status so the UI
+      // renders nothing until 'recalibration_suggested' fires.
+      let observedMer: ObservedMerResult | null = null;
+      if (pet && pet.current_weight_kg > 0 && pet.target_daily_calories && pet.target_daily_calories > 0) {
+        const createdAt = (pet as { created_at?: string | null }).created_at;
+        const daysSincePlanStart = createdAt
+          ? Math.max(0, Math.floor((now.getTime() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24)))
+          : 0;
+        // Only bother computing once the window has enough headroom. Cheap gate.
+        if (daysSincePlanStart >= MIN_DAYS_FOR_RECALIB) {
+          const predictedRer = calculateRER(pet.current_weight_kg);
+          const predictedMerFactor = predictedRer > 0
+            ? pet.target_daily_calories / predictedRer
+            : 1.0;
+          const kcalLogs = (logs28Data || [])
+            .filter((l: any) => typeof l.calories_consumed === 'number' && l.calories_consumed > 0)
+            .map((l: any) => ({ logDate: l.log_date, caloriesConsumed: l.calories_consumed }));
+          const weightLogs = (weightLogs28Data || [])
+            .filter((w: any) => typeof w.weight_kg === 'number' && w.weight_kg > 0)
+            .map((w: any) => ({ loggedAt: w.logged_at, weightKg: Number(w.weight_kg) }));
+          observedMer = computeObservedMer({
+            currentWeightKg: pet.current_weight_kg,
+            predictedMerFactor,
+            kcalLogs,
+            weightLogs,
+            daysSincePlanStart,
+          });
+        }
       }
 
       set({
@@ -699,6 +927,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         consecutiveHighIntensityDays,
         daysSinceLastFoodLog,
         exerciseCalorieRatio,
+        observedMer,
         isTrendsLoading: false,
         _trendsFetchedAt: Date.now(),
         _contextPetId: petId,
@@ -715,6 +944,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
         todayScans: stateAfterTrends.todayScans,
         nextActivity: stateAfterTrends.nextActivity,
         todayActivityMinutes: stateAfterTrends.todayActivityMinutes,
+        todayActivityTargetMinutes: stateAfterTrends.todayActivityTargetMinutes,
         activityCompletionRate: stateAfterTrends.activityCompletionRate,
         todayProtein: stateAfterTrends.todayProtein,
         todayCarbs: stateAfterTrends.todayCarbs,

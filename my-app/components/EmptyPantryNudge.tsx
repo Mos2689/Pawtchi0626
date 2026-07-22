@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, Image, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PawtchiButton } from './PawtchiButton';
+import { makeShadow } from '../constants/design';
 
 interface Props {
   petId: string;
@@ -66,11 +67,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0f172a',
     borderRadius: 24,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 16,
-    elevation: 8,
+    ...makeShadow(8, 16, 0.15, '#000'),
   },
   bubbleText: {
     color: '#e2e8f0',

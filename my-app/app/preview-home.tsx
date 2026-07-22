@@ -13,10 +13,11 @@ export const PREVIEW_SEEN_KEY = 'preview_home_seen';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useSubscription } from '../hooks/useSubscription';
 import { HealthRings, ProgressBar } from '../components/HealthRings';
+import { makeShadow } from '../constants/design';
 import { deriveLifeStage, getLifeStageLabel } from '../lib/lifeStage';
+import { resolvePetImage } from '../lib/petFallbackImage';
+import { computeWaterTargetMl } from '../lib/hydration';
 import { track } from '../lib/analytics';
-
-const FALLBACK_PHOTO = 'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=1000&auto=format&fit=crop';
 
 // A faded "Sample" tag so nothing here is mistaken for real, logged data (brand: proof over claim).
 function SampleTag() {
@@ -30,12 +31,12 @@ function SampleTag() {
 export default function PreviewHomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { activePet } = useActivePetStore();
+  const activePet = useActivePetStore(s => s.activePet);
   const { isPro } = useSubscription();
 
   const petName = activePet?.name?.trim() || 'your pet';
-  const photo = activePet?.image_url || FALLBACK_PHOTO;
   const species = activePet?.species === 'cat' ? 'cat' : 'dog';
+  const photo = resolvePetImage(activePet?.image_url, species);
   const breed = activePet?.breed;
   const ageYears = Math.floor(activePet?.age_years || 0);
   const lifeStage = getLifeStageLabel(deriveLifeStage(species, ageYears, 0), species);
@@ -44,7 +45,7 @@ export default function PreviewHomeScreen() {
   const targetCal = activePet?.target_daily_calories || 0;
   const currentWeight = activePet?.current_weight_kg || 0;
   const targetWeight = activePet?.target_weight_kg || currentWeight;
-  const waterTarget = currentWeight ? Math.round(currentWeight * 50) : 0;
+  const waterTarget = computeWaterTargetMl(currentWeight, activePet?.diet_type);
   const waterDisplay = waterTarget >= 1000 ? `${(waterTarget / 1000).toFixed(1)}L` : `${waterTarget}ml`;
 
   // Aspirational "good day" sample fills.
@@ -249,7 +250,7 @@ const styles = StyleSheet.create({
     position: 'absolute', bottom: 8, right: '30%',
     flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: '#FFFFFF', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3,
+    ...makeShadow(2, 4, 0.1, '#000'),
   },
   streakBadgeText: { fontFamily: 'Montserrat_800ExtraBold', fontSize: 12, color: '#ea580c' },
   ringsSampleTag: { position: 'absolute', top: 0, right: 8 },

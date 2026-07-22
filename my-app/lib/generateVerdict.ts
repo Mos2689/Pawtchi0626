@@ -91,6 +91,7 @@ function nutrientGPer1000(analysis: FoodAnalysis, key: string): number | null {
 function cleanAllergenNames(
   warnings: string[],
   keyIngredients: string[],
+  petAllergies: string[] = [],
 ): string[] {
   const cleaned = new Set<string>();
   for (const warning of warnings) {
@@ -107,10 +108,7 @@ function cleanAllergenNames(
   }
   // Fallback: cross-match key_ingredients against pet allergies
   if (cleaned.size === 0 && keyIngredients.length > 0) {
-    const petAllergiesLower =
-      (ctx.pet as { allergies?: string[] })?.allergies?.map(a =>
-        a.toLowerCase()
-      ) ?? [];
+    const petAllergiesLower = petAllergies.map(a => a.toLowerCase());
     for (const ing of keyIngredients) {
       if (
         petAllergiesLower.some(al => ing.toLowerCase().includes(al))
@@ -121,9 +119,6 @@ function cleanAllergenNames(
   }
   return Array.from(cleaned);
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ctx: any = null; // resolved at call site
 
 export function generateVerdict(ctx: VerdictContext): ScanResultVerdict {
   const { scanResult, foodAnalysis, pet, weight_context: wCtx } = ctx;
@@ -179,7 +174,11 @@ export function generateVerdict(ctx: VerdictContext): ScanResultVerdict {
   // --- Resolve clean allergen names ---
   const keyIngredients =
     scanResult.key_ingredients ?? scanResult.ingredients_of_concern ?? [];
-  const allergenNames = cleanAllergenNames(allergyWarnings, keyIngredients);
+  const allergenNames = cleanAllergenNames(
+    allergyWarnings,
+    keyIngredients,
+    (pet as { allergies?: string[] }).allergies ?? [],
+  );
 
   // --- Calorie context ---
   const kcalFraction =

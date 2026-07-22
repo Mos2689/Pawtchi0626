@@ -17,6 +17,8 @@ export type AnalyticsEvent =
   | 'paywall_restore_tapped'
   | 'paywall_dismissed'
   // Auth
+  | 'auth_screen_viewed'
+  | 'auth_mode_switched'
   | 'auth_signup_started'
   | 'auth_signup_succeeded'
   | 'auth_signup_failed'
@@ -24,6 +26,10 @@ export type AnalyticsEvent =
   | 'auth_signin_succeeded'
   | 'auth_signin_failed'
   | 'auth_forgot_password'
+  | 'auth_signup_code_resent'
+  | 'auth_password_reset_code_sent'
+  | 'auth_password_reset_succeeded'
+  | 'auth_password_reset_failed'
   // Onboarding funnel — fired on every step view/exit so we can chart drop-off
   | 'onboarding_step_viewed'
   | 'onboarding_step_completed'
@@ -38,7 +44,20 @@ export type AnalyticsEvent =
   | 'plan_reveal_viewed'
   | 'plan_reveal_scrolled'
   | 'plan_reveal_insight_viewed'
+  | 'plan_receipt_row_expanded'
+  | 'plan_receipt_mismatch'
+  | 'plan_reveal_shared'
   | 'plan_reveal_continued'
+  // Walksigns — the identity discovered from how a dog moves through the
+  // world. `assigned` covers provisional readings (incl. quiet re-readings),
+  // `confirmed` the fifth-valid-walk confirmation, `transition` the
+  // celebrated life-moment changes (graduation, seniority).
+  | 'walksign_assigned'
+  | 'walksign_reveal_viewed'
+  | 'walksign_confirmed'
+  | 'walksign_transition'
+  | 'walksign_shared'
+  | 'welcome_screen_viewed'
   | 'preview_home_viewed'
   | 'preview_home_cta'
   | 'profile_completion_chip_tapped'
@@ -62,7 +81,94 @@ export type AnalyticsEvent =
   | 'vet_checkin_opened'
   | 'vet_checkin_replied'
   | 'vet_history_case_opened'
-  | 'vet_report_scanned';
+  | 'vet_report_scanned'
+  | 'weight_loss_rate_dangerous'
+  // Diagnostic: refreshToday saw daily_logs say "X kcal consumed" but
+  // food_scans returned 0 rows. Indicates the two queries disagree on what
+  // "today" means — usually a timezone-filter mismatch on a timestamptz column.
+  | 'today_data_inconsistent'
+  // Granular UI events
+  | 'ui_button_tapped'
+  | 'onboarding_option_selected'
+  // Fires when the owner-reported BCS produces a target weight that diverges
+  // sharply from the AI/breed-chart reference — surfaces likely BCS mis-taps
+  // or small-frame dogs the breed chart mis-estimates. Non-blocking.
+  | 'target_weight_bcs_breed_divergence'
+  // Fires once per completed local ideal-weight estimation on the goal screen.
+  // Props include mode/reason/classification/severity so we can see how often
+  // the advisory shows and which breed/BCS combos land out of band.
+  | 'ideal_weight_estimated'
+  // Fires from the NON-BLOCKING "Re-check weight or breed" link inside the
+  // weight advisory — the user chose to go back and fix an input rather than
+  // proceed with the band-anchored plan.
+  | 'ideal_weight_conflict_go_back'
+  // A weight log crossed a stage target (or the final ideal). Props carry
+  // event type, progress_pct, and whether the owner re-scored or dismissed.
+  | 'milestone_reached'
+  // The owner recorded a fresh BCS (milestone sheet or stale-BCS prompt).
+  // predicted_used=true means they dismissed and the drift-predicted score
+  // advanced the plan instead.
+  | 'bcs_rescored'
+  // Photo BCS read — the background Gemini estimate of body condition from
+  // the avatar photo, and what happened to its suggestion on the goal screen.
+  // requested/returned/failed track the pipeline; shown/suppressed track the
+  // display gate (suppressed carries the reason: no_pet, not_full_body,
+  // band_too_wide, low_confidence, scale_conflict); accepted/overridden are
+  // the calibration signal — whether owners agree with the photo read.
+  | 'bcs_photo_estimate_requested'
+  | 'bcs_photo_estimate_returned'
+  | 'bcs_photo_estimate_failed'
+  | 'bcs_photo_suggestion_shown'
+  | 'bcs_photo_suggestion_suppressed'
+  | 'bcs_photo_suggestion_accepted'
+  | 'bcs_photo_suggestion_overridden'
+  // Hands-on check — the guided BCS questionnaire (onboarding body_check
+  // step). answered fires per question; conflict when the three core reads
+  // contradict; completed carries the fused score, band, confidence tier and
+  // photo agreement; fallback_used when the owner takes the quick-pick path.
+  | 'bcs_check_started'
+  | 'bcs_check_answered'
+  | 'bcs_check_conflict'
+  | 'bcs_check_completed'
+  | 'bcs_check_fallback_used'
+  // Central failure telemetry (lib/appError.ts reportError). Fires once per
+  // user-visible failure with context (which flow), kind (offline/server/
+  // ai_unavailable/...), and a technical detail string for debugging. The
+  // detail contains no user data by construction — it's error taxonomy only.
+  | 'app_error'
+  // Tracked walks — GPS session → validation → auto-completion engine.
+  | 'walk_tracking_started'
+  | 'walk_tracking_denied'
+  | 'walk_auto_paused'
+  | 'walk_completed'
+  | 'walk_validated'
+  | 'walk_matched_activity'
+  | 'walk_logged_unmatched'
+  | 'walk_discarded'
+  | 'walk_recovered'
+  | 'walk_sync_dropped'
+  | 'walk_shared'
+  // Paw Moment share card — the walk→Instagram loop. `viewed` fires when the
+  // card preview opens, `shared` when the native sheet completes (the OS
+  // never reports an actual post, so a dismissed sheet counts as shared),
+  // `dismissed` when the user backs out of the preview without sharing.
+  | 'moment_card_viewed'
+  | 'moment_card_shared'
+  | 'moment_card_share_failed'
+  | 'moment_card_dismissed'
+  // Paw Prints — walk gallery, milestone ladder, monthly recap. Shares ride
+  // the moment_card_shared event with source milestone/monthly_recap/
+  // walk_gallery; these cover the in-app loop.
+  | 'pawprint_gallery_viewed'
+  | 'pawprint_tile_opened'
+  | 'pawprint_milestone_reached'
+  | 'pawprint_milestone_celebrated'
+  | 'pawprint_recap_viewed'
+  | 'pawprint_teaser_tapped'
+  // Duplicate-activity guardrail — fires when the Activity tab's read-side
+  // de-dupe drops stacked schedule rows. A non-zero rate in the wild means the
+  // generator/DB guardrails regressed; ideally this stays silent forever.
+  | 'activity_duplicates_detected';
 
 export type AnalyticsProps = Record<string, string | number | boolean | null | undefined>;
 
@@ -100,3 +206,36 @@ export function track(event: AnalyticsEvent, props: AnalyticsProps = {}): void {
     }
   }
 }
+
+// ── PostHog Integration ──
+import PostHog from 'posthog-react-native';
+
+const posthogApiKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY;
+const posthogHost = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com';
+
+export let posthog: PostHog | null = null;
+
+if (posthogApiKey) {
+  posthog = new PostHog(posthogApiKey, {
+    host: posthogHost,
+    // Note: session replay is disabled by default unless explicitly configured
+  });
+
+  const postHogSink: Sink = (event, props) => {
+    if (posthog) {
+      // Strip undefined values to satisfy PostHogEventProperties type
+      const cleanProps = Object.fromEntries(
+        Object.entries(props).filter(([_, v]) => v !== undefined)
+      );
+      posthog.capture(event, cleanProps as Record<string, any>);
+      // In development, flush immediately so you don't have to wait 30 seconds
+      // to see your events in the dashboard.
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        posthog.flush();
+      }
+    }
+  };
+
+  addAnalyticsSink(postHogSink);
+}
+

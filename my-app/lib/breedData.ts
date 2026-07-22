@@ -8,6 +8,12 @@ export interface BreedDefaults {
   weightRange: { male: [number, number]; female: [number, number] };
   sizeCategory: SizeCategory;
   seniorAgeYears: number;
+  // Intrinsic metabolic efficiency at the same activity level. Defaults to 1.0.
+  // Only set for breeds where allometric scaling consistently over- or
+  // under-prescribes calories even after activity/neutering/life-stage are
+  // accounted for. Do NOT set on breeds whose thriftiness is already captured
+  // via `typicalActivityLevel: 'sedentary'` — that would double-count.
+  metabolicModifier?: number;
 }
 
 const DOG_BREED_DATA: Record<string, BreedDefaults> = {
@@ -18,6 +24,7 @@ const DOG_BREED_DATA: Record<string, BreedDefaults> = {
     weightRange: { male: [29, 36], female: [25, 32] },
     sizeCategory: 'large',
     seniorAgeYears: 8,
+    metabolicModifier: 0.95, // POMC deletion → measurable food efficiency at any activity level
   },
   'French Bulldog': {
     typicalActivityLevel: 'sedentary',
@@ -39,6 +46,7 @@ const DOG_BREED_DATA: Record<string, BreedDefaults> = {
     weightRange: { male: [30, 34], female: [25, 30] },
     sizeCategory: 'large',
     seniorAgeYears: 8,
+    metabolicModifier: 0.95, // shares Lab's thrifty tendency in clinical practice
   },
   'Bulldog': {
     typicalActivityLevel: 'sedentary',
@@ -416,6 +424,31 @@ export function getMixedBreedDefaults(
     sizeCategory: size,
     seniorAgeYears: seniorMap[size],
   };
+}
+
+/**
+ * Returns the pooled (male + female union) breed weight range for a species/
+ * breed pair. Convenience for input-validation callers that don't care about
+ * sex. Prefer `getBreedDefaults(...).weightRange` when sex matters.
+ *
+ * Single source of truth — `weightBounds.ts` and any other bounds-check code
+ * should consume this, not maintain their own copies.
+ */
+export function getBreedWeightRange(
+  species: 'dog' | 'cat',
+  breed: string | null | undefined,
+): { lower: number; upper: number } | null {
+  if (!breed) return null;
+  const data = species === 'dog' ? DOG_BREED_DATA : CAT_BREED_DATA;
+  const entry = data[breed];
+  if (!entry) return null;
+  const { male, female } = entry.weightRange;
+  const hasMale = male[1] > 0;
+  const hasFemale = female[1] > 0;
+  if (!hasMale && !hasFemale) return null;
+  const lower = Math.min(hasMale ? male[0] : Infinity, hasFemale ? female[0] : Infinity);
+  const upper = Math.max(hasMale ? male[1] : 0, hasFemale ? female[1] : 0);
+  return { lower, upper };
 }
 
 /**

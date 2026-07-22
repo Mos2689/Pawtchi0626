@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { makeShadow } from '../constants/design';
 
 export type DayMacro = {
     date: string;
@@ -15,38 +16,42 @@ interface WeeklyNutritionChartProps {
     data: DayMacro[];
 }
 
+// Atwater energy factors — the calories each gram of macronutrient yields.
+// Calories aren't a fourth nutrient to stack alongside protein/carbs/fat; they
+// ARE the energy those three carry. So the bar is built from each macro's
+// calorie contribution: the stack height equals the day's calories (from food),
+// and each segment is the share of that energy from protein, carbs, or fat.
+const KCAL_PER_G = { protein: 4, carbs: 4, fat: 9 } as const;
+
 function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps) {
-    // All derivation memoized in one pass keyed on `data` (was partly recomputed
-    // every render). Normalizes each metric against its week's maximum.
-    const { processedData, absoluteMaxTotalS, hasZeroData } = useMemo(() => {
-        const maxCal = Math.max(...data.map(d => d.calories), 1);
-        const maxPro = Math.max(...data.map(d => d.protein), 1);
-        const maxCarb = Math.max(...data.map(d => d.carbs), 1);
-        const maxFat = Math.max(...data.map(d => d.fat), 1);
+    // One memoized pass keyed on `data`: convert grams → kcal, size each day's
+    // bar against the week's biggest day, and split it by energy source.
+    const { processedData, maxTotalKcal, hasZeroData } = useMemo(() => {
+        const withKcal = data.map(d => {
+            const proKcal = (d.protein || 0) * KCAL_PER_G.protein;
+            const carbKcal = (d.carbs || 0) * KCAL_PER_G.carbs;
+            const fatKcal = (d.fat || 0) * KCAL_PER_G.fat;
+            const totalKcal = proKcal + carbKcal + fatKcal;
+            return { ...d, proKcal, carbKcal, fatKcal, totalKcal };
+        });
 
-        const processed = data.map(d => {
-            const calS = d.calories / maxCal;
-            const proS = d.protein / maxPro;
-            const carbS = d.carbs / maxCarb;
-            const fatS = d.fat / maxFat;
+        const maxTotalKcal = Math.max(...withKcal.map(d => d.totalKcal), 1);
 
-            const totalS = calS + proS + carbS + fatS || 1; // avoid division by zero
-
+        const processed = withKcal.map(d => {
+            const t = d.totalKcal || 1; // avoid division by zero on empty days
+            const hasData = d.totalKcal > 0;
             return {
                 ...d,
-                totalS,
-                calP: d.calories === 0 && d.protein === 0 ? 0 : (calS / totalS) * 100,
-                proP: d.calories === 0 && d.protein === 0 ? 0 : (proS / totalS) * 100,
-                carbP: d.calories === 0 && d.protein === 0 ? 0 : (carbS / totalS) * 100,
-                fatP: d.calories === 0 && d.protein === 0 ? 0 : (fatS / totalS) * 100,
+                proP: hasData ? (d.proKcal / t) * 100 : 0,
+                carbP: hasData ? (d.carbKcal / t) * 100 : 0,
+                fatP: hasData ? (d.fatKcal / t) * 100 : 0,
             };
         });
 
         return {
             processedData: processed,
-            absoluteMaxTotalS: Math.max(...processed.map(d => d.totalS), 1),
-            // If there's literally no data (all 0), show thin empty placeholder bars.
-            hasZeroData: data.every(d => d.calories === 0 && d.protein === 0 && d.carbs === 0 && d.fat === 0),
+            maxTotalKcal,
+            hasZeroData: withKcal.every(d => d.totalKcal === 0),
         };
     }, [data]);
 
@@ -62,31 +67,29 @@ function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps) {
                     </Text>
                 </View>
                 <View style={styles.legendWrapper}>
-                    <LegendItem color="#F7F602" label="CAL" />
                     <LegendItem color="#EF4444" label="PRO" />
                     <LegendItem color="#3B82F6" label="CARB" />
                     <LegendItem color="#F97316" label="FAT" />
                 </View>
             </View>
 
-            {/* Stacked Chart */}
+            {/* Stacked Chart — bar height = calories, split by energy source */}
             <View style={styles.chartContainer}>
                 {processedData.map((d, i) => {
-                    let barHeightPct = hasZeroData ? 15 : (d.totalS / absoluteMaxTotalS) * 100;
+                    let barHeightPct = hasZeroData ? 15 : (d.totalKcal / maxTotalKcal) * 100;
                     if (barHeightPct < 15) barHeightPct = 15; // Min cap so labels align cleanly
 
                     return (
                         <View key={i} style={styles.barColumn}>
                             {/* Stack Container */}
                             <View style={[styles.barWrapper, { height: `${barHeightPct}%` }]}>
-                                {hasZeroData || d.totalS === 1 && d.calories === 0 ? (
+                                {d.totalKcal === 0 ? (
                                     <View style={[styles.segment, { backgroundColor: '#f1f5f9', height: '100%' }]} />
                                 ) : (
                                     <>
                                         <View style={[styles.segment, { backgroundColor: '#F97316', height: `${d.fatP}%` }]} />
                                         <View style={[styles.segment, { backgroundColor: '#3B82F6', height: `${d.carbP}%` }]} />
                                         <View style={[styles.segment, { backgroundColor: '#EF4444', height: `${d.proP}%` }]} />
-                                        <View style={[styles.segment, { backgroundColor: '#F7F602', height: `${d.calP}%` }]} />
                                     </>
                                 )}
                             </View>
@@ -96,6 +99,10 @@ function WeeklyNutritionChart({ data }: WeeklyNutritionChartProps) {
                     );
                 })}
             </View>
+
+            {/* Reads the chart for the user — bar height IS the calories, so there's
+                no separate calorie bar to double-count the macros. */}
+            <Text style={styles.caption}>Bar height = daily calories · split by energy source</Text>
         </View>
     );
 }
@@ -116,11 +123,7 @@ const styles = StyleSheet.create({
         backgroundColor: '#FFFFFF',
         borderRadius: 32,
         padding: 24,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.05,
-        shadowRadius: 30,
-        elevation: 4,
+        ...makeShadow(10, 30, 0.05, '#000'),
         borderWidth: 1,
         borderColor: 'rgba(0,0,0,0.03)',
         marginBottom: 24,
@@ -198,5 +201,13 @@ const styles = StyleSheet.create({
     dayLabelActive: {
         color: '#041015',
         fontWeight: '900',
+    },
+    caption: {
+        marginTop: 18,
+        fontFamily: 'Montserrat_500Medium',
+        fontSize: 10,
+        color: '#94a3b8',
+        textAlign: 'center',
+        letterSpacing: 0.3,
     },
 });

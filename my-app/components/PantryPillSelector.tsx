@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { makeShadow } from '../constants/design';
 
 interface PantryItem {
   id: string;
@@ -118,11 +119,7 @@ const styles = StyleSheet.create({
   pillSelected: {
     backgroundColor: '#F7F602',
     borderColor: '#F7F602',
-    shadowColor: '#F7F602',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
+    ...makeShadow(4, 8, 0.2, '#F7F602'),
   },
   pillText: {
     fontSize: 14,

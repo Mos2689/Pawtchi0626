@@ -6,7 +6,8 @@
 
 const DEFAULT_KCAL_PER_100G = 350; // typical adult-maintenance dry kibble
 const MEALS_PER_DAY = 2;
-const TREAT_CAP_PERCENT = 0.10; // vets' "10% rule" — treats stay under 10% of daily calories
+const TREAT_CAP_PERCENT_MAINTAIN = 0.10; // vets' "10% rule" — treats stay under 10% of daily calories
+const TREAT_CAP_PERCENT_STRICT = 0.05;   // weight-loss mode: tighter buffer for owner under-estimation
 const WATER_ML_PER_KG = 50; // matches the in-app target used elsewhere
 
 export interface PortionInput {
@@ -14,6 +15,8 @@ export interface PortionInput {
   currentWeightKg: number;
   /** Override when the owner is on wet or raw food. */
   kcalPer100g?: number;
+  /** When 'lose', the treat cap tightens to 5% to protect the deficit. */
+  goal?: 'lose' | 'maintain' | 'gain';
 }
 
 export interface PortionPlan {
@@ -28,7 +31,7 @@ export interface PortionPlan {
   treatGrams: number;
   /** Daily water target in ml, rounded to 10ml. */
   waterMl: number;
-  /** Treat cap as a 0-1 fraction (always 0.10 for v1). */
+  /** Treat cap as a 0-1 fraction: 0.10 for maintenance, 0.05 for weight-loss strict mode. */
   treatCapPercent: number;
 }
 
@@ -41,12 +44,14 @@ export function derivePortionPlan({
   dailyKcal,
   currentWeightKg,
   kcalPer100g = DEFAULT_KCAL_PER_100G,
+  goal,
 }: PortionInput): PortionPlan {
   const safeKcal = Math.max(0, Math.round(dailyKcal || 0));
   const safeWeight = Math.max(0, currentWeightKg || 0);
   const safeDensity = kcalPer100g > 0 ? kcalPer100g : DEFAULT_KCAL_PER_100G;
 
-  const treatKcal = Math.round(safeKcal * TREAT_CAP_PERCENT);
+  const treatCapPercent = goal === 'lose' ? TREAT_CAP_PERCENT_STRICT : TREAT_CAP_PERCENT_MAINTAIN;
+  const treatKcal = Math.round(safeKcal * treatCapPercent);
   const mealKcal = Math.max(0, safeKcal - treatKcal);
 
   // grams = (kcal / kcal_per_100g) * 100 — applied per-meal and to the treat slice.
@@ -60,6 +65,6 @@ export function derivePortionPlan({
     gramsPerMeal: roundTo(gramsPerMealRaw, 5),
     treatGrams: roundTo(treatGramsRaw, 5),
     waterMl: roundTo(safeWeight * WATER_ML_PER_KG, 10),
-    treatCapPercent: TREAT_CAP_PERCENT,
+    treatCapPercent,
   };
 }

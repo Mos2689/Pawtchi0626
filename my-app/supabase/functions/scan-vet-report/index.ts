@@ -4,11 +4,12 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { validateImagePayload, safeParseBody, isValidUUID } from '../_shared/validate.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000;
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
   const t0 = Date.now();
 
@@ -28,36 +29,35 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('scan-vet-report', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const { imageBase64, mimeType, petId, petProfile } = parsed.data as Record<string, any>;
 
     if (!imageBase64 || !petId) {
-      throw new Error('imageBase64 and petId are required.')
+      logInternal('scan-vet-report', 'imageBase64 or petId missing from request');
+      return errorResponse('invalid_input', corsHeaders);
     }
 
     console.log(`[scan-vet-report] start user=${auth.userId} mime=${mimeType || 'unknown'} bytes=${typeof imageBase64 === 'string' ? imageBase64.length : 0}`);
 
     // ── Security: Validate inputs ──
     if (!isValidUUID(petId)) {
-      throw new Error('Invalid petId format.')
+      logInternal('scan-vet-report', `invalid petId format: ${String(petId).substring(0, 50)}`);
+      return errorResponse('invalid_input', corsHeaders);
     }
 
     const imageErr = validateImagePayload(imageBase64, mimeType);
     if (imageErr) {
-      return new Response(
-        JSON.stringify({ success: false, error: imageErr }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('scan-vet-report', imageErr.detail, 'image validation');
+      return errorResponse(imageErr.code, corsHeaders);
     }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured.')
+      logInternal('scan-vet-report', 'GEMINI_API_KEY is not configured.');
+      return errorResponse('server_error', corsHeaders);
     }
 
     // ── Security: API key via header, not URL parameter ──
@@ -141,7 +141,8 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text()
-      throw new Error(`Gemini API error: ${geminiRes.status} - ${errText}`)
+      logInternal('scan-vet-report', `upstream ${geminiRes.status}: ${errText.substring(0, 300)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const geminiData = await geminiRes.json()
@@ -189,12 +190,11 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
     console.log(`[scan-vet-report] parse outcome=${parseOutcome} chars=${cleanText.length}`);
 
     // If parsing still failed, refuse to persist a phantom vet visit. The
-    // client routes this to the calm "couldn't read" error modal.
+    // client routes this to the calm "couldn't read" error state.
+    // Status stays 200 so functions.invoke() delivers the body (older shipped
+    // clients read data.error on 200 responses).
     if (!extractedData || typeof extractedData !== 'object') {
-      return new Response(
-        JSON.stringify({ success: false, error: "Scan didn't fully read — try a clearer photo." }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-      );
+      return errorResponse('unreadable_image', corsHeaders, { status: 200 });
     }
 
     // Require at least one useful structured field before saving — otherwise
@@ -209,10 +209,7 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
       !!extractedData.next_appointment ||
       !!extractedData.vet_notes;
     if (!hasUsefulField) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Scan didn't fully read — try a clearer photo." }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-      );
+      return errorResponse('unreadable_image', corsHeaders, { status: 200 });
     }
 
     // Store in Supabase
@@ -292,11 +289,9 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
 
-  } catch (err: any) {
-    console.error(`[scan-vet-report] crash elapsedMs=${Date.now() - t0} message=${err?.message}`, err);
-    return new Response(
-      JSON.stringify({ success: false, error: err?.message || 'Scan failed.' }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+  } catch (err: unknown) {
+    logInternal('scan-vet-report', err, `crash elapsedMs=${Date.now() - t0}`);
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return errorResponse(isAbort ? 'ai_unavailable' : 'server_error', corsHeaders);
   }
 })

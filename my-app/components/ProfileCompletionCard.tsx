@@ -12,7 +12,7 @@ import { motion } from '../constants/design';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { computeCompleteness, MissingItem } from '../lib/profileCompleteness';
 import { track } from '../lib/analytics';
-import { color, font } from '../constants/design';
+import { color, font, makeShadow } from '../constants/design';
 
 // ─── Tokens (aligned to the rest of the home surface) ──────────────────────
 // Card is intentionally light & airy so it nests under the colorful ring hero
@@ -95,7 +95,8 @@ function ProgressLine({ pct }: { pct: number }) {
 
 export function ProfileCompletionCard() {
   const router = useRouter();
-  const { activePet, foodPantry } = useActivePetStore();
+  const activePet = useActivePetStore(s => s.activePet);
+  const foodPantry = useActivePetStore(s => s.foodPantry);
   const [dismissed, setDismissed] = useState(true); // hidden until storage check
 
   const { score, missing, isAccurateEnough } = computeCompleteness(activePet, {
@@ -220,13 +221,8 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingHorizontal: 18,
     paddingBottom: 16,
-    marginBottom: 20,
     // Calibrated depth — present without competing with the ring hero above.
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 3,
+    ...makeShadow(6, 14, 0.06),
   },
 
   // ─── Header row ────────────────────────────────────────────────────────

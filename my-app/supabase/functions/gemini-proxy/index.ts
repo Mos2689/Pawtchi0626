@@ -3,11 +3,12 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { validateImagePayload, safeParseBody } from '../_shared/validate.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000; // 30 second timeout
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -26,10 +27,8 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('gemini-proxy', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const { imageBase64, mimeType, petProfile, selectedPantryItemId, todayState } = parsed.data as Record<string, any>;
@@ -37,15 +36,14 @@ Deno.serve(async (req) => {
     // ── Security: Validate image payload size ──
     const imageErr = validateImagePayload(imageBase64, mimeType);
     if (imageErr) {
-      return new Response(
-        JSON.stringify({ success: false, error: imageErr }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('gemini-proxy', imageErr.detail, 'image validation');
+      return errorResponse(imageErr.code, corsHeaders);
     }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured in Edge Function secrets.')
+      logInternal('gemini-proxy', 'GEMINI_API_KEY is not configured in Edge Function secrets.');
+      return errorResponse('server_error', corsHeaders);
     }
 
     // Use header-based auth instead of query parameter (security best practice)
@@ -232,13 +230,15 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
           await new Promise(r => setTimeout(r, 1500));
           continue;
         }
-        throw new Error('Gemini API request timed out or failed after 2 attempts.');
+        logInternal('gemini-proxy', fetchErr, 'upstream timed out/failed after 2 attempts');
+        return errorResponse('ai_unavailable', corsHeaders);
       }
     }
 
     if (!geminiRes || !geminiRes.ok) {
       const errorBody = geminiRes ? await geminiRes.text() : 'No response';
-      throw new Error(`Gemini API error (${geminiRes?.status || 'timeout'}): ${errorBody.substring(0, 300)}`);
+      logInternal('gemini-proxy', `upstream ${geminiRes?.status || 'timeout'}: ${errorBody.substring(0, 300)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const data = await geminiRes.json();
@@ -340,10 +340,7 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-    );
+    logInternal('gemini-proxy', error, 'unhandled');
+    return errorResponse('server_error', corsHeaders);
   }
 });

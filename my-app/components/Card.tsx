@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, ViewStyle, TouchableOpacity } from 'react-native';
 import { Colors } from '../constants/Theme';
+import { makeShadow } from '../constants/design';
 
 interface CardProps {
   children: React.ReactNode;
@@ -30,11 +31,7 @@ export const Card: React.FC<CardProps> = ({
         return {
           backgroundColor: themeColors.surface,
           borderColor: 'transparent',
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.1,
-          shadowRadius: 12,
-          elevation: 4,
+          ...makeShadow(4, 12, 0.1, '#000'),
         };
       case 'outline':
       default:
@@ -53,11 +50,7 @@ export const Card: React.FC<CardProps> = ({
         selected && { 
             borderColor: themeColors.primary, 
             borderWidth: 2,
-            shadowColor: themeColors.primary,
-            shadowOffset: { width: 0, height: 10 },
-            shadowOpacity: 0.4,
-            shadowRadius: 30,
-            elevation: 8,
+            ...makeShadow(10, 30, 0.4, themeColors.primary),
         },
         style,
       ]}

@@ -123,4 +123,48 @@ describe('getBreedWatchOuts', () => {
     const texts = out.map((w) => w.text);
     expect(new Set(texts).size).toBe(texts.length);
   });
+
+  describe('Brachycephalic + overweight nudge', () => {
+    test('Frenchie at 15 kg (~115% of upper breed reference 13) with BCS 5 → flat-faced nudge fires', () => {
+      const out = getBreedWatchOuts({
+        species: 'dog',
+        breed: 'French Bulldog',
+        sizeCategory: 'small',
+        lifeStage: 'adult',
+        bcs: 5,
+        weightVsTargetKg: 0,
+        currentWeightKg: 15,
+      });
+      const joined = out.map((w) => w.text).join(' ').toLowerCase();
+      expect(joined).toContain('flat-faced');
+    });
+
+    test('Frenchie at 12 kg (within breed range) → no flat-faced nudge', () => {
+      const out = getBreedWatchOuts({
+        species: 'dog',
+        breed: 'French Bulldog',
+        sizeCategory: 'small',
+        lifeStage: 'adult',
+        bcs: 5,
+        weightVsTargetKg: 0,
+        currentWeightKg: 12,
+      });
+      const joined = out.map((w) => w.text).join(' ').toLowerCase();
+      expect(joined).not.toContain('flat-faced');
+    });
+
+    test('Labrador at 40 kg → no flat-faced nudge (not brachycephalic)', () => {
+      const out = getBreedWatchOuts({
+        species: 'dog',
+        breed: 'Labrador Retriever',
+        sizeCategory: 'large',
+        lifeStage: 'adult',
+        bcs: 5,
+        weightVsTargetKg: 0,
+        currentWeightKg: 40,
+      });
+      const joined = out.map((w) => w.text).join(' ').toLowerCase();
+      expect(joined).not.toContain('flat-faced');
+    });
+  });
 });

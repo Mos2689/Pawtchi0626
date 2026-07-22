@@ -1,10 +1,10 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack, useRouter, useSegments, useRootNavigationState } from 'expo-router';
+import { Stack, useRouter, useSegments, useRootNavigationState, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import 'react-native-reanimated';
-import Purchases, { LOG_LEVEL } from 'react-native-purchases';
+import Purchases, { LOG_LEVEL, type PurchasesConfiguration } from 'react-native-purchases';
 
 import * as SplashScreen from 'expo-splash-screen';
 import {
@@ -16,15 +16,54 @@ import {
   Montserrat_800ExtraBold,
 } from '@expo-google-fonts/montserrat';
 import { BebasNeue_400Regular } from '@expo-google-fonts/bebas-neue';
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+} from '@expo-google-fonts/inter';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AppErrorBoundary } from '@/components/AppErrorBoundary';
 import { AuthProvider } from '@/providers/AuthProvider';
 import { WalkthroughProvider } from '@/providers/WalkthroughContext';
 import { SubscriptionProvider } from '@/providers/SubscriptionProvider';
 import { useAuth } from '@/providers/AuthProvider';
+import { posthog } from '@/lib/analytics';
+import { consumeFreshSignup } from '@/lib/onboardingFunnel';
+import { isRecoveryInProgress } from '@/lib/passwordRecovery';
+import { PostHogProvider } from 'posthog-react-native';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { supabase } from '@/lib/supabase';
+import { WALK_TRACKING_ENABLED } from '@/constants/features';
+import { initFirebaseAnalytics, setFirebaseUserId } from '@/lib/firebaseAnalytics';
+// Side-effect import: defines the walk-tracking background task at bundle
+// load so the OS can deliver GPS fixes without any walk screen mounted.
+// Kept even while walks are disabled — defineTask is inert JS registration
+// (already try/caught) and the OS never starts the task without a walk.
+import '@/lib/walk/locationEngine';
+
+const INFORMATIONAL_ENTITLEMENT_VERIFICATION =
+  'INFORMATIONAL' as NonNullable<PurchasesConfiguration['entitlementVerificationMode']>;
+
+// Push registration + token sync, once per session — not per Home mount.
+// Rendered only while a session exists, so the permission prompt still fires
+// on the first authed screen (same timing as when this lived in Home).
+function PushNotificationsBridge({ userId }: { userId: string }) {
+  const { expoPushToken } = usePushNotifications();
+  useEffect(() => {
+    if (userId && expoPushToken) {
+      supabase.rpc('register_push_token', { push_token: expoPushToken })
+        .then(({ error }) => {
+          if (error) console.error('Failed to sync push token:', error.message);
+        });
+    }
+  }, [userId, expoPushToken]);
+  return null;
+}
 
 
 export const unstable_settings = {
@@ -37,6 +76,7 @@ function RootLayoutNav() {
   const segments = useSegments();
   const router = useRouter();
   const navState = useRootNavigationState();
+  const pathname = usePathname();
 
   // Brand fonts load once here for the whole app (screens never call useFonts
   // themselves). The splash stays up until both fonts and auth state resolve,
@@ -48,6 +88,12 @@ function RootLayoutNav() {
     Montserrat_600SemiBold,
     Montserrat_700Bold,
     Montserrat_800ExtraBold,
+    // Social-artifact typography (Paw Moment cards) — the locked June 2026
+    // social visual guidelines type in Inter, not the in-app brand pair.
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
   });
 
   // Initialize RevenueCat SDK on mount
@@ -62,13 +108,74 @@ function RootLayoutNav() {
         : process.env.EXPO_PUBLIC_RC_ANDROID_KEY;
       
       if (apiKey) {
-        Purchases.configure({ apiKey });
+        Purchases.configure({
+          apiKey,
+          // RevenueCat still grants access in informational mode, while the
+          // returned entitlement tells measurement code whether it verified.
+          entitlementVerificationMode: INFORMATIONAL_ENTITLEMENT_VERIFICATION,
+        });
       } else {
         console.warn('RevenueCat API key is missing from environment variables.');
       }
     } catch (e) {
       console.warn('RevenueCat configure failed (likely running in Expo Go without native modules):', e);
     }
+  }, []);
+
+  // Register the narrow Firebase sink once. It sits beside PostHog; it does
+  // not replace or alter any existing product analytics delivery.
+  useEffect(() => {
+    initFirebaseAnalytics();
+  }, []);
+
+  // Tracked walks: recover an enabled feature, or clean up a persisted/native
+  // session left by an older enabled build when the release flag is off. This
+  // makes disabling Walk safe for users who update while a session is active.
+  useEffect(() => {
+    const { useWalkStore } = require('@/store/useWalkStore');
+    const run = () => {
+      const store = useWalkStore.getState();
+      const operation = WALK_TRACKING_ENABLED
+        ? store.recoverOrphanedWalk()
+        : store.hardStopTracking();
+      operation.catch(() => {});
+    };
+    if (useWalkStore.persist.hasHydrated()) run();
+    else {
+      const unsub = useWalkStore.persist.onFinishHydration(run);
+      return unsub;
+    }
+  }, []);
+
+  // Walk-tracking reconciler: THE single guarantee that the OS location service
+  // is off whenever a walk isn't active. Subscribes to the walk phase and stops
+  // tracking on every transition out of the active phases — so cleanup no longer
+  // depends on any one button handler remembering to call it. This is what makes
+  // the "indicator stays lit after Finish" regression unable to silently return.
+  useEffect(() => {
+    if (!WALK_TRACKING_ENABLED) return;
+    const { startTrackingReconciler } = require('@/lib/walk/trackingReconciler');
+    return startTrackingReconciler();
+  }, []);
+
+  // Walk-tracking janitor: every time the app returns to the foreground with
+  // no walk in flight, make sure the OS location service is actually off.
+  // This is the regression-proof backstop for the "location indicator stays
+  // lit after Finish" class of bug — whatever the cause, tracking dies the
+  // next time the user opens the app instead of requiring a force-close.
+  // Cheap when healthy: one native "is it running?" check per foreground.
+  useEffect(() => {
+    if (!WALK_TRACKING_ENABLED) return;
+    const { AppState } = require('react-native');
+    const { useWalkStore } = require('@/store/useWalkStore');
+    const { ensureWalkTrackingStopped } = require('@/lib/walk/locationEngine');
+    const sub = AppState.addEventListener('change', (state: string) => {
+      if (state !== 'active') return;
+      const phase = useWalkStore.getState().phase;
+      if (phase === 'tracking' || phase === 'starting' || phase === 'saving') return;
+      ensureWalkTrackingStopped().catch(() => {});
+    });
+    return () => sub.remove();
   }, []);
 
   // Initialize Meta (Facebook) SDK + ATT consent on mount.
@@ -100,21 +207,41 @@ function RootLayoutNav() {
     initMeta();
   }, []);
 
-  // Link RevenueCat identity to Supabase user so subscription persists across reinstalls
+  // Link RevenueCat identity and PostHog identity to Supabase user.
+  // `Purchases.isConfigured` is an async guard in v9 — treating it as a
+  // synchronous boolean (as an older version exposed) would always be truthy
+  // and would throw on Expo Go where the native module is absent.
   useEffect(() => {
-    try {
-      if (session?.user?.id) {
-        Purchases.logIn(session.user.id).catch((e) =>
-          console.warn('RevenueCat logIn error:', e)
-        );
-      } else {
-        // Log out of RevenueCat when user signs out
-        Purchases.logOut().catch(() => {});
+    (async () => {
+      try {
+        const rcReady = await Purchases.isConfigured().catch(() => false);
+        if (session?.user?.id) {
+          if (rcReady) {
+            Purchases.logIn(session.user.id).catch((e) =>
+              console.warn('RevenueCat logIn error:', e)
+            );
+          }
+          posthog?.identify(session.user.id);
+          setFirebaseUserId(session.user.id);
+        } else {
+          if (rcReady) {
+            Purchases.logOut().catch(() => {});
+          }
+          posthog?.reset();
+          setFirebaseUserId(null);
+        }
+      } catch (e) {
+        console.warn('RevenueCat logIn/out failed (likely running in Expo Go without native modules):', e);
       }
-    } catch (e) {
-      console.warn('RevenueCat logIn/out failed (likely running in Expo Go without native modules):', e);
-    }
+    })();
   }, [session?.user?.id]);
+
+  // PostHog screen tracking
+  useEffect(() => {
+    if (pathname && posthog) {
+      posthog.screen(pathname, { segments });
+    }
+  }, [pathname, segments]);
 
   // ── Centralized auth gate — THE single authority for auth-based navigation ──
   // Navigation is a pure function of auth state, decided in exactly one place.
@@ -131,9 +258,19 @@ function RootLayoutNav() {
       // /welcome path (not '/') because '/' collides with (tabs)/index and
       // would resolve back into the tabs group we just signed the user out of.
       router.replace('/welcome');
-    } else if (session && inPublic) {
-      // Logged in while on welcome/login → into the app.
-      router.replace('/(tabs)');
+    } else if (session && inPublic && !isRecoveryInProgress()) {
+      // Logged in while on welcome/login → into the app. A fresh signup goes
+      // straight to onboarding: the account provably has no pet yet, so
+      // mounting the tabs boot gate (a network fetch behind a full-screen
+      // loader) just to rediscover that would be a dead beat in the funnel's
+      // most fragile moment.
+      const fresh = consumeFreshSignup();
+      if (__DEV__) {
+        // Debugging breadcrumb: shows in Metro which way the gate routed.
+        // eslint-disable-next-line no-console
+        console.log('[authGate]', fresh ? 'fresh signup → /onboarding/species' : 'session → /(tabs)');
+      }
+      router.replace(fresh ? '/onboarding/species' : '/(tabs)');
     }
   }, [session, authLoading, navState?.key, segments, router]);
 
@@ -152,12 +289,14 @@ function RootLayoutNav() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+      {session?.user?.id && <PushNotificationsBridge userId={session.user.id} />}
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="welcome" options={{ headerShown: false, animation: 'none' }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="walk" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="ask" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="preview-home" options={{ presentation: 'card', headerShown: false, gestureEnabled: false }} />
       </Stack>
@@ -167,13 +306,24 @@ function RootLayoutNav() {
 }
 
 export default function RootLayout() {
-  return (
+  const providers = (
     <AuthProvider>
       <SubscriptionProvider>
         <WalkthroughProvider>
-          <RootLayoutNav />
+          {/* Render-crash backstop. Sits INSIDE the providers so a "Start
+              again" remount keeps the session — the user returns to their
+              screen, not the welcome video. */}
+          <AppErrorBoundary>
+            <RootLayoutNav />
+          </AppErrorBoundary>
         </WalkthroughProvider>
       </SubscriptionProvider>
     </AuthProvider>
   );
+
+  if (posthog) {
+    const Provider = PostHogProvider as any;
+    return <Provider client={posthog} autocapture>{providers}</Provider>;
+  }
+  return providers;
 }

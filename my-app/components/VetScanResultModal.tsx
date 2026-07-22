@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import {
   View, Text, StyleSheet, Modal, ScrollView, TouchableOpacity,
-  TouchableWithoutFeedback, Platform,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -11,9 +11,7 @@ import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { color, font, radius, shadow, space } from '../constants/design';
 import { PulseMark } from './PulseMark';
 import { possessivePronoun } from '../lib/referral';
-
-const FALLBACK_AVATAR =
-  'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=400&auto=format&fit=crop';
+import { resolvePetImage } from '../lib/petFallbackImage';
 
 export interface VetScanResult {
   // What Gemini extracted from this report
@@ -43,6 +41,7 @@ export interface VetScanResult {
 interface PetSnapshot {
   name: string;
   imageUrl?: string | null;
+  species?: string | null;
   gender?: string | null;
   currentWeightKg?: number | null;
   targetWeightKg?: number | null;
@@ -120,7 +119,7 @@ export function VetScanResultModal({ visible, pet, result, onClose, onOpenHistor
   if (!result) return null;
 
   const their = possessivePronoun(pet.gender);
-  const avatar = pet.imageUrl || FALLBACK_AVATAR;
+  const avatar = resolvePetImage(pet.imageUrl, pet.species, 400);
 
   // ─── Calm "couldn't read" path ───
   if (!result.hasUsefulData) {
@@ -333,7 +332,7 @@ const styles = StyleSheet.create({
     width: 96, height: 96, borderRadius: 48,
     borderWidth: 3, borderColor: color.yellow,
     padding: 3,
-    ...(Platform.OS === 'ios' ? shadow.raised : { elevation: 6 }),
+    ...shadow.raised,
   },
   avatar: { width: '100%', height: '100%', borderRadius: 42 },
   checkBadge: {

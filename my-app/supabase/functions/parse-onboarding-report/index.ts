@@ -3,11 +3,12 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { validateImagePayload, safeParseBody } from '../_shared/validate.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000;
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -26,30 +27,28 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('parse-onboarding-report', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const { imageBase64, mimeType, species } = parsed.data as Record<string, any>;
 
     if (!imageBase64) {
-      throw new Error('imageBase64 is required.');
+      logInternal('parse-onboarding-report', 'imageBase64 missing from request');
+      return errorResponse('invalid_input', corsHeaders);
     }
 
     // ── Security: Validate image payload ──
     const imageErr = validateImagePayload(imageBase64, mimeType);
     if (imageErr) {
-      return new Response(
-        JSON.stringify({ success: false, error: imageErr }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('parse-onboarding-report', imageErr.detail, 'image validation');
+      return errorResponse(imageErr.code, corsHeaders);
     }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
     if (!GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured.');
+      logInternal('parse-onboarding-report', 'GEMINI_API_KEY is not configured.');
+      return errorResponse('server_error', corsHeaders);
     }
 
     const today = new Date().toISOString().split('T')[0];
@@ -133,7 +132,8 @@ RULES:
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text();
-      throw new Error(`Gemini API error: ${geminiRes.status} - ${errText}`);
+      logInternal('parse-onboarding-report', `upstream ${geminiRes.status}: ${errText.substring(0, 300)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const geminiData = await geminiRes.json();
@@ -155,7 +155,10 @@ RULES:
     try {
       extracted = JSON.parse(cleanText);
     } catch {
-      throw new Error('Failed to parse Gemini response as JSON.');
+      // The model produced unparseable output for this document — for the
+      // caller that reads the same as a document we couldn't read.
+      logInternal('parse-onboarding-report', `model output was not valid JSON: ${cleanText.substring(0, 200)}`);
+      return errorResponse('unreadable_image', corsHeaders);
     }
 
     // If DOB was extracted, compute age from it
@@ -183,10 +186,10 @@ RULES:
       JSON.stringify({ success: true, data: extracted }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
-  } catch (err: any) {
-    return new Response(
-      JSON.stringify({ success: false, error: err.message }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    );
+  } catch (err: unknown) {
+    logInternal('parse-onboarding-report', err, 'unhandled');
+    // AbortController timeouts land here — the upstream never answered.
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return errorResponse(isAbort ? 'ai_unavailable' : 'server_error', corsHeaders);
   }
 });

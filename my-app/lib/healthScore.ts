@@ -10,6 +10,7 @@
 
 import { toDryMatterBasis, defaultMoisturePct } from './aafcoMath';
 import { hasMappedCondition } from './clinicalMapping';
+import { findToxicIngredients, type ToxinHit } from './toxicIngredients';
 
 export const HEALTH_SCORE_VERSION = 'pawtchi.healthScore.v2';
 
@@ -27,6 +28,8 @@ export type HealthScoreInput = {
     moisture_pct?: number | null;
     kcal_per_100g_as_fed?: number | null;
     confidence?: number; // Gemini extraction confidence 0–1
+    /** Optional — the food's name and/or ingredient text, scanned for acute toxins. */
+    name_and_ingredients?: (string | null | undefined)[];
   };
   pet: {
     species: 'dog' | 'cat';
@@ -43,6 +46,10 @@ export type HealthScoreResult = {
   score: number; // 1–10 integer
   version: string;
   reasons: string[]; // Human-readable explanation of deductions
+  /** True when an acute toxin was detected — the meal-log CTA must be blocked. */
+  is_toxic_for_pet?: boolean;
+  /** Detected toxin hits (empty/undefined when none). */
+  toxin_hits?: ToxinHit[];
 };
 
 // AAFCO 2014 minimum protein floors, expressed in dry-matter %.
@@ -79,6 +86,25 @@ export function computeHealthScore(input: HealthScoreInput): HealthScoreResult {
   const { food, pet } = input;
   const reasons: string[] = [];
   let score = 10;
+
+  // --- Acute toxin hard-block. Overrides everything else. ---
+  // A xylitol / chocolate / grape hit is a "do not feed" event regardless of
+  // macros, allergies, or any other signal. Score forced to 1 and the meal-log
+  // path uses `is_toxic_for_pet` to block the action.
+  const toxinHits = findToxicIngredients(pet.species, food.name_and_ingredients ?? []);
+  if (toxinHits.length > 0) {
+    const toxinNames = toxinHits.map((h) => h.toxin).join(', ');
+    return {
+      score: 1,
+      version: HEALTH_SCORE_VERSION,
+      reasons: [
+        `Do not feed — contains ${toxinNames}.`,
+        ...toxinHits.map((h) => `${h.toxin}: ${h.reason}`),
+      ],
+      is_toxic_for_pet: true,
+      toxin_hits: toxinHits,
+    };
+  }
 
   // --- Hard safety deductions ---
   if (food.is_allergy_trigger) {
@@ -189,5 +215,6 @@ export function computeHealthScore(input: HealthScoreInput): HealthScoreResult {
     score,
     version: HEALTH_SCORE_VERSION,
     reasons,
+    is_toxic_for_pet: false,
   };
 }

@@ -1,4 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { errorResponse } from './errors.ts'
 
 /**
  * Per-user, per-endpoint rate limiter backed by Supabase.
@@ -46,21 +47,10 @@ export async function checkRateLimit(
 
     if (cached.count > maxRequests) {
       const retryAfter = Math.ceil((cached.windowStart + WINDOW_MS - now) / 1000);
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: `Rate limit exceeded. Maximum ${maxRequests} requests per hour for this endpoint.`,
-          retry_after_seconds: retryAfter,
-        }),
-        {
-          status: 429,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-            'Retry-After': String(retryAfter),
-          },
-        },
-      );
+      return errorResponse('rate_limited', corsHeaders, {
+        extraHeaders: { 'Retry-After': String(retryAfter) },
+        extraBody: { retry_after_seconds: retryAfter },
+      });
     }
 
     return null; // Allowed
@@ -87,16 +77,9 @@ export async function checkRateLimit(
       if (dbCount >= maxRequests) {
         // Seed memory cache so subsequent calls are fast
         memoryCache.set(key, { count: dbCount, windowStart: now - WINDOW_MS + 1000 });
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: `Rate limit exceeded. Maximum ${maxRequests} requests per hour for this endpoint.`,
-          }),
-          {
-            status: 429,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json', 'Retry-After': '3600' },
-          },
-        );
+        return errorResponse('rate_limited', corsHeaders, {
+          extraHeaders: { 'Retry-After': '3600' },
+        });
       }
 
       // Log this request
@@ -130,8 +113,8 @@ export const RATE_LIMITS: Record<string, number> = {
   'generate-health-insight': 3,
   'ask-vet': 5, // hourly abuse guard; the real limit is the 4/month quota in vet_questions
   'generate-schedule': 30,
-  'estimate-weight': 10,
   'parse-onboarding-report': 10,
+  'estimate-bcs': 10,
   'send-email': 5,
   'update-streak': 60,
 };

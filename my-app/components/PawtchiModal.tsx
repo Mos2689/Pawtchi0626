@@ -4,9 +4,8 @@ import {
   Dimensions, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
-import { motion } from '../constants/design';
+import { color, motion, shadow } from '../constants/design';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -62,9 +61,6 @@ export function PawtchiModal({
           {/* Absorb touches inside the card so they don't bubble to the backdrop. */}
           <TouchableWithoutFeedback onPress={() => {}}>
           <View style={styles.container}>
-            {/* Glow accent */}
-            <View style={styles.glow} />
-
             {/* Card */}
             <View style={styles.card}>
               {/* Header */}
@@ -103,21 +99,14 @@ export function PawtchiModal({
                       <Text style={styles.actionBtnSecondaryText}>{action.label}</Text>
                     </TouchableOpacity>
                   ) : (
-                    <LinearGradient
+                    <TouchableOpacity
                       key={index}
-                      colors={['#F7F602', '#fac129']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.actionBtnGradient}
+                      style={styles.actionBtnPrimary}
+                      onPress={action.onPress}
+                      activeOpacity={0.85}
                     >
-                      <TouchableOpacity
-                        style={styles.actionBtnTouchable}
-                        onPress={action.onPress}
-                        activeOpacity={0.85}
-                      >
-                        <Text style={styles.actionBtnPrimaryText}>{action.label}</Text>
-                      </TouchableOpacity>
-                    </LinearGradient>
+                      <Text style={styles.actionBtnPrimaryText}>{action.label}</Text>
+                    </TouchableOpacity>
                   )
                 ))}
               </View>
@@ -221,20 +210,13 @@ export function PawtchiSuccessModal({
 
               {/* Actions */}
               <View style={styles.successActions}>
-                <LinearGradient
-                  colors={['#F7F602', '#fac129']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.actionBtnGradient}
+                <TouchableOpacity
+                  style={styles.actionBtnPrimary}
+                  onPress={primaryAction.onPress}
+                  activeOpacity={0.85}
                 >
-                  <TouchableOpacity
-                    style={styles.actionBtnTouchable}
-                    onPress={primaryAction.onPress}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.actionBtnPrimaryText}>{primaryAction.label}</Text>
-                  </TouchableOpacity>
-                </LinearGradient>
+                  <Text style={styles.actionBtnPrimaryText}>{primaryAction.label}</Text>
+                </TouchableOpacity>
 
                 {secondaryAction && (
                   <TouchableOpacity
@@ -274,25 +256,11 @@ const styles = StyleSheet.create({
     maxWidth: 380,
     position: 'relative',
   },
-  glow: {
-    position: 'absolute',
-    top: -20,
-    left: -20,
-    right: -20,
-    bottom: -20,
-    backgroundColor: 'rgba(255, 252, 0, 0.15)',
-    borderRadius: 32,
-    transform: [{ scale: 1.05 }],
-  },
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 28,
     padding: 28,
-    shadowColor: '#F7F602',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.3,
-    shadowRadius: 24,
-    elevation: 20,
+    ...shadow.raised,
   },
   header: {
     flexDirection: 'row',
@@ -334,12 +302,11 @@ const styles = StyleSheet.create({
     gap: 12,
     marginTop: 8,
   },
-  actionBtnGradient: {
+  // Flat brand yellow — the one yellow, no gradient (design system §4.02).
+  actionBtnPrimary: {
+    backgroundColor: color.yellow,
     borderRadius: 16,
-    overflow: 'hidden',
     flex: 1,
-  },
-  actionBtnTouchable: {
     paddingVertical: 16,
     alignItems: 'center',
     justifyContent: 'center',

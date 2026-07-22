@@ -4,11 +4,13 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { safeParseBody, isValidUUID } from '../_shared/validate.ts'
+import { computeWaterTargetMl } from '../_shared/hydration.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000;
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -27,18 +29,21 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('generate-health-insight', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const { petId } = parsed.data as Record<string, any>;
-    if (!petId) throw new Error('petId is required.')
-    if (!isValidUUID(petId)) throw new Error('Invalid petId format.')
+    if (!petId || !isValidUUID(petId)) {
+      logInternal('generate-health-insight', 'missing or malformed petId');
+      return errorResponse('invalid_input', corsHeaders);
+    }
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
-    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured.')
+    if (!GEMINI_API_KEY) {
+      logInternal('generate-health-insight', 'GEMINI_API_KEY not configured.');
+      return errorResponse('server_error', corsHeaders);
+    }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -52,15 +57,15 @@ Deno.serve(async (req) => {
       .single();
     
     if (!petOwnerCheck || petOwnerCheck.owner_id !== auth.userId) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'You do not own this pet.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
-      );
+      return errorResponse('forbidden', corsHeaders);
     }
 
     // Gather pet data
     const { data: pet } = await sb.from('pets').select('*').eq('id', petId).single()
-    if (!pet) throw new Error('Pet not found.')
+    if (!pet) {
+      logInternal('generate-health-insight', `pet ${petId} passed ownership check but full row fetch returned null`);
+      return errorResponse('not_found', corsHeaders);
+    }
 
     const today = new Date()
     const sevenDaysAgo = new Date(today)
@@ -102,7 +107,7 @@ Deno.serve(async (req) => {
     const avgCal = logs.length > 0 ? Math.round(totalCal / logs.length) : 0
     const totalWater = logs.reduce((s: number, l: any) => s + (l.water_ml || 0), 0)
     const avgWater = logs.length > 0 ? Math.round(totalWater / logs.length) : 0
-    const daysWaterOnTarget = logs.filter((l: any) => (l.water_ml || 0) >= Math.round(pet.current_weight_kg * 50) * 0.7).length
+    const daysWaterOnTarget = logs.filter((l: any) => (l.water_ml || 0) >= computeWaterTargetMl(pet.current_weight_kg, pet.diet_type) * 0.7).length
 
     const completedActs = acts.filter((a: any) => a.status === 'completed')
     const skippedActs = acts.filter((a: any) => a.status === 'skipped')
@@ -131,52 +136,92 @@ Deno.serve(async (req) => {
     const totalTreats = logs.reduce((s: number, l: any) => s + (l.treats_consumed || 0), 0)
 
     const targetCal = pet.target_daily_calories || 0
-    const targetWater = Math.round(pet.current_weight_kg * 50)
+    const targetWater = computeWaterTargetMl(pet.current_weight_kg, pet.diet_type)
+    const pronoun = pet.gender === 'female' ? 'her' : pet.gender === 'male' ? 'his' : 'their'
+    const pronounSubj = pet.gender === 'female' ? 'she' : pet.gender === 'male' ? 'he' : 'they'
 
-    const dataPrompt = `You are a veterinary health advisor AI for PAWTCHI.
-Analyze this pet's last 7 days of data and provide a STRUCTURED weekly health reflection.
+    // ── Deterministic observations ──
+    // We compute the specific facts of the week in code, then hand them to
+    // Gemini as a "must reference" list. This is what stops the model from
+    // reaching for filler like "areas for improvement" when data is thin —
+    // it now has to pick from a set of concrete truths.
+    const kcalPctOfTarget = targetCal > 0 && avgCal > 0 ? Math.round((avgCal / targetCal) * 100) : null
+    const waterPctOfTarget = targetWater > 0 && avgWater > 0 ? Math.round((avgWater / targetWater) * 100) : null
+    const treatPctOfDaily = targetCal > 0 && totalTreatCals > 0 ? Math.round((totalTreatCals / 7 / targetCal) * 100) : null
+    const daysLogged = logs.length
+    const weightDeltaKg = weights.length >= 2 ? Number((weights[0].weight_kg - weights[weights.length - 1].weight_kg).toFixed(1)) : null
+    const observations: string[] = []
+    if (daysLogged >= 3) {
+      if (kcalPctOfTarget !== null) observations.push(`${pet.name} averaged ${avgCal} kcal/day — that is ${kcalPctOfTarget}% of ${pronoun} ${targetCal} kcal target.`)
+      if (waterPctOfTarget !== null) observations.push(`Water averaged ${avgWater} ml/day (${waterPctOfTarget}% of the ${targetWater} ml target); ${daysWaterOnTarget}/7 days hit the target.`)
+      if (totalExerciseMins > 0) observations.push(`${totalExerciseMins} minutes of activity across ${completedActs.length} sessions this week.`)
+      if (skippedActs.length >= 2) observations.push(`${skippedActs.length} scheduled activities were skipped.`)
+      if (treatPctOfDaily !== null && treatPctOfDaily >= 8) observations.push(`Treats are ${treatPctOfDaily}% of ${pronoun} daily kcal — vets typically cap at 10%.`)
+      if (weightDeltaKg !== null && Math.abs(weightDeltaKg) >= 0.2) observations.push(`Weight moved ${weightDeltaKg > 0 ? '+' : ''}${weightDeltaKg} kg across the ${weights.length} logged weigh-ins.`)
+      if (calDelta !== null && Math.abs(calDelta) >= 10) observations.push(`Calorie intake is ${calDelta > 0 ? 'up' : 'down'} ${Math.abs(calDelta)}% versus last week.`)
+      if (exerciseDelta !== null && Math.abs(exerciseDelta) >= 15) observations.push(`Activity is ${exerciseDelta > 0 ? 'up' : 'down'} ${Math.abs(exerciseDelta)}% versus last week.`)
+      if (waterDelta !== null && Math.abs(waterDelta) >= 15) observations.push(`Water is ${waterDelta > 0 ? 'up' : 'down'} ${Math.abs(waterDelta)}% versus last week.`)
+    }
 
-Pet Profile:
-- Name: ${pet.name}
+    const thinData = daysLogged < 3 && weights.length < 2 && completedActs.length < 2
+
+    const dataPrompt = `You are Pawtchi, a calm veterinary companion. You are writing this week's reflection card for ONE specific pet. Your job is to notice patterns the owner would miss and turn them into one clear action. You are not a general advice column — every sentence must be grounded in the numbers below.
+
+PET
+- Name: ${pet.name} (use this name, never "your dog/cat/pet")
 - Species: ${pet.species}, Breed: ${pet.breed || 'Mixed'}
-- Age: ${pet.age_years || '?'} years, Weight: ${pet.current_weight_kg}kg
-- Target Weight: ${pet.target_weight_kg || 'Not set'}kg
-- Body Condition Score: ${pet.body_condition_score || '?'}/9
-- Activity Level: ${pet.activity_level}
-- Known Allergies: ${pet.allergies?.join(', ') || 'None'}
-- Medical Conditions: ${pet.medical_conditions?.join(', ') || 'None'}
-- Target Calories: ${targetCal} kcal/day
+- Sex: ${pet.gender || 'unknown'} — use ${pronoun}/${pronounSubj}, never "they" for a known individual
+- Age: ${pet.age_years || '?'} years
+- Weight: ${pet.current_weight_kg} kg, target ${pet.target_weight_kg || 'not set'} kg, BCS ${pet.body_condition_score || '?'}/9
+- Activity level: ${pet.activity_level}
+- Allergies: ${pet.allergies?.join(', ') || 'None'}
+- Conditions: ${pet.medical_conditions?.join(', ') || 'None'}
+- Daily target: ${targetCal} kcal, ~${targetWater} ml water
 
-This Week (7 days):
-- Average daily calories: ${avgCal} kcal (target: ${targetCal})
-- Average daily water: ${avgWater}ml (target: ~${targetWater}ml)
-- Days water on target: ${daysWaterOnTarget}/7
-- Total exercise: ${totalExerciseMins} min across ${completedActs.length} sessions
-- Skipped activities: ${skippedActs.length}
-- Weight trend: ${weightTrend}
-- Treats: ${totalTreats} total (${totalTreatCals} kcal from treats)
-- Recent foods: ${recentFoods || 'No food scans'}
+RAW DATA (this week, 7 days)
+- Days with any log: ${daysLogged}/7
+- Avg calories: ${avgCal} kcal ${kcalPctOfTarget !== null ? `(${kcalPctOfTarget}% of target)` : ''}
+- Avg water: ${avgWater} ml ${waterPctOfTarget !== null ? `(${waterPctOfTarget}% of target)` : ''}, on-target days ${daysWaterOnTarget}/7
+- Exercise: ${totalExerciseMins} min / ${completedActs.length} sessions; skipped ${skippedActs.length}
+- Weight: ${weightTrend}${weightDeltaKg !== null ? ` (${weightDeltaKg > 0 ? '+' : ''}${weightDeltaKg} kg net)` : ''}
+- Treats: ${totalTreats} logged (${totalTreatCals} kcal from treats)${treatPctOfDaily !== null ? `, ~${treatPctOfDaily}% of daily kcal` : ''}
+- Recent foods scanned: ${recentFoods || 'None'}
 
-Comparison vs Last Week:
-- Calories: ${calDelta !== null ? `${calDelta > 0 ? '+' : ''}${calDelta}%` : 'No data'}
-- Exercise: ${exerciseDelta !== null ? `${exerciseDelta > 0 ? '+' : ''}${exerciseDelta}%` : 'No data'}
-- Water: ${waterDelta !== null ? `${waterDelta > 0 ? '+' : ''}${waterDelta}%` : 'No data'}
+VS LAST WEEK
+- Calories ${calDelta !== null ? `${calDelta > 0 ? '+' : ''}${calDelta}%` : 'no prior data'}
+- Activity ${exerciseDelta !== null ? `${exerciseDelta > 0 ? '+' : ''}${exerciseDelta}%` : 'no prior data'}
+- Water ${waterDelta !== null ? `${waterDelta > 0 ? '+' : ''}${waterDelta}%` : 'no prior data'}
 
-IMPORTANT VOICE RULES — follow these for every response:
-- Maximum 3 sentences for any text field (headline, tip, wins, concerns)
-- Use the animal's name, never "your dog/cat/pet"
-- Use correct pronouns (his/her based on profile sex, never "their" for a known individual)
-- Never use: exclamation marks, "immediately", "urgent", "ensure", "incredible", "amazing", "AI-powered"
-- End with a calm action or note, never an emotional exclamation
-- Tone: calm, specific, direct, plainspoken Australian English
-- Never speak as the animal — Pawtchi narrates in third person
+PRE-COMPUTED OBSERVATIONS — the wins/concerns/tip MUST reference specific numbers from this list. Do not invent metrics that are not here.
+${observations.length > 0 ? observations.map(o => `• ${o}`).join('\n') : '• (Not enough logged days this week to compute reliable patterns.)'}
 
-IMPORTANT: You MUST respond with a valid JSON block enclosed in \`\`\`json fences, using this exact structure:
+${thinData ? `THIN-DATA MODE: fewer than 3 logged days and fewer than 2 weight logs.
+- Headline: acknowledge this is the first pattern-forming week for ${pet.name} — do NOT pretend to see a trend.
+- Wins: only include something if it is literally in the data (e.g., "${daysLogged}/7 days logged", "${completedActs.length} activity session${completedActs.length === 1 ? '' : 's'} completed"). Otherwise return [].
+- Concerns: []
+- Tip: name ONE specific logging action for this week (e.g., "Log ${pet.name}'s water at each refill for 3 days — Pawtchi needs a baseline before ${pronoun} target flexes.").
+` : ''}
+BANNED PHRASES — if any of these appear, the output is rejected:
+- "areas for improvement", "room for improvement", "shows improvement"
+- "consult your vet", "speak to your vet", "check with a vet" (unless a red-flag concern genuinely warrants it)
+- "overall health", "well-being", "wellbeing"
+- "ensure", "make sure", "be sure to"
+- "keep up the good work", "great job", "amazing", "incredible", "AI-powered"
+- exclamation marks, "immediately", "urgent"
+- generic tips like "try to exercise more", "give more water", "watch the diet"
+- "your dog/cat/pet" instead of the name
+
+STYLE
+- Max 3 sentences per field. Plainspoken Australian English. Third person — Pawtchi narrates, never speaks as ${pet.name}.
+- Every wins/concerns line names a number OR a concrete food/activity — no adjectives standing alone.
+- The tip is a single sentence naming: (1) what to do, (2) when/how much, (3) why (linked to a number above). It must be doable this week without buying anything.
+
+FORMAT — respond with exactly one JSON block in \`\`\`json fences:
 {
-  "headline": "One-sentence summary of the week (warm, specific to the pet by name)",
-  "wins": ["Array of 1-3 positive things from this week — be specific with numbers"],
-  "concerns": ["Array of 0-2 concerns — only include if genuinely concerning, reference numbers"],
-  "tip": "One specific, actionable tip the owner can implement THIS week. Be practical, not generic.",
+  "headline": "One sentence naming ${pet.name} + the single most important pattern from this week's numbers.",
+  "wins": ["1-3 items, each references a number from the observations above"],
+  "concerns": ["0-2 items, only if genuinely concerning — reference the number that concerned you"],
+  "tip": "One specific action for THIS week, tied to a number above.",
   "comparison": {
     "caloriesVsLastWeek": "${calDelta !== null ? `${calDelta > 0 ? '+' : ''}${calDelta}%` : 'N/A'}",
     "activityVsLastWeek": "${exerciseDelta !== null ? `${exerciseDelta > 0 ? '+' : ''}${exerciseDelta}%` : 'N/A'}",
@@ -184,12 +229,16 @@ IMPORTANT: You MUST respond with a valid JSON block enclosed in \`\`\`json fence
   }
 }
 
-Rules:
-- "wins" should celebrate real achievements (e.g., "Hit water target 5/7 days", "30% more exercise than last week")
-- "concerns" should only flag real issues — empty array [] if everything looks fine
-- "tip" must be specific and practical, not vague (e.g., "Try replacing one afternoon treat with a 5-min fetch game" NOT "Try to exercise more")
-- Reference the pet by name in the headline
-- Keep tone warm, encouraging, and vet-informed`
+EXAMPLES
+
+Good headline: "Bruno hit ${pronoun} water target only 3/7 days this week, and it's the biggest slip Pawtchi has seen this month."
+Bad headline: "Bruno's weekly data shows areas for improvement in his daily nutrition and hydration." (banned phrase, no numbers)
+
+Good tip: "Move Bruno's afternoon bowl refill to right after ${pronoun} walk — that is when the 3/7 dry days landed, and a wet mouth drinks faster."
+Bad tip: "Review Bruno's current food label and consult your vet." (banned phrase, unrelated to the observations)
+
+Good win: "Bruno finished 5 of 6 walks — 42 min more than last week."
+Bad win: "Bruno is doing great with his exercise routine." (no number, generic praise)`
 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
@@ -215,7 +264,8 @@ Rules:
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text()
-      throw new Error(`Gemini error: ${geminiRes.status} - ${errText}`)
+      logInternal('generate-health-insight', `upstream ${geminiRes.status}: ${errText.substring(0, 300)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const geminiData = await geminiRes.json()
@@ -260,10 +310,9 @@ Rules:
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
 
-  } catch (err: any) {
-    return new Response(
-      JSON.stringify({ success: false, error: err.message }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+  } catch (err: unknown) {
+    logInternal('generate-health-insight', err, 'unhandled');
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return errorResponse(isAbort ? 'ai_unavailable' : 'server_error', corsHeaders);
   }
 })

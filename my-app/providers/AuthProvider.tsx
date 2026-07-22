@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useStreakStore } from '../store/useStreakStore';
 import { usePetContextStore } from '../store/usePetContextStore';
+import { WALK_TRACKING_ENABLED } from '../constants/features';
 
 type AuthContextType = {
   session: Session | null;
@@ -77,6 +78,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       try { useActivePetStore.getState().clearPet(); } catch {}
       try { useStreakStore.getState().clearStreak(); } catch {}
       try { usePetContextStore.getState().clearContext(); } catch {}
+      // Kill any live location tracking on the way out — the reconciler only
+      // fires on phase change, and signing out mid-walk doesn't touch the walk
+      // phase, so without this a service could leak past the session. Fire-and-
+      // forget: never block the sign-out on the bounded OS stop.
+      if (WALK_TRACKING_ENABLED) {
+        import('../store/useWalkStore')
+          .then(({ useWalkStore }) => useWalkStore.getState().hardStopTracking())
+          .catch(() => {});
+      }
 
       // 2. Fire-and-forget walkthrough wipes — SafeStorage already caps these at 2 s.
       AsyncStorage.removeItem('walkthrough_completed').catch(() => {});

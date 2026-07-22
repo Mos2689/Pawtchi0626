@@ -18,6 +18,8 @@ import {
   estimateKcalPer100g,
 } from './aafcoMath';
 import { calculateDailyKcal, type Species, type ActivityLevel } from './healthMath';
+import { deriveLifeStage, getLifeStageCalorieMultiplier, getAgeMonths } from './lifeStage';
+import { getBreedDefaults, sizeCategoryFromWeight } from './breedData';
 import aafcoDog from '../data/aafco_dog_2014.json';
 import aafcoCat from '../data/aafco_cat_2014.json';
 import clinicalAdjustments from '../data/clinical_adjustments.json';
@@ -67,6 +69,10 @@ export interface FoodVerdictInput {
     activity_level: ActivityLevel;
     is_neutered: boolean;
     goal: 'lose' | 'maintain' | 'gain';
+    breed?: string | null;
+    age_years?: number | null;
+    /** Owner-reported BCS (1–9). When present, gates the lose-mode tier. */
+    body_condition_score?: number | null;
     /** Confirmed clinical conditions — only conditions with user_confirmed=true should be passed in. */
     confirmed_condition_keys?: string[];
   };
@@ -143,11 +149,15 @@ export function pickLifeStageProfile(input: {
  * Determine which clinical adjustments to apply.
  * - Includes any condition the caller marks as confirmed (`confirmed_condition_keys`).
  * - Auto-includes 'obesity' if goal === 'lose' and obesity isn't already in the list.
+ * - Auto-includes 'large_breed_puppy' for large/giant puppies. Wrong food at
+ *   this life stage causes irreversible developmental orthopedic disease.
  * - Skips any deferred condition (anything in `_deferred_conditions`).
  */
 export function resolveActiveAdjustments(input: {
   confirmed_condition_keys?: string[];
   goal: 'lose' | 'maintain' | 'gain';
+  life_stage?: string | null;
+  size_category?: 'toy' | 'small' | 'medium' | 'large' | 'giant' | null;
 }): string[] {
   const known = new Set(Object.keys(clinicalAdjustments.conditions || {}));
   const out = new Set<string>();
@@ -158,6 +168,14 @@ export function resolveActiveAdjustments(input: {
 
   if (input.goal === 'lose' && known.has('obesity')) {
     out.add('obesity');
+  }
+
+  if (
+    input.life_stage === 'puppy' &&
+    (input.size_category === 'large' || input.size_category === 'giant') &&
+    known.has('large_breed_puppy')
+  ) {
+    out.add('large_breed_puppy');
   }
 
   return Array.from(out);
@@ -278,15 +296,28 @@ export function analyzeFood(input: FoodVerdictInput): FoodAnalysis {
   const { food, pet, meal_grams } = input;
 
   // 1. Daily kcal target (uses fixed weight-loss math from healthMath.ts)
+  // Derive life-stage multiplier + breed metabolic modifier so the verdict's
+  // daily target matches what onboarding computed (senior/geriatric reductions,
+  // Lab/Golden 0.95 thrifty modifier).
+  const breedDefaults = getBreedDefaults(pet.species, pet.breed ?? null, pet.weight_kg);
+  const petAgeYears = pet.age_years ?? (pet.age_months != null ? pet.age_months / 12 : 0);
+  const petAgeMonths = getAgeMonths({ age_months: pet.age_months, age_years: pet.age_years }) ?? 0;
+  const sizeCategory = breedDefaults?.sizeCategory ?? sizeCategoryFromWeight(pet.species, pet.weight_kg);
+  const lifeStage = deriveLifeStage(pet.species, Math.floor(petAgeYears), Math.round((petAgeYears % 1) * 12), sizeCategory);
+  const lifeStageMultiplier = getLifeStageCalorieMultiplier(lifeStage, pet.species);
+  const metabolicModifier = breedDefaults?.metabolicModifier ?? 1.0;
+
   const daily_kcal_target = calculateDailyKcal(
     pet.weight_kg,
     pet.species,
     pet.is_neutered,
     pet.activity_level,
     pet.goal,
-    pet.age_months ?? undefined,
-    1.0,
+    petAgeMonths || undefined,
+    lifeStageMultiplier,
     pet.target_weight_kg ?? undefined,
+    metabolicModifier,
+    pet.body_condition_score ?? undefined,
   );
 
   // 2. Pick AAFCO profile
@@ -297,6 +328,8 @@ export function analyzeFood(input: FoodVerdictInput): FoodAnalysis {
   const active_clinical_adjustments = resolveActiveAdjustments({
     confirmed_condition_keys: pet.confirmed_condition_keys,
     goal: pet.goal,
+    life_stage: lifeStage,
+    size_category: sizeCategory,
   });
 
   const { effective, notes: adjustmentNotes } = applyAdjustments(baseline, active_clinical_adjustments);

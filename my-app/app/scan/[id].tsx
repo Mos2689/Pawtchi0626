@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +9,8 @@ import type { FoodAnalysis } from '../../lib/foodVerdict';
 import NutritionReferencePanel from '../../components/NutritionReferencePanel';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { haptic } from '../../lib/haptics';
+import { PawLoader } from '../../components/loader/PawLoader';
+import { makeShadow } from '../../constants/design';
 
 interface FoodScanDetails {
     id: string;
@@ -52,8 +54,8 @@ export default function ScanDetailScreen() {
 
     if (isLoading) {
         return (
-            <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-                <ActivityIndicator size="large" color="#F7F602" />
+            <View style={styles.container}>
+                <PawLoader visible />
             </View>
         );
     }
@@ -349,11 +351,7 @@ const styles = StyleSheet.create({
         backgroundColor: '#FFFFFF',
         borderRadius: 40,
         padding: 28,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.04,
-        shadowRadius: 40,
-        elevation: 4,
+        ...makeShadow(10, 40, 0.04, '#000'),
         borderWidth: 1,
         borderColor: 'rgba(0,0,0,0.04)',
         overflow: 'hidden' as const,

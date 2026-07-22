@@ -2,6 +2,7 @@ import React from 'react';
 import { TouchableOpacity, StyleSheet, ViewStyle, TextStyle } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors } from '../constants/Theme';
+import { makeShadow } from '../constants/design';
 import { Typography } from './Typography';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost';
@@ -44,11 +45,7 @@ export const Button: React.FC<ButtonProps> = ({
         return {
           container: {
             backgroundColor: themeColors.primary,
-            shadowColor: themeColors.primary,
-            shadowOffset: { width: 0, height: 12 },
-            shadowOpacity: 0.5,
-            shadowRadius: 24,
-            elevation: 8,
+            ...makeShadow(12, 24, 0.5, themeColors.primary),
           },
           text: { color: themeColors['on-primary'] },
         };

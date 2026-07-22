@@ -5,6 +5,7 @@
 // here is for display only.
 
 import { supabase } from './supabase';
+import { errorCopy, fromEdgeBody, reportError, toAppError, type ErrorCopy } from './appError';
 
 export const MONTHLY_CAP = 4;
 
@@ -87,12 +88,12 @@ export type AskResult =
   | { kind: 'answer'; answer: VetAnswer; caseId: string | null; remaining: number; resetsAt: string }
   | { kind: 'clarify'; clarify: ClarifyPayload }
   | { kind: 'limit'; resetsAt: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; copy: ErrorCopy; retryable: boolean };
 
 export type FollowupResult =
   | { kind: 'answer'; answer: VetAnswer; followupsLeft: number }
   | { kind: 'limit' } // 3 follow-ups used for this case
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; copy: ErrorCopy; retryable: boolean };
 
 function monthStartISO(now = new Date()): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
@@ -131,27 +132,18 @@ export async function askVet(
 
     if (error) {
       // supabase-js wraps a non-2xx response in a FunctionsHttpError whose
-      // `.context` is the raw Response. Read it so the real server cause is
-      // visible (e.g. function not deployed, missing table) instead of a
-      // generic message.
-      let serverMsg: string | null = null;
-      try {
-        const ctx: any = (error as any).context;
-        if (ctx && typeof ctx.json === 'function') {
-          const body = await ctx.json();
-          if (body?.code === 'monthly_limit') {
-            return { kind: 'limit', resetsAt: body.resetsAt };
-          }
-          serverMsg = body?.error ?? null;
-        }
-      } catch {
-        // body wasn't JSON — ignore
+      // `.context` is the raw Response. Read it ONCE (bodies are single-use):
+      // first for the limit code, then for the error_code the classifier maps.
+      let body: any = null;
+      try { body = await (error as any).context?.json?.(); } catch { /* not json */ }
+      if (body?.code === 'monthly_limit') {
+        return { kind: 'limit', resetsAt: body.resetsAt };
       }
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        // eslint-disable-next-line no-console
-        console.warn('[askVet] invoke failed:', (error as any)?.message, '| server:', serverMsg);
-      }
-      return { kind: 'error', message: serverMsg || 'Something went wrong. Please try again in a moment.' };
+      const appErr = toAppError(error, {
+        errorCode: typeof body?.error_code === 'string' ? body.error_code : null,
+      });
+      reportError(appErr, 'ask_vet');
+      return { kind: 'error', copy: errorCopy(appErr, { context: 'ask_vet' }), retryable: appErr.retryable };
     }
     if (data?.code === 'monthly_limit') {
       return { kind: 'limit', resetsAt: data.resetsAt };
@@ -170,9 +162,15 @@ export async function askVet(
         resetsAt: data.resetsAt,
       };
     }
-    return { kind: 'error', message: data?.error || 'Could not generate an answer. Please try again.' };
-  } catch {
-    return { kind: 'error', message: 'Could not reach Pawtchi. Please check your connection and try again.' };
+    {
+      const appErr = fromEdgeBody(data) ?? toAppError(new Error('no answer in response'));
+      reportError(appErr, 'ask_vet');
+      return { kind: 'error', copy: errorCopy(appErr, { context: 'ask_vet' }), retryable: appErr.retryable };
+    }
+  } catch (err) {
+    const appErr = toAppError(err);
+    reportError(appErr, 'ask_vet');
+    return { kind: 'error', copy: errorCopy(appErr, { context: 'ask_vet' }), retryable: appErr.retryable };
   }
 }
 
@@ -194,7 +192,11 @@ export async function askFollowup(
       let body: any = null;
       try { body = await (error as any).context?.json?.(); } catch { /* not json */ }
       if (body?.code === 'followup_limit') return { kind: 'limit' };
-      return { kind: 'error', message: body?.error || 'Something went wrong. Please try again in a moment.' };
+      const appErr = toAppError(error, {
+        errorCode: typeof body?.error_code === 'string' ? body.error_code : null,
+      });
+      reportError(appErr, 'ask_vet');
+      return { kind: 'error', copy: errorCopy(appErr, { context: 'ask_vet' }), retryable: appErr.retryable };
     }
     if (data?.code === 'followup_limit') return { kind: 'limit' };
     if (data?.success && data.answer) {
@@ -202,9 +204,15 @@ export async function askFollowup(
       invalidateAskCache();
       return { kind: 'answer', answer: data.answer as VetAnswer, followupsLeft: data.followupsLeft ?? 0 };
     }
-    return { kind: 'error', message: data?.error || 'Could not generate an answer. Please try again.' };
-  } catch {
-    return { kind: 'error', message: 'Could not reach Pawtchi. Please check your connection and try again.' };
+    {
+      const appErr = fromEdgeBody(data) ?? toAppError(new Error('no answer in response'));
+      reportError(appErr, 'ask_vet');
+      return { kind: 'error', copy: errorCopy(appErr, { context: 'ask_vet' }), retryable: appErr.retryable };
+    }
+  } catch (err) {
+    const appErr = toAppError(err);
+    reportError(appErr, 'ask_vet');
+    return { kind: 'error', copy: errorCopy(appErr, { context: 'ask_vet' }), retryable: appErr.retryable };
   }
 }
 

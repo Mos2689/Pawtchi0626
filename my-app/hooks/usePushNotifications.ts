@@ -21,6 +21,11 @@ function routeFromNotification(router: ReturnType<typeof useRouter>, response: N
     if (!data) return;
     if (data.type === 'vet_checkin' && typeof data.questionId === 'string') {
         router.push(`/ask?case=${data.questionId}&mode=checkin` as any);
+    } else if (data.type === 'activity_reminder') {
+        // Anticipatory walk/feeding/training nudge — open the activity tab so
+        // the user can see what's coming up next. The activity id is in
+        // `data.activityId` if we ever want to scroll-to or expand it.
+        router.push('/(tabs)/activity' as any);
     }
 }
 
@@ -87,8 +92,11 @@ async function registerForPushNotificationsAsync() {
             // Never log the token in production — it's sensitive.
             if (__DEV__) console.log('Push token successfully generated:', token);
         } catch (e: unknown) {
+            // Return null — never an error string. A string here used to flow
+            // into register_push_token and get stored as a "token", silently
+            // breaking pushes for that user.
             console.error('Push token error:', e);
-            token = `Error: ${e}`;
+            token = null;
         }
     } else {
         if (__DEV__) console.log('Must use physical device for Push Notifications');

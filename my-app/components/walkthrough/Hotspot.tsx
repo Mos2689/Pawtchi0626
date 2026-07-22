@@ -8,6 +8,7 @@ import Animated, {
   useAnimatedStyle 
 } from 'react-native-reanimated';
 import { useWalkthrough } from '../../providers/WalkthroughContext';
+import { makeShadow } from '../../constants/design';
 import { Colors } from '../../constants/Theme';
 
 interface HotspotProps extends ViewProps {
@@ -107,10 +108,6 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
     backgroundColor: '#041015', // Dark blue
-    shadowColor: '#041015',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 6,
-    elevation: 4,
+    ...makeShadow(0, 6, 1, '#041015'),
   }
 });

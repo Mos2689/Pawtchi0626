@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
 
-serve(async (req) => {
+serve(async (req: Request) => {
   try {
     // ── Security: Cron secret guard ──
     // This function is called by Supabase cron scheduler, not by users.
@@ -55,7 +55,7 @@ serve(async (req) => {
 
     const pushTokensMap = new Map();
     if (profiles) {
-      profiles.forEach(p => {
+      profiles.forEach((p: any) => {
         if (p.push_token) {
           pushTokensMap.set(p.id, p.push_token);
         }
@@ -63,11 +63,11 @@ serve(async (req) => {
     }
 
     // 5. Determine which pets missed logs (inaction)
-    const unloggedMeals = [];
-    const unloggedWater = [];
+    const unloggedMeals: any[] = [];
+    const unloggedWater: any[] = [];
 
-    pets.forEach(pet => {
-      const log = dailyLogs?.find(l => l.pet_id === pet.id);
+    pets.forEach((pet: any) => {
+      const log = dailyLogs?.find((l: any) => l.pet_id === pet.id);
       
       // If no log exists for today, or calories = 0 -> Missed Meal
       if (!log || log.calories_consumed === 0) {
@@ -123,9 +123,13 @@ serve(async (req) => {
       headers: { "Content-Type": "application/json" },
     });
 
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 400,
+  } catch (error: unknown) {
+    // Cron-invoked — the "caller" is the scheduler, but keep the same
+    // no-internal-details contract as the user-facing functions.
+    const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error);
+    console.error(`[check-reminders] ${detail}`);
+    return new Response(JSON.stringify({ success: false, error_code: 'server_error', error: 'Something went wrong on our side.' }), {
+      status: 500,
       headers: { "Content-Type": "application/json" },
     });
   }

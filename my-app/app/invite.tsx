@@ -9,6 +9,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 
 import { useActivePetStore } from '../store/useActivePetStore';
+import { resolvePetImage } from '../lib/petFallbackImage';
 import {
   buildInviteSubcopy,
   buildInviteMessage,
@@ -23,13 +24,10 @@ const YELLOW = '#F7F602';
 const CREAM = '#F4F1EC';
 const CREAM_MUTED = 'rgba(244, 241, 236, 0.55)';
 
-const FALLBACK_PET_IMAGE =
-  'https://images.unsplash.com/photo-1543466835-00a7907e9de1?q=80&w=1000&auto=format&fit=crop';
-
 export default function InviteScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { activePet } = useActivePetStore();
+  const activePet = useActivePetStore(s => s.activePet);
 
   const petName = activePet?.name?.trim() || null;
   const displayName = petName || 'your companion';
@@ -74,7 +72,7 @@ export default function InviteScreen() {
       <View style={styles.hero}>
         <Animated.View entering={FadeIn.duration(700)} style={styles.portraitRing}>
           <Image
-            source={{ uri: activePet?.image_url || FALLBACK_PET_IMAGE }}
+            source={{ uri: resolvePetImage(activePet?.image_url, activePet?.species, 1000) }}
             style={styles.portrait}
             contentFit="cover"
             cachePolicy="memory-disk"

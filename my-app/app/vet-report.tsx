@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, StyleSheet, ScrollView, TouchableOpacity, TextInput,
-  ActivityIndicator, Platform, KeyboardAvoidingView,
+  Platform, KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -14,14 +14,18 @@ import { Header } from '../components/Header';
 import { Typography } from '../components/Typography';
 import { PawtchiButton } from '../components/PawtchiButton';
 import { PawtchiModal } from '../components/PawtchiModal';
+import { PawLoader } from '../components/loader/PawLoader';
 import { color, font, radius, shadow, space } from '../constants/design';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useAuth } from '../providers/AuthProvider';
 import { useSubscription } from '../hooks/useSubscription';
 import { supabase } from '../lib/supabase';
 import { track } from '../lib/analytics';
+import { errorCopy, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../lib/appError';
 import { getThread } from '../lib/askVet';
 import { buildVetReportHTML } from '../lib/vetReport/buildVetReportHTML';
+import { getLocalYMD, localDayStartUtcISO } from '../lib/dateUtils';
+import { computeWaterTargetMl } from '../lib/hydration';
 import type {
   VetReportData, Medication, Vaccination, WeightHistoryEntry,
   DietItem, RecentVetVisit,
@@ -85,7 +89,8 @@ async function fetchImageDataUri(url?: string | null): Promise<string | null> {
 export default function VetReportScreen() {
   const router = useRouter();
   const { caseId } = useLocalSearchParams<{ caseId?: string }>();
-  const { activePet, foodPantry } = useActivePetStore();
+  const activePet = useActivePetStore(s => s.activePet);
+  const foodPantry = useActivePetStore(s => s.foodPantry);
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
 
@@ -100,7 +105,13 @@ export default function VetReportScreen() {
 
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Branded failure sheet; retryRef replays the share when "Try again" is tapped.
+  const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  const retryRef = React.useRef<null | (() => void)>(null);
+  const handleRecovery = (action: RecoveryActionId) => {
+    setFailure(null);
+    if (action === 'retry') retryRef.current?.();
+  };
 
   // Owner-editable
   const [reason, setReason] = useState('');
@@ -132,8 +143,12 @@ export default function VetReportScreen() {
       const now = new Date();
       const sevenAgo = new Date(now);
       sevenAgo.setDate(sevenAgo.getDate() - 7);
-      const todayStr = now.toISOString().split('T')[0];
-      const sevenStr = sevenAgo.toISOString().split('T')[0];
+      // Local-day strings for date-column comparisons (log_date, scheduled_date
+      // are DATE columns), and a UTC ISO anchor for the timestamptz column
+      // (food_scans.created_at) — see lib/dateUtils.ts.
+      const todayStr = getLocalYMD(now);
+      const sevenStr = getLocalYMD(sevenAgo);
+      const sevenStartUtc = localDayStartUtcISO(sevenAgo);
 
       const [profileRes, wLogsRes, vetRes, logsRes, actsRes, treatScansRes] = await Promise.all([
         user?.id
@@ -151,7 +166,7 @@ export default function VetReportScreen() {
           .gte('scheduled_date', sevenStr).lte('scheduled_date', todayStr),
         supabase.from('food_scans').select('ai_estimated_calories, is_treat')
           .eq('pet_id', activePet.id).eq('is_treat', true)
-          .gte('created_at', `${sevenStr}T00:00:00`),
+          .gte('created_at', sevenStartUtc),
       ]);
 
       setOwnerName(profileRes?.data?.full_name || null);
@@ -207,7 +222,9 @@ export default function VetReportScreen() {
       const treatCaloriesPercent = totalWeekCals > 0 ? Math.round((treatCals / totalWeekCals) * 100) : null;
       const totalActMins = (actsRes.data || []).reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
       const avgActivityMinutes = (actsRes.data || []).length ? Math.round(totalActMins / 7) : null;
-      const waterTargetMl = activePet.current_weight_kg ? Math.round(activePet.current_weight_kg * 50) : null;
+      const waterTargetMl = activePet.current_weight_kg
+        ? computeWaterTargetMl(activePet.current_weight_kg, activePet.diet_type)
+        : null;
 
       setWeekly({
         targetDailyCalories: activePet.target_daily_calories ?? null,
@@ -300,9 +317,14 @@ export default function VetReportScreen() {
   const handleShare = async () => {
     if (!checkAccess()) return;
     if (!activePet) {
-      setErrorMsg('No pet found. Set up a pet profile first.');
+      setFailure({
+        title: 'No pet yet',
+        message: 'Set up a pet profile first, then share their summary.',
+        actions: [{ label: 'OK', action: 'dismiss' }],
+      });
       return;
     }
+    retryRef.current = handleShare;
     setGenerating(true);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -319,7 +341,11 @@ export default function VetReportScreen() {
       const { uri } = await Print.printToFileAsync({ html });
 
       if (!(await Sharing.isAvailableAsync())) {
-        setErrorMsg('Sharing is not available on this device.');
+        setFailure({
+          title: 'Sharing isn’t available',
+          message: 'This device can’t open the share sheet right now.',
+          actions: [{ label: 'OK', action: 'dismiss' }],
+        });
         return;
       }
       await Sharing.shareAsync(uri, {
@@ -328,9 +354,10 @@ export default function VetReportScreen() {
         dialogTitle: `${petName}'s health summary`,
       });
       track('vet_report_shared', { species: activePet.species });
-    } catch (e: any) {
-      console.error('[vet-report] share error:', e);
-      setErrorMsg(e?.message || 'Could not generate the report. Please try again.');
+    } catch (e: unknown) {
+      const appErr = toAppError(e);
+      reportError(appErr, 'report');
+      setFailure(errorCopy(appErr, { context: 'report', petName }));
     } finally {
       setGenerating(false);
     }
@@ -353,9 +380,7 @@ export default function VetReportScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <Header title="Vet report" />
-        <View style={styles.center}>
-          <ActivityIndicator color={color.navy} />
-        </View>
+        <PawLoader visible />
       </SafeAreaView>
     );
   }
@@ -515,12 +540,15 @@ export default function VetReportScreen() {
       </KeyboardAvoidingView>
 
       <PawtchiModal
-        visible={!!errorMsg}
-        onClose={() => setErrorMsg(null)}
-        title="Couldn’t share"
+        visible={failure != null}
+        onClose={() => setFailure(null)}
+        title={failure?.title ?? ''}
         icon={{ name: 'error-outline', color: color.error }}
-        message={errorMsg || ''}
-        showCloseButton
+        message={failure?.message}
+        actions={(failure?.actions ?? []).map(a => ({
+          label: a.label,
+          onPress: () => handleRecovery(a.action),
+        }))}
       />
     </SafeAreaView>
   );

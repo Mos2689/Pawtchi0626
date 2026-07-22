@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Animated } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStreakStore } from '../store/useStreakStore';
+import { makeShadow } from '../constants/design';
 
 const MILESTONE_MESSAGES: Record<number, string> = {
   3: '3-day streak',
@@ -13,7 +14,8 @@ const MILESTONE_MESSAGES: Record<number, string> = {
 
 export function CoinToast() {
   const insets = useSafeAreaInsets();
-  const { lastEarnEvent, clearLastEarn } = useStreakStore();
+  const lastEarnEvent = useStreakStore(s => s.lastEarnEvent);
+  const clearLastEarn = useStreakStore(s => s.clearLastEarn);
   const slideAnim = useRef(new Animated.Value(-160)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
@@ -154,11 +156,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: '#e5e7eb',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
-    elevation: 20,
+    ...makeShadow(12, 24, 0.15, '#000'),
     minWidth: 240,
   },
   toastMilestone: {

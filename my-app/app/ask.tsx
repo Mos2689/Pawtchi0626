@@ -9,31 +9,31 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeInDown, useSharedValue, useAnimatedStyle,
-  withRepeat, withTiming, Easing,
+  withRepeat, withTiming, Easing, cancelAnimation,
 } from 'react-native-reanimated';
 
 import { Header } from '../components/Header';
 import { Typography } from '../components/Typography';
 import { PawtchiButton } from '../components/PawtchiButton';
-import { PawtchiModal } from '../components/PawtchiModal';
+import { ErrorState } from '../components/ErrorState';
 import { VetAnswerCard } from '../components/VetAnswerCard';
 import { PulseMark } from '../components/PulseMark';
-import { color, font, radius, shadow, space } from '../constants/design';
+import { color, font, motion, radius, shadow, space } from '../constants/design';
+import { PawLoader } from '../components/loader/PawLoader';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useAuth } from '../providers/AuthProvider';
 import { useSubscription } from '../hooks/useSubscription';
 import { possessivePronoun } from '../lib/referral';
 import { getSuggestedQuestions } from '../lib/vetQuestionPrompts';
 import { track } from '../lib/analytics';
+import { resolvePetImage } from '../lib/petFallbackImage';
+import type { ErrorCopy, RecoveryActionId } from '../lib/appError';
 import {
   askVet, askFollowup, getMonthlyUsage, getHistory, getThread, FOLLOWUP_CAP,
   type MonthlyUsage, type VetAnswer, type VetQuestionRecord, type ClarifyPayload,
   type VetFollowupTurn,
 } from '../lib/askVet';
 import { ClarifyJourney } from '../components/ClarifyJourney';
-
-const FALLBACK_PET_IMAGE =
-  'https://images.unsplash.com/photo-1583337130417-3346a1be7dee?q=80&w=400&auto=format&fit=crop';
 
 function formatShortDate(iso?: string | null): string {
   if (!iso) return '';
@@ -50,9 +50,18 @@ function ThinkingState({ imageUri, lines }: { imageUri: string; lines: string[] 
   const [lineIdx, setLineIdx] = useState(0);
 
   useEffect(() => {
-    pulse.value = withRepeat(withTiming(1.18, { duration: 1100, easing: Easing.inOut(Easing.ease) }), -1, true);
-    const id = setInterval(() => setLineIdx((i) => (i + 1) % lines.length), 1700);
-    return () => clearInterval(id);
+    // Breathing (the shared "working" signal), not a heartbeat — the single
+    // heartbeat is reserved for completion, per the Living Paw motion language.
+    pulse.value = withRepeat(
+      withTiming(1.18, { duration: motion.loader.breatheCycle / 2, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true
+    );
+    const id = setInterval(() => setLineIdx((i) => (i + 1) % lines.length), motion.loader.copyRotate);
+    return () => {
+      clearInterval(id);
+      cancelAnimation(pulse);
+    };
   }, [lines.length]);
 
   const ringStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
@@ -76,13 +85,13 @@ function ThinkingState({ imageUri, lines }: { imageUri: string; lines: string[] 
 
 export default function AskScreen() {
   const router = useRouter();
-  const { activePet } = useActivePetStore();
+  const activePet = useActivePetStore(s => s.activePet);
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
 
   const petName = activePet?.name?.trim() || 'your companion';
   const their = possessivePronoun(activePet?.gender);
-  const imageUri = activePet?.image_url || FALLBACK_PET_IMAGE;
+  const imageUri = resolvePetImage(activePet?.image_url, activePet?.species, 400);
 
   const [usage, setUsage] = useState<MonthlyUsage | null>(null);
   const [question, setQuestion] = useState('');
@@ -91,7 +100,10 @@ export default function AskScreen() {
   const [clarify, setClarify] = useState<ClarifyPayload | null>(null);
   const [askedQuestion, setAskedQuestion] = useState('');
   const [history, setHistory] = useState<VetQuestionRecord[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // In-flow failure card (branded copy from askVet). retryRef replays whatever
+  // call failed — the first ask, a clarified ask, or a follow-up.
+  const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  const retryRef = useRef<null | (() => void)>(null);
 
   // ── Case / thread state ──
   const [caseId, setCaseId] = useState<string | null>(null);
@@ -200,7 +212,8 @@ export default function AskScreen() {
       track('vet_ask_limit_reached');
     } else {
       setPhase(clarify ? 'clarify' : 'idle');
-      setErrorMsg(result.message);
+      retryRef.current = () => resolveAnswer(text, clarifyAnswers);
+      setFailure(result.copy);
     }
   };
 
@@ -262,9 +275,30 @@ export default function AskScreen() {
       track('vet_followup_limit');
     } else {
       setPhase('answer');
-      setErrorMsg(result.message);
+      retryRef.current = () => submitFollowup(text, kind);
+      setFailure(result.copy);
     }
   };
+
+  const handleFailureAction = (action: RecoveryActionId) => {
+    setFailure(null);
+    if (action === 'retry') retryRef.current?.();
+  };
+
+  // A docked, in-flow failure card — replaces the old blocking error modal on
+  // every phase. Retry replays the failed call; "Not now" just clears it.
+  const renderFailure = () =>
+    failure ? (
+      <View style={styles.failureDock}>
+        <ErrorState
+          copy={failure}
+          variant="card"
+          icon="error-outline"
+          onAction={handleFailureAction}
+          onDismiss={() => setFailure(null)}
+        />
+      </View>
+    ) : null;
 
   // One-tap check-in replies (decision > tap), pet-name aware.
   const checkinOptions = [
@@ -279,9 +313,7 @@ export default function AskScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <Header title="Second Opinion" />
-        <View style={styles.caseLoading}>
-          <PulseMark size={64} variant="listening" ringColor={color.navy} />
-        </View>
+        <PawLoader visible />
       </SafeAreaView>
     );
   }
@@ -308,14 +340,7 @@ export default function AskScreen() {
           onSubmit={resolveWithClarify}
           onSkip={skipClarify}
         />
-        <PawtchiModal
-          visible={!!errorMsg}
-          onClose={() => setErrorMsg(null)}
-          title="Let’s try that again"
-          icon={{ name: 'error-outline', color: color.error }}
-          message={errorMsg || ''}
-          showCloseButton
-        />
+        {renderFailure()}
       </SafeAreaView>
     );
   }
@@ -444,14 +469,7 @@ export default function AskScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
 
-        <PawtchiModal
-          visible={!!errorMsg}
-          onClose={() => setErrorMsg(null)}
-          title="Let’s try that again"
-          icon={{ name: 'error-outline', color: color.error }}
-          message={errorMsg || ''}
-          showCloseButton
-        />
+        {renderFailure()}
       </SafeAreaView>
     );
   }
@@ -577,14 +595,7 @@ export default function AskScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <PawtchiModal
-        visible={!!errorMsg}
-        onClose={() => setErrorMsg(null)}
-        title="Let’s try that again"
-        icon={{ name: 'error-outline', color: color.error }}
-        message={errorMsg || ''}
-        showCloseButton
-      />
+      {renderFailure()}
     </SafeAreaView>
   );
 }
@@ -592,6 +603,8 @@ export default function AskScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.surface },
   scroll: { paddingHorizontal: space.xxl, paddingTop: space.md, paddingBottom: 60 },
+  // Docks the in-flow failure card above the safe-area bottom on any phase.
+  failureDock: { paddingHorizontal: space.xxl, paddingBottom: space.md },
 
   // Hero
   hero: { alignItems: 'center', marginBottom: space.xl },

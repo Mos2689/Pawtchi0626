@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/Theme';
+import { makeShadow } from '../constants/design';
 import ConfettiCannon from 'react-native-confetti-cannon';
 
 // The precise order of hotspots
@@ -185,11 +186,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 24,
     width: '100%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 8,
+    ...makeShadow(10, 20, 0.15, '#000'),
   },
   tooltipHeader: {
     flexDirection: 'row',

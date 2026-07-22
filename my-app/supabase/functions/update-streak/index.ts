@@ -4,6 +4,7 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { safeParseBody } from '../_shared/validate.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 // Coin economy constants
 const COIN_REWARDS: Record<string, number> = {
@@ -20,7 +21,7 @@ const MILESTONE_BONUSES: Record<number, number> = {
   30: 500,
 };
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -39,10 +40,8 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('update-streak', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const body = parsed.data as Record<string, any>;
@@ -53,10 +52,8 @@ Deno.serve(async (req) => {
     const userId = auth.userId;
 
     if (!action) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'action is required' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('update-streak', 'action missing from request');
+      return errorResponse('invalid_input', corsHeaders);
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -80,6 +77,37 @@ Deno.serve(async (req) => {
       streak = newStreak;
     } else if (fetchErr) {
       throw fetchErr;
+    }
+
+    // 1b. Idempotency: offline-synced actions (tracked walks) retry, so the
+    // same completion can arrive more than once. A ledger row for this exact
+    // (owner, action, reference) means it was already awarded — return the
+    // current state without changing anything. `duplicate: true` tells the
+    // client to skip the coin toast.
+    if (referenceId) {
+      const { data: priorTxns, error: priorErr } = await supabase
+        .from('coin_transactions')
+        .select('id')
+        .eq('owner_id', userId)
+        .eq('reason', action)
+        .eq('reference_id', referenceId)
+        .limit(1);
+      if (!priorErr && priorTxns && priorTxns.length > 0) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            duplicate: true,
+            currentStreak: streak.current_streak || 0,
+            longestStreak: streak.longest_streak || 0,
+            pawCoins: streak.paw_coins || 0,
+            coinsEarned: 0,
+            milestoneHit: null,
+            streakBroken: false,
+            previousStreak: null,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
     const today = new Date().toISOString().split('T')[0];
@@ -182,11 +210,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[update-streak] Error:', message);
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
-    );
+    logInternal('update-streak', error, 'unhandled');
+    return errorResponse('server_error', corsHeaders);
   }
 });

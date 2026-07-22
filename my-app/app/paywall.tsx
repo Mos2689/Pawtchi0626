@@ -1,61 +1,72 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     View,
     Text,
     StyleSheet,
     TouchableOpacity,
-    ScrollView,
-    ActivityIndicator,
     Alert,
     Platform,
     Linking,
+    Image,
+    Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+import MaskedView from '@react-native-masked-view/masked-view';
+import Svg, { Path, Rect, Circle } from 'react-native-svg';
+import Animated, {
+    FadeInDown,
+    FadeIn,
+    useAnimatedStyle,
+    useSharedValue,
+    withRepeat,
+    withSequence,
+    withTiming,
+    Easing,
+    cancelAnimation,
+} from 'react-native-reanimated';
 import Purchases, { PurchasesPackage } from 'react-native-purchases';
 import Constants from 'expo-constants';
-import { color, font } from '../constants/design';
+import { color, font, makeShadow } from '../constants/design';
+import { PawLoader } from '../components/loader/PawLoader';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useSubscription } from '../hooks/useSubscription';
 import { track } from '../lib/analytics';
 import { openManageSubscription } from '../lib/manageSubscription';
+import { PawtchiModal } from '../components/PawtchiModal';
+import { errorCopy, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../lib/appError';
 
-// ─── Brand system (Pawtchi Brand Book 2026, Part IV) ───
-// Navy ground + electric yellow accent only. Yellow marks the ONE thing that
-// matters (§4.02) — here, the call to action. Bebas Neue display, Montserrat body
-// (§4.03). Left-aligned, one idea per surface (§4.06).
-const NAVY = color.navy;
-const NAVY_RAISED = color.navyRaised;
+// ─── V2 palette: white ground, navy text, yellow accent ───
+const NAVY = '#0a1a3a';
 const YELLOW = color.yellow;
-const CREAM = color.cream;
-const CREAM_DIM = color.creamDim;
-const CREAM_FAINT = color.creamFaint;
-const HAIRLINE = color.hairlineOnNavy;
+const GRAY_500 = '#6b7280';
+const GRAY_400 = '#9ca3af';
+const CHIP_BG = '#f8f8f6';
+const CHIP_BORDER = '#e5e5e0';
+const TESTIMONIAL_BG = '#fafaf7';
+const TESTIMONIAL_BORDER = '#ececea';
 
 const DISPLAY = font.display;
 const BODY = font.regular;
 const BODY_MED = font.medium;
 const BODY_SEMI = font.semibold;
+const BODY_BOLD = font.bold;
+const BODY_XB = font.extrabold;
+
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const HERO_HEIGHT = SCREEN_H * 0.48;
 
 const OFFERINGS_TIMEOUT_MS = 8000;
 
-// In Expo Go the RevenueCat native module isn't available, so live offerings never
-// load and the paywall can't be previewed. To preview the full UI during development
-// we fall back to SAMPLE prices — but only in Expo Go AND only when `__DEV__` is true.
-//
-// The `__DEV__` guard is the safety contract: a production release build compiles with
-// `__DEV__ === false`, so it is ALWAYS live, data-driven, and can NEVER render these
-// placeholders — keeping the store-reviewed build compliant with pricing policy.
 const IS_EXPO_GO =
     Constants.appOwnership === 'expo' ||
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (Constants as any).executionEnvironment === 'storeClient';
 const USE_MOCK_PLANS = __DEV__ && IS_EXPO_GO;
 
-// Shape mirrors only the RevenueCat fields the paywall actually reads.
 const MOCK_PACKAGES = [
     {
         identifier: 'annual', packageType: 'ANNUAL',
@@ -88,20 +99,79 @@ function deriveMode(status: string, isFreemiumActive: boolean, daysSinceCreation
     return 'renewal';
 }
 
-// Concrete features the subscription unlocks. "Instant food scanning" replaces the
-// old "AI-powered food scanning" — the brand book bans the word "AI" (§6.04 rule 06).
-const FEATURES: { icon: keyof typeof MaterialIcons.glyphMap; label: string }[] = [
-    { icon: 'photo-camera', label: 'Instant food scanning' },
-    { icon: 'directions-run', label: 'Activity & walk tracking' },
-    { icon: 'insights', label: 'Weekly health insights' },
-    { icon: 'notifications-none', label: 'Smart pet reminders' },
-    { icon: 'description', label: 'Vet report analysis' },
-    { icon: 'show-chart', label: 'Calorie & nutrition trends' },
+// ─── Mosaic images ───
+const MOSAIC = {
+    topLeft: require('../assets/images/paywall/scan-food.png'),
+    center: require('../assets/images/paywall/hero-center.png'),
+    topRight: require('../assets/images/paywall/cat-play.png'),
+    bottomLeft: require('../assets/images/paywall/hiking-dog.png'),
+    bottomRight: require('../assets/images/paywall/park-puppy.png'),
+};
+
+// ─── Feature chip icons (inline SVG) ───
+function FoodScanIcon() {
+    return (
+        <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+            <Rect x={3} y={3} width={18} height={18} rx={3} stroke={NAVY} strokeWidth={2} />
+            <Circle cx={12} cy={12} r={3} stroke={NAVY} strokeWidth={2} />
+        </Svg>
+    );
+}
+
+function HealthIcon() {
+    return (
+        <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+            <Path d="M3 17l4-4 4 4 6-8 4 4" stroke={NAVY} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+    );
+}
+
+function ActivityIcon() {
+    return (
+        <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+            <Path d="M12 4v4M12 16v4M4 12h4M16 12h4" stroke={NAVY} strokeWidth={2} strokeLinecap="round" />
+            <Circle cx={12} cy={12} r={3} stroke={NAVY} strokeWidth={2} />
+        </Svg>
+    );
+}
+
+function RemindersIcon() {
+    return (
+        <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+            <Path d="M12 3a6 6 0 016 6c0 4-6 9-6 9s-6-5-6-9a6 6 0 016-6z" stroke={NAVY} strokeWidth={2} />
+        </Svg>
+    );
+}
+
+function StarIcon() {
+    return (
+        <Svg width={12} height={12} viewBox="0 0 24 24">
+            <Path
+                d="M12 2l3 7 7 .5-5.5 5L18 22l-6-4-6 4 1.5-7.5L2 9.5 9 9z"
+                fill={YELLOW}
+                stroke={NAVY}
+                strokeWidth={1.5}
+            />
+        </Svg>
+    );
+}
+
+function ArrowIcon() {
+    return (
+        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+            <Path d="M5 12h14M13 5l7 7-7 7" stroke={NAVY} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+    );
+}
+
+const FEATURE_CHIPS = [
+    { label: 'Food Scan', Icon: FoodScanIcon },
+    { label: 'Health', Icon: HealthIcon },
+    { label: 'Activity', Icon: ActivityIcon },
+    { label: 'Reminders', Icon: RemindersIcon },
 ];
 
 // ─── Pricing helpers ───
-// Every price and trial term is derived from live, localized RevenueCat product
-// data so the offer screen always matches the store cart (Play Subscriptions policy).
 
 function capitalize(s: string): string {
     return s.length ? s[0].toUpperCase() + s.slice(1) : s;
@@ -135,7 +205,7 @@ function getTrialPhrase(pkg?: PurchasesPackage): string | null {
     const bp = opt?.freePhase?.billingPeriod;
     if (bp) {
         const ph = periodPhrase(bp.unit, bp.value, bp.iso8601);
-        if (ph) return `${ph} free trial`;
+        if (ph) return `${ph} free`;
     }
     return null;
 }
@@ -146,56 +216,73 @@ function getPerMonthString(pkg?: PurchasesPackage): string | null {
     return p?.pricePerMonthString ?? null;
 }
 
-// Localized per-week price (e.g. "A$1.52") — used as the conversion anchor on the
-// plan cards even though billing is yearly/monthly. Comes from the store, so the
-// currency always matches the cart.
-function getPerWeekString(pkg?: PurchasesPackage): string | null {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const p: any = pkg?.product;
-    return p?.pricePerWeekString ?? null;
-}
+// ─── Pulse glow animation for CTA ───
+function PulseGlowCTA({ label, onPress, disabled }: {
+    label: string;
+    onPress: () => void;
+    disabled: boolean;
+}) {
+    const glowScale = useSharedValue(1);
 
-function getSavingsPercent(yearly?: PurchasesPackage, monthly?: PurchasesPackage): number | null {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const y: any = yearly?.product;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const m: any = monthly?.product;
-    const yPerMonth = typeof y?.pricePerMonth === 'number' ? y.pricePerMonth : (typeof y?.price === 'number' ? y.price / 12 : null);
-    const mPrice = typeof m?.price === 'number' ? m.price : null;
-    if (!yPerMonth || !mPrice || mPrice <= 0) return null;
-    const pct = Math.round((1 - yPerMonth / mPrice) * 100);
-    return pct > 0 && pct < 100 ? pct : null;
+    useEffect(() => {
+        glowScale.value = withRepeat(
+            withSequence(
+                withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
+                withTiming(1.02, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
+            ),
+            -1,
+            true,
+        );
+        return () => cancelAnimation(glowScale);
+    }, [glowScale]);
+
+    const animatedStyle = useAnimatedStyle(() => ({
+        transform: [{ scale: glowScale.value }],
+    }));
+
+    return (
+        <TouchableOpacity
+            onPress={onPress}
+            disabled={disabled}
+            activeOpacity={0.9}
+            style={{ width: '100%' }}
+        >
+            <Animated.View style={[styles.cta, animatedStyle, disabled && styles.ctaDisabled]}>
+                <View style={styles.ctaInner}>
+                    <Text style={styles.ctaText}>{label}</Text>
+                    <ArrowIcon />
+                </View>
+            </Animated.View>
+        </TouchableOpacity>
+    );
 }
 
 export default function PaywallScreen() {
     const insets = useSafeAreaInsets();
     const router = useRouter();
-    const { activePet } = useActivePetStore();
+    const activePet = useActivePetStore(s => s.activePet);
     const { restorePurchases, purchasePackage, getOfferings, status, isPro, isFreemiumActive, daysSinceCreation } = useSubscription();
 
-    const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'yearly'>('yearly');
     const [purchasing, setPurchasing] = useState(false);
     const [packages, setPackages] = useState<PurchasesPackage[]>([]);
     const [loadState, setLoadState] = useState<LoadState>('loading');
     const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
+    // Branded failure sheet — the purchase paths land here instead of a raw alert.
+    const [failure, setFailure] = useState<ErrorCopy | null>(null);
+    // What a "Try again" on the failure sheet should replay — reload offerings
+    // when plans didn't load, re-run the purchase when the charge failed.
+    const retryRef = useRef<null | (() => void)>(null);
+    const handleRecovery = (action: RecoveryActionId) => {
+        setFailure(null);
+        if (action === 'retry') retryRef.current?.();
+    };
 
     const petName = activePet?.name?.trim() || null;
-    const petPossessive = petName ? `${petName}'s` : "your animal's";
+    const petPossessive = petName ? `${petName}'s` : "your pet's";
 
     const mode = deriveMode(status, isFreemiumActive, daysSinceCreation);
-    // Always dismissible. Premium features re-open the paywall when used, so
-    // closing this never strands the user with no path to value.
-    const showDismiss = true;
 
-    const headline = mode === 'renewal' ? 'PICK UP\nWHERE YOU\nLEFT OFF.' : 'NOTICE\nEVERYTHING.';
-    const subcopy =
-        mode === 'renewal'
-            ? `${capitalize(petPossessive)} history is safe. Pick up the patterns right where you left off.`
-            : mode === 'upgrade'
-                ? `Keep noticing the slow changes in ${petPossessive} weight, food and energy — Pawtchi is already watching.`
-                : `Pawtchi notices the slow changes in ${petPossessive} weight, food and energy, while they're still small. Free to start.`;
-
-    // ─── Robust offerings load: timeout + retry + error state (never an infinite spinner) ───
+    // ─── Offerings load ───
     const loadOfferings = useCallback(async () => {
         setLoadState('loading');
         try {
@@ -228,11 +315,8 @@ export default function PaywallScreen() {
         }
     }, [getOfferings]);
 
-    useEffect(() => {
-        loadOfferings();
-    }, [loadOfferings]);
+    useEffect(() => { loadOfferings(); }, [loadOfferings]);
 
-    // One-time: record the view, and (dev only) learn whether RevenueCat is configured.
     useEffect(() => {
         track('paywall_viewed', { mode });
         (async () => {
@@ -250,65 +334,26 @@ export default function PaywallScreen() {
         loadOfferings();
     };
 
-    // Live, localized pricing — sourced from the store, never hardcoded.
     const loaded = loadState === 'loaded';
-    const yearlyPkg = packages.find((p) => p.packageType === 'ANNUAL');
     const monthlyPkg = packages.find((p) => p.packageType === 'MONTHLY');
-    const selectedPkg = selectedPlan === 'yearly' ? yearlyPkg : monthlyPkg;
+    const selectedPkg = monthlyPkg || packages[0];
     const selectedPrice = selectedPkg?.product.priceString ?? '';
-    const periodWord = selectedPlan === 'yearly' ? 'year' : 'month';
+    const periodWord = 'month';
     const trialPhrase = getTrialPhrase(selectedPkg);
-    const yearSavings = getSavingsPercent(yearlyPkg, monthlyPkg);
-
-    const selectPlan = (plan: 'monthly' | 'yearly') => {
-        setSelectedPlan(plan);
-        track('paywall_plan_selected', { plan });
-    };
-
-    // Plan card — anchored on the per-week price (cheap, approachable) while billing
-    // stays yearly/monthly. Selected card fills electric yellow with navy text.
-    const renderPlanCard = (plan: 'yearly' | 'monthly', pkg: PurchasesPackage) => {
-        const selected = selectedPlan === plan;
-        const perWeek = getPerWeekString(pkg);
-        const name = plan === 'yearly' ? 'Yearly' : 'Monthly';
-        const billed = plan === 'yearly' ? 'billed yearly' : 'billed monthly';
-        const mainColor = selected ? NAVY : CREAM;
-        const dimColor = selected ? 'rgba(7, 32, 42, 0.62)' : CREAM_DIM;
-        return (
-            <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => selectPlan(plan)}
-                style={[styles.planCard, selected && styles.planCardSelected]}
-            >
-                <View style={styles.planTopRow}>
-                    <Text style={[styles.planName, { color: mainColor }]}>{name}</Text>
-                    {plan === 'yearly' && yearSavings !== null && (
-                        <View style={[styles.badge, selected && styles.badgeSelected]}>
-                            <Text style={styles.badgeText}>{`SAVE ${yearSavings}%`}</Text>
-                        </View>
-                    )}
-                </View>
-                <Text style={[styles.planWeek, { color: mainColor }]}>
-                    {perWeek ? `${perWeek} ` : `${pkg.product.priceString} `}
-                    <Text style={[styles.planWeekUnit, { color: dimColor }]}>
-                        {perWeek ? '/ week' : `/ ${plan === 'yearly' ? 'year' : 'month'}`}
-                    </Text>
-                </Text>
-                <Text style={[styles.planBilled, { color: dimColor }]}>{`${pkg.product.priceString} ${billed}`}</Text>
-            </TouchableOpacity>
-        );
-    };
 
     const handlePurchase = async () => {
-        // Guard the brief window before entitlement status resolves: an active
-        // subscriber should manage, never re-purchase.
         if (isPro) {
             openManageSubscription();
             return;
         }
         const pkg = selectedPkg || packages[0];
         if (!pkg) {
-            Alert.alert('No plans available', 'Please try again in a moment.');
+            retryRef.current = handleRetry;
+            setFailure({
+                title: 'Plans didn’t load',
+                message: 'Give it a moment, then try again.',
+                actions: [{ label: 'Try again', action: 'retry' }],
+            });
             return;
         }
         if (USE_MOCK_PLANS) {
@@ -316,26 +361,44 @@ export default function PaywallScreen() {
             return;
         }
         setPurchasing(true);
-        track('paywall_purchase_started', { plan: selectedPlan, price: selectedPrice });
+        track('paywall_purchase_started', { plan: 'monthly', price: selectedPrice });
         try {
             const success = await purchasePackage(pkg);
             if (success) {
-                track('paywall_purchase_succeeded', { plan: selectedPlan, price: selectedPrice });
-                router.back();
+                track('paywall_purchase_succeeded', { plan: 'monthly', price: selectedPrice });
+                safeExit();
             } else {
-                track('paywall_purchase_cancelled', { plan: selectedPlan });
+                track('paywall_purchase_cancelled', { plan: 'monthly' });
             }
         } catch (e: unknown) {
+            // purchasePackage already swallows user-cancellation (returns
+            // false) — anything thrown here is a real failure the user must
+            // see, not a silent dead end.
+            const appErr = toAppError(e);
+            appErr.kind = 'purchase';
+            reportError(appErr, 'purchase');
             track('paywall_purchase_failed', { reason: e instanceof Error ? e.message : 'exception' });
-            console.error('Purchase error:', e);
+            retryRef.current = handlePurchase;
+            setFailure(errorCopy(appErr, { context: 'purchase' }));
         } finally {
             setPurchasing(false);
         }
     };
 
+    // Exit that can never dead-end: ask.tsx reaches this screen via
+    // router.replace, so back() can have nothing to pop — the X would then
+    // silently no-op and the user is trapped on the paywall.
+    const safeExit = useCallback(() => {
+        if (router.canGoBack()) {
+            router.back();
+        } else {
+            router.replace('/(tabs)' as any);
+        }
+    }, [router]);
+
     const handleDismiss = () => {
         track('paywall_dismissed', { mode });
-        router.back();
+        safeExit();
     };
 
     const handleRestore = () => {
@@ -343,46 +406,48 @@ export default function PaywallScreen() {
         restorePurchases();
     };
 
-    // ─── Already subscribed: never show a purchase CTA ───
-    // An active subscriber who reaches this screen must not be able to buy again —
-    // that triggers the store's "you already own this" error. Show a calm confirmation
-    // with a Manage option that deep-links to the store, never the in-app purchase flow.
+    // ─── Already subscribed ───
     if (isPro) {
         return (
             <View style={[styles.container, { paddingTop: insets.top }]}>
-                <StatusBar style="light" />
+                <StatusBar style="dark" />
                 <TouchableOpacity
-                    style={[styles.closeButton, { top: insets.top + 8 }]}
-                    onPress={() => router.back()}
+                    style={[styles.closeBtn, { top: insets.top + 8 }]}
+                    onPress={safeExit}
                     activeOpacity={0.7}
                     hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 >
-                    <MaterialIcons name="close" size={24} color={CREAM_DIM} />
+                    <Svg width={12} height={12} viewBox="0 0 12 12" fill="none">
+                        <Path d="M1 1l10 10M11 1L1 11" stroke={NAVY} strokeWidth={2} strokeLinecap="round" />
+                    </Svg>
                 </TouchableOpacity>
 
                 <View style={styles.activeWrap}>
                     <Animated.View entering={FadeInDown.duration(450)} style={styles.activeInner}>
-                        <View style={styles.activeBadge}>
-                            <MaterialIcons name="check-circle" size={16} color={NAVY} />
-                            <Text style={styles.activeBadgeText}>
-                                {status === 'trial' ? 'TRIAL ACTIVE' : 'ACTIVE'}
-                            </Text>
+                        <View style={styles.brandPill}>
+                            <View style={styles.brandIcon}>
+                                <Svg width={10} height={10} viewBox="0 0 10 10" fill="none">
+                                    <Path d="M5 1l1.2 2.4L9 3.8 7 5.8l.4 3L5 7.5 2.6 8.8 3 5.8 1 3.8l2.8-.4z" fill={NAVY} />
+                                </Svg>
+                            </View>
+                            <Text style={styles.brandLabel}>Pawtchi Plus</Text>
                         </View>
-                        <Text style={styles.eyebrow}>PAWTCHI PLUS</Text>
-                        <Text style={styles.headline}>{'YOU’RE\nALL SET.'}</Text>
+                        <Text style={styles.headlineDisplay}>
+                            {"YOU'RE\nALL SET."}
+                        </Text>
                         <Text style={styles.subcopy}>
                             {petName
                                 ? `You're already on Pawtchi Plus. ${petPossessive} full picture is unlocked.`
-                                : "You're already on Pawtchi Plus. Your animal's full picture is unlocked."}
+                                : "You're already on Pawtchi Plus. Your pet's full picture is unlocked."}
                         </Text>
                     </Animated.View>
                 </View>
 
-                <View style={[styles.stickyBar, { paddingBottom: insets.bottom + 12 }]}>
+                <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }]}>
                     <TouchableOpacity style={styles.cta} onPress={openManageSubscription} activeOpacity={0.9}>
                         <Text style={styles.ctaText}>Manage subscription</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.activeClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <TouchableOpacity onPress={safeExit} style={styles.activeCloseBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                         <Text style={styles.activeCloseText}>Close</Text>
                     </TouchableOpacity>
                 </View>
@@ -390,326 +455,578 @@ export default function PaywallScreen() {
         );
     }
 
-    // Sticky CTA button behaviour adapts to load state.
+    // CTA label adapts to load state
     const ctaLabel = !loaded
         ? (loadState === 'error' ? 'Try again' : 'Loading…')
         : trialPhrase
-            ? `Start your ${trialPhrase}`
+            ? 'Start Free Trial'
             : `Subscribe — ${selectedPrice}/${periodWord}`;
     const ctaOnPress = loadState === 'error' ? handleRetry : handlePurchase;
     const ctaDisabled = loadState === 'loading' || purchasing;
 
-    return (
-        <View style={[styles.container, { paddingTop: insets.top }]}>
-            <StatusBar style="light" />
+    // Legal line below CTA — always derived from live data
+    const legalLine = loaded && selectedPkg
+        ? trialPhrase
+            ? `${capitalize(trialPhrase)}, then ${selectedPrice}/month · Cancel anytime`
+            : `${selectedPrice}/month · Cancel anytime`
+        : '';
 
-            {showDismiss && (
+    return (
+        <View style={styles.container}>
+            <StatusBar style="dark" />
+
+            {/* ─── HERO MOSAIC ─── */}
+            <Animated.View entering={FadeIn.duration(500)} style={styles.hero}>
+                <View style={styles.mosaic}>
+                    {/* Left column */}
+                    <View style={styles.mosaicSide}>
+                        <View style={styles.mosaicSideCell}>
+                            <Image source={MOSAIC.topLeft} style={styles.mosaicImg} />
+                        </View>
+                        <MaskedView
+                            style={[styles.mosaicSideCell, { marginTop: -20, zIndex: 1 }]}
+                            maskElement={
+                                <LinearGradient
+                                    style={{ flex: 1 }}
+                                    colors={['transparent', '#000']}
+                                    locations={[0, 0.25]}
+                                />
+                            }
+                        >
+                            <Image source={MOSAIC.bottomLeft} style={styles.mosaicImg} />
+                        </MaskedView>
+                    </View>
+                    {/* Center column (tall, spans full height) */}
+                    <MaskedView
+                        style={[styles.mosaicCenterCol, { marginHorizontal: -20, zIndex: 1 }]}
+                        maskElement={
+                            <LinearGradient
+                                style={{ flex: 1 }}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                colors={['transparent', '#000', '#000', 'transparent']}
+                                locations={[0, 0.15, 0.85, 1]}
+                            />
+                        }
+                    >
+                        <Image source={MOSAIC.center} style={styles.mosaicImg} />
+                    </MaskedView>
+                    {/* Right column */}
+                    <View style={styles.mosaicSide}>
+                        <View style={styles.mosaicSideCell}>
+                            <Image source={MOSAIC.topRight} style={styles.mosaicImg} />
+                        </View>
+                        <MaskedView
+                            style={[styles.mosaicSideCell, { marginTop: -20, zIndex: 1 }]}
+                            maskElement={
+                                <LinearGradient
+                                    style={{ flex: 1 }}
+                                    colors={['transparent', '#000']}
+                                    locations={[0, 0.25]}
+                                />
+                            }
+                        >
+                            <Image source={MOSAIC.bottomRight} style={styles.mosaicImg} />
+                        </MaskedView>
+                    </View>
+                </View>
+
+                {/* Gradient fade to white */}
+                <LinearGradient
+                    colors={['transparent', '#ffffff']}
+                    locations={[0, 0.85]}
+                    style={[styles.heroGradient, { zIndex: 10 }]}
+                    pointerEvents="none"
+                />
+
+                {/* Close button */}
                 <TouchableOpacity
-                    style={[styles.closeButton, { top: insets.top + 8 }]}
+                    style={[styles.closeBtn, { top: insets.top + 8 }]}
                     onPress={handleDismiss}
                     activeOpacity={0.7}
                     hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 >
-                    <MaterialIcons name="close" size={24} color={CREAM_DIM} />
+                    <Svg width={12} height={12} viewBox="0 0 12 12" fill="none">
+                        <Path d="M1 1l10 10M11 1L1 11" stroke={NAVY} strokeWidth={2} strokeLinecap="round" />
+                    </Svg>
                 </TouchableOpacity>
-            )}
+            </Animated.View>
 
-            <ScrollView
-                contentContainerStyle={[styles.scroll, { paddingBottom: 230 + insets.bottom }]}
-                showsVerticalScrollIndicator={false}
-                bounces={false}
-            >
+            {/* ─── BOTTOM CONTENT ─── */}
+            <Animated.View entering={FadeInDown.duration(500).delay(150)} style={styles.content}>
                 {USE_MOCK_PLANS && (
                     <View style={styles.devBanner}>
-                        <Text style={styles.devBannerText}>DEV PREVIEW · SAMPLE PRICES (EXPO GO)</Text>
+                        <Text style={styles.devBannerText}>DEV PREVIEW · SAMPLE PRICES</Text>
                     </View>
                 )}
 
-                <Animated.View entering={FadeInDown.duration(450)}>
-                    <Text style={styles.eyebrow}>PAWTCHI PLUS</Text>
-                    <Text style={styles.headline}>{headline}</Text>
-                    <Text style={styles.subcopy}>{subcopy}</Text>
-                </Animated.View>
+                {/* Brand pill */}
+                <View style={styles.brandPill}>
+                    <View style={styles.brandIcon}>
+                        <Svg width={10} height={10} viewBox="0 0 10 10" fill="none">
+                            <Path d="M5 1l1.2 2.4L9 3.8 7 5.8l.4 3L5 7.5 2.6 8.8 3 5.8 1 3.8l2.8-.4z" fill={NAVY} />
+                        </Svg>
+                    </View>
+                    <Text style={styles.brandLabel}>Pawtchi Plus</Text>
+                </View>
 
-                {/* What's included — concrete, scannable (§4.05 line icons, cream not yellow) */}
-                <Animated.View entering={FadeInDown.duration(450).delay(70)} style={styles.features}>
-                    <Text style={styles.sectionLabel}>WHAT&apos;S INCLUDED</Text>
-                    {FEATURES.map((f) => (
-                        <View key={f.label} style={styles.featureRow}>
-                            <MaterialIcons name={f.icon} size={20} color={CREAM} style={styles.featureIcon} />
-                            <Text style={styles.featureText}>{f.label}</Text>
+                {/* Headline with yellow highlight bar */}
+                <View style={styles.headlineWrap}>
+                    <Text style={styles.headlineDisplay}>NOTICE </Text>
+                    <View style={styles.highlightWrap}>
+                        <View style={styles.highlightBar} />
+                        <Text style={styles.headlineDisplay}>EVERYTHING</Text>
+                    </View>
+                    <Text style={styles.headlineDisplay}>.</Text>
+                </View>
+
+                {/* Subhead */}
+                <Text style={styles.subcopy}>
+                    Pawtchi catches the slow changes in {petPossessive} weight, food and energy — while they're still small.
+                </Text>
+
+                {/* Testimonial + rating */}
+                <View style={styles.testimonialRow}>
+                    <View style={styles.testimonialPill}>
+                        <View style={styles.testimonialAvatar}>
+                            <Text style={styles.testimonialInitial}>M</Text>
+                        </View>
+                        <Text style={styles.testimonialQuote}>
+                            "Caught it weeks before our vet did." <Text style={styles.testimonialAuthor}>— Mos</Text>
+                        </Text>
+                    </View>
+                    <View style={styles.ratingWrap}>
+                        <StarIcon />
+                        <Text style={styles.ratingText}>4.9</Text>
+                    </View>
+                </View>
+
+                {/* CTA */}
+                {loadState === 'error' ? (
+                    <View style={styles.errorWrap}>
+                        <Text style={styles.errorText}>Couldn't load plans right now.</Text>
+                        <TouchableOpacity style={styles.retryBtn} onPress={handleRetry} activeOpacity={0.85}>
+                            <MaterialIcons name="refresh" size={16} color={NAVY} />
+                            <Text style={styles.retryText}>Retry</Text>
+                        </TouchableOpacity>
+                        {/* A store hiccup must never trap anyone — freemium users
+                            have full access anyway, so give them the door. */}
+                        {isFreemiumActive && (
+                            <TouchableOpacity onPress={handleDismiss} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                                <Text style={styles.errorContinueLink}>
+                                    Continue with your free access for now
+                                </Text>
+                            </TouchableOpacity>
+                        )}
+                        {__DEV__ && (
+                            <Text style={styles.devHint}>
+                                {isConfigured === false
+                                    ? 'Dev note: in-app purchases load in a development build, not Expo Go.'
+                                    : 'Dev note: sideloaded builds often can’t reach Google Play billing — plans load when installed via a Play testing track.'}
+                            </Text>
+                        )}
+                    </View>
+                ) : (
+                    <PulseGlowCTA
+                        label={ctaLabel}
+                        onPress={ctaOnPress}
+                        disabled={ctaDisabled}
+                    />
+                )}
+
+                {/* Legal */}
+                {legalLine !== '' && <Text style={styles.legal}>{legalLine}</Text>}
+
+                {/* Feature chips */}
+                <View style={styles.chips}>
+                    {FEATURE_CHIPS.map(({ label, Icon }) => (
+                        <View key={label} style={styles.chip}>
+                            <Icon />
+                            <Text style={styles.chipLabel}>{label}</Text>
                         </View>
                     ))}
-                </Animated.View>
+                </View>
 
-                {/* Plans */}
-                <Animated.View entering={FadeInDown.duration(450).delay(140)} style={styles.plans}>
-                    {loadState === 'loading' && (
-                        <View style={styles.plansState}>
-                            <ActivityIndicator color={CREAM_DIM} />
-                            <Text style={styles.fine}>Loading plans…</Text>
-                        </View>
-                    )}
-
-                    {loadState === 'error' && (
-                        <View style={styles.plansState}>
-                            <Text style={styles.errorText}>We couldn&apos;t load plans right now.</Text>
-                            <TouchableOpacity style={styles.retryBtn} onPress={handleRetry} activeOpacity={0.85}>
-                                <MaterialIcons name="refresh" size={16} color={CREAM} />
-                                <Text style={styles.retryText}>Retry</Text>
-                            </TouchableOpacity>
-                            {__DEV__ && isConfigured === false && (
-                                <Text style={styles.devHint}>Dev note: in-app purchases load in a development build, not Expo Go.</Text>
-                            )}
-                        </View>
-                    )}
-
-                    {loaded && (
-                        <>
-                            {yearlyPkg && renderPlanCard('yearly', yearlyPkg)}
-                            {monthlyPkg && renderPlanCard('monthly', monthlyPkg)}
-                        </>
-                    )}
-                </Animated.View>
-
-                {/* Footer — restore + legal (kept off the sticky bar to keep it focused) */}
-                <TouchableOpacity onPress={handleRestore} style={styles.restoreBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <Text style={styles.restoreText}>Restore purchase</Text>
-                </TouchableOpacity>
-
-                {loaded && selectedPkg && (
-                    <Text style={styles.legal}>
-                        {Platform.OS === 'android'
-                            ? `Payment is charged to your Google Play account at confirmation.${trialPhrase ? ` Your free trial converts to a paid subscription (${selectedPrice}/${periodWord}) when it ends unless cancelled beforehand.` : ''} It renews at ${selectedPrice}/${periodWord} unless cancelled at least 24 hours before the period ends. Manage in Google Play → Subscriptions.`
-                            : `Payment is charged to your Apple ID at confirmation.${trialPhrase ? ` Your free trial converts to a paid subscription (${selectedPrice}/${periodWord}) when it ends unless cancelled beforehand.` : ''} It renews at ${selectedPrice}/${periodWord} unless auto-renew is turned off at least 24 hours before the period ends. Manage in Settings → Apple ID → Subscriptions.`}
-                    </Text>
-                )}
-
-                <View style={styles.legalLinks}>
-                    <TouchableOpacity onPress={() => router.push('/privacy')}>
-                        <Text style={styles.legalLink}>Privacy Policy</Text>
+                {/* Footer links */}
+                <View style={styles.footerLinks}>
+                    <TouchableOpacity onPress={handleRestore} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <Text style={styles.footerLink}>Restore purchase</Text>
                     </TouchableOpacity>
-                    <Text style={styles.legalDot}>·</Text>
+                    <Text style={styles.footerDot}>·</Text>
+                    <TouchableOpacity onPress={() => router.push('/privacy')}>
+                        <Text style={styles.footerLink}>Privacy</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.footerDot}>·</Text>
                     <TouchableOpacity onPress={() => Linking.openURL('https://pawtchi.com/terms')}>
-                        <Text style={styles.legalLink}>Terms of Use</Text>
+                        <Text style={styles.footerLink}>Terms</Text>
                     </TouchableOpacity>
                 </View>
-            </ScrollView>
+            </Animated.View>
+            {/* Loader ONLY during an active purchase — never during offerings
+                load. The initial load is shown inline (CTA reads "Loading…",
+                disabled) so the screen stays interactive and the close button
+                is always tappable. A full-screen opaque loader over the whole
+                paywall (incl. the X) is what trapped users when a store call
+                stalled — the paywall must never become uncloseable. */}
+            <PawLoader visible={purchasing} message="Processing…" />
 
-            {/* ─── Sticky conversion bar — always visible ─── */}
-            <View style={[styles.stickyBar, { paddingBottom: insets.bottom + 12 }]}>
-                {loaded && selectedPkg && (
-                    <Text style={styles.stickyTerms}>
-                        {trialPhrase
-                            ? `${capitalize(trialPhrase)}, then ${selectedPrice}/${periodWord}. Cancel anytime in ${Platform.OS === 'android' ? 'Google Play → Subscriptions' : 'App Store settings'}.`
-                            : `${selectedPrice}/${periodWord}. Cancel anytime in ${Platform.OS === 'android' ? 'Google Play → Subscriptions' : 'App Store settings'}.`}
-                    </Text>
-                )}
-                <TouchableOpacity
-                    style={[styles.cta, ctaDisabled && styles.ctaDisabled]}
-                    onPress={ctaOnPress}
-                    disabled={ctaDisabled}
-                    activeOpacity={0.9}
-                >
-                    {purchasing ? <ActivityIndicator color={NAVY} /> : <Text style={styles.ctaText}>{ctaLabel}</Text>}
-                </TouchableOpacity>
-            </View>
+            {/* Branded failure sheet — purchase paths land here, never a raw alert. */}
+            <PawtchiModal
+                visible={failure != null}
+                onClose={() => setFailure(null)}
+                title={failure?.title ?? ''}
+                message={failure?.message}
+                icon={{ name: 'wb-cloudy', color: color.alertDeep }}
+                actions={(failure?.actions ?? []).map(a => ({
+                    label: a.label,
+                    onPress: () => handleRecovery(a.action),
+                }))}
+            />
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: NAVY },
-    center: { justifyContent: 'center', alignItems: 'center' },
-    closeButton: {
-        position: 'absolute',
-        right: 20,
-        zIndex: 10,
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    scroll: {
-        paddingHorizontal: 24,
-        paddingTop: 52,
+    container: {
+        flex: 1,
+        backgroundColor: '#ffffff',
     },
 
-    // Dev-only preview banner (never compiled into a production release)
+    // ─── Hero mosaic ───
+    hero: {
+        width: '100%',
+        height: HERO_HEIGHT,
+        overflow: 'hidden',
+    },
+    mosaic: {
+        flex: 1,
+        flexDirection: 'row',
+    },
+    mosaicSide: {
+        flex: 1,
+    },
+    mosaicSideCell: {
+        flex: 1,
+        overflow: 'hidden',
+    },
+    mosaicCenterCol: {
+        flex: 1.4,
+        overflow: 'hidden',
+    },
+    mosaicImg: {
+        width: '100%',
+        height: '100%',
+        resizeMode: 'cover',
+    },
+    heroGradient: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 240,
+    },
+
+    // ─── Close button ───
+    closeBtn: {
+        position: 'absolute',
+        right: 14,
+        width: 30,
+        height: 30,
+        backgroundColor: 'rgba(255,255,255,0.8)',
+        borderRadius: 15,
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 10,
+    },
+
+    // ─── Bottom content ───
+    content: {
+        flex: 1,
+        alignItems: 'center',
+        paddingHorizontal: 28,
+        marginTop: -20,
+    },
+
     devBanner: {
-        alignSelf: 'flex-start',
         backgroundColor: 'rgba(247, 246, 2, 0.14)',
         borderRadius: 6,
         paddingHorizontal: 8,
         paddingVertical: 4,
-        marginBottom: 16,
+        marginBottom: 8,
     },
     devBannerText: {
         fontFamily: BODY_SEMI,
         fontSize: 9.5,
         letterSpacing: 0.5,
-        color: YELLOW,
+        color: NAVY,
     },
 
-    // Already-subscribed state
-    activeWrap: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
-    activeInner: { alignItems: 'flex-start', width: '100%' },
-    activeBadge: {
+    // Brand pill
+    brandPill: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        backgroundColor: YELLOW,
-        borderRadius: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        marginBottom: 20,
+        marginBottom: 12,
     },
-    activeBadgeText: {
-        fontFamily: BODY_SEMI,
-        fontSize: 11,
+    brandIcon: {
+        width: 18,
+        height: 18,
+        backgroundColor: YELLOW,
+        borderRadius: 5,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    brandLabel: {
+        fontFamily: BODY_BOLD,
+        fontSize: 12,
+        letterSpacing: 1.5,
+        color: NAVY,
+        textTransform: 'uppercase',
+    },
+
+    // Headline
+    headlineWrap: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        marginBottom: 10,
+    },
+    headlineDisplay: {
+        fontFamily: DISPLAY,
+        fontSize: 38,
+        lineHeight: 40,
         letterSpacing: 1,
         color: NAVY,
     },
-    activeClose: { alignSelf: 'center', marginTop: 14 },
-    activeCloseText: { fontFamily: BODY_MED, fontSize: 14, color: CREAM_DIM },
+    highlightWrap: {
+        position: 'relative',
+    },
+    highlightBar: {
+        position: 'absolute',
+        left: -4,
+        right: -4,
+        bottom: 6,
+        height: 14,
+        backgroundColor: YELLOW,
+        transform: [{ skewX: '-8deg' }],
+    },
 
-    // Hero
-    eyebrow: {
-        fontFamily: BODY_SEMI,
-        fontSize: 12,
-        letterSpacing: 3,
-        color: CREAM_DIM,
-        marginBottom: 12,
-    },
-    headline: {
-        fontFamily: DISPLAY,
-        fontSize: 44,
-        lineHeight: 42,
-        letterSpacing: 1,
-        color: CREAM,
-    },
+    // Subcopy
     subcopy: {
         fontFamily: BODY,
-        fontSize: 15,
-        lineHeight: 22,
-        color: CREAM_DIM,
-        marginTop: 14,
-        maxWidth: 460,
+        fontSize: 14,
+        lineHeight: 21,
+        color: GRAY_500,
+        textAlign: 'center',
+        maxWidth: 300,
+        marginBottom: 16,
     },
 
-    // Features
-    features: { marginTop: 28 },
-    sectionLabel: {
-        fontFamily: BODY_SEMI,
-        fontSize: 11,
-        letterSpacing: 2,
-        color: CREAM_FAINT,
-        marginBottom: 12,
-    },
-    featureRow: {
+    // Testimonial
+    testimonialRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 9,
+        gap: 8,
+        marginBottom: 16,
+        maxWidth: 340,
     },
-    featureIcon: { marginRight: 14 },
-    featureText: {
-        fontFamily: BODY_MED,
-        fontSize: 15.5,
-        color: CREAM,
+    testimonialPill: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        backgroundColor: TESTIMONIAL_BG,
+        borderWidth: 1,
+        borderColor: TESTIMONIAL_BORDER,
+        borderRadius: 20,
+        paddingVertical: 5,
+        paddingRight: 10,
+        paddingLeft: 5,
+    },
+    testimonialAvatar: {
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        backgroundColor: YELLOW,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    testimonialInitial: {
+        fontFamily: BODY_XB,
+        fontSize: 11,
+        color: NAVY,
+    },
+    testimonialQuote: {
+        fontFamily: BODY,
+        fontSize: 11,
+        lineHeight: 13.2,
+        color: NAVY,
+        fontStyle: 'italic',
+        flex: 1,
+    },
+    testimonialAuthor: {
+        fontStyle: 'normal',
+        fontFamily: BODY_SEMI,
+        color: GRAY_400,
+    },
+    ratingWrap: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
+    },
+    ratingText: {
+        fontFamily: BODY_XB,
+        fontSize: 11,
+        color: NAVY,
     },
 
-    // Plans
-    plans: { marginTop: 28, gap: 12 },
-    plansState: {
-        paddingVertical: 24,
-        alignItems: 'flex-start',
-        gap: 12,
+    // CTA
+    cta: {
+        width: '100%',
+        backgroundColor: YELLOW,
+        borderRadius: 18,
+        paddingVertical: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 10,
+        // Shadow mimics the pulse-glow from the design
+        ...makeShadow(8, 24, 0.45, YELLOW),
     },
-    fine: { fontFamily: BODY, fontSize: 13, color: CREAM_DIM },
-    errorText: { fontFamily: BODY_MED, fontSize: 14, color: CREAM },
+    ctaDisabled: {
+        opacity: 0.55,
+    },
+    ctaInner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    ctaText: {
+        fontFamily: BODY_XB,
+        fontSize: 18,
+        color: NAVY,
+        letterSpacing: -0.3,
+    },
+
+    // Legal
+    legal: {
+        fontFamily: BODY,
+        fontSize: 11,
+        color: GRAY_400,
+        textAlign: 'center',
+        lineHeight: 15.4,
+        marginBottom: 12,
+    },
+
+    // Feature chips
+    chips: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        gap: 6,
+        marginTop: 6,
+    },
+    chip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        backgroundColor: CHIP_BG,
+        borderWidth: 1,
+        borderColor: CHIP_BORDER,
+        borderRadius: 20,
+        paddingVertical: 7,
+        paddingHorizontal: 14,
+    },
+    chipLabel: {
+        fontFamily: BODY_SEMI,
+        fontSize: 12,
+        color: NAVY,
+        textTransform: 'uppercase',
+        letterSpacing: 0.3,
+    },
+
+    // Error state
+    errorWrap: {
+        alignItems: 'center',
+        gap: 10,
+        marginBottom: 16,
+    },
+    errorText: {
+        fontFamily: BODY_MED,
+        fontSize: 14,
+        color: NAVY,
+    },
     retryBtn: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
         borderWidth: 1,
-        borderColor: CREAM_DIM,
+        borderColor: NAVY,
         borderRadius: 12,
         paddingVertical: 10,
         paddingHorizontal: 18,
     },
-    retryText: { fontFamily: BODY_SEMI, fontSize: 14, color: CREAM },
-    devHint: { fontFamily: BODY, fontSize: 11, color: CREAM_FAINT, maxWidth: 320 },
-    planCard: {
-        borderWidth: 1.5,
-        borderColor: HAIRLINE,
-        borderRadius: 16,
-        paddingVertical: 16,
-        paddingHorizontal: 18,
+    retryText: {
+        fontFamily: BODY_SEMI,
+        fontSize: 14,
+        color: NAVY,
     },
-    planCardSelected: {
-        backgroundColor: YELLOW,
-        borderColor: YELLOW,
+    errorContinueLink: {
+        fontFamily: BODY_SEMI,
+        fontSize: 13,
+        color: GRAY_500,
+        textDecorationLine: 'underline',
+        textAlign: 'center',
+        paddingVertical: 4,
     },
-    planTopRow: {
+    devHint: {
+        fontFamily: BODY,
+        fontSize: 11,
+        color: GRAY_400,
+        maxWidth: 320,
+        textAlign: 'center',
+    },
+
+    // Footer links
+    footerLinks: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 6,
+        gap: 8,
+        marginTop: 16,
     },
-    planName: { fontFamily: BODY_SEMI, fontSize: 15, letterSpacing: 0.3 },
-    badge: {
-        backgroundColor: 'rgba(247, 246, 2, 0.16)',
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 3,
+    footerLink: {
+        fontFamily: BODY_MED,
+        fontSize: 11,
+        color: GRAY_400,
+        textDecorationLine: 'underline',
     },
-    badgeSelected: { backgroundColor: NAVY },
-    badgeText: { fontFamily: BODY_SEMI, fontSize: 10, letterSpacing: 0.5, color: YELLOW },
-    planWeek: { fontFamily: BODY_SEMI, fontSize: 23, letterSpacing: 0.2 },
-    planWeekUnit: { fontFamily: BODY_MED, fontSize: 13 },
-    planBilled: { fontFamily: BODY, fontSize: 12.5, marginTop: 3 },
+    footerDot: {
+        color: GRAY_400,
+        fontSize: 11,
+    },
 
-    // Footer
-    restoreBtn: { marginTop: 22, alignSelf: 'flex-start' },
-    restoreText: { fontFamily: BODY_MED, fontSize: 13, color: CREAM_DIM, textDecorationLine: 'underline' },
-    legal: {
-        fontFamily: BODY,
-        fontSize: 10.5,
-        lineHeight: 16,
-        color: CREAM_FAINT,
-        marginTop: 18,
+    // Already subscribed
+    activeWrap: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 28,
     },
-    legalLinks: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
-    legalLink: { fontFamily: BODY_MED, fontSize: 11, color: CREAM_DIM, textDecorationLine: 'underline' },
-    legalDot: { color: CREAM_FAINT, fontSize: 11 },
-
-    // Sticky bar
-    stickyBar: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: NAVY_RAISED,
-        borderTopWidth: 1,
-        borderTopColor: HAIRLINE,
+    activeInner: {
+        alignItems: 'center',
+        width: '100%',
+    },
+    activeCloseBtn: {
+        alignSelf: 'center',
+        marginTop: 14,
+    },
+    activeCloseText: {
+        fontFamily: BODY_MED,
+        fontSize: 14,
+        color: GRAY_500,
+    },
+    bottomBar: {
         paddingHorizontal: 24,
         paddingTop: 14,
     },
-    stickyTerms: {
-        fontFamily: BODY,
-        fontSize: 12,
-        color: CREAM_DIM,
-        textAlign: 'center',
-        marginBottom: 10,
-    },
-    cta: {
-        height: 56,
-        borderRadius: 16,
-        backgroundColor: YELLOW,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    ctaDisabled: { opacity: 0.55 },
-    ctaText: { fontFamily: BODY_SEMI, fontSize: 16, color: NAVY, letterSpacing: 0.2 },
 });

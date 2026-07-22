@@ -1,5 +1,8 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
+import { withTimeout } from '../lib/withTimeout';
 
 // Reason labels for toast display
 const REASON_LABELS: Record<string, string> = {
@@ -43,7 +46,12 @@ interface StreakState {
 // Skip a refetch within this window (awardCoins/deductCoins keep the store fresh).
 const STREAK_STALE_MS = 30_000;
 
-export const useStreakStore = create<StreakState>((set, get) => ({
+// Persisted snapshot (streak/coin numbers only) so the Home header renders the
+// last-known values instantly on cold start while fetchStreak revalidates.
+// _fetchedUser is persisted as the snapshot's owner: fetchStreak resets the
+// numbers synchronously when it's called for a different user, so a stale
+// snapshot can never show one account's coins to another.
+export const useStreakStore = create<StreakState>()(persist((set, get) => ({
   currentStreak: 0,
   longestStreak: 0,
   pawCoins: 0,
@@ -54,6 +62,19 @@ export const useStreakStore = create<StreakState>((set, get) => ({
   _fetchedUser: null,
 
   fetchStreak: async (userId: string, opts?: { force?: boolean }) => {
+    // Cross-account guard: a persisted snapshot from another user must never
+    // render. Reset the numbers synchronously before fetching theirs.
+    if (get()._fetchedUser && get()._fetchedUser !== userId) {
+      set({
+        currentStreak: 0,
+        longestStreak: 0,
+        pawCoins: 0,
+        lastLoggedDate: null,
+        lastEarnEvent: null,
+        _fetchedAt: 0,
+        _fetchedUser: null,
+      });
+    }
     // Staleness guard: the streak is fetched on every Home focus + in the tab
     // layout. awardCoins/deductCoins update it optimistically, so a fresh fetch
     // within the window is redundant.
@@ -62,11 +83,18 @@ export const useStreakStore = create<StreakState>((set, get) => ({
       return;
     }
     try {
-      const { data, error } = await supabase
-        .from('streaks')
-        .select('current_streak, longest_streak, paw_coins, last_logged_date')
-        .eq('owner_id', userId)
-        .single();
+      // Bounded: this fetch gates the tab navigator on first login — a hung
+      // request must land in catch (isLoading: false), never spin forever.
+      const { data, error } = await withTimeout(
+        supabase
+          .from('streaks')
+          .select('current_streak, longest_streak, paw_coins, last_logged_date')
+          .eq('owner_id', userId)
+          .single()
+          .then(r => r),
+        15_000,
+        'fetchStreak',
+      );
 
       if (error && error.code !== 'PGRST116') {
         console.error('[StreakStore] Fetch error:', error);
@@ -102,6 +130,20 @@ export const useStreakStore = create<StreakState>((set, get) => ({
       if (error) throw error;
 
       if (data.success) {
+        // A retried offline sync (tracked walks) can hit the server twice for
+        // the same completion — the function dedupes and flags it. Refresh the
+        // numbers but never re-celebrate an award that already happened.
+        if (data.duplicate) {
+          set({
+            currentStreak: data.currentStreak,
+            longestStreak: data.longestStreak,
+            pawCoins: data.pawCoins,
+            _fetchedAt: Date.now(),
+            _fetchedUser: userId,
+          });
+          return;
+        }
+
         const earnEvent: EarnEvent = {
           coins: data.coinsEarned,
           reason: action,
@@ -174,4 +216,17 @@ export const useStreakStore = create<StreakState>((set, get) => ({
     _fetchedAt: 0,
     _fetchedUser: null,
   }),
+}), {
+  name: 'streak-snapshot',
+  storage: createJSONStorage(() => AsyncStorage),
+  version: 1,
+  // Numbers + owning user only — never loading flags or the toast event.
+  partialize: (s) => ({
+    currentStreak: s.currentStreak,
+    longestStreak: s.longestStreak,
+    pawCoins: s.pawCoins,
+    lastLoggedDate: s.lastLoggedDate,
+    _fetchedUser: s._fetchedUser,
+  }),
+  migrate: (persisted, version) => (version === 1 ? (persisted as Partial<StreakState>) : undefined),
 }));

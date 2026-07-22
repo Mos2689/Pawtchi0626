@@ -1,24 +1,41 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
+import Animated, {
+  FadeInDown, useSharedValue, useAnimatedStyle, withSequence, withSpring,
+} from 'react-native-reanimated';
 
-import { color, font, radius, space, motion } from '../../constants/design';
+import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
 import { usePetStore, ActivityLevel } from '../../store/usePetStore';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
 import { OnboardingHeader } from '../../components/OnboardingHeader';
+import { RealityCheckSheet } from '../../components/RealityCheckSheet';
 import { getBreedDefaults } from '../../lib/breedData';
 import {
   stepIndex, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
+import { track } from '../../lib/analytics';
 
-const ACTIVITY_OPTIONS: { level: ActivityLevel; label: string; description: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
-  { level: 'sedentary', label: 'Couch potato', description: 'Mostly resting', icon: 'weekend' },
-  { level: 'normal', label: 'Casual walker', description: 'Regular walks', icon: 'pets' },
-  { level: 'active', label: 'Active explorer', description: 'Loves to play', icon: 'directions-run' },
-  { level: 'highly_active', label: 'Athlete', description: 'High energy', icon: 'fitness-center' },
+// Activity-level definitions are intentionally concrete (time, not feel) — when
+// an owner picks "highly active" because it sounds nice, the resulting kcal
+// target inflates 60–100%, which over months is real obesity risk. The
+// per-option `clinicalDescription` is shown to the user and matters here.
+const ACTIVITY_OPTIONS: {
+  level: ActivityLevel;
+  label: string;
+  description: string;
+  clinicalDescription: string;
+  icon: keyof typeof MaterialIcons.glyphMap | '__dog__';
+  /** Numerical rank so we can detect "more active than breed typical". */
+  rank: number;
+}[] = [
+  { level: 'sedentary',     label: 'Couch potato',    description: 'Under 30 min/day',         clinicalDescription: 'Mostly indoor, under 30 minutes of walking or play a day.',                       icon: 'weekend',         rank: 0 },
+  { level: 'normal',        label: 'Casual walker',   description: '30–60 min/day',            clinicalDescription: 'A walk or two and some daily play, 30–60 minutes total.',                          icon: 'pets',            rank: 1 },
+  { level: 'active',        label: 'Active explorer', description: '1–2 hr/day',               clinicalDescription: 'Long daily walks, hikes, or active play — 1 to 2 hours of movement most days.',  icon: '__dog__',         rank: 2 },
+  { level: 'highly_active', label: 'Athlete',         description: '3+ hr/day · working dog', clinicalDescription: 'Working, sporting, or sport-dog level: 3+ hours of intense exercise daily.',        icon: 'fitness-center',  rank: 3 },
 ];
 
 // Step 4 of 6 — energy. Big tappable cards, one decision. Breed pre-selects the
@@ -27,7 +44,7 @@ export default function EnergyScreen() {
   const router = useRouter();
   useOnboardingStepTracking('energy');
 
-  const { species, name, breed, activityLevel, setActivityLevel } = usePetStore();
+  const { species, name, breed, activityLevel, setActivityLevel, imageUri } = usePetStore();
   const petName = name.trim() || 'your pet';
 
   // Track whether the prefill came from the breed default — surface it as a hint
@@ -35,20 +52,51 @@ export default function EnergyScreen() {
   const [prefilledFromBreed, setPrefilledFromBreed] = useState(false);
   const hasManuallySet = useRef(false);
 
+  // The pre-picked card asks for a look when the prefill lands — the hint chip
+  // says "we chose this"; the pulse points at what was chosen.
+  const prefillPulse = useSharedValue(1);
+  const prefillPulseStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: prefillPulse.value }],
+  }));
+
   useEffect(() => {
     if (!breed || hasManuallySet.current) return;
     const defaults = getBreedDefaults(species, breed);
     if (defaults?.typicalActivityLevel) {
       setActivityLevel(defaults.typicalActivityLevel);
       setPrefilledFromBreed(true);
+      prefillPulse.value = withSequence(
+        withSpring(1.03, motion.spring.gentle),
+        withSpring(1, motion.spring.gentle),
+      );
     }
-  }, [breed, species, setActivityLevel]);
+  }, [breed, species, setActivityLevel, prefillPulse]);
+
+  // Reality check: when the owner picks an activity level meaningfully higher
+  // than what's typical for the breed, confirm before setting it — via a
+  // branded sheet, not a system alert. Over-claiming activity inflates the
+  // daily kcal target ~60-100%; the most common cause of consumer-app obesity
+  // is owner-asserted activity.
+  const [realityCheck, setRealityCheck] = useState<{
+    newOpt: (typeof ACTIVITY_OPTIONS)[number];
+    typicalOpt: (typeof ACTIVITY_OPTIONS)[number];
+  } | null>(null);
 
   const handleSelect = (level: ActivityLevel) => {
     hasManuallySet.current = true;
     setPrefilledFromBreed(false);
-    // Selection haptic comes from the SelectableChip surface.
+
+    const breedDefaults = breed ? getBreedDefaults(species, breed) : null;
+    const typical = breedDefaults?.typicalActivityLevel;
+    const newOpt = ACTIVITY_OPTIONS.find((o) => o.level === level);
+    const typicalOpt = typical ? ACTIVITY_OPTIONS.find((o) => o.level === typical) : null;
+    if (newOpt && typicalOpt && newOpt.rank - typicalOpt.rank >= 2 && breed) {
+      setRealityCheck({ newOpt, typicalOpt });
+      return;
+    }
+
     setActivityLevel(level);
+    track('onboarding_option_selected', { step: 'energy', option: 'activityLevel', value: level });
   };
 
   const handleContinue = () => {
@@ -89,7 +137,10 @@ export default function EnergyScreen() {
               <Animated.View
                 key={opt.level}
                 entering={FadeInDown.duration(380).delay(120 + i * 40)}
-                style={styles.choiceWrap}
+                style={[
+                  styles.choiceWrap,
+                  prefilledFromBreed && selected ? prefillPulseStyle : undefined,
+                ]}
               >
                 <SelectableChip
                   selected={selected}
@@ -99,10 +150,19 @@ export default function EnergyScreen() {
                   onPress={() => handleSelect(opt.level)}
                 >
                   <View style={[styles.choiceIcon, selected && styles.choiceIconSelected]}>
-                    <MaterialIcons name={opt.icon} size={22} color={selected ? color.navy : color.slateMuted} />
+                    {opt.icon === '__dog__' ? (
+                      <RunningDogIcon size={22} color={selected ? color.navy : color.slateMuted} />
+                    ) : (
+                      <MaterialIcons name={opt.icon} size={22} color={selected ? color.navy : color.slateMuted} />
+                    )}
                   </View>
                   <Text style={[styles.choiceLabel, selected && styles.choiceLabelSelected]}>{opt.label}</Text>
                   <Text style={[styles.choiceDesc, selected && styles.choiceDescSelected]}>{opt.description}</Text>
+                  {selected && (
+                    <Text style={styles.choiceClinicalDesc}>
+                      {opt.clinicalDescription}
+                    </Text>
+                  )}
                 </SelectableChip>
               </Animated.View>
             );
@@ -119,6 +179,29 @@ export default function EnergyScreen() {
           onPress={handleContinue}
         />
       </View>
+
+      {realityCheck && (
+        <RealityCheckSheet
+          visible
+          petName={petName}
+          species={species === 'cat' ? 'cat' : 'dog'}
+          imageUri={imageUri}
+          breed={breed || ''}
+          proposedLabel={realityCheck.newOpt.label}
+          proposedClinical={realityCheck.newOpt.clinicalDescription}
+          typicalLabel={realityCheck.typicalOpt.label}
+          typicalDescription={realityCheck.typicalOpt.description}
+          onConfirm={() => {
+            setActivityLevel(realityCheck.newOpt.level);
+            track('onboarding_option_selected', {
+              step: 'energy', option: 'activityLevel',
+              value: realityCheck.newOpt.level, confirmed_override: true,
+            });
+            setRealityCheck(null);
+          }}
+          onCancel={() => setRealityCheck(null)}
+        />
+      )}
     </View>
   );
 }
@@ -221,16 +304,19 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   choiceDescSelected: { color: color.slateMuted },
+  choiceClinicalDesc: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: color.slateMuted,
+    marginTop: 8,
+  },
 
   sticky: {
     paddingHorizontal: space.xxl,
     paddingTop: space.md,
     paddingBottom: space.xxl,
     backgroundColor: color.surface,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 12,
+    ...makeShadow(-6, 14, 0.06),
   },
 });

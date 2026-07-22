@@ -1,12 +1,13 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { PawLoader } from './loader/PawLoader';
 import { Image } from 'expo-image';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import type { PantryItem } from '../store/useActivePetStore';
 import { AnimatedPressable } from './AnimatedPressable';
 import { color, font, motion, radius, shadow, space } from '../constants/design';
-import { BOWL_SIZE_GRAMS } from '../lib/pantryMath';
+import { getPortionPresets, type PortionPresets } from '../lib/pantryMath';
 import { getSuggestion } from '../lib/portionLearning';
 
 const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
@@ -18,9 +19,7 @@ const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
   human_food: 'restaurant',
 };
 
-const CUSTOM_STEP = 0.25;
-const CUSTOM_MIN = 0.25;
-const CUSTOM_MAX = 5;
+const MEALS_PER_DAY = 2;
 
 type Phase = 'idle' | 'logging' | 'success';
 
@@ -28,6 +27,9 @@ interface Props {
   eyebrow: string;
   item: PantryItem;
   bowlSize?: 'small' | 'medium' | 'large' | 'xl';
+  species?: 'dog' | 'cat';
+  /** Used as a fallback for weight-mode chip baseline when the item has no per-serving label data. */
+  dailyKcalTarget?: number;
   /**
    * Returns a promise that resolves once the log has committed. The hero
    * shows a spinner while it's pending and a "Logged" pulse on success.
@@ -39,82 +41,95 @@ interface Props {
 
 /**
  * The hero of the meal tab: a single image-led card with the predicted food,
- * an inline portion chip row (Less / Usual / More + Custom stepper), and one
- * big Log button that surfaces logging + success feedback in place.
+ * an inline portion chip row, and one Log button.
  *
- * The default chip is the learned portion for this item (via portionLearning)
- * so the owner usually just confirms.
+ * The chip vocabulary is unit-typed (see `getPortionPresets` in pantryMath):
+ *   • fraction mode (cups, pouches, cans, …) — ¼ / ½ / Full / 1½ + text-link Custom
+ *   • count mode (pieces)                    — 1 / 2 / 3 / Custom
+ *   • weight mode (grams)                    — 0.5× / 1.0× / 1.5× baseline + Custom
+ *
+ * Internally the source of truth is `gramsFed`. At log time we send
+ * `multiplier = gramsFed / gramsPerUnit` so `computePantryMacros` is
+ * unchanged — kcal math stays single-sourced regardless of which vocabulary
+ * the chips speak.
  */
-export function MealHero({ eyebrow, item, bowlSize, onLog, isBusy }: Props) {
-  const isBowlMode = !!bowlSize && (item.serving_unit === 'cup' || !item.serving_unit);
-  const portionOptions = useMemo(
-    () => (isBowlMode
-      ? [
-          { label: 'Quarter bowl', value: 0.25 },
-          { label: 'Half bowl', value: 0.5 },
-          { label: 'Full bowl', value: 1 },
-        ]
-      : [
-          { label: 'A little less', value: 0.75 },
-          { label: 'Usual', value: 1 },
-          { label: 'A little more', value: 1.25 },
-        ]),
-    [isBowlMode],
-  );
+export function MealHero({ eyebrow, item, bowlSize, species = 'dog', dailyKcalTarget = 0, onLog, isBusy }: Props) {
+  // Resolve chip set + stepper for this item.
+  const presets: PortionPresets = useMemo(() => {
+    const kcalPer100g = item.kcal_per_100g_as_fed && item.kcal_per_100g_as_fed > 0 ? item.kcal_per_100g_as_fed : null;
+    const labelGramsPerServing = item.kcal_per_serving && kcalPer100g
+      ? (item.kcal_per_serving * 100) / kcalPer100g
+      : null;
+    const perMealKcalTarget = dailyKcalTarget > 0 ? dailyKcalTarget / MEALS_PER_DAY : null;
+    return getPortionPresets(item.serving_unit, species, bowlSize ?? null, {
+      labelGramsPerServing,
+      perMealKcalTarget,
+      kcalPer100g,
+    });
+  }, [item.serving_unit, item.kcal_per_serving, item.kcal_per_100g_as_fed, species, bowlSize, dailyKcalTarget]);
 
-  const [multiplier, setMultiplier] = useState<number>(1);
+  const { mode, gramsPerUnit, presets: chips, stepper } = presets;
+  const stepperGramsDelta = stepper.step * gramsPerUnit;
+  const stepperMinGrams = Math.max(1, Math.round(stepper.min * gramsPerUnit));
+  const stepperMaxGrams = Math.round(stepper.max * gramsPerUnit);
+
+  // The "Custom" chip belongs in the row only when mode is count/weight.
+  // In fraction mode all 4 chips are real presets and Custom is a text-link below.
+  const customChipIndex = mode === 'fraction' ? -1 : chips.findIndex(c => c.label === 'Custom');
+
+  const [gramsFed, setGramsFed] = useState<number>(chips.find(c => c.label !== 'Custom')?.gramsFed ?? gramsPerUnit);
   const [isCustom, setIsCustom] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Pre-fill the learned portion when this item changes — if the owner has
-  // been feeding less/more, that becomes the default.
+  // Pre-fill the learned portion when this item changes. portionLearning stores
+  // a multiplier (per-unit); convert to grams via the current presets and
+  // match against any of the preset gram values.
   useEffect(() => {
     let cancelled = false;
-    getSuggestion(item.id).then((learned) => {
+    getSuggestion(item.id).then((learnedMult) => {
       if (cancelled) return;
-      setMultiplier(learned ?? 1);
-      setIsCustom(false);
+      const learned = learnedMult ?? 1;
+      const learnedGrams = Math.max(1, Math.round(learned * gramsPerUnit));
+      setGramsFed(learnedGrams);
+      const presetGrams = chips
+        .filter(c => c.label !== 'Custom')
+        .map(c => c.gramsFed);
+      setIsCustom(!presetGrams.some(g => Math.abs(g - learnedGrams) < 1));
     });
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.id]);
+  }, [item.id, gramsPerUnit]);
 
-  // Clean up any pending success-state timer on unmount or item change.
+  // Clean up any pending success-state timer on unmount.
   useEffect(() => () => {
     if (successTimer.current) clearTimeout(successTimer.current);
   }, []);
 
   const baseKcal = item.kcal_per_serving ?? 0;
-  const portionGrams = bowlSize && isBowlMode ? BOWL_SIZE_GRAMS[bowlSize] : null;
+  const multiplier = gramsPerUnit > 0 ? gramsFed / gramsPerUnit : 0;
   const displayKcal = Math.round(baseKcal * multiplier);
-  const portionUnit = isBowlMode ? 'bowl' : (item.serving_unit || 'serving');
-  const portionLabel = isBowlMode
-    ? `${bowlSize} bowl`
-    : item.serving_unit
-      ? `1 ${item.serving_unit}`
-      : '1 serving';
 
   const title = item.product_name
     ? `${item.brand} ${item.product_name}`
     : item.brand;
 
-  const formatMult = (m: number) => (m % 1 === 0 ? `${m}` : m.toFixed(2));
-
-  const handlePressChip = (value: number) => {
+  const handlePressChip = (index: number) => {
+    if (index === customChipIndex) {
+      setIsCustom(true);
+      return;
+    }
     setIsCustom(false);
-    setMultiplier(value);
+    setGramsFed(chips[index].gramsFed);
   };
 
   const handleCustom = () => {
-    // Toggling into custom keeps the current multiplier so the stepper
-    // continues from the same starting point.
     setIsCustom(true);
   };
 
   const handleStep = (delta: number) => {
-    setMultiplier((m) => {
-      const next = Math.max(CUSTOM_MIN, Math.min(CUSTOM_MAX, +(m + delta).toFixed(2)));
+    setGramsFed((g) => {
+      const next = Math.max(stepperMinGrams, Math.min(stepperMaxGrams, Math.round(g + delta)));
       return next;
     });
   };
@@ -134,6 +149,15 @@ export function MealHero({ eyebrow, item, bowlSize, onLog, isBusy }: Props) {
   };
 
   const isDisabled = phase !== 'idle' || !!isBusy;
+
+  const renderChipSubLabel = (chip: { label: string; gramsFed: number }) => {
+    if (chip.label === 'Custom') return null;
+    if (mode === 'weight') {
+      const k = Math.round((baseKcal * chip.gramsFed) / Math.max(1, gramsPerUnit));
+      return baseKcal > 0 ? `≈ ${k} kcal` : null;
+    }
+    return `≈ ${chip.gramsFed} g`;
+  };
 
   return (
     <Animated.View entering={FadeIn.duration(360)} style={styles.wrap}>
@@ -157,82 +181,85 @@ export function MealHero({ eyebrow, item, bowlSize, onLog, isBusy }: Props) {
           <View style={styles.text}>
             <Text style={styles.title} numberOfLines={2}>{title}</Text>
             <Text style={styles.sub} numberOfLines={1}>
-              {portionGrams ? `${portionGrams} g · ` : ''}~{displayKcal} kcal
+              {gramsFed > 0 ? `${gramsFed} g · ` : ''}~{displayKcal} kcal
             </Text>
           </View>
         </View>
 
-        {/* Chip row — three descriptive presets + Custom */}
+        {/* Chip row — four presets, with Custom sitting in the row for count/weight modes */}
         <View style={styles.chipRow}>
-          {portionOptions.map((opt) => {
-            const selected = !isCustom && Math.abs(multiplier - opt.value) < 0.01;
+          {chips.map((chip, idx) => {
+            const isCustomChip = idx === customChipIndex;
+            const selected = isCustomChip
+              ? isCustom
+              : !isCustom && Math.abs(gramsFed - chip.gramsFed) < 1;
+            const subLabel = renderChipSubLabel(chip);
             return (
               <Pressable
-                key={opt.label}
+                key={chip.label + idx}
                 style={({ pressed }) => [
                   styles.chip,
                   selected && styles.chipSelected,
                   pressed && styles.chipPressed,
                 ]}
-                onPress={() => handlePressChip(opt.value)}
+                onPress={() => handlePressChip(idx)}
               >
                 <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
-                  {opt.label}
+                  {chip.label}
                 </Text>
+                {subLabel && (
+                  <Text style={[styles.chipSub, selected && styles.chipSubSelected]} numberOfLines={1}>
+                    {subLabel}
+                  </Text>
+                )}
               </Pressable>
             );
           })}
-          <Pressable
-            style={({ pressed }) => [
-              styles.chip,
-              isCustom && styles.chipSelected,
-              pressed && styles.chipPressed,
-            ]}
-            onPress={handleCustom}
-          >
-            <Text style={[styles.chipText, isCustom && styles.chipTextSelected]}>Custom</Text>
-          </Pressable>
         </View>
 
-        {/* Portion summary + custom stepper */}
+        {/* Custom text-link — only in fraction mode (count/weight have a Custom chip) */}
+        {mode === 'fraction' && (
+          <Pressable onPress={handleCustom} style={styles.customLinkWrap}>
+            <Text style={[styles.customLink, isCustom && styles.customLinkActive]}>
+              {isCustom ? 'Custom amount' : 'Set custom amount'}
+            </Text>
+          </Pressable>
+        )}
+
+        {/* Portion summary + stepper */}
         <View style={styles.portionRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.portionValue}>
-              {formatMult(multiplier)}
-              <Text style={styles.portionUnit}> × {portionUnit}{multiplier !== 1 && !isBowlMode ? 's' : ''}</Text>
+              {gramsFed} g
+              {baseKcal > 0 && <Text style={styles.portionUnit}>  ·  {displayKcal} kcal</Text>}
             </Text>
-            {portionGrams && (
-              <Text style={styles.portionHint} numberOfLines={1}>
-                Full bowl ≈ {portionGrams} g
-              </Text>
-            )}
-            {baseKcal > 0 && (
-              <Text style={styles.portionHint} numberOfLines={1}>
-                {Math.round(baseKcal)} × {formatMult(multiplier)} = {displayKcal} kcal
-              </Text>
-            )}
+            <Text style={styles.portionHint} numberOfLines={1}>
+              {mode === 'weight'
+                ? `Stepper · ${stepper.step} g`
+                : `1 ${presets.unitLabel} ≈ ${gramsPerUnit} g`}
+            </Text>
           </View>
           {isCustom && (
             <Animated.View entering={FadeInDown.duration(200)} style={styles.stepper}>
               <Pressable
                 style={({ pressed }) => [
                   styles.stepperBtn,
-                  multiplier <= CUSTOM_MIN && { opacity: 0.3 },
+                  gramsFed <= stepperMinGrams && { opacity: 0.3 },
                   pressed && styles.stepperBtnPressed,
                 ]}
-                onPress={() => handleStep(-CUSTOM_STEP)}
-                disabled={multiplier <= CUSTOM_MIN}
+                onPress={() => handleStep(-stepperGramsDelta)}
+                disabled={gramsFed <= stepperMinGrams}
               >
                 <MaterialIcons name="remove" size={20} color={color.navy} />
               </Pressable>
               <Pressable
                 style={({ pressed }) => [
                   styles.stepperBtn,
-                  multiplier >= CUSTOM_MAX && { opacity: 0.3 },
+                  gramsFed >= stepperMaxGrams && { opacity: 0.3 },
                   pressed && styles.stepperBtnPressed,
                 ]}
-                onPress={() => handleStep(CUSTOM_STEP)}
-                disabled={multiplier >= CUSTOM_MAX}
+                onPress={() => handleStep(stepperGramsDelta)}
+                disabled={gramsFed >= stepperMaxGrams}
               >
                 <MaterialIcons name="add" size={20} color={color.navy} />
               </Pressable>
@@ -253,10 +280,7 @@ export function MealHero({ eyebrow, item, bowlSize, onLog, isBusy }: Props) {
           onPress={handleLogPress}
         >
           {phase === 'logging' && (
-            <>
-              <ActivityIndicator size="small" color={color.navy} />
-              <Text style={styles.ctaText}>Logging…</Text>
-            </>
+            <Text style={styles.ctaText}>Logging…</Text>
           )}
           {phase === 'success' && (
             <Animated.View entering={FadeIn.duration(200)} style={styles.ctaInner}>
@@ -272,6 +296,7 @@ export function MealHero({ eyebrow, item, bowlSize, onLog, isBusy }: Props) {
           )}
         </AnimatedPressable>
       </View>
+      <PawLoader visible={phase === 'logging'} message="Logging meal…" />
     </Animated.View>
   );
 }
@@ -328,20 +353,19 @@ const styles = StyleSheet.create({
   },
   chipRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: space.sm,
-    marginBottom: space.md,
+    marginBottom: space.sm,
   },
   chip: {
-    flexGrow: 1,
-    flexBasis: '22%',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: color.hairline,
     backgroundColor: color.surface,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   chipSelected: {
     borderColor: color.navy,
@@ -355,9 +379,36 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     color: color.ink,
     textAlign: 'center',
+    lineHeight: 16,
   },
   chipTextSelected: {
     color: color.cream,
+  },
+  chipSub: {
+    fontFamily: font.medium,
+    fontSize: 10.5,
+    color: color.slateFaint,
+    textAlign: 'center',
+    marginTop: 2,
+    lineHeight: 13,
+  },
+  chipSubSelected: {
+    color: color.creamDim,
+  },
+
+  customLinkWrap: {
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+    marginBottom: space.sm,
+  },
+  customLink: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.slateMuted,
+    textDecorationLine: 'underline',
+  },
+  customLinkActive: {
+    color: color.navy,
   },
 
   portionRow: {

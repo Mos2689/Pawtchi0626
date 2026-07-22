@@ -1,5 +1,9 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
+import { dietTagsFromPantry } from '../lib/hydration';
+import { withTimeout } from '../lib/withTimeout';
 
 export interface PantryItem {
     id: string;
@@ -55,6 +59,20 @@ export interface Pet {
     unlocked_items?: string[];
     equipped_items?: string[];
     current_avatar_url?: string;
+    created_at?: string;
+    severe_obesity_vet_confirmed_at?: string | null;
+    reproductive_status?: 'pregnant' | 'nursing' | 'neither' | null;
+    pregnancy_weeks?: number | null;
+    /** When the owner's BCS was last recorded — drives re-score prompts. */
+    bcs_updated_at?: string | null;
+    /** Walksign identity (dogs only) — null until assigned. */
+    walksign?: string | null;
+    walksign_status?: 'provisional' | 'confirmed' | null;
+    walksign_assigned_at?: string | null;
+    /** Append-only assignment log: { sign, status, reason, at }[]. */
+    walksign_history?: { sign: string; status: string; reason: string; at: string }[];
+    /** Whether this is the owner's first dog — the Newbond signal. */
+    first_dog?: boolean | null;
 }
 
 interface ActivePetState {
@@ -64,6 +82,7 @@ interface ActivePetState {
     error: string | null;
     fetchPet: (userId: string, options?: { silent?: boolean }) => Promise<void>;
     fetchPantry: (petId: string) => Promise<void>;
+    syncDietTypeFromPantry: (petId: string) => Promise<void>;
     addPantryItem: (item: Omit<PantryItem, 'id' | 'first_scanned_at' | 'last_scanned_at' | 'scan_count'>) => Promise<PantryItem | null>;
     incrementPantryScan: (itemId: string) => Promise<void>;
     archivePantryItem: (itemId: string) => Promise<void>;
@@ -74,14 +93,26 @@ interface ActivePetState {
     unlockItem: (itemId: string) => Promise<boolean>;
     toggleEquipItem: (itemId: string) => Promise<boolean>;
     isTailoring: boolean;
+    // True while a weight change is rebuilding the calorie target + activity
+    // schedule in the background. Tabs read this to show a "recalibrating"
+    // state instead of a wrong "build from scratch" empty state.
+    recalibrating: boolean;
+    setRecalibrating: (v: boolean) => void;
 }
 
-export const useActivePetStore = create<ActivePetState>((set, get) => ({
+// Persisted snapshot (pet + pantry only — never loading/error flags) so a
+// returning user's Home renders instantly from disk while fetchPet revalidates
+// silently in the background. The tab layout only trusts the snapshot when
+// activePet.owner_id matches the signed-in user, so a stale snapshot can never
+// leak across accounts. clearPet() on sign-out wipes the persisted copy too.
+export const useActivePetStore = create<ActivePetState>()(persist((set, get) => ({
     activePet: null,
     foodPantry: [],
     isLoading: true,
     isTailoring: false,
+    recalibrating: false,
     error: null,
+    setRecalibrating: (v: boolean) => set({ recalibrating: v }),
     fetchPet: async (userId, options) => {
         // Silent refresh (used after an optimistic write) must NOT toggle the
         // global isLoading flag: the tab layout renders a full-screen spinner and
@@ -92,23 +123,40 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             set({ isLoading: true, error: null });
         }
 
-        // Fetch the most recently created pet for this user
-        const { data, error } = await supabase
-            .from('pets')
-            .select('*')
-            .eq('owner_id', userId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
+        try {
+            // Fetch the most recently created pet for this user. Bounded: this
+            // call gates the whole tab navigator, so a hung fetch must become a
+            // catchable error (→ retry UI), never an infinite loader.
+            const { data, error } = await withTimeout(
+                supabase
+                    .from('pets')
+                    .select('*')
+                    .eq('owner_id', userId)
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .single()
+                    .then(r => r),
+                15_000,
+                'fetchPet',
+            );
 
-        if (error && error.code !== 'PGRST116') {
-            console.error('Error fetching pet:', error);
-            set(silent ? { error: error.message } : { error: error.message, isLoading: false, activePet: null });
-        } else {
-            set(silent ? { activePet: data || null, error: null } : { activePet: data || null, isLoading: false, error: null });
-            // Also fetch pantry when pet loads
-            if (data?.id) {
-                get().fetchPantry(data.id);
+            if (error && error.code !== 'PGRST116') {
+                console.error('Error fetching pet:', error);
+                set(silent ? { error: error.message } : { error: error.message, isLoading: false, activePet: null });
+            } else {
+                // Clearing isLoading is safe in BOTH modes — only isLoading:TRUE
+                // unmounts the navigator (see comment above). After a
+                // snapshot-backed silent revalidate this marks the store settled.
+                set({ activePet: data || null, isLoading: false, error: null });
+                // Also fetch pantry when pet loads
+                if (data?.id) {
+                    get().fetchPantry(data.id);
+                }
+            }
+        } catch (e: any) {
+            console.error('[ActivePet] fetchPet threw:', e);
+            if (!silent) {
+                set({ isLoading: false, error: e?.message || 'Failed to load pet', activePet: null });
             }
         }
     },
@@ -122,8 +170,34 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
         // Hide archived foods from every active pantry surface. Filtered
         // client-side so this is safe whether or not the column exists yet.
         set({ foodPantry: (data || []).filter((p: any) => !p.is_archived) });
+        get().syncDietTypeFromPantry(petId);
+    },
+    // Keep pets.diet_type mirroring what's actually in the pantry. The diet
+    // moisture profile drives the drinking-water target (lib/hydration.ts) —
+    // a wet-fed cat gets most of its water from food and needs a much lower
+    // bowl target. Persisted on the pet row so the edge functions (schedule
+    // generation, ask-vet, health insights) see the same diet the app does.
+    // Fire-and-forget: hydration targets self-correct on the next sync.
+    syncDietTypeFromPantry: async (petId) => {
+        try {
+            const pet = get().activePet;
+            if (!pet || pet.id !== petId) return;
+            const tags = dietTagsFromPantry(get().foodPantry);
+            if (tags.length === 0) return; // empty pantry proves nothing — keep whatever is stored
+            const current = [...(pet.diet_type ?? [])].sort();
+            if (JSON.stringify(tags) === JSON.stringify(current)) return;
+            set({ activePet: { ...pet, diet_type: tags } });
+            const { error } = await supabase
+                .from('pets')
+                .update({ diet_type: tags })
+                .eq('id', petId);
+            if (error) throw error;
+        } catch (e) {
+            console.warn('[ActivePet] diet_type sync failed (non-fatal):', e);
+        }
     },
     archivePantryItem: async (itemId) => {
+        const petId = get().foodPantry.find(p => p.id === itemId)?.pet_id;
         // Optimistic removal from the active rail; history (food_scans) stays.
         set({ foodPantry: get().foodPantry.filter(p => p.id !== itemId) });
         const { error } = await supabase
@@ -132,6 +206,8 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
             .eq('id', itemId);
         if (error) {
             console.error('Failed to archive pantry item:', error);
+        } else if (petId) {
+            get().syncDietTypeFromPantry(petId);
         }
     },
     addPantryItem: async (item) => {
@@ -164,6 +240,7 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
         }
         // Refresh pantry
         set({ foodPantry: [...get().foodPantry, data] });
+        get().syncDietTypeFromPantry(item.pet_id);
         return data;
     },
     incrementPantryScan: async (itemId) => {
@@ -283,9 +360,13 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
         // Trigger AI Tailoring
         set({ isTailoring: true });
         try {
-            const { data, error: fnError } = await supabase.functions.invoke('generate-wearable-avatar', {
-                body: { petId: activePet.id, items: newEquipped }
-            });
+            const { data, error: fnError } = await withTimeout(
+                supabase.functions.invoke('generate-wearable-avatar', {
+                    body: { petId: activePet.id, items: newEquipped }
+                }),
+                45_000,
+                'generate-wearable-avatar',
+            );
 
             if (fnError) throw fnError;
             if (data && data.success) {
@@ -309,4 +390,13 @@ export const useActivePetStore = create<ActivePetState>((set, get) => ({
 
         return true;
     }
+}), {
+    name: 'active-pet-snapshot',
+    storage: createJSONStorage(() => AsyncStorage),
+    version: 1,
+    // Data only — actions and transient flags (isLoading, error, isTailoring,
+    // recalibrating) must never round-trip through disk.
+    partialize: (s) => ({ activePet: s.activePet, foodPantry: s.foodPantry }),
+    // Unknown version → drop the snapshot rather than guess at its shape.
+    migrate: (persisted, version) => (version === 1 ? (persisted as Partial<ActivePetState>) : undefined),
 }));

@@ -24,6 +24,8 @@ export interface NudgeInput {
   // Weight management fields
   daysSinceLastWeighIn?: number | null;
   hasWeightGoal?: boolean;
+  /** Derived goal direction, drives the reweigh-cadence nudge. */
+  goalDirection?: 'lose' | 'maintain' | 'gain' | null;
   // Rolling balance + chronic-under-eating signals
   weeklyDelta?: number | null;
   daysUnderTarget?: number | null;
@@ -90,6 +92,27 @@ export function computeNudge(input: NudgeInput): Nudge | null {
           ? 'Almost at calorie limit. Keep portions small for the rest of today.'
           : 'A 15-min walk would help balance today\'s calories.',
       actionType: isOver ? undefined : (hasRestrictions ? undefined : 'suggest_walk'),
+    };
+  }
+
+  // ── P1.5: Reweigh cadence — a stale weigh-in makes every downstream
+  // calculation drift. Vets rely on rate-of-loss as the primary safety signal
+  // during weight management; a plan running on a 3-week-old weight isn't
+  // catching problems. 14 days for weight-loss, 28 days for maintenance.
+  if (
+    input.hasWeightGoal &&
+    typeof input.daysSinceLastWeighIn === 'number' &&
+    (
+      (input.goalDirection === 'lose' && input.daysSinceLastWeighIn >= 14) ||
+      (input.goalDirection === 'maintain' && input.daysSinceLastWeighIn >= 28) ||
+      (input.goalDirection === 'gain' && input.daysSinceLastWeighIn >= 14)
+    )
+  ) {
+    return {
+      priority: 'action',
+      title: 'Time for a Weigh-in',
+      message: `It's been ${input.daysSinceLastWeighIn} days since the last weigh-in — a quick check keeps the plan accurate.`,
+      actionType: 'remind_weight',
     };
   }
 

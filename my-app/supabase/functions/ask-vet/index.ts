@@ -4,6 +4,8 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { safeParseBody, isValidUUID } from '../_shared/validate.ts'
+import { computeWaterTargetMl } from '../_shared/hydration.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-3.1-pro-preview';
 const GEMINI_TIMEOUT_MS = 45_000; // Pro + thinking is slower than Flash
@@ -20,7 +22,7 @@ function monthStartISO(now: Date): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -39,16 +41,18 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('ask-vet', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const { petId, question, clarifyAnswers, parentId: rawParentId, followupKind } = parsed.data as Record<string, any>;
-    if (!petId || !isValidUUID(petId)) throw new Error('A valid petId is required.');
+    if (!petId || !isValidUUID(petId)) {
+      logInternal('ask-vet', 'missing or malformed petId');
+      return errorResponse('invalid_input', corsHeaders);
+    }
     if (!question || typeof question !== 'string' || !question.trim()) {
-      throw new Error('A question is required.');
+      logInternal('ask-vet', 'question missing from request');
+      return errorResponse('invalid_input', corsHeaders);
     }
     const cleanQuestion = question.trim().slice(0, MAX_QUESTION_LENGTH);
     // Optional detail from the clarifying round. Its presence forces a final
@@ -64,7 +68,10 @@ Deno.serve(async (req) => {
     const followKind = isCheckin ? 'checkin' : 'followup';
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
-    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured.')
+    if (!GEMINI_API_KEY) {
+      logInternal('ask-vet', 'GEMINI_API_KEY not configured.');
+      return errorResponse('server_error', corsHeaders);
+    }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -78,10 +85,7 @@ Deno.serve(async (req) => {
       .single();
 
     if (!petOwnerCheck || petOwnerCheck.owner_id !== auth.userId) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'You do not own this pet.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
-      );
+      return errorResponse('forbidden', corsHeaders);
     }
 
     const now = new Date();
@@ -112,10 +116,7 @@ Deno.serve(async (req) => {
         .select('id, user_id, question, answer, followup_count, checkin_count, status')
         .eq('id', parentId).single();
       if (!headRow || headRow.user_id !== auth.userId) {
-        return new Response(
-          JSON.stringify({ success: false, error: 'Case not found.' }),
-          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return errorResponse('not_found', corsHeaders, { status: 403 });
       }
       head = headRow;
       if (followKind === 'followup' && (head.followup_count ?? 0) >= 3) {
@@ -132,7 +133,10 @@ Deno.serve(async (req) => {
 
     // ── Gather this pet's picture (mirrors generate-health-insight) ──
     const { data: pet } = await sb.from('pets').select('*').eq('id', petId).single()
-    if (!pet) throw new Error('Pet not found.')
+    if (!pet) {
+      logInternal('ask-vet', `pet ${petId} passed ownership check but full row fetch returned null`);
+      return errorResponse('not_found', corsHeaders);
+    }
 
     const sevenDaysAgo = new Date(now)
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
@@ -172,7 +176,7 @@ Deno.serve(async (req) => {
     const recentFoods = scans.map((s: any) => s.ai_identified_food).filter(Boolean).slice(0, 6).join(', ')
     const primaryFood = pantry.find((p: any) => p.is_primary)
     const primaryFoodLabel = primaryFood ? `${primaryFood.brand || ''} ${primaryFood.product_name || ''}`.trim() : 'Not recorded'
-    const targetWater = Math.round((pet.current_weight_kg || 10) * 50)
+    const targetWater = computeWaterTargetMl(pet.current_weight_kg || 10, pet.diet_type)
     const pronoun = pet.gender === 'male' ? 'he/him/his' : pet.gender === 'female' ? 'she/her/her' : 'they/them/their'
 
     const vetHistoryLine = latestVet
@@ -297,19 +301,21 @@ Respond with STRICT JSON only (no markdown), exactly this shape:
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text()
-      throw new Error(`Gemini error: ${geminiRes.status} - ${errText}`)
+      logInternal('ask-vet', `upstream ${geminiRes.status}: ${errText.substring(0, 300)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const geminiData = await geminiRes.json()
     const candidate = geminiData?.candidates?.[0]
-    // Join all text parts (a thinking response can include a separate thought part).
+    // Join all text parts, explicitly excluding the thought part.
     const rawText = (candidate?.content?.parts || [])
+      .filter((p: any) => p?.thought !== true)
       .map((p: any) => p?.text || '')
       .join('')
     if (!rawText.trim()) {
-      console.error('[ask-vet] empty Gemini text. finishReason:', candidate?.finishReason,
+      console.error('[ask-vet] empty model text. finishReason:', candidate?.finishReason,
         'usage:', JSON.stringify(geminiData?.usageMetadata))
-      throw new Error('The response came back empty. Please try again.')
+      return errorResponse('ai_unavailable', corsHeaders);
     }
     let cleaned = rawText.trim()
     if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7)
@@ -322,7 +328,7 @@ Respond with STRICT JSON only (no markdown), exactly this shape:
       answer = JSON.parse(cleaned)
     } catch {
       console.error('[ask-vet] JSON parse failed. raw:', cleaned.slice(0, 500))
-      throw new Error('Could not read the response. Please try rephrasing the question.')
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const asStrings = (v: any) => (Array.isArray(v) ? v.filter((x: any) => typeof x === 'string' && x.trim()) : []);
@@ -368,7 +374,10 @@ Respond with STRICT JSON only (no markdown), exactly this shape:
       redFlag: answer.redFlag === true || urgency !== 'routine',
       offTopic: answer.offTopic === true,
     }
-    if (!normalised.answer) throw new Error('The response was empty. Please try again.')
+    if (!normalised.answer) {
+      logInternal('ask-vet', 'model answer field was empty after normalisation');
+      return errorResponse('ai_unavailable', corsHeaders);
+    }
 
     // Check-in the model recommends (clamped 1-7 days) — drives the nudge + push.
     const ci = answer.checkIn;
@@ -432,10 +441,9 @@ Respond with STRICT JSON only (no markdown), exactly this shape:
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
 
-  } catch (err: any) {
-    return new Response(
-      JSON.stringify({ success: false, error: err.message }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+  } catch (err: unknown) {
+    logInternal('ask-vet', err, 'unhandled');
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return errorResponse(isAbort ? 'ai_unavailable' : 'server_error', corsHeaders);
   }
 })

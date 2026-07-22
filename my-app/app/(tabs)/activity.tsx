@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { PawLoader } from '../../components/loader/PawLoader';
+import { BreathingPaw } from '../../components/BreathingPaw';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -12,10 +14,27 @@ import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { contextualizeWalk } from '../../lib/contextualizer';
 import { regenerateSchedule } from '../../lib/scheduleAdjuster';
+import { deriveActivityRestrictions } from '../../lib/activityRestrictions';
+import { computeWeeklyBurn, computeDailyDeficitKcal, estimateActivityBurn, type WeeklyBurn } from '../../lib/activityBurn';
+import { computeWaterTargetMl } from '../../lib/hydration';
+import { useOwnerPrefsStore } from '../../store/useOwnerPrefsStore';
+import { getLocalYMD } from '../../lib/dateUtils';
+import { RoutineSheet } from '../../components/RoutineSheet';
+import type { OwnerPrefsRow } from '../../lib/routineDefaults';
+import { persistActivityCompletion, fireCompletionSideEffects } from '../../lib/completeActivity';
+import { dedupeActivities } from '../../lib/dedupeActivities';
+import { track } from '../../lib/analytics';
+import { trackFirebaseEvent } from '../../lib/firebaseAnalytics';
+import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import {
+  errorCopy, extractInvokeErrorCode, isAppError, reportError, toAppError,
+  type ErrorContext, type ErrorCopy, type RecoveryActionId,
+} from '../../lib/appError';
 import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
 import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
 
@@ -34,6 +53,11 @@ const ACTIVITY_TYPES = [
   { id: 'vet_visit', label: 'Vet Visit', icon: 'local-hospital', color: '#fee2e2' },
   { id: 'other', label: 'Other', icon: 'star', color: '#f3f4f6' },
 ];
+
+// Types kept out of the "What did you do?" quick-log picker. They stay in
+// ACTIVITY_TYPES so scheduled / AI-generated rows of these types still render
+// in the timeline — this only hides them as manual-log options.
+const HIDDEN_LOG_TYPES = ['medicine', 'grooming', 'training', 'vet_visit'];
 
 // Activity types whose completion asks "how long?" before confirming.
 const TIME_BASED_TYPES = ['walk', 'play', 'training'];
@@ -101,6 +125,7 @@ interface TimelineRowProps {
   onSelectDuration: (mins: number) => void;
   onConfirm: (item: any, duration: number) => void;
   onCancel: () => void;
+  onTrackWalk: () => void;
 }
 
 // One timeline entry (food or activity). Memoized so toggling expand/confirm on
@@ -109,7 +134,7 @@ interface TimelineRowProps {
 // confirming) → React.memo skips them.
 const TimelineRow = React.memo(function TimelineRow({
   item, isLast, isExpanded, isConfirming, confirmingDuration,
-  petName, currentWeightKg, onToggleExpand, onCheckTap, onSelectDuration, onConfirm, onCancel,
+  petName, currentWeightKg, onToggleExpand, onCheckTap, onSelectDuration, onConfirm, onCancel, onTrackWalk,
 }: TimelineRowProps) {
   const isFood = item._feedType === 'food';
   const timeStr = item.scheduled_time
@@ -141,6 +166,7 @@ const TimelineRow = React.memo(function TimelineRow({
   const isPending = item.status === 'pending';
   const isCompleted = item.status === 'completed';
   const isSkipped = item.status === 'skipped';
+  const isFuture = item.scheduled_date > getLocalYMD(new Date());
   const typeDef = ACTIVITY_TYPES.find(t => t.id === item.activity_type) || ACTIVITY_TYPES[0];
   const meta: string[] = [];
   if (item.duration_minutes) meta.push(`${item.duration_minutes} min`);
@@ -219,16 +245,31 @@ const TimelineRow = React.memo(function TimelineRow({
                 )}
               </View>
             )}
-            {isPending && (
-              <TouchableOpacity
-                style={styles.tlDetailMarkDone}
-                onPress={() => onCheckTap(item)}
-                activeOpacity={0.9}
-              >
-                <MaterialIcons name="check" size={15} color={color.navy} />
-                <Text style={styles.tlDetailMarkDoneText}>Mark done</Text>
-              </TouchableOpacity>
-            )}
+            {isPending && !isFuture && (() => {
+              const trackable = WALK_TRACKING_ENABLED && item.activity_type === 'walk';
+              return (
+                <View style={styles.tlDetailActionsRow}>
+                  {trackable && (
+                    <TouchableOpacity
+                      style={styles.tlDetailMarkDone}
+                      onPress={onTrackWalk}
+                      activeOpacity={0.9}
+                    >
+                      <MaterialIcons name="play-arrow" size={15} color={color.navy} />
+                      <Text style={styles.tlDetailMarkDoneText}>Track walk</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={trackable ? styles.tlDetailGhost : styles.tlDetailMarkDone}
+                    onPress={() => onCheckTap(item)}
+                    activeOpacity={0.9}
+                  >
+                    <MaterialIcons name="check" size={15} color={trackable ? color.slateMuted : color.navy} />
+                    <Text style={trackable ? styles.tlDetailGhostText : styles.tlDetailMarkDoneText}>Mark done</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })()}
           </View>
         )}
 
@@ -257,9 +298,16 @@ export default function ActivityScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const activePet = useActivePetStore(s => s.activePet);
+  // A weight change is rebuilding the schedule in the background. Read it so we
+  // show "recalibrating" instead of the wrong "build from scratch" empty state.
+  const recalibrating = useActivePetStore(s => s.recalibrating);
   const awardCoins = useStreakStore(s => s.awardCoins);
   const { user } = useAuth();
   const { hasFullAccess } = useSubscription();
+  const ownerPrefs = useOwnerPrefsStore(s => s.prefs);
+  const hasFetchedPrefs = useOwnerPrefsStore(s => s.hasFetched);
+  const fetchPrefs = useOwnerPrefsStore(s => s.fetchPrefs);
+  const upsertPrefs = useOwnerPrefsStore(s => s.upsertPrefs);
 
   const checkAccess = () => {
     if (!hasFullAccess) {
@@ -276,13 +324,12 @@ export default function ActivityScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [weeklyStats, setWeeklyStats] = useState<{ completed: number; skipped: number; total: number } | null>(null);
+  // Derived on-device from the last 7 days of activity rows, so the burn card
+  // survives app restarts (the old version cached the last API response).
+  const [weeklyBurn, setWeeklyBurn] = useState<WeeklyBurn | null>(null);
   const [showAdjustBanner, setShowAdjustBanner] = useState(false);
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [adjustDismissed, setAdjustDismissed] = useState(false);
-  const [lastBurnSummary, setLastBurnSummary] = useState<{
-    weeklyKcal: number; dailyKcal: number; contributionPct: number;
-    deficitPct: number; totalMinutes: number; byType: Record<string, any>;
-  } | null>(null);
 
   // Branded schedule success modal
   const [showScheduleSuccess, setShowScheduleSuccess] = useState(false);
@@ -299,9 +346,21 @@ export default function ActivityScreen() {
   const [showAdjustSuccess, setShowAdjustSuccess] = useState(false);
   const [adjustSuccessMsg, setAdjustSuccessMsg] = useState('');
 
-  // Branded error modal
-  const [showError, setShowError] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
+  // Branded error modal — always fed by errorCopy(), never a raw message.
+  // retryRef replays whatever operation failed when "Try again" is tapped.
+  const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  const retryRef = useRef<null | (() => void)>(null);
+  const presentFailure = useCallback((err: unknown, context: ErrorContext, retry?: () => void) => {
+    const appErr = isAppError(err) ? err : toAppError(err);
+    reportError(appErr, context);
+    retryRef.current = retry ?? null;
+    setFailure(errorCopy(appErr, { context, petName: activePet?.name }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePet?.name]);
+  const handleRecovery = useCallback((action: RecoveryActionId) => {
+    setFailure(null);
+    if (action === 'retry') retryRef.current?.();
+  }, []);
 
   // Smart Completion state
   const [confirmingTaskId, setConfirmingTaskId] = useState<string | null>(null);
@@ -309,6 +368,13 @@ export default function ActivityScreen() {
 
   // Expanded detail view — tap a timeline item to see full description
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+
+  // Routine sheet — owner-aware schedule prefs. Opens on first plan generation
+  // when no prefs exist, and from the existing-user banner CTA when prefs are
+  // missing but activities already exist.
+  const [routineSheetOpen, setRoutineSheetOpen] = useState(false);
+  const [routineSubmitting, setRoutineSubmitting] = useState(false);
+  const [routineBannerDismissed, setRoutineBannerDismissed] = useState(false);
 
   // Modal state
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -322,13 +388,6 @@ export default function ActivityScreen() {
   const [formDistance, setFormDistance] = useState('');
   const [formWater, setFormWater] = useState(250);
   const [formIntensity, setFormIntensity] = useState<'low' | 'moderate' | 'high'>('moderate');
-
-  const getLocalYMD = (d: Date) => {
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
 
   const dateStr = getLocalYMD(currentDate);
 
@@ -372,7 +431,16 @@ export default function ActivityScreen() {
       ]);
       setDailyLog(logRes.data || null);
       setFoodScans(scansRes.data || []);
-      setActivities(actsRes.data || []);
+      // Defensive de-dupe: even with the generator + DB guardrails, a client
+      // whose table already holds stacked rows (from before the fix) must not
+      // render a slot twice. `removed > 0` is a real signal — report it so a
+      // future regression surfaces instead of silently doubling the timeline.
+      const { rows: deduped, removed } = dedupeActivities(actsRes.data || []);
+      if (removed > 0) {
+        console.warn(`[activity] Dropped ${removed} duplicate activity row(s) for ${dateStr}`);
+        track('activity_duplicates_detected', { pet_id: activePet.id, date: dateStr, removed });
+      }
+      setActivities(deduped);
     } catch (e) {
       console.error(e);
     } finally {
@@ -381,30 +449,42 @@ export default function ActivityScreen() {
     }
   }, [activePet, currentDate, dateStr]);
 
-  // Check last 7 days completion rate for auto-adjustment
+  // Check last 7 days completion rate for auto-adjustment, and derive the
+  // weekly burn card from the same rows (manual logs included — a logged walk
+  // burns calories whether or not Pawtchi scheduled it).
   const fetchWeeklyStats = useCallback(async () => {
     if (!activePet) return;
     const today = new Date();
+    const todayStr = getLocalYMD(today);
     const sevenDaysAgo = new Date(today);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
     try {
       const { data } = await supabase
         .from('activities')
-        .select('status')
+        .select('status, activity_type, intensity, duration_minutes, active_minutes, scheduled_date, is_ai_generated')
         .eq('pet_id', activePet.id)
-        .eq('is_ai_generated', true)
         .gte('scheduled_date', getLocalYMD(sevenDaysAgo))
-        .lt('scheduled_date', getLocalYMD(today));
+        .lte('scheduled_date', todayStr);
 
       if (data && data.length > 0) {
-        const completed = data.filter(a => a.status === 'completed').length;
-        const skipped = data.filter(a => a.status === 'skipped').length;
-        setWeeklyStats({ completed, skipped, total: data.length });
-        const completionRate = completed / data.length;
-        if (completionRate < 0.5 && skipped > 2 && !adjustDismissed) {
-          setShowAdjustBanner(true);
+        // Adjust-banner stats: AI-generated rows from FULL past days only —
+        // a day still in progress shouldn't count against completion.
+        const pastAiRows = data.filter(a => a.is_ai_generated && a.scheduled_date < todayStr);
+        if (pastAiRows.length > 0) {
+          const completed = pastAiRows.filter(a => a.status === 'completed').length;
+          const skipped = pastAiRows.filter(a => a.status === 'skipped').length;
+          setWeeklyStats({ completed, skipped, total: pastAiRows.length });
+          const completionRate = completed / pastAiRows.length;
+          if (completionRate < 0.5 && skipped > 2 && !adjustDismissed) {
+            setShowAdjustBanner(true);
+          }
         }
+
+        // Burn card: trailing 7 days including today (query spans 8 days so
+        // the banner keeps its full 7 past days — trim the oldest for burn).
+        const burnRows = data.filter(a => a.scheduled_date > getLocalYMD(sevenDaysAgo));
+        setWeeklyBurn(computeWeeklyBurn(burnRows, activePet.current_weight_kg || 0));
       }
     } catch (e) {
       console.error('Weekly stats error:', e);
@@ -415,8 +495,21 @@ export default function ActivityScreen() {
     useCallback(() => {
       fetchData();
       fetchWeeklyStats();
-    }, [fetchData, fetchWeeklyStats])
+      if (user?.id) fetchPrefs(user.id);
+    }, [fetchData, fetchWeeklyStats, fetchPrefs, user?.id])
   );
+
+  // When a background recalibration (weight log on Health) finishes, the plan
+  // this tab fetched may be stale or mid-rebuild — pull the fresh schedule in
+  // the moment the shared flag settles, so the user never has to bounce tabs.
+  const wasRecalibratingRef = useRef(recalibrating);
+  React.useEffect(() => {
+    if (wasRecalibratingRef.current && !recalibrating) {
+      fetchData();
+      fetchWeeklyStats();
+    }
+    wasRecalibratingRef.current = recalibrating;
+  }, [recalibrating, fetchData, fetchWeeklyStats]);
 
   // Merge food scans + activities into timeline, sorted by time
   const timeline = useMemo(() => {
@@ -444,6 +537,9 @@ export default function ActivityScreen() {
   // the handler — and every memoized row — churn on every list change).
   const activitiesRef = useRef(activities);
   activitiesRef.current = activities;
+  // Same pattern for the burn card's optimistic update/rollback.
+  const weeklyBurnRef = useRef(weeklyBurn);
+  weeklyBurnRef.current = weeklyBurn;
 
   // Confirm completion (with optional duration override). Defined before
   // handleCheckTap because that handler depends on it.
@@ -460,79 +556,61 @@ export default function ActivityScreen() {
           : a
       )
     );
-    // Award coins for activity completion (fire-and-forget)
-    if (user?.id) {
-      awardCoins(user.id, 'activity_complete', item.id);
+    // Keep the weekly burn card live too — it's derived from a separate fetch
+    // that would otherwise stay stale until the next tab focus. Kcal prefers
+    // measured moving time (tracked walks); the minutes tally stays elapsed.
+    const doneDuration = durationOverride ?? item.duration_minutes;
+    const doneKcal = Math.round(
+      estimateActivityBurn(
+        item.activity_type,
+        item.intensity,
+        durationOverride ?? item.active_minutes ?? item.duration_minutes,
+        activePet?.current_weight_kg || 0,
+      ),
+    );
+    const prevBurn = weeklyBurnRef.current;
+    if (prevBurn) {
+      setWeeklyBurn({
+        ...prevBurn,
+        completedKcal: prevBurn.completedKcal + doneKcal,
+        completedMinutes: prevBurn.completedMinutes + (doneDuration || 0),
+      });
     }
-    // Completion changes activity minutes / completion-rate (the Home activity
-    // ring), which aren't updated optimistically → force a refetch on next focus.
-    usePetContextStore.getState().invalidateContext();
+    // Coins + Home-ring invalidation + reminder cancel — shared with tracked
+    // walks so both completion paths celebrate and settle identically.
+    fireCompletionSideEffects({ userId: user?.id, activityId: item.id });
 
     try {
-      const updatePayload: any = { status: 'completed' };
-      if (durationOverride !== null) {
-        updatePayload.duration_minutes = durationOverride;
-      }
-
-      const { error } = await supabase
-        .from('activities')
-        .update(updatePayload)
-        .eq('id', item.id);
-      if (error) throw error;
-
-      // Update daily_logs for water and walk
-      if (item.activity_type === 'water' || item.activity_type === 'walk') {
-        const { data: existingLog } = await supabase
-          .from('daily_logs')
-          .select('*')
-          .eq('pet_id', activePet!.id)
-          .eq('log_date', dateStr) // Use viewed date instead of fixed Today
-          .single();
-
-        if (existingLog) {
-          const updates: any = { updated_at: new Date().toISOString() };
-          if (item.activity_type === 'water' && item.water_ml) {
-            updates.water_ml = (existingLog.water_ml || 0) + item.water_ml;
-          }
-          if (item.activity_type === 'walk') {
-            updates.walks_count = (existingLog.walks_count || 0) + 1;
-          }
-          await supabase.from('daily_logs').update(updates).eq('id', existingLog.id);
-
-          // Update context store incrementally
-          if (item.activity_type === 'water' && item.water_ml) {
-            usePetContextStore.getState().updateWater((existingLog.water_ml || 0) + item.water_ml);
-          }
-          if (item.activity_type === 'walk') {
-            usePetContextStore.getState().updateWalks((existingLog.walks_count || 0) + 1);
-          }
-        } else {
-          const inserts: any = { pet_id: activePet!.id, log_date: dateStr }; // Use viewed date
-          if (item.activity_type === 'water') inserts.water_ml = item.water_ml || 0;
-          if (item.activity_type === 'walk') inserts.walks_count = 1;
-          await supabase.from('daily_logs').insert(inserts);
-
-          // Update context store for new log
-          if (item.activity_type === 'water' && item.water_ml) {
-            usePetContextStore.getState().updateWater(item.water_ml);
-          }
-          if (item.activity_type === 'walk') {
-            usePetContextStore.getState().updateWalks(1);
-          }
-        }
-      }
-
-    } catch (e: any) {
+      // Shared persistence pipeline (status update + log_intake increment +
+      // authoritative context-store totals) — extracted to lib/completeActivity
+      // so walk auto-completion runs the exact same code path.
+      await persistActivityCompletion({
+        activity: item,
+        petId: activePet!.id,
+        dateStr, // Use viewed date instead of fixed Today
+        durationMinutes: durationOverride,
+      });
+    } catch (e: unknown) {
       // Network failed — roll the optimistic completion back so the UI stays truthful.
       setActivities(prevActivities);
-      setErrorMsg(e?.message || 'Failed to complete activity.');
-      setShowError(true);
+      setWeeklyBurn(prevBurn);
+      presentFailure(e, 'log', () => confirmCompletion(item, durationOverride));
     }
-  }, [activePet, dateStr, user, awardCoins]);
+  }, [activePet, dateStr, user]);
 
-  // Handle tap on the check circle. Stable so memoized rows don't re-render.
   const handleCheckTap = useCallback((item: any) => {
     if (!hasFullAccess) { router.push('/paywall' as any); return; }
+
+    // Safety check: block marking future items as done
+    if (item.scheduled_date > getLocalYMD(new Date())) {
+      setFailure({
+        title: 'Not yet',
+        message: 'You can’t mark an activity done for a future date.',
+        actions: [{ label: 'OK', action: 'dismiss' }],
+      });
+      return;
+    }
+
     if (TIME_BASED_TYPES.includes(item.activity_type)) {
       // Show inline duration confirmation
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -549,6 +627,46 @@ export default function ActivityScreen() {
     setExpandedItemId(isExpanded ? null : item.id);
   }, []);
   const handleCancelConfirm = useCallback(() => setConfirmingTaskId(null), []);
+
+  // One-tap tracked walk — GPS measures it and completes the slot on its own.
+  const handleTrackWalk = useCallback(() => {
+    router.push((hasFullAccess ? '/walk' : '/paywall') as any);
+  }, [router, hasFullAccess]);
+
+  // First-time + edit-from-empty flow: open routine sheet, save prefs, then
+  // call generateSchedule in the same tap. When prefs already exist the
+  // "Generate" button calls generateSchedule directly.
+  const handleGenerateTap = useCallback(() => {
+    if (!activePet || !checkAccess()) return;
+    if (!ownerPrefs) {
+      setRoutineSheetOpen(true);
+    } else {
+      generateSchedule();
+    }
+    // generateSchedule defined below — handleGenerateTap is hoisted via closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePet, ownerPrefs, hasFullAccess]);
+
+  const handleRoutineSubmit = useCallback(async (row: OwnerPrefsRow) => {
+    if (!user?.id) return;
+    setRoutineSubmitting(true);
+    const ok = await upsertPrefs(user.id, row);
+    setRoutineSubmitting(false);
+    setRoutineSheetOpen(false);
+    if (!ok) {
+      retryRef.current = () => handleRoutineSubmit(row);
+      setFailure({
+        title: 'Couldn’t save your routine',
+        message: 'Nothing was lost — try again.',
+        actions: [{ label: 'Try again', action: 'retry' }, { label: 'Not now', action: 'dismiss' }],
+      });
+      return;
+    }
+    // Generate the plan with the freshly-saved prefs. Use a microtask so the
+    // sheet has time to unmount before the generate spinner takes over.
+    setTimeout(() => generateSchedule(), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, upsertPrefs]);
 
   // Generate AI Schedule
   const generateSchedule = async () => {
@@ -569,6 +687,16 @@ export default function ActivityScreen() {
         body: JSON.stringify({
           petProfile: activePet,
           daysToGenerate: 7,
+          // Anchor the plan to the phone's calendar date — the edge function's
+          // UTC "today" is a day off for most timezones. localTime lets the
+          // builder start today's plan from NOW instead of back-filling
+          // already-past slots.
+          localDate: getLocalYMD(new Date()),
+          localTime: new Date().toTimeString().slice(0, 8),
+          // Structured clinical exercise restrictions, enforced server-side.
+          activityRestrictions: deriveActivityRestrictions(activePet.medical_conditions),
+          // Real planned daily deficit for an honest "% of deficit" readout.
+          dailyDeficitKcal: computeDailyDeficitKcal(activePet),
         }),
       });
 
@@ -598,17 +726,15 @@ export default function ActivityScreen() {
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Schedule generation failed.');
 
-      // Capture burn summary for display
-      if (data.activity_burn) {
-        setLastBurnSummary({
-          weeklyKcal: data.activity_burn.weekly_kcal,
-          dailyKcal: data.activity_burn.daily_kcal,
-          contributionPct: data.activity_burn.contribution_pct,
-          deficitPct: data.activity_burn.deficit_contribution_pct,
-          totalMinutes: data.activity_burn.total_minutes,
-          byType: data.activity_burn.by_type,
-        });
-      }
+      // The successful edge-function response confirms the personalised rows
+      // were generated and saved. No plan/activity details leave the app.
+      trackFirebaseEvent('activity_plan_created');
+
+      // Pull the fresh plan into the timeline BEFORE showing the modal, so
+      // dismissing it reveals a populated screen instead of triggering a
+      // visible refetch-and-pop. Await deliberately — the spinner keeps
+      // running the extra beat and the transition lands settled.
+      await Promise.all([fetchData(), fetchWeeklyStats()]);
 
       // Show branded success modal instead of native Alert
       setScheduleSuccessData({
@@ -622,18 +748,11 @@ export default function ActivityScreen() {
       setShowScheduleSuccess(true);
       // New schedule changes today's activities → refresh Home's "up next".
       usePetContextStore.getState().invalidateContext();
-    } catch (e: any) {
-      let msg = e?.message || 'Schedule generation failed.';
-
-      // Surface common Supabase Edge Function errors with actionable guidance
-      if (msg.includes('is not configured') || msg.includes('not found') || msg.includes('function not found')) {
-        msg = `Edge function not deployed or missing environment variables.\n\nDeploy with:\nnpx supabase functions deploy generate-schedule`;
-      } else if (msg.includes('GEMINI_API_KEY')) {
-        msg = `AI API key not configured.\n\nSet GEMINI_API_KEY in Supabase Edge Function settings.`;
-      }
-
-      setErrorMsg(msg);
-      setShowError(true);
+    } catch (e: unknown) {
+      // Deployment hints ("function not found", missing env) live in the
+      // reportError technical log for developers — users get calm copy.
+      const appErr = toAppError(e, { errorCode: await extractInvokeErrorCode(e) });
+      presentFailure(appErr, 'schedule', () => generateSchedule());
     } finally {
       setIsGenerating(false);
     }
@@ -655,6 +774,10 @@ export default function ActivityScreen() {
 
       if (!result.success) throw new Error(result.error || 'Adjustment failed.');
 
+      // Refresh the timeline before the success modal appears (same reasoning
+      // as generateSchedule — no refetch-pop after dismissing the modal).
+      await fetchData();
+
       setShowAdjustBanner(false);
       setAdjustDismissed(true);
 
@@ -666,9 +789,8 @@ export default function ActivityScreen() {
       setShowAdjustSuccess(true);
       // Adjusted plan changes today's activities → refresh Home's "up next".
       usePetContextStore.getState().invalidateContext();
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'Adjustment failed.');
-      setShowError(true);
+    } catch (e: unknown) {
+      presentFailure(e, 'schedule', () => adjustSchedule());
     } finally {
       setIsAdjusting(false);
     }
@@ -711,29 +833,41 @@ export default function ActivityScreen() {
       const { error } = await supabase.from('activities').insert(actPayload);
       if (error) throw error;
 
-      // Update daily_logs
+      // Update daily_logs — atomic increment via the log_intake RPC, with the
+      // original read-modify-write kept as fallback until it's deployed.
       if (selectedType === 'water' || selectedType === 'walk') {
-        const { data: existingLog } = await supabase
-          .from('daily_logs')
-          .select('*')
-          .eq('pet_id', activePet.id)
-          .eq('log_date', dateStr) // Use viewed date instead of fixed Today
-          .single();
+        const { error: intakeErr } = await supabase.rpc('log_intake', {
+          p_pet_id: activePet.id,
+          p_log_date: dateStr, // Use viewed date instead of fixed Today
+          p_kcal_delta: 0,
+          p_treat_delta: 0,
+          p_water_delta: selectedType === 'water' ? formWater : 0,
+          p_walk_delta: selectedType === 'walk' ? 1 : 0,
+        });
 
-        if (existingLog) {
-          const updates: any = { updated_at: new Date().toISOString() };
-          if (selectedType === 'water') {
-            updates.water_ml = (existingLog.water_ml || 0) + formWater;
+        if (intakeErr) {
+          const { data: existingLog } = await supabase
+            .from('daily_logs')
+            .select('*')
+            .eq('pet_id', activePet.id)
+            .eq('log_date', dateStr) // Use viewed date instead of fixed Today
+            .single();
+
+          if (existingLog) {
+            const updates: any = { updated_at: new Date().toISOString() };
+            if (selectedType === 'water') {
+              updates.water_ml = (existingLog.water_ml || 0) + formWater;
+            }
+            if (selectedType === 'walk') {
+              updates.walks_count = (existingLog.walks_count || 0) + 1;
+            }
+            await supabase.from('daily_logs').update(updates).eq('id', existingLog.id);
+          } else {
+            const inserts: any = { pet_id: activePet.id, log_date: dateStr }; // Use viewed date
+            if (selectedType === 'water') inserts.water_ml = formWater;
+            if (selectedType === 'walk') inserts.walks_count = 1;
+            await supabase.from('daily_logs').insert(inserts);
           }
-          if (selectedType === 'walk') {
-            updates.walks_count = (existingLog.walks_count || 0) + 1;
-          }
-          await supabase.from('daily_logs').update(updates).eq('id', existingLog.id);
-        } else {
-          const inserts: any = { pet_id: activePet.id, log_date: dateStr }; // Use viewed date
-          if (selectedType === 'water') inserts.water_ml = formWater;
-          if (selectedType === 'walk') inserts.walks_count = 1;
-          await supabase.from('daily_logs').insert(inserts);
         }
       }
 
@@ -751,9 +885,8 @@ export default function ActivityScreen() {
       }
       // A manual log changes today's activity/water stats → force a Home refetch.
       usePetContextStore.getState().invalidateContext();
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'Failed to log activity.');
-      setShowError(true);
+    } catch (e: unknown) {
+      presentFailure(e, 'log', () => handleLogActivity());
     } finally {
       setIsSubmitting(false);
     }
@@ -774,11 +907,23 @@ export default function ActivityScreen() {
   const targetCalories = activePet?.target_daily_calories || 0;
 
   const heroWater = dailyLog?.water_ml || 0;
-  const targetWater = Math.round((activePet?.current_weight_kg || 10) * 50);
+  const targetWater = computeWaterTargetMl(activePet?.current_weight_kg || 10, activePet?.diet_type);
 
   const heroPlay = activities
     .filter(a => ['walk', 'play', 'training'].includes(a.activity_type) && a.status === 'completed')
     .reduce((sum, a) => sum + (a.duration_minutes || 0), 0);
+
+  // Today's ACTUAL burn — completed activities only, computed on-device. The
+  // old version showed the plan-wide daily estimate from the last generation
+  // response, which was both stale and about planned (not done) work.
+  const heroBurn = Math.round(
+    activities
+      .filter(a => a.status === 'completed')
+      .reduce(
+        (sum, a) => sum + estimateActivityBurn(a.activity_type, a.intensity, a.active_minutes ?? a.duration_minutes, activePet?.current_weight_kg || 0),
+        0,
+      ),
+  );
 
   // Calculate target play based on generated activities (or fallback to 30)
   const targetPlay = activities
@@ -797,19 +942,28 @@ export default function ActivityScreen() {
   if (completionPct === 100 && totalScheduled > 0) heroMessage = "All done";
   if (totalScheduled === 0 && heroPlay > 0) heroMessage = "Active day";
 
-  // Date slider: 5 days centered around today
+  // Date slider: yesterday + today + the next 5 days — the full span of a
+  // freshly generated 7-day plan (the old 5-day strip hid days 5–7).
   const weekDates = useMemo(() => {
     const today = new Date();
-    return Array.from({ length: 5 }, (_, i) => {
+    return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(today);
       d.setDate(today.getDate() + i - 1);
       return d;
     });
   }, []);
+  const todayYMD = getLocalYMD(new Date());
 
   const calPct = Math.min(1, targetCalories > 0 ? heroCalories / targetCalories : 0);
   const waterPct = Math.min(1, targetWater > 0 ? heroWater / targetWater : 0);
   const playPct = Math.min(1, targetPlay > 0 ? heroPlay / targetPlay : 0);
+
+  // The pet's true weekly deficit (0 for maintain/gain plans) — the honest
+  // denominator for the burn card's "% of deficit" badge.
+  const weeklyDeficitKcal = useMemo(
+    () => (activePet ? computeDailyDeficitKcal(activePet) * 7 : 0),
+    [activePet],
+  );
 
   // Pet-voiced framing — the screen is "Bruno's mission today", not "your tasks"
   const petName = activePet?.name?.trim() || 'your pet';
@@ -850,8 +1004,11 @@ export default function ActivityScreen() {
           contentContainerStyle={styles.dateRow}
         >
           {weekDates.map((date, idx) => {
-            const isSelected = getLocalYMD(date) === dateStr;
-            const isFuture = new Date(date.setHours(0, 0, 0, 0)).getTime() > new Date().setHours(0, 0, 0, 0);
+            const ymd = getLocalYMD(date);
+            const isSelected = ymd === dateStr;
+            // String compare — the old Date.setHours() version mutated the
+            // memoized dates in place.
+            const isFuture = ymd > todayYMD;
             return (
               <TouchableOpacity
                 key={idx}
@@ -877,31 +1034,77 @@ export default function ActivityScreen() {
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
+        {/* Recalibration banner — a plan already exists but is being rebuilt for
+            a new weight. Quiet acknowledgment above the mission. */}
+        {recalibrating && activities.length > 0 && (
+          <Animated.View entering={FadeInDown.duration(420)} style={styles.recalibrateBanner}>
+            <BreathingPaw size={18} />
+            <Text style={styles.recalibrateBannerText}>
+              Updating {petName}&apos;s plan for the new weight…
+            </Text>
+          </Animated.View>
+        )}
+
         {/* ════ MISSION HERO — pet-voiced, the day's narrative ════ */}
         <Animated.View entering={FadeInDown.duration(420)}>
           {activities.length === 0 && !isLoading ? (
-            // Empty-state hero: prominent generate moment
-            <View style={styles.missionEmpty}>
-              <Text style={styles.missionEmptyEyebrow}>{petName.toUpperCase()}&apos;S WEEK</Text>
-              <Text style={styles.missionEmptyTitle}>
-                Build {petName}&apos;s{'\n'}first week.
-              </Text>
-              <Text style={styles.missionEmptyBody}>
-                Pawtchi plans walks, water, play, and grooming for {petName} —
-                tuned to their breed, weight, and goal.
-              </Text>
-              <PawtchiButton
-                title={isGenerating ? 'Planning…' : 'Generate 7-day plan'}
-                variant="primary"
-                size="large"
-                iconName={isGenerating ? undefined : 'auto-awesome'}
-                iconPosition="left"
-                loading={isGenerating}
-                onPress={generateSchedule}
-                style={{ marginTop: space.lg }}
-              />
-            </View>
-          ) : totalScheduled > 0 ? (
+            recalibrating ? (
+              // A plan already existed — it's being rebuilt for the new weight,
+              // NOT created from scratch. Say so, so the empty gap during the
+              // schedule delete/insert never reads as "no plan yet".
+              <View style={styles.missionEmpty}>
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionLabel}>{petName.toUpperCase()}&apos;S WEEK</Text>
+                  <View style={styles.sectionRule} />
+                </View>
+                <View style={styles.missionEmptyRow}>
+                  <View style={styles.missionEmptyIcon}>
+                    <BreathingPaw size={22} />
+                  </View>
+                  <View style={styles.missionEmptyText}>
+                    <Text style={styles.missionEmptyTitle}>Recalibrating {petName}&apos;s week…</Text>
+                    <Text style={styles.missionEmptyBody}>
+                      {petName}&apos;s new weight is in — Pawtchi is rebuilding this week&apos;s walks, water, and play to match. This only takes a moment.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              // Empty-state hero: prominent generate moment.
+              // When prefs are missing the CTA opens RoutineSheet first — the
+              // copy adapts so users know they're about to tell us about their day.
+              <View style={styles.missionEmpty}>
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionLabel}>{petName.toUpperCase()}&apos;S WEEK</Text>
+                  <View style={styles.sectionRule} />
+                </View>
+                <View style={styles.missionEmptyRow}>
+                  <View style={styles.missionEmptyIcon}>
+                    <RunningDogIcon size={22} color={color.navy} />
+                  </View>
+                  <View style={styles.missionEmptyText}>
+                    <Text style={styles.missionEmptyTitle}>Build {petName}&apos;s first week</Text>
+                    <Text style={styles.missionEmptyBody}>
+                      {ownerPrefs
+                        ? `Pawtchi plans walks, water, play, and grooming for ${petName} — tuned to their breed, weight, and goal.`
+                        : `Tell us a bit about your day and we'll build ${petName}'s plan to fit around it.`}
+                    </Text>
+                  </View>
+                </View>
+                <PawtchiButton
+                  title={isGenerating ? 'Planning…' : ownerPrefs ? 'Generate 7-day plan' : `Set up ${petName}'s plan`}
+                  variant="primary"
+                  size="large"
+                  loading={isGenerating}
+                  onPress={handleGenerateTap}
+                  style={{ marginTop: space.md }}
+                />
+              </View>
+            )
+          ) : activities.length > 0 ? (
+            // Renders for ANY day with activities — including one where every
+            // task was skipped (totalScheduled === 0), which previously fell
+            // through to a spinner that never resolved.
             <View style={styles.mission}>
               <View style={styles.missionHead}>
                 <Text style={styles.missionEyebrow}>{petName.toUpperCase()}&apos;S MISSION TODAY</Text>
@@ -920,6 +1123,10 @@ export default function ActivityScreen() {
                     A good day with you. Tomorrow&apos;s plan is ready when {petName} is.
                   </Text>
                 </>
+              ) : totalScheduled === 0 ? (
+                <Text style={styles.missionDoneBody}>
+                  Nothing left on today&apos;s plan. Tomorrow is a fresh start for {petName}.
+                </Text>
               ) : (
                 <>
                   <View style={styles.missionFractionRow}>
@@ -930,7 +1137,10 @@ export default function ActivityScreen() {
                     <Text style={styles.missionStatus}>{missionStatus}</Text>
                   </View>
                   <View style={styles.missionTrack}>
-                    <View style={[styles.missionFill, { width: `${completionPct}%` }]} />
+                    <Animated.View
+                      layout={LinearTransition.duration(350)}
+                      style={[styles.missionFill, { width: `${completionPct}%` }]}
+                    />
                   </View>
                 </>
               )}
@@ -951,27 +1161,39 @@ export default function ActivityScreen() {
                 <View style={styles.missionStatDivider} />
                 <View style={styles.missionStat}>
                   <Text style={styles.missionStatValue}>
-                    {lastBurnSummary?.dailyKcal ? `${lastBurnSummary.dailyKcal}` : '—'}
-                    {lastBurnSummary?.dailyKcal ? <Text style={styles.missionStatUnit}> kcal</Text> : null}
+                    {heroBurn > 0 ? `${heroBurn}` : '—'}
+                    {heroBurn > 0 ? <Text style={styles.missionStatUnit}> kcal</Text> : null}
                   </Text>
                   <Text style={styles.missionStatLabel}>activity burn</Text>
                 </View>
               </View>
             </View>
-          ) : (
-            // Loading or fallback
-            <View style={styles.missionLoading}>
-              <ActivityIndicator color={color.navy} />
-            </View>
-          )}
+          ) : null}
         </Animated.View>
 
-        {/* ════ UP NEXT — the single highest-priority action ════ */}
+        {/* START WALK lives in the docked tab-bar button (WalkTabDock),
+             rendered by the tab layout above the Activity tab. */}
+
+        {/* ════ UP NEXT — the single highest-priority action. Keyed by the
+             pending activity's id so completing one plays a proper hand-off
+             (old card fades out, next card slides in) instead of the text
+             swapping in place. ════ */}
         {nextPending && (
-          <Animated.View entering={FadeInDown.duration(420).delay(60)} exiting={FadeOut.duration(180)} layout={LinearTransition.duration(220)}>
+          <Animated.View key={nextPending.id} entering={FadeInDown.duration(420).delay(60)} exiting={FadeOut.duration(180)} layout={LinearTransition.duration(220)}>
             <View style={styles.sectionHead}>
               <Text style={styles.sectionLabel}>UP NEXT</Text>
               <View style={styles.sectionRule} />
+              <TouchableOpacity
+                style={[styles.sectionAddBtn, (isLoading || !activePet) && styles.sectionAddBtnDisabled]}
+                activeOpacity={0.85}
+                disabled={isLoading || !activePet}
+                onPress={() => setIsModalVisible(true)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Log an activity"
+              >
+                <MaterialIcons name="add" size={18} color={color.navy} />
+              </TouchableOpacity>
             </View>
             {(() => {
               const typeDef = ACTIVITY_TYPES.find(t => t.id === nextPending.activity_type) || ACTIVITY_TYPES[0];
@@ -982,6 +1204,7 @@ export default function ActivityScreen() {
               if (nextPending.duration_minutes) meta.push(`${nextPending.duration_minutes} min`);
               if (nextPending.intensity) meta.push(nextPending.intensity);
               if (nextPending.water_ml) meta.push(`${nextPending.water_ml} ml`);
+              const isFuture = nextPending.scheduled_date > getLocalYMD(new Date());
               return (
                 <View style={styles.upNextCard}>
                   <View style={styles.upNextRow}>
@@ -997,14 +1220,36 @@ export default function ActivityScreen() {
                     </View>
                   </View>
                   {confirmingTaskId !== nextPending.id ? (
-                    <TouchableOpacity
-                      style={styles.upNextCta}
-                      onPress={() => handleCheckTap(nextPending)}
-                      activeOpacity={0.9}
-                    >
-                      <MaterialIcons name="check" size={17} color={color.navy} />
-                      <Text style={styles.upNextCtaText}>Mark done</Text>
-                    </TouchableOpacity>
+                    !isFuture ? (
+                      WALK_TRACKING_ENABLED && nextPending.activity_type === 'walk' ? (
+                        <View style={styles.upNextCtaRow}>
+                          <TouchableOpacity
+                            style={[styles.upNextCta, { flex: 1 }]}
+                            onPress={handleTrackWalk}
+                            activeOpacity={0.9}
+                          >
+                            <MaterialIcons name="play-arrow" size={17} color={color.navy} />
+                            <Text style={styles.upNextCtaText}>Track walk</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.upNextCtaGhost}
+                            onPress={() => handleCheckTap(nextPending)}
+                            activeOpacity={0.85}
+                          >
+                            <Text style={styles.upNextCtaGhostText}>Mark done</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={styles.upNextCta}
+                          onPress={() => handleCheckTap(nextPending)}
+                          activeOpacity={0.9}
+                        >
+                          <MaterialIcons name="check" size={17} color={color.navy} />
+                          <Text style={styles.upNextCtaText}>Mark done</Text>
+                        </TouchableOpacity>
+                      )
+                    ) : null
                   ) : (
                     <SmartConfirm
                       item={nextPending}
@@ -1018,6 +1263,33 @@ export default function ActivityScreen() {
                 </View>
               );
             })()}
+          </Animated.View>
+        )}
+
+        {/* ════ ROUTINE BANNER — for existing users without prefs ════ */}
+        {hasFetchedPrefs && !ownerPrefs && activities.length > 0 && !routineBannerDismissed && isToday && (
+          <Animated.View entering={FadeInDown.duration(420).delay(40)} style={styles.routineBanner}>
+            <View style={styles.routineBannerHead}>
+              <MaterialIcons name="schedule" size={18} color={color.navy} />
+              <Text style={styles.routineBannerTitle}>Make this plan fit your day</Text>
+              <TouchableOpacity
+                style={styles.routineBannerDismiss}
+                onPress={() => setRoutineBannerDismissed(true)}
+                hitSlop={8}
+              >
+                <MaterialIcons name="close" size={16} color={color.slateMuted} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.routineBannerDesc}>
+              {petName}&apos;s plan still runs on default times. Set your routine and we&apos;ll rebuild it around your day.
+            </Text>
+            <TouchableOpacity
+              style={styles.routineBannerCta}
+              onPress={() => setRoutineSheetOpen(true)}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.routineBannerCtaText}>Set up routine</Text>
+            </TouchableOpacity>
           </Animated.View>
         )}
 
@@ -1040,11 +1312,7 @@ export default function ActivityScreen() {
                 disabled={isAdjusting}
                 activeOpacity={0.9}
               >
-                {isAdjusting ? (
-                  <ActivityIndicator color={color.navy} size="small" />
-                ) : (
-                  <Text style={styles.adjustPrimaryText}>Adjust the plan</Text>
-                )}
+                <Text style={styles.adjustPrimaryText}>Adjust the plan</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.adjustSecondary}
@@ -1064,6 +1332,21 @@ export default function ActivityScreen() {
               <View style={styles.sectionRule} />
               {pendingCount > 0 && (
                 <Text style={styles.sectionMeta}>{pendingCount} pending</Text>
+              )}
+              {/* When UP NEXT is hidden (no pending), the add button lives here
+                  so logging is always one tap away. */}
+              {!nextPending && (
+                <TouchableOpacity
+                  style={[styles.sectionAddBtn, (isLoading || !activePet) && styles.sectionAddBtnDisabled]}
+                  activeOpacity={0.85}
+                  disabled={isLoading || !activePet}
+                  onPress={() => setIsModalVisible(true)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Log an activity"
+                >
+                  <MaterialIcons name="add" size={18} color={color.navy} />
+                </TouchableOpacity>
               )}
             </View>
             <View style={styles.timeline}>
@@ -1086,6 +1369,7 @@ export default function ActivityScreen() {
                     onSelectDuration={setConfirmingDuration}
                     onConfirm={confirmCompletion}
                     onCancel={handleCancelConfirm}
+                    onTrackWalk={handleTrackWalk}
                   />
                 );
               })}
@@ -1093,8 +1377,10 @@ export default function ActivityScreen() {
           </Animated.View>
         )}
 
-        {/* ════ ACTIVITY BURN — micro context card, only when interesting ════ */}
-        {lastBurnSummary && lastBurnSummary.weeklyKcal > 0 && (
+        {/* ════ ACTIVITY BURN — micro context card, derived from real rows.
+             Shows what was actually DONE this week; the badge relates it to
+             the pet's true planned deficit (suppressed for maintain/gain). ════ */}
+        {weeklyBurn && weeklyBurn.completedKcal > 0 && (
           <Animated.View entering={FadeInDown.duration(420).delay(160)} style={styles.burnCard}>
             <View style={styles.burnCardLeft}>
               <View style={styles.burnIcon}>
@@ -1102,30 +1388,37 @@ export default function ActivityScreen() {
               </View>
               <View>
                 <Text style={styles.burnLabel}>{petName}&apos;s burn this week</Text>
-                <Text style={styles.burnSub}>{lastBurnSummary.totalMinutes} min · {lastBurnSummary.dailyKcal} kcal/day</Text>
+                <Text style={styles.burnSub}>
+                  {weeklyBurn.completedMinutes} min done · {weeklyBurn.completedKcal} kcal burned
+                </Text>
               </View>
             </View>
             <View style={styles.burnBadge}>
-              <Text style={styles.burnBadgeText}>{lastBurnSummary.deficitPct}% of deficit</Text>
+              <Text style={styles.burnBadgeText}>
+                {weeklyDeficitKcal > 0
+                  ? `${Math.min(100, Math.round((weeklyBurn.completedKcal / weeklyDeficitKcal) * 100))}% of deficit`
+                  : `${weeklyBurn.plannedKcal} kcal planned`}
+              </Text>
             </View>
           </Animated.View>
         )}
 
-        {isLoading && (
-          <ActivityIndicator style={{ marginTop: 32 }} size="small" color={color.navy} />
-        )}
+        {/* Full-screen loader ONLY for the real, user-triggered schedule
+            rebuild (isAdjusting) — never for the passive data fetch. Blocking a
+            navigable screen with an opaque loader on every tab focus made the
+            Activity tab feel slow when there's nothing to wait for; the screen
+            now renders immediately and fills in (the empty-state hero is gated
+            on !isLoading, so it never flashes during that brief first fetch). */}
+        <PawLoader
+          visible={isAdjusting}
+          message={[
+            'Analyzing recent activity…',
+            'Balancing calorie burn…',
+            'Building custom schedule…',
+            'Finalizing adjustments…'
+          ]}
+        />
       </ScrollView>
-
-      {/* Log activity FAB — yellow pill, sticks above the tab bar */}
-      <TouchableOpacity
-        style={[styles.fab, { bottom: insets.bottom + 78 }, (isLoading || !activePet) && styles.fabDisabled]}
-        activeOpacity={0.9}
-        disabled={isLoading || !activePet}
-        onPress={() => setIsModalVisible(true)}
-      >
-        <MaterialIcons name="add" size={20} color={color.navy} />
-        <Text style={styles.fabText}>Log activity</Text>
-      </TouchableOpacity>
 
       {/* LOG ACTIVITY MODAL / BOTTOM SHEET */}
       <Modal
@@ -1183,7 +1476,7 @@ export default function ActivityScreen() {
 
                   {/* Tertiary Scroll Row: Care & Health */}
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.bentoTagsScroll}>
-                    {ACTIVITY_TYPES.filter(t => !['walk', 'play', 'water'].includes(t.id)).map(type => (
+                    {ACTIVITY_TYPES.filter(t => !['walk', 'play', 'water', ...HIDDEN_LOG_TYPES].includes(t.id)).map(type => (
                       <TouchableOpacity
                         key={type.id}
                         style={[styles.bentoTag, { backgroundColor: type.color }]}
@@ -1315,13 +1608,11 @@ export default function ActivityScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Branded Schedule Success Modal */}
+      {/* Branded Schedule Success Modal — data is already refreshed before
+          the modal opens, so closing it just closes it. */}
       <PawtchiSuccessModal
         visible={showScheduleSuccess}
-        onClose={() => {
-          setShowScheduleSuccess(false);
-          fetchData();
-        }}
+        onClose={() => setShowScheduleSuccess(false)}
         title="Schedule created"
         icon={{ name: 'check-circle', color: '#F7F602' }}
         lines={[
@@ -1331,27 +1622,23 @@ export default function ActivityScreen() {
           },
           ...(scheduleSuccessData && scheduleSuccessData.weeklyKcal > 0
             ? [{
-                text: `This week's activities burn ~${scheduleSuccessData.weeklyKcal} kcal (~${scheduleSuccessData.dailyKcal} kcal/day, ${scheduleSuccessData.totalMinutes} minutes total). Activity covers ${scheduleSuccessData.deficitPct}% of your weekly calorie deficit goal.`,
+                // Only mention the deficit when the plan actually has one —
+                // maintain/gain plans aren't hypocaloric.
+                text: `This week's activities burn ~${scheduleSuccessData.weeklyKcal} kcal (~${scheduleSuccessData.dailyKcal} kcal/day, ${scheduleSuccessData.totalMinutes} minutes total).${scheduleSuccessData.deficitPct > 0 ? ` Activity covers ${scheduleSuccessData.deficitPct}% of the weekly calorie deficit.` : ''}`,
                 type: 'burn' as const,
               }]
             : []),
         ]}
         primaryAction={{
           label: 'Done',
-          onPress: () => {
-            setShowScheduleSuccess(false);
-            fetchData();
-          },
+          onPress: () => setShowScheduleSuccess(false),
         }}
       />
 
       {/* Branded Schedule Adjusted Modal */}
       <PawtchiSuccessModal
         visible={showAdjustSuccess}
-        onClose={() => {
-          setShowAdjustSuccess(false);
-          fetchData();
-        }}
+        onClose={() => setShowAdjustSuccess(false)}
         title="Schedule adjusted"
         icon={{ name: 'self-improvement', color: '#F7F602' }}
         lines={[
@@ -1359,21 +1646,32 @@ export default function ActivityScreen() {
         ]}
         primaryAction={{
           label: 'Done',
-          onPress: () => {
-            setShowAdjustSuccess(false);
-            fetchData();
-          },
+          onPress: () => setShowAdjustSuccess(false),
         }}
       />
 
       {/* Branded Error Modal */}
       <PawtchiModal
-        visible={showError}
-        onClose={() => setShowError(false)}
-        title="Something went wrong"
+        visible={failure != null}
+        onClose={() => setFailure(null)}
+        title={failure?.title ?? ''}
         icon={{ name: 'error-outline', color: '#ef4444' }}
-        message={errorMsg}
-        showCloseButton
+        message={failure?.message}
+        actions={(failure?.actions ?? []).map(a => ({
+          label: a.label,
+          onPress: () => handleRecovery(a.action),
+        }))}
+      />
+
+      <RoutineSheet
+        visible={routineSheetOpen}
+        onClose={() => setRoutineSheetOpen(false)}
+        petName={petName}
+        species={activePet?.species === 'cat' ? 'cat' : 'dog'}
+        existingPrefs={ownerPrefs}
+        primaryLabel={ownerPrefs ? 'Save changes' : `Build ${petName}'s plan`}
+        onSubmit={handleRoutineSubmit}
+        isSubmitting={routineSubmitting}
       />
 
     </View>
@@ -1574,32 +1872,40 @@ const styles = StyleSheet.create({
 
   // Empty-state hero (no schedule yet)
   missionEmpty: {
-    backgroundColor: color.navy,
-    borderRadius: 28,
-    padding: space.xxl,
     marginTop: space.lg,
-    ...shadow.raised,
   },
-  missionEmptyEyebrow: {
-    fontFamily: font.semibold,
-    fontSize: 10.5,
-    letterSpacing: 2.4,
-    color: color.yellow,
-    marginBottom: space.md,
+  missionEmptyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.md,
+    paddingHorizontal: 2,
+  },
+  missionEmptyIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#f5f3ee',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  missionEmptyText: {
+    flex: 1,
+    minWidth: 0,
   },
   missionEmptyTitle: {
-    fontFamily: font.display,
-    fontSize: 42,
-    lineHeight: 42,
-    letterSpacing: 1,
-    color: color.cream,
-    marginBottom: space.md,
+    fontFamily: font.bold,
+    fontSize: 17,
+    color: color.navy,
+    letterSpacing: -0.3,
+    lineHeight: 22,
   },
   missionEmptyBody: {
-    fontFamily: font.regular,
-    fontSize: 13.5,
-    lineHeight: 20,
-    color: color.creamDim,
+    fontFamily: font.medium,
+    fontSize: 13,
+    lineHeight: 19,
+    color: color.slateMuted,
+    marginTop: 4,
   },
 
   // ════ Section heads ════
@@ -1685,6 +1991,26 @@ const styles = StyleSheet.create({
     color: color.navy,
     letterSpacing: 0.2,
   },
+  // Walk slots get the tracked-walk primary + a quiet manual fallback.
+  upNextCtaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
+  upNextCtaGhost: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+  },
+  upNextCtaGhostText: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slateMuted,
+  },
 
   // ════ Smart confirm (inline duration picker) ════
   smartConfirm: {
@@ -1757,7 +2083,69 @@ const styles = StyleSheet.create({
     color: color.slateMuted,
   },
 
+  // ════ Routine banner (existing-user nudge) ════
+  routineBanner: {
+    backgroundColor: color.surface,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    padding: space.lg,
+    marginTop: space.lg,
+    ...shadow.card,
+  },
+  routineBannerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  routineBannerTitle: {
+    fontFamily: font.bold,
+    fontSize: 14.5,
+    color: color.ink,
+    flex: 1,
+  },
+  routineBannerDismiss: {
+    width: 24, height: 24,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  routineBannerDesc: {
+    fontFamily: font.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: color.slateMuted,
+    marginBottom: space.md,
+  },
+  routineBannerCta: {
+    alignSelf: 'flex-start',
+    backgroundColor: color.navy,
+    paddingHorizontal: space.md,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+  },
+  routineBannerCtaText: {
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.cream,
+  },
+
   // ════ Adjust banner ════
+  recalibrateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: color.yellowSoft,
+    borderRadius: radius.lg,
+    paddingVertical: 12,
+    paddingHorizontal: space.lg,
+    marginTop: space.md,
+  },
+  recalibrateBannerText: {
+    flex: 1,
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.navy,
+  },
   adjustBanner: {
     backgroundColor: color.surface,
     borderRadius: radius.xl,
@@ -1943,6 +2331,28 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     color: color.navy,
   },
+  tlDetailActionsRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: space.sm,
+  },
+  tlDetailGhost: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    alignSelf: 'flex-start' as const,
+    gap: 5,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  tlDetailGhostText: {
+    fontFamily: font.semibold,
+    fontSize: 12.5,
+    color: color.slateMuted,
+  },
   tlContext: {
     fontFamily: font.medium,
     fontSize: 11.5,
@@ -2002,32 +2412,19 @@ const styles = StyleSheet.create({
     color: color.slate,
   },
 
-  // ════ Floating "Log activity" pill ════
-  fab: {
-    position: 'absolute',
-    right: space.xxl,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  // ════ Section-header "+" add button ════
+  // Compact yellow chip on the right end of a section rule — the quiet
+  // replacement for the old floating "Log activity" pill.
+  sectionAddBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     backgroundColor: color.yellow,
-    paddingLeft: 12,
-    paddingRight: 16,
-    height: 48,
-    borderRadius: radius.pill,
-    shadowColor: color.yellow,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 14,
-    elevation: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  fabDisabled: {
-    opacity: 0.45,
-  },
-  fabText: {
-    fontFamily: font.bold,
-    fontSize: 13.5,
-    color: color.navy,
-    letterSpacing: 0.2,
+  sectionAddBtnDisabled: {
+    opacity: 0.4,
   },
 
   // ════ Bottom-sheet modal ════

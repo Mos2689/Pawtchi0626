@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { withTimeout } from '../../lib/withTimeout';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Modal, TextInput, ActivityIndicator, Alert,
+  Modal, TextInput, Alert, Linking,
   KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,8 +12,10 @@ import { setStatusBarStyle } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import Svg, { Path, Defs, LinearGradient as SvgLinearGradient, Stop, Circle } from 'react-native-svg';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
+import { PawtchiModal } from '../../components/PawtchiModal';
+import { WeightLoggedModal } from '../../components/WeightLoggedModal';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { PawLoader } from '../../components/loader/PawLoader';
 import * as ImagePicker from 'expo-image-picker';
 
 import { color, font, radius, shadow, space } from '../../constants/design';
@@ -23,19 +26,22 @@ import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
 import { supabase } from '../../lib/supabase';
 import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
+import { validateWeeklyLossRate } from '../../lib/weightLossRate';
+import { getLocalYMD, localDayStartUtcISO } from '../../lib/dateUtils';
+import { waterPerSessionMl, computeWaterTargetMl } from '../../lib/hydration';
+import { prepareImageForUpload } from '../../lib/imagePrep';
+import { deriveLifeStage, getLifeStageCalorieMultiplier, getAgeMonths } from '../../lib/lifeStage';
+import { getBreedDefaults, sizeCategoryFromWeight } from '../../lib/breedData';
 import { regenerateSchedule } from '../../lib/scheduleAdjuster';
 import { getReportFreshness } from '../../lib/vetReportFreshness';
+import { estimateIdealWeight } from '../../lib/idealWeight';
+import { evaluateMilestone, type MilestoneResult } from '../../lib/milestoneEngine';
 import { track } from '../../lib/analytics';
+import { appError, errorCopy, fromEdgeBody, isAppError, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../../lib/appError';
 import { haptic } from '../../lib/haptics';
 import { VetScanResultModal, type VetScanResult } from '../../components/VetScanResultModal';
+import { BcsRescoreSheet, type RescoreTrigger } from '../../components/BcsRescoreSheet';
 import WeeklyNutritionChart, { DayMacro } from '../../components/WeeklyNutritionChart';
-
-function getLocalYMD(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 // Health — one continuous canvas, not a stack of boxes.
 // A full-bleed navy canopy carries the weight story; a light sheet rises over
@@ -120,6 +126,17 @@ export default function HealthScreen() {
   const [weightNotes, setWeightNotes] = useState('');
   const [isSavingWeight, setIsSavingWeight] = useState(false);
 
+  // ── Milestone loop state ──
+  // Earliest weight log = plan-start anchor for milestone progress.
+  const [firstWeightLog, setFirstWeightLog] = useState<{ weight_kg: number; logged_at: string } | null>(null);
+  // Open re-score sheet: why it opened + the engine result behind it.
+  const [milestonePrompt, setMilestonePrompt] = useState<{ trigger: RescoreTrigger; result: MilestoneResult } | null>(null);
+  // Milestone detected during a vet scan — promoted to the sheet after the
+  // scan-result modal closes so the two don't stack.
+  const [pendingMilestone, setPendingMilestone] = useState<{ trigger: RescoreTrigger; result: MilestoneResult } | null>(null);
+  // Transparency note after a recalc: "Daily target adjusted −40 kcal".
+  const [kcalDeltaNote, setKcalDeltaNote] = useState<number | null>(null);
+
   // Insight generation
   const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
 
@@ -133,13 +150,23 @@ export default function HealthScreen() {
     weightDiff: number | null;
     scheduleRegenerated: boolean;
     goal: string;
+    willRecalibrate: boolean;
   } | null>(null);
 
   // Branded vet scan success/error modals
   const [showVetScanSuccess, setShowVetScanSuccess] = useState(false);
   const [vetScanResult, setVetScanResult] = useState<VetScanResult | null>(null);
-  const [showVetScanError, setShowVetScanError] = useState(false);
-  const [vetScanErrorMsg, setVetScanErrorMsg] = useState('');
+  // Branded failure sheet for the scan / report paths. retryRef replays the
+  // operation that failed; pick-again reopens the source chooser.
+  const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  const retryRef = useRef<null | (() => void)>(null);
+  const handleRecovery = useCallback((action: RecoveryActionId) => {
+    setFailure(null);
+    if (action === 'retry') retryRef.current?.();
+    else if (action === 'pick_again') scanVetReport();
+    else if (action === 'open_settings') Linking.openSettings().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Delete-report confirm flow
   const [reportToDelete, setReportToDelete] = useState<{ id: string; date: string } | null>(null);
 
@@ -168,15 +195,17 @@ export default function HealthScreen() {
     const fourteenDaysAgo = new Date(today);
     fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
 
-    const todayStr = today.toISOString().split('T')[0];
-    const sevenStr = sevenDaysAgo.toISOString().split('T')[0];
-    const fourteenStr = fourteenDaysAgo.toISOString().split('T')[0];
+    // Local-day strings — log_date / scheduled_date are DATE columns; using
+    // UTC dates here would mis-bucket boundary days for owners east of UTC.
+    const todayStr = getLocalYMD(today);
+    const sevenStr = getLocalYMD(sevenDaysAgo);
+    const fourteenStr = getLocalYMD(fourteenDaysAgo);
     const hasAllergies = !!(activePet.allergies && activePet.allergies.length > 0);
 
     try {
       // All reads are independent → fire them in parallel instead of a serial
       // waterfall, then process + batch the setState calls so the screen paints once.
-      const [wLogsRes, scans7Res, actsThisRes, actsLastRes, waterRes, insightRes, allergyRes, vReportsRes] = await Promise.all([
+      const [wLogsRes, scans7Res, actsThisRes, actsLastRes, waterRes, insightRes, allergyRes, vReportsRes, firstLogRes] = await Promise.all([
         supabase
           .from('weight_logs')
           .select('*')
@@ -187,7 +216,7 @@ export default function HealthScreen() {
           .from('food_scans')
           .select('created_at, ai_estimated_calories, protein_g, carbs_g, fat_g')
           .eq('pet_id', activePet.id)
-          .gte('created_at', `${sevenStr}T00:00:00`),
+          .gte('created_at', localDayStartUtcISO(sevenDaysAgo)),
         supabase
           .from('activities')
           .select('duration_minutes, scheduled_date')
@@ -231,15 +260,25 @@ export default function HealthScreen() {
           .eq('pet_id', activePet.id)
           .order('report_date', { ascending: false })
           .limit(5),
+        // Earliest weight log — plan-start anchor for milestone progress.
+        supabase
+          .from('weight_logs')
+          .select('weight_kg, logged_at')
+          .eq('pet_id', activePet.id)
+          .order('logged_at', { ascending: true })
+          .limit(1),
       ]);
 
-      // 2. Weekly Macros (Last 7 days of food_scans)
+      // 2. Weekly Macros (Last 7 days of food_scans).
+      // Bucket by LOCAL day, not UTC — owners east of UTC otherwise see scans
+      // shifted to the wrong day (e.g. a 02:00 IST scan would land in
+      // "yesterday's" bucket).
       const scans7 = scans7Res.data;
       const daysArr: DayMacro[] = [];
       for (let i = 6; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = getLocalYMD(d);
         daysArr.push({
           date: dateStr,
           dayLabel: d.toLocaleDateString('en-US', { weekday: 'narrow' }),
@@ -252,7 +291,7 @@ export default function HealthScreen() {
       }
 
       (scans7 || []).forEach(scan => {
-        const scanDate = new Date(scan.created_at).toISOString().split('T')[0];
+        const scanDate = getLocalYMD(new Date(scan.created_at));
         const dayIdx = daysArr.findIndex(d => d.date === scanDate);
         if (dayIdx >= 0) {
           daysArr[dayIdx].calories += (scan.ai_estimated_calories || 0);
@@ -272,7 +311,7 @@ export default function HealthScreen() {
       for (let i = 6; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = getLocalYMD(d);
         const dayActs = (actsThisWeek || []).filter((a: any) => a.scheduled_date === dateStr);
         const dayMins = dayActs.reduce((s: number, a: any) => s + (a.duration_minutes || 0), 0);
         actDaysArr.push({
@@ -287,13 +326,15 @@ export default function HealthScreen() {
       const totalWater = (waterLogs || []).reduce((s, l) => s + (l.water_ml || 0), 0);
       const daysWithData = (waterLogs || []).filter(l => l.water_ml > 0).length || 1;
       const avgMl = Math.round(totalWater / daysWithData);
-      const targetMl = Math.round((activePet.current_weight_kg || 10) * 50);
+      // Single source for the drinking target — diet-aware (wet-fed pets get most
+      // water from food), same function Home uses. Never inline weight × 50.
+      const targetMl = computeWaterTargetMl(activePet.current_weight_kg || 10, activePet.diet_type);
 
       const hydDaysArr: { day: string; ml: number; targetMl: number; isToday: boolean }[] = [];
       for (let i = 6; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = getLocalYMD(d);
         const dayLog = (waterLogs || []).find((l: any) => l.log_date === dateStr);
         hydDaysArr.push({
           day: d.toLocaleDateString('en-US', { weekday: 'narrow' }),
@@ -312,8 +353,30 @@ export default function HealthScreen() {
         }).slice(0, 3);
       }
 
-      // Batch all state updates together so the screen paints in one pass.
-      setWeightLogs(wLogsRes.data || []);
+      // Onboarding weight is written to `pets.current_weight_kg` but NOT to
+      // `weight_logs` — so a brand-new pet has an empty logs table and this
+      // screen would say "NO WEIGHT YET" even though the value the owner just
+      // entered is right there on the pet row. Synthesize a virtual first
+      // entry from the pet's onboarding weight + created_at so it anchors the
+      // trend, the list, and the milestone loop like any other log.
+      const realLogs = wLogsRes.data || [];
+      const realFirst = firstLogRes.data?.[0] ?? null;
+      const onboardingLog =
+        realLogs.length === 0 && activePet.current_weight_kg > 0
+          ? {
+              id: `onboarding-${activePet.id}`,
+              pet_id: activePet.id,
+              weight_kg: activePet.current_weight_kg,
+              logged_at: activePet.created_at || new Date().toISOString(),
+              notes: null,
+              source: 'onboarding',
+            }
+          : null;
+      setWeightLogs(onboardingLog ? [onboardingLog] : realLogs);
+      setFirstWeightLog(realFirst ?? (onboardingLog ? {
+        weight_kg: onboardingLog.weight_kg,
+        logged_at: onboardingLog.logged_at,
+      } : null));
       setWeeklyMacros(daysArr);
       setActivityScore({ thisWeek: thisWeekMins, lastWeek: lastWeekMins });
       setWeeklyActivity(actDaysArr);
@@ -360,6 +423,7 @@ export default function HealthScreen() {
   const pickAndUploadVetReport = async (source: 'camera' | 'library') => {
     if (!activePet) return;
     if (isScanning) return;
+    retryRef.current = () => pickAndUploadVetReport(source);
 
     // Lock the button before the picker so a rapid double-tap can't insert two rows.
     setIsScanning(true);
@@ -368,8 +432,7 @@ export default function HealthScreen() {
       if (source === 'camera') {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
         if (!perm.granted) {
-          setVetScanErrorMsg('Camera access is off. Turn it on in Settings to take a photo.');
-          setShowVetScanError(true);
+          setFailure(errorCopy(appError('permission', 'camera permission denied'), { context: 'vet_scan' }));
           setIsScanning(false);
           return;
         }
@@ -386,26 +449,37 @@ export default function HealthScreen() {
         });
       }
 
-      const base64 = result.canceled ? null : result.assets?.[0]?.base64;
+      if (result.canceled || !result.assets?.[0]) {
+        setIsScanning(false);
+        return;
+      }
+      // Downscale before the network round trip; falls back to the picker's
+      // original base64 when the manipulator can't process the image.
+      const prepared = await prepareImageForUpload(result.assets[0]);
+      const base64 = prepared.base64;
       if (!base64) {
         setIsScanning(false);
         return;
       }
       // Pre-check size before round-tripping to the function (5MB raw cap).
       if (base64.length * 0.75 > 5_000_000) {
-        setVetScanErrorMsg('That image is too large. Try a smaller photo.');
-        setShowVetScanError(true);
+        setFailure({
+          title: 'That photo is too large',
+          message: 'Crop it or pick a lower-resolution photo, then scan again.',
+          actions: [{ label: 'Try another photo', action: 'pick_again' }, { label: 'Not now', action: 'dismiss' }],
+        });
         setIsScanning(false);
         return;
       }
-      const mimeType = result.assets?.[0]?.mimeType || 'image/jpeg';
-      console.log(`[VetScan] picked image source=${source} sizeKB=${Math.round(base64.length * 0.75 / 1024)} mime=${mimeType}`);
+      const mimeType = prepared.mimeType;
+      console.log(`[VetScan] picked image source=${source} sizeKB=${Math.round(base64.length * 0.75 / 1024)} mime=${mimeType} downscaled=${prepared.downscaled}`);
 
       await runVetScan(base64, mimeType);
-    } catch (e: any) {
-      console.warn('[VetScan] failed: picker stage', e);
-      setVetScanErrorMsg(e?.message || 'Scan failed.');
-      setShowVetScanError(true);
+    } catch (e: unknown) {
+      const appErr = isAppError(e) ? e : toAppError(e);
+      reportError(appErr, 'vet_scan');
+      console.warn('[VetScan] failed: picker stage', appErr.technical);
+      setFailure(errorCopy(appErr, { context: 'vet_scan', petName: activePet?.name }));
     } finally {
       setIsScanning(false);
     }
@@ -413,6 +487,7 @@ export default function HealthScreen() {
 
   const runVetScan = async (imageBase64: string, mimeType: string) => {
     if (!activePet) return;
+    retryRef.current = () => runVetScan(imageBase64, mimeType);
     const startedAt = Date.now();
     try {
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -442,7 +517,7 @@ export default function HealthScreen() {
         });
       } catch (fetchErr: any) {
         if (fetchErr?.name === 'AbortError') {
-          throw new Error('Scan took too long — try again with a smaller, sharper photo.');
+          throw appError('timeout', 'vet scan aborted after 60s client cap');
         }
         throw fetchErr;
       } finally {
@@ -456,26 +531,25 @@ export default function HealthScreen() {
       console.log(`[VetScan] response status=${res.status} contentType=${contentType} bytes=${bodyText.length}`);
 
       if (!res.ok) {
-        // Surface the status code so server-side issues are obvious in logs.
-        throw new Error(`Scan failed (HTTP ${res.status}). Try again in a moment.`);
+        // A coded body (rate_limited, ai_unavailable, ...) beats the bare
+        // status; either way the status lands in the technical log.
+        let errBody: any = null;
+        try { errBody = JSON.parse(bodyText); } catch { /* not json */ }
+        throw fromEdgeBody(errBody) ?? appError('server', `vet scan HTTP ${res.status}`);
       }
       if (bodyText.length === 0) {
-        // Almost always a dropped tunnel POST. Be specific so the user knows
-        // exactly what to change.
-        throw new Error(
-          "Your upload didn't reach the server. If you're running Expo with --tunnel, that connection drops large images. Restart with `npx expo start` (LAN) and try again."
-        );
+        // Almost always a dropped tunnel POST in dev (expo --tunnel drops
+        // large uploads) — the detail lives in the technical log.
+        throw appError('offline', 'empty response body — dropped tunnel POST? use LAN (npx expo start)');
       }
       let data: any;
       try {
         data = JSON.parse(bodyText);
       } catch {
-        console.warn('[VetScan] non-JSON response first 200 chars:', bodyText.slice(0, 200));
-        throw new Error('The server returned an unexpected response — try again, or pick a smaller photo.');
+        throw appError('server', `non-JSON scan response, first 200 chars: ${bodyText.slice(0, 200)}`);
       }
       if (!data.success) {
-        console.warn('[VetScan] server reported failure:', data.error);
-        throw new Error(data.error || 'Scan failed.');
+        throw fromEdgeBody(data) ?? appError('server', 'scan success=false with no error_code');
       }
       console.log(`[VetScan] parsed success=true hasExtracted=${!!data.extracted_data}`);
 
@@ -484,7 +558,7 @@ export default function HealthScreen() {
       // ── Snapshot prior state for the success summary + recalibration. ──
       const prevWeight = activePet.current_weight_kg ?? null;
       const prevCalories = activePet.target_daily_calories ?? 0;
-      const prevGoal = deriveGoal(prevWeight ?? 0, activePet.target_weight_kg);
+      const prevGoal = deriveGoal(prevWeight ?? 0, activePet.target_weight_kg, activePet.body_condition_score);
       const prevDiagnoses = new Set(activePet.medical_conditions || []);
       const prevAllergies = new Set(activePet.allergies || []);
 
@@ -496,16 +570,26 @@ export default function HealthScreen() {
       let scheduleRegenerated = false;
       let newGoal = prevGoal;
       if (newWeight && activePet.species) {
-        newGoal = deriveGoal(newWeight, activePet.target_weight_kg);
+        newGoal = deriveGoal(newWeight, activePet.target_weight_kg, activePet.body_condition_score);
+        const ageYears = activePet.age_years ?? 0;
+        const ageMonths = getAgeMonths(activePet);
+
+        const breedDefs = getBreedDefaults(activePet.species, activePet.breed ?? null, newWeight);
+        const sizeCat = breedDefs?.sizeCategory ?? sizeCategoryFromWeight(activePet.species, newWeight);
+        const lifeStage = deriveLifeStage(activePet.species, Math.floor(ageYears), Math.round((ageYears % 1) * 12), sizeCat);
+        const lsMultiplier = getLifeStageCalorieMultiplier(lifeStage, activePet.species);
+        const metabMod = breedDefs?.metabolicModifier ?? 1.0;
         newCalories = calculateDailyKcal(
           newWeight,
           activePet.species,
           activePet.is_neutered,
           activePet.activity_level,
           newGoal,
-          undefined,
-          1.0,
+          ageMonths,
+          lsMultiplier,
           activePet.target_weight_kg,
+          metabMod,
+          activePet.body_condition_score,
         );
         console.log(`[VetScan] recalibrate weight=${newWeight} prev=${prevWeight ?? 'null'} newKcal=${newCalories}`);
         // Optimistic store update so Home + Health derive off new target instantly.
@@ -522,6 +606,7 @@ export default function HealthScreen() {
           const goalFlipped = prevGoal !== newGoal;
           if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
             console.log(`[VetScan] schedule regenerate trigger=${goalFlipped ? 'goal' : 'delta'} weightDelta=${weightDeltaKg.toFixed(2)}`);
+            useActivePetStore.getState().setRecalibrating(true);
             const refreshed = useActivePetStore.getState().activePet ?? activePet;
             const ctx = usePetContextStore.getState();
             const sched = await regenerateSchedule({
@@ -532,7 +617,7 @@ export default function HealthScreen() {
             });
             scheduleRegenerated = sched.success;
             if (scheduleRegenerated) {
-              const newWaterPerSession = Math.round(newWeight * 50 / 3);
+              const newWaterPerSession = waterPerSessionMl(newWeight, activePet.diet_type);
               const todayStr = getLocalYMD(new Date());
               await supabase
                 .from('activities')
@@ -551,6 +636,11 @@ export default function HealthScreen() {
           }
           throw recalErr;
         }
+
+        // Milestone check on the scanned weight — promoted to the re-score
+        // sheet after the scan-result modal closes.
+        const milestone = evaluateMilestoneForWeights(newWeight, prevWeight);
+        if (milestone) setPendingMilestone(milestone);
       }
 
       // Pull post-write pet so we can diff diagnoses/allergies the edge function merged.
@@ -576,7 +666,7 @@ export default function HealthScreen() {
       const medicationsCount = Array.isArray(ext.medications) ? ext.medications.length : 0;
       const vaccinationsCount = Array.isArray(ext.vaccinations) ? ext.vaccinations.length : 0;
       const bcs = typeof ext.body_condition_score === 'number' ? ext.body_condition_score : null;
-      const waterMlPerSession = scheduleRegenerated && newWeight ? Math.round(newWeight * 50 / 3) : null;
+      const waterMlPerSession = scheduleRegenerated && newWeight ? waterPerSessionMl(newWeight, activePet.diet_type) : null;
 
       // "Useful data" gates the celebration tone + coin reward. An unreadable
       // photo where Gemini only filled vet_notes shouldn't pay out.
@@ -637,31 +727,38 @@ export default function HealthScreen() {
         awardCoins(user.id, 'vet_report_log', data.report_id);
       }
       console.log(`[VetScan] done in ${Date.now() - startedAt}ms`);
-    } catch (e: any) {
-      console.warn(`[VetScan] failed after ${Date.now() - startedAt}ms:`, e?.message || e);
-      setVetScanErrorMsg(e?.message || 'Scan failed.');
-      setShowVetScanError(true);
+    } catch (e: unknown) {
+      const appErr = isAppError(e) ? e : toAppError(e);
+      reportError(appErr, 'vet_scan');
+      console.warn(`[VetScan] failed after ${Date.now() - startedAt}ms:`, appErr.technical);
+      setFailure(errorCopy(appErr, { context: 'vet_scan', petName: activePet.name }));
     } finally {
       setIsScanning(false);
+      useActivePetStore.getState().setRecalibrating(false);
     }
   };
 
   // Delete a vet report row (used for clearing failed/duplicate scans).
-  const confirmDeleteReport = async () => {
-    if (!reportToDelete) return;
-    const id = reportToDelete.id;
+  const deleteReportById = async (id: string) => {
+    retryRef.current = () => deleteReportById(id);
     // Optimistic removal so the timeline updates instantly.
     setVetReports((prev) => prev.filter((r) => r.id !== id));
     setReportToDelete(null);
     try {
       const { error } = await supabase.from('vet_reports').delete().eq('id', id);
       if (error) throw error;
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Restore on failure.
       fetchHealthData({ force: true });
-      setVetScanErrorMsg(e?.message || 'Could not delete the report.');
-      setShowVetScanError(true);
+      const appErr = toAppError(e);
+      reportError(appErr, 'report');
+      setFailure(errorCopy(appErr, { context: 'report' }));
     }
+  };
+
+  const confirmDeleteReport = () => {
+    if (!reportToDelete) return;
+    deleteReportById(reportToDelete.id);
   };
 
   // Generate health insight
@@ -675,14 +772,18 @@ export default function HealthScreen() {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
 
-      const res = await fetch(`${supabaseUrl}/functions/v1/generate-health-insight`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ petId: activePet.id }),
-      });
+      const res = await withTimeout(
+        fetch(`${supabaseUrl}/functions/v1/generate-health-insight`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ petId: activePet.id }),
+        }),
+        45_000,
+        'generate-health-insight',
+      );
 
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Generation failed.');
@@ -707,25 +808,82 @@ export default function HealthScreen() {
     try {
       // Snapshot prior state so we can detect a meaningful change after the log.
       const prevWeight = activePet.current_weight_kg ?? null;
-      const prevGoal = deriveGoal(prevWeight ?? weight, activePet.target_weight_kg);
+      const prevGoal = deriveGoal(prevWeight ?? weight, activePet.target_weight_kg, activePet.body_condition_score);
       const prevCalories = activePet.target_daily_calories ?? 0;
 
       // Recalculate daily calorie target based on new weight
-      const goal = deriveGoal(weight, activePet.target_weight_kg);
-      const newCalories = calculateDailyKcal(
+      const goal = deriveGoal(weight, activePet.target_weight_kg, activePet.body_condition_score);
+
+      // A meaningful weight move (≥0.3 kg) or a flipped goal rebuilds the
+      // activity schedule. Decide this up front so the success modal and every
+      // tab can show a "recalibrating" state from the moment the log lands.
+      const weightDeltaKg = prevWeight !== null ? Math.abs(weight - prevWeight) : 0;
+      const goalFlipped = prevGoal !== goal;
+      const willRecalibrate = !!activePet.id && (weightDeltaKg >= 0.3 || goalFlipped);
+
+      const ageYears = activePet.age_years ?? 0;
+      const ageMonths = getAgeMonths(activePet);
+      const breedDefs = getBreedDefaults(activePet.species, activePet.breed ?? null, weight);
+      const sizeCat = breedDefs?.sizeCategory ?? sizeCategoryFromWeight(activePet.species, weight);
+      const lifeStage = deriveLifeStage(activePet.species, Math.floor(ageYears), Math.round((ageYears % 1) * 12), sizeCat);
+      const lsMultiplier = getLifeStageCalorieMultiplier(lifeStage, activePet.species);
+      const metabMod = breedDefs?.metabolicModifier ?? 1.0;
+      // Cat ramp: compute days since pet creation so the first 14 days of a
+      // lose plan get the gentler ramp floor (hepatic lipidosis prevention).
+      const createdAt = (activePet as { created_at?: string | null }).created_at;
+      const daysSincePlanStart = createdAt
+        ? Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24)))
+        : undefined;
+      let newCalories = calculateDailyKcal(
         weight,
         activePet.species,
         activePet.is_neutered,
         activePet.activity_level,
         goal,
-        undefined,
-        1.0,
+        ageMonths,
+        lsMultiplier,
         activePet.target_weight_kg,
+        metabMod,
+        activePet.body_condition_score,
+        daysSincePlanStart,
       );
+
+      // ── Weight-loss rate safety check ──
+      // Fetch the most recent prior weight log to compute the actual rate of
+      // loss. A dangerous rate (dog ≥3%/wk, cat ≥2%/wk) means we ease the
+      // plan upward by 10% and warn the owner. Especially important for cats
+      // where fast loss → hepatic lipidosis risk.
+      let lossRateWarning: { species: 'dog' | 'cat'; pctPerWeek: number } | null = null;
+      try {
+        const { data: priorLogs } = await supabase
+          .from('weight_logs')
+          .select('weight_kg, created_at')
+          .eq('pet_id', activePet.id)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        const prior = priorLogs?.[0];
+        if (prior && typeof prior.weight_kg === 'number' && prior.created_at) {
+          const daysBetween = (Date.now() - new Date(prior.created_at).getTime()) / (1000 * 60 * 60 * 24);
+          const rate = validateWeeklyLossRate(weight, prior.weight_kg, daysBetween, activePet.species as 'dog' | 'cat');
+          if (rate.status === 'dangerous') {
+            newCalories = Math.round(newCalories * 1.10);
+            lossRateWarning = { species: activePet.species as 'dog' | 'cat', pctPerWeek: rate.pctPerWeek };
+            try { track('weight_loss_rate_dangerous', { pct_per_week: Math.round(rate.pctPerWeek * 10) / 10, species: activePet.species }); } catch { /* analytics best-effort */ }
+          }
+        }
+      } catch {
+        // Safety net is best-effort. If the query fails, fall through to the
+        // normal flow rather than blocking the weight log itself.
+      }
 
       // ---- HOT RELOAD: Optimistic UI update (instant, no flicker) ----
       // Update pet store immediately so home tab and all listeners see new weight + calories
       useActivePetStore.getState().updatePetWeight(weight, newCalories);
+
+      // Flip the shared recalibrating signal on the moment kcal is correct, so
+      // Activity/Meal show "recalibrating" instead of a wrong empty state while
+      // the schedule rebuilds below. Cleared in the finally block.
+      if (willRecalibrate) useActivePetStore.getState().setRecalibrating(true);
 
       // Persist weight log to DB
       await supabase.from('weight_logs').insert({
@@ -734,6 +892,14 @@ export default function HealthScreen() {
         notes: weightNotes || null,
         source: 'manual',
       });
+
+      if (lossRateWarning) {
+        Alert.alert(
+          'Losing weight too fast',
+          `${activePet.name} has lost about ${lossRateWarning.pctPerWeek.toFixed(1)}% of body weight per week — faster than vets recommend (≤${lossRateWarning.species === 'cat' ? '1' : '1.5'}% for ${lossRateWarning.species}s).\n\nWe've eased today's calorie target up by 10%. Please check in with your vet — fast weight loss can be especially risky for ${lossRateWarning.species === 'cat' ? 'cats (hepatic lipidosis)' : 'muscle health'}.`,
+          [{ text: 'OK' }],
+        );
+      }
 
       // Persist pet profile update to DB
       await supabase.from('pets').update({
@@ -761,6 +927,7 @@ export default function HealthScreen() {
         weightDiff,
         scheduleRegenerated: false,
         goal,
+        willRecalibrate,
       });
       setShowWeightSuccess(true);
 
@@ -791,6 +958,7 @@ export default function HealthScreen() {
         todayScans: ctx.todayScans,
         nextActivity: ctx.nextActivity,
         todayActivityMinutes: ctx.todayActivityMinutes,
+        todayActivityTargetMinutes: ctx.todayActivityTargetMinutes,
         activityCompletionRate: ctx.activityCompletionRate,
         todayProtein: ctx.todayProtein,
         todayCarbs: ctx.todayCarbs,
@@ -810,10 +978,9 @@ export default function HealthScreen() {
 
       // ---- SCHEDULE REGENERATION: When weight change is meaningful ----
       // Either ≥0.3kg movement OR the goal direction has flipped (e.g. lose → maintain).
-      const weightDeltaKg = prevWeight !== null ? Math.abs(weight - prevWeight) : 0;
-      const goalFlipped = prevGoal !== goal;
+      // `willRecalibrate` was decided up front (see above) so the UI could react instantly.
       let scheduleRegenerated = false;
-      if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
+      if (willRecalibrate) {
         const refreshed = useActivePetStore.getState().activePet ?? activePet;
         const result = await regenerateSchedule({
           pet: refreshed,
@@ -824,7 +991,7 @@ export default function HealthScreen() {
         scheduleRegenerated = result.success;
 
         if (scheduleRegenerated) {
-          const newWaterPerSession = Math.round(weight * 50 / 3);
+          const newWaterPerSession = waterPerSessionMl(weight, activePet.diet_type);
           const todayStr = getLocalYMD(new Date());
           await supabase
             .from('activities')
@@ -838,6 +1005,11 @@ export default function HealthScreen() {
           setWeightSuccessData(prev => prev ? { ...prev, scheduleRegenerated: true } : null);
         }
       }
+      // ---- MILESTONE LOOP: did this log cross a stage target? ----
+      // Evaluated after everything persisted; the sheet opens once the
+      // weight-success modal closes so the two never stack.
+      const milestone = evaluateMilestoneForWeights(weight, prevWeight);
+      if (milestone) setPendingMilestone(milestone);
     } catch (e: any) {
       // Revert optimistic update on failure
       if (user?.id) {
@@ -845,6 +1017,150 @@ export default function HealthScreen() {
       }
     } finally {
       setIsSavingWeight(false);
+      // Rebuild finished (or failed) — clear the shared signal so tabs settle.
+      useActivePetStore.getState().setRecalibrating(false);
+    }
+  };
+
+  // ── Milestone loop helpers ──
+
+  // Weight log nearest to the BCS recording time — the anchor for predicting
+  // how the score has drifted. Best-effort from the logs already loaded.
+  const bcsAnchorWeight = (bcsUpdatedAt: string | null): number | null => {
+    if (!bcsUpdatedAt) return null;
+    const at = Date.parse(bcsUpdatedAt);
+    if (!Number.isFinite(at)) return null;
+    const candidates = [...weightLogs, ...(firstWeightLog ? [firstWeightLog] : [])]
+      .filter((l) => typeof l.weight_kg === 'number' && l.logged_at);
+    let best: { weight_kg: number } | null = null;
+    let bestDist = Infinity;
+    for (const l of candidates) {
+      const d = Math.abs(Date.parse(l.logged_at) - at);
+      if (Number.isFinite(d) && d < bestDist) { bestDist = d; best = l; }
+    }
+    return best?.weight_kg ?? null;
+  };
+
+  const evaluateMilestoneForWeights = (
+    newWeight: number,
+    prevWeight: number | null,
+  ): { trigger: RescoreTrigger; result: MilestoneResult } | null => {
+    if (!activePet) return null;
+    const bcsUpdatedAt = activePet.bcs_updated_at ?? activePet.created_at ?? null;
+    const result = evaluateMilestone({
+      species: activePet.species,
+      breed: activePet.breed ?? null,
+      sex: activePet.gender ?? null,
+      ageMonths: getAgeMonths(activePet),
+      startWeightKg: firstWeightLog?.weight_kg ?? prevWeight ?? null,
+      previousWeightKg: prevWeight,
+      currentWeightKg: newWeight,
+      stageTargetKg: activePet.target_weight_kg ?? null,
+      bcs: activePet.body_condition_score ?? null,
+      bcsUpdatedAt,
+      bcsAnchorWeightKg: bcsAnchorWeight(bcsUpdatedAt),
+    });
+    if (result.event === 'stage_reached' || result.event === 'final_reached') {
+      track('milestone_reached', {
+        event: result.event,
+        progress_pct: result.progressPct,
+        next_target_kg: result.nextStage?.targetKg ?? null,
+        final_ideal_kg: result.finalIdealKg,
+      });
+      return { trigger: result.event, result };
+    }
+    return null;
+  };
+
+  // Apply a BCS re-score (owner-picked, or drift-predicted on dismissal):
+  // fresh ideal-weight estimate at today's weight → next stage target →
+  // recalculated calories → persisted + schedule regenerated. The same loop
+  // a vet runs at a recheck appointment.
+  const applyBcsRescore = async (pickedBcs: number | null) => {
+    const prompt = milestonePrompt;
+    setMilestonePrompt(null);
+    if (!activePet || !prompt) return;
+
+    const predictedUsed = pickedBcs == null;
+    const newBcs = pickedBcs ?? prompt.result.predictedBcs ?? activePet.body_condition_score ?? null;
+    if (newBcs == null) return;
+
+    const weight = activePet.current_weight_kg;
+    const prevCalories = activePet.target_daily_calories ?? 0;
+
+    try {
+      const estimate = estimateIdealWeight({
+        species: activePet.species,
+        breed: activePet.breed ?? null,
+        sex: activePet.gender ?? null,
+        ageMonths: getAgeMonths(activePet),
+        currentWeightKg: weight,
+        bcs: newBcs,
+      });
+      const newTarget = estimate.mode === 'ok' && estimate.targetKg != null
+        ? estimate.targetKg
+        : activePet.target_weight_kg ?? null;
+
+      const goal = deriveGoal(weight, newTarget, newBcs);
+      const ageMonths = getAgeMonths(activePet);
+      const breedDefs = getBreedDefaults(activePet.species, activePet.breed ?? null, weight);
+      const sizeCat = breedDefs?.sizeCategory ?? sizeCategoryFromWeight(activePet.species, weight);
+      const ageYears = activePet.age_years ?? 0;
+      const lifeStage = deriveLifeStage(activePet.species, Math.floor(ageYears), Math.round((ageYears % 1) * 12), sizeCat);
+      const lsMultiplier = getLifeStageCalorieMultiplier(lifeStage, activePet.species);
+      const newCalories = calculateDailyKcal(
+        weight,
+        activePet.species,
+        activePet.is_neutered,
+        activePet.activity_level,
+        goal,
+        ageMonths,
+        lsMultiplier,
+        newTarget,
+        breedDefs?.metabolicModifier ?? 1.0,
+        newBcs,
+      );
+
+      const { error } = await supabase.from('pets').update({
+        body_condition_score: newBcs,
+        bcs_updated_at: new Date().toISOString(),
+        target_weight_kg: newTarget,
+        target_daily_calories: newCalories,
+      }).eq('id', activePet.id);
+      if (error) throw error;
+
+      // Optimistic calories + full silent refresh for the rest of the row.
+      useActivePetStore.getState().updatePetWeight(weight, newCalories);
+      if (user?.id) await useActivePetStore.getState().fetchPet(user.id, { silent: true });
+      usePetContextStore.getState().invalidateContext();
+
+      if (newCalories !== prevCalories) setKcalDeltaNote(newCalories - prevCalories);
+
+      // Stage advance usually flips or re-aims the plan — regenerate.
+      useActivePetStore.getState().setRecalibrating(true);
+      const refreshed = useActivePetStore.getState().activePet ?? activePet;
+      const ctx = usePetContextStore.getState();
+      await regenerateSchedule({
+        pet: refreshed,
+        weeklyStats: null,
+        todayCalPercent: ctx.calPercent ?? 0,
+        weightTrendDirection: ctx.weightTrend?.direction ?? null,
+      });
+
+      track('bcs_rescored', {
+        source: prompt.trigger,
+        old_bcs: activePet.body_condition_score ?? null,
+        new_bcs: newBcs,
+        predicted_used: predictedUsed,
+        new_target_kg: newTarget,
+        calorie_delta: newCalories - prevCalories,
+      });
+      haptic.success();
+    } catch (e) {
+      console.warn('[Milestone] re-score apply failed:', e);
+      if (user?.id) await useActivePetStore.getState().fetchPet(user.id, { silent: true });
+    } finally {
+      useActivePetStore.getState().setRecalibrating(false);
     }
   };
 
@@ -861,12 +1177,41 @@ export default function HealthScreen() {
 
   // Weight goal progress
   const hasWeightGoal = activePet?.target_weight_kg && activePet.target_weight_kg !== activePet.current_weight_kg;
-  const weightGoalPct = hasWeightGoal && hasWeightData
+
+  // Milestone view for display: progress toward the FINAL ideal (not the
+  // stage target) + BCS staleness. previousWeightKg = current suppresses
+  // stage events — those only fire from actual weight logs.
+  const milestoneView = activePet && activePet.current_weight_kg > 0
+    ? evaluateMilestone({
+        species: activePet.species,
+        breed: activePet.breed ?? null,
+        sex: activePet.gender ?? null,
+        ageMonths: getAgeMonths(activePet),
+        startWeightKg: firstWeightLog?.weight_kg ?? activePet.current_weight_kg,
+        previousWeightKg: activePet.current_weight_kg,
+        currentWeightKg: activePet.current_weight_kg,
+        stageTargetKg: activePet.target_weight_kg ?? null,
+        bcs: activePet.body_condition_score ?? null,
+        bcsUpdatedAt: activePet.bcs_updated_at ?? activePet.created_at ?? null,
+        bcsAnchorWeightKg: null,
+      })
+    : null;
+
+  // Stage-relative fallback when the milestone view can't compute (no logs yet).
+  const stageRelativePct = hasWeightGoal && hasWeightData
     ? Math.min(Math.round(
       Math.abs(1 - (Math.abs((currentWeight ?? activePet!.current_weight_kg!) - activePet!.target_weight_kg!) /
         Math.abs((weightLogs[weightLogs.length - 1]?.weight_kg || activePet!.current_weight_kg) - activePet!.target_weight_kg!))) * 100
     ), 100)
     : 0;
+  const weightGoalPct = milestoneView?.progressPct ?? stageRelativePct;
+  // The final ideal, when it differs meaningfully from the stored stage —
+  // lets the goal line read "stage 42 kg · ideal 37 kg".
+  const finalIdealForDisplay = milestoneView?.finalIdealKg != null
+    && activePet?.target_weight_kg != null
+    && Math.abs(milestoneView.finalIdealKg - activePet.target_weight_kg) > 0.5
+    ? milestoneView.finalIdealKg
+    : null;
 
   const petName = activePet?.name || 'your pet';
   const onTrack = weeklyDelta !== null && weeklyTarget !== null && Math.abs(weeklyDelta) < weeklyTarget * 0.05;
@@ -904,7 +1249,9 @@ export default function HealthScreen() {
             )}
             <Text style={styles.canopySub}>
               {hasWeightGoal
-                ? `goal ${Number(activePet?.target_weight_kg || 0).toFixed(1)} kg · ${Math.abs((activePet?.current_weight_kg || 0) - (activePet?.target_weight_kg || 0)).toFixed(1)} kg to go`
+                ? finalIdealForDisplay != null
+                  ? `stage ${Number(activePet?.target_weight_kg || 0).toFixed(1)} kg · ideal ${finalIdealForDisplay.toFixed(1)} kg · ${weightGoalPct}% there`
+                  : `goal ${Number(activePet?.target_weight_kg || 0).toFixed(1)} kg · ${Math.abs((activePet?.current_weight_kg || 0) - (activePet?.target_weight_kg || 0)).toFixed(1)} kg to go`
                 : `${petName}’s weight over time`}
             </Text>
 
@@ -912,6 +1259,27 @@ export default function HealthScreen() {
               <View style={styles.goalTrack}>
                 <View style={[styles.goalFill, { width: `${Math.max(weightGoalPct, 4)}%` }]} />
               </View>
+            )}
+
+            {kcalDeltaNote != null && kcalDeltaNote !== 0 && (
+              <Text style={styles.kcalDeltaNote}>
+                Daily target adjusted {kcalDeltaNote > 0 ? '+' : ''}{kcalDeltaNote} kcal
+              </Text>
+            )}
+
+            {/* Stale-BCS prompt — the plan is running on an old body-shape
+                assessment. Tapping opens the same re-score sheet. */}
+            {milestoneView?.event === 'bcs_stale' && !milestonePrompt && (
+              <TouchableOpacity
+                activeOpacity={0.8}
+                style={styles.staleBcsCard}
+                onPress={() => setMilestonePrompt({ trigger: 'bcs_stale', result: milestoneView })}
+              >
+                <MaterialIcons name="pets" size={16} color={color.navy} />
+                <Text style={styles.staleBcsText}>
+                  Quick body check — {petName}&apos;s shape hasn&apos;t been updated in a while. Tap to re-check.
+                </Text>
+              </TouchableOpacity>
             )}
           </Animated.View>
 
@@ -1081,22 +1449,70 @@ export default function HealthScreen() {
                 )}
               </View>
 
-              {isGeneratingInsight ? (
-                <View style={styles.insightLoading}>
-                  <ActivityIndicator color={color.yellow} />
-                  <Text style={styles.insightBody}>Reading {petName}&apos;s week…</Text>
-                </View>
-              ) : healthInsight?.insight_data ? (
+              {isGeneratingInsight ? null : healthInsight?.insight_data ? (
                 <>
                   <Text style={styles.insightHeadline}>
                     {healthInsight.insight_data.headline}
                   </Text>
+
+                  {Array.isArray(healthInsight.insight_data.wins) && healthInsight.insight_data.wins.length > 0 && (
+                    <View style={styles.insightList}>
+                      {healthInsight.insight_data.wins.slice(0, 3).map((w: string, i: number) => (
+                        <View key={`win-${i}`} style={styles.insightListRow}>
+                          <MaterialIcons name="check" size={14} color={color.yellow} style={styles.insightListIcon} />
+                          <Text style={styles.insightListText}>{w}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  {Array.isArray(healthInsight.insight_data.concerns) && healthInsight.insight_data.concerns.length > 0 && (
+                    <View style={styles.insightList}>
+                      {healthInsight.insight_data.concerns.slice(0, 2).map((c: string, i: number) => (
+                        <View key={`concern-${i}`} style={styles.insightListRow}>
+                          <MaterialIcons name="priority-high" size={14} color="#fca5a5" style={styles.insightListIcon} />
+                          <Text style={[styles.insightListText, styles.insightConcernText]}>{c}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
                   <View style={styles.insightTipRow}>
                     <View style={styles.insightTipMark} />
                     <Text style={styles.insightTip}>
                       {healthInsight.insight_data.tip || "Maintain the current routine based on this week's data."}
                     </Text>
                   </View>
+
+                  {healthInsight.insight_data.comparison && (() => {
+                    const c = healthInsight.insight_data.comparison;
+                    const chips: { label: string; value: string }[] = [];
+                    if (c.caloriesVsLastWeek && c.caloriesVsLastWeek !== 'N/A') chips.push({ label: 'kcal', value: c.caloriesVsLastWeek });
+                    if (c.activityVsLastWeek && c.activityVsLastWeek !== 'N/A') chips.push({ label: 'activity', value: c.activityVsLastWeek });
+                    if (c.waterVsLastWeek && c.waterVsLastWeek !== 'N/A') chips.push({ label: 'water', value: c.waterVsLastWeek });
+                    if (chips.length === 0) return null;
+                    return (
+                      <View style={styles.insightDeltaRow}>
+                        <Text style={styles.insightDeltaCaption}>vs last week</Text>
+                        <View style={styles.insightDeltaChips}>
+                          {chips.map((chip, i) => {
+                            const positive = chip.value.trim().startsWith('+');
+                            const negative = chip.value.trim().startsWith('-');
+                            return (
+                              <View key={i} style={styles.insightDeltaChip}>
+                                <Text style={styles.insightDeltaLabel}>{chip.label}</Text>
+                                <Text style={[
+                                  styles.insightDeltaValue,
+                                  positive && styles.insightDeltaPositive,
+                                  negative && styles.insightDeltaNegative,
+                                ]}>{chip.value}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    );
+                  })()}
                 </>
               ) : (
                 <Text style={styles.insightBody}>
@@ -1276,43 +1692,26 @@ export default function HealthScreen() {
 
       {/* Branded Weight Log Success Modal */}
       {weightSuccessData && (
-        <PawtchiSuccessModal
+        <WeightLoggedModal
           visible={showWeightSuccess}
           onClose={() => {
             setShowWeightSuccess(false);
+            // A milestone detected during this weigh-in opens its sheet now,
+            // after the success beat — never stacked on top of it.
+            if (pendingMilestone) {
+              setMilestonePrompt(pendingMilestone);
+              setPendingMilestone(null);
+            }
           }}
-          title={`${weightSuccessData.weight} kg logged`}
-          icon={{ name: 'monitor-weight', color: color.yellow }}
-          lines={[
-            {
-              text: `${weightSuccessData.weight} kg recorded for ${activePet?.name}.`,
-              type: 'normal',
-            },
-            ...(weightSuccessData.calorieDiff !== null && weightSuccessData.calorieDiff !== 0
-              ? [{
-                  text: `Daily target: ${weightSuccessData.prevCalories} → ${weightSuccessData.newCalories} kcal ${weightSuccessData.calorieDiff > 0 ? '↑' : '↓'}`,
-                  type: 'highlight' as const,
-                }]
-              : []),
-            ...(weightSuccessData.weightDiff !== null && Math.abs(weightSuccessData.weightDiff) >= 0.1
-              ? [{
-                  text: weightSuccessData.weightDiff > 0
-                    ? `Weight is up — schedule adjusted to burn more calories.`
-                    : `Weight is down — schedule supports healthy maintenance.`,
-                  type: 'sub' as const,
-                }]
-              : []),
-            ...(weightSuccessData.scheduleRegenerated
-              ? [{
-                  text: 'Activity schedule has been refreshed for the new weight.',
-                  type: 'sub' as const,
-                }]
-              : []),
-          ]}
-          primaryAction={{
-            label: 'Done',
-            onPress: () => setShowWeightSuccess(false),
-          }}
+          petName={activePet?.name || 'your pet'}
+          weight={weightSuccessData.weight}
+          weightDiff={weightSuccessData.weightDiff}
+          prevCalories={weightSuccessData.prevCalories}
+          newCalories={weightSuccessData.newCalories}
+          calorieDiff={weightSuccessData.calorieDiff}
+          goal={weightSuccessData.goal}
+          willRecalibrate={weightSuccessData.willRecalibrate}
+          progressPct={milestoneView?.progressPct ?? null}
         />
       )}
 
@@ -1323,6 +1722,7 @@ export default function HealthScreen() {
         pet={{
           name: activePet?.name || 'your pet',
           imageUrl: activePet?.image_url,
+          species: activePet?.species,
           gender: activePet?.gender,
           currentWeightKg: activePet?.current_weight_kg ?? null,
           targetWeightKg: activePet?.target_weight_kg ?? null,
@@ -1335,23 +1735,55 @@ export default function HealthScreen() {
         onClose={() => {
           setShowVetScanSuccess(false);
           fetchHealthData();
+          if (pendingMilestone) {
+            setMilestonePrompt(pendingMilestone);
+            setPendingMilestone(null);
+          }
         }}
         onOpenHistory={() => {
           setShowVetScanSuccess(false);
           // Vet history lives inline on this screen; close + refresh scrolls it
           // back into view at the top of the list.
           fetchHealthData();
+          if (pendingMilestone) {
+            setMilestonePrompt(pendingMilestone);
+            setPendingMilestone(null);
+          }
+        }}
+      />
+
+      {/* Milestone / stale-BCS re-score sheet — the recheck moment. Selecting
+          a silhouette advances the plan; skipping advances on the predicted
+          score so the program never stalls at a stage target. */}
+      <BcsRescoreSheet
+        visible={milestonePrompt !== null}
+        petName={petName}
+        species={activePet?.species ?? 'dog'}
+        trigger={milestonePrompt?.trigger ?? 'bcs_stale'}
+        progressPct={milestonePrompt?.result.progressPct ?? null}
+        onSelect={(bcs) => { applyBcsRescore(bcs); }}
+        onDismiss={() => {
+          if (milestonePrompt?.trigger === 'bcs_stale') {
+            // Stale prompt is purely optional — dismissing changes nothing.
+            setMilestonePrompt(null);
+          } else {
+            // Milestone dismissal still advances the stage (predicted BCS).
+            applyBcsRescore(null);
+          }
         }}
       />
 
       {/* Branded Vet Scan Error Modal */}
       <PawtchiModal
-        visible={showVetScanError}
-        onClose={() => setShowVetScanError(false)}
-        title="Scan Failed"
+        visible={failure != null}
+        onClose={() => setFailure(null)}
+        title={failure?.title ?? ''}
         icon={{ name: 'error-outline', color: color.error }}
-        message={vetScanErrorMsg}
-        showCloseButton
+        message={failure?.message}
+        actions={(failure?.actions ?? []).map(a => ({
+          label: a.label,
+          onPress: () => handleRecovery(a.action),
+        }))}
       />
 
       {/* Delete-report confirm */}
@@ -1366,6 +1798,7 @@ export default function HealthScreen() {
           { label: 'Delete', onPress: confirmDeleteReport, variant: 'primary' },
         ]}
       />
+      <PawLoader visible={isGeneratingInsight} message="Generating health insight…" />
     </View>
   );
 }
@@ -1441,6 +1874,28 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: radius.pill,
     backgroundColor: color.navy,
+  },
+  kcalDeltaNote: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.navy,
+    marginTop: space.md,
+  },
+  staleBcsCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: space.lg,
+    padding: space.md,
+    borderRadius: radius.md,
+    backgroundColor: color.yellowSoft,
+  },
+  staleBcsText: {
+    flex: 1,
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    lineHeight: 17,
+    color: color.navy,
   },
   canopyChart: {
     height: 80,
@@ -1608,6 +2063,71 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     color: color.creamDim,
+  },
+  insightList: {
+    marginTop: space.lg,
+    gap: 8,
+  },
+  insightListRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.sm,
+  },
+  insightListIcon: {
+    marginTop: 2,
+  },
+  insightListText: {
+    flex: 1,
+    fontFamily: font.regular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: color.cream,
+  },
+  insightConcernText: {
+    color: '#fecaca',
+  },
+  insightDeltaRow: {
+    marginTop: space.lg,
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(244, 241, 236, 0.10)',
+  },
+  insightDeltaCaption: {
+    fontFamily: font.semibold,
+    fontSize: 9.5,
+    letterSpacing: 1.8,
+    color: color.creamFaint,
+    marginBottom: space.sm,
+  },
+  insightDeltaChips: {
+    flexDirection: 'row',
+    gap: space.sm,
+    flexWrap: 'wrap',
+  },
+  insightDeltaChip: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(244, 241, 236, 0.06)',
+  },
+  insightDeltaLabel: {
+    fontFamily: font.regular,
+    fontSize: 11,
+    color: color.creamDim,
+  },
+  insightDeltaValue: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.cream,
+  },
+  insightDeltaPositive: {
+    color: '#86efac',
+  },
+  insightDeltaNegative: {
+    color: '#fca5a5',
   },
 
   // Allergy strip — soft, factual

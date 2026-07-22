@@ -3,11 +3,12 @@ import { getCorsHeaders } from '../_shared/cors.ts'
 import { verifyAuth } from '../_shared/auth.ts'
 import { checkRateLimit, RATE_LIMITS } from '../_shared/rateLimit.ts'
 import { safeParseBody } from '../_shared/validate.ts'
+import { errorResponse, logInternal } from '../_shared/errors.ts'
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT_MS = 30_000;
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   const corsHeaders = getCorsHeaders(req);
 
   if (req.method === 'OPTIONS') {
@@ -26,10 +27,8 @@ Deno.serve(async (req) => {
     // ── Security: Parse body with size limits ──
     const parsed = await safeParseBody(req);
     if (parsed.error) {
-      return new Response(
-        JSON.stringify({ success: false, error: parsed.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
+      logInternal('gemini-verdict', parsed.error.detail, 'body validation');
+      return errorResponse(parsed.error.code, corsHeaders);
     }
 
     const {
@@ -44,7 +43,8 @@ Deno.serve(async (req) => {
 
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY')
     if (!GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is not configured.')
+      logInternal('gemini-verdict', 'GEMINI_API_KEY is not configured.');
+      return errorResponse('server_error', corsHeaders);
     }
 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
@@ -199,7 +199,8 @@ Output ONLY the paragraph. No preamble, no bullets, no markdown formatting.`
 
     if (!response.ok) {
       const errBody = await response.text()
-      throw new Error(`Gemini API error (${response.status}): ${errBody.substring(0, 200)}`)
+      logInternal('gemini-verdict', `upstream ${response.status}: ${errBody.substring(0, 200)}`);
+      return errorResponse('ai_unavailable', corsHeaders);
     }
 
     const data = await response.json()
@@ -214,10 +215,8 @@ Output ONLY the paragraph. No preamble, no bullets, no markdown formatting.`
     )
 
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Unknown error'
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-    )
+    logInternal('gemini-verdict', error, 'unhandled');
+    const isAbort = error instanceof Error && error.name === 'AbortError';
+    return errorResponse(isAbort ? 'ai_unavailable' : 'server_error', corsHeaders);
   }
 })

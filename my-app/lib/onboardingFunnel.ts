@@ -9,6 +9,7 @@ export type OnboardingStepId =
   | 'body_basics'
   | 'energy'
   | 'allergies'
+  | 'body_check'
   | 'goal'
   | 'reveal';
 
@@ -18,6 +19,7 @@ const STEP_ORDER: OnboardingStepId[] = [
   'body_basics',
   'energy',
   'allergies',
+  'body_check',
   'goal',
   'reveal',
 ];
@@ -51,4 +53,30 @@ export function trackStepBack(step: OnboardingStepId) {
 
 export function trackFieldSkipped(step: OnboardingStepId, field: string) {
   track('onboarding_field_skipped', { step, step_index: stepIndex(step), field });
+}
+
+// ── Fresh-signup routing latch ──
+// Signup is the one moment we KNOW the account has no pet yet, so the auth
+// gate can route straight to /onboarding/species without mounting the tabs
+// boot gate — whose only job would be to discover "no pet" over the network
+// behind a full-screen loader. Set BEFORE supabase.auth.signUp (the session
+// event can land, and the gate can navigate, before the await resumes),
+// consumed once by the gate, cleared on failure or verification-required.
+// Deliberately in-memory: after an app restart the normal fetch-then-redirect
+// path is the correct behavior anyway.
+let freshSignup = false;
+
+export function markFreshSignup(): void {
+  freshSignup = true;
+}
+
+export function clearFreshSignup(): void {
+  freshSignup = false;
+}
+
+/** Read-and-clear — true exactly once per marked signup. */
+export function consumeFreshSignup(): boolean {
+  const value = freshSignup;
+  freshSignup = false;
+  return value;
 }
