@@ -11,7 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "55",
+      "buildNumber": "56",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Pawtchi uses your camera to scan your pet's food and analyse its nutritional content.",
@@ -99,8 +99,12 @@
         {
           "ios": {
             "useFrameworks": "static",
+            "buildReactNativeFromSource": true,
             "extraPods": [
-              { "name": "GoogleUtilities", "modular_headers": true }
+              {
+                "name": "GoogleUtilities",
+                "modular_headers": true
+              }
             ]
           }
         }
