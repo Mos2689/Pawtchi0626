@@ -26,6 +26,7 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { walkTrace } from './walkTrace';
 import type { RawGpsPoint } from './walkSession';
 
 export const WALK_LOCATION_TASK = 'pawtchi-walk-location';
@@ -196,42 +197,60 @@ export async function stopWalkLocationUpdates(): Promise<void> {
 /**
  * Belt-and-braces stop: some stopLocationUpdatesAsync resolutions land before
  * the underlying CLLocationManager/foreground-service actually releases, and
- * the iOS status-bar location indicator lingers. Poll hasStarted a few times
- * and retry the stop until the OS agrees we're not tracking. Cheap on the
- * happy path (first check returns false, one syscall) — bounded on the sad.
+ * the iOS status-bar location indicator lingers. Retry the stop until the OS
+ * agrees we're not tracking. Bounded — cheap on the happy path (one stop, one
+ * verify), a handful of syscalls on the sad.
+ *
+ * INVARIANT — the stop is NEVER gated on a `hasStartedLocationUpdatesAsync`
+ * read. That native "is it running?" check is exactly the one that lies: on
+ * both iOS and Android it can report `false` while the CLLocationManager /
+ * foreground service is still alive. An earlier version returned early on that
+ * false read and so never issued a single stop — that is the precise mechanism
+ * behind the recurring "location indicator stays lit until force-close" bug.
+ * Here `hasStarted` is used ONLY to decide when to STOP retrying, and every
+ * iteration fires an unconditional stop first. Stopping an already-stopped
+ * task just throws; we swallow it. The service turning off is non-negotiable,
+ * so we never trust a read that could skip the stop.
  */
 export async function ensureWalkTrackingStopped(): Promise<void> {
   desiredTracking = false;
 
   // If a native start is mid-flight, stopping now is a no-op the start would
-  // immediately undo — wait for it so the loop below sees the registered task.
+  // immediately undo — wait for it so the stop below acts on a registered task.
   if (startInFlight) {
     try {
       await startInFlight;
     } catch {
-      // A failed start means nothing got registered — proceed to verify.
+      // A failed start means nothing got registered — proceed to stop anyway.
     }
   }
 
   for (let i = 0; i < 8; i++) {
+    // ALWAYS fire the stop first — unconditionally, before any state read.
+    // This is the whole guarantee: no code path can skip it.
+    try {
+      await Location.stopLocationUpdatesAsync(WALK_LOCATION_TASK);
+    } catch {
+      // Not registered / already stopped / racing the OS's own teardown —
+      // all benign here; swallow and let the verify decide whether to retry.
+    }
+
+    // Now verify. If the OS says we're off, we're done. If the read itself
+    // throws (Expo Go / missing native module), we've already issued the stop
+    // — treat that as done rather than spinning on a check we can't make.
     let stillOn = false;
     try {
       stillOn = await Location.hasStartedLocationUpdatesAsync(WALK_LOCATION_TASK);
     } catch {
-      // Can't read the state (Expo Go / missing native module) — fire one
-      // best-effort stop rather than trusting an error to mean "not tracking".
-      try {
-        await Location.stopLocationUpdatesAsync(WALK_LOCATION_TASK);
-      } catch {}
       return;
     }
     if (!stillOn) return;
-    try {
-      await Location.stopLocationUpdatesAsync(WALK_LOCATION_TASK);
-    } catch {
-      // The stop can race with the OS's own teardown; swallow and re-poll.
-    }
+
     await new Promise(r => setTimeout(r, 250));
   }
+  // The loop issued 8 unconditional stops and the OS still reports the task as
+  // started. This is decisive evidence that the stop is not taking at the native
+  // layer (an expo-location / CLLocationManager artifact), NOT a missing JS call.
   if (__DEV__) console.log('[locationEngine] tracking stop retries exhausted');
+  walkTrace('stop_retries_exhausted', { hasStarted: true });
 }

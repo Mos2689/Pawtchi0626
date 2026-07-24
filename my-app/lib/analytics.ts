@@ -58,8 +58,6 @@ export type AnalyticsEvent =
   | 'walksign_transition'
   | 'walksign_shared'
   | 'welcome_screen_viewed'
-  | 'preview_home_viewed'
-  | 'preview_home_cta'
   | 'profile_completion_chip_tapped'
   // Vet report export (owner-prepared PDF shared with a vet)
   | 'vet_report_opened'
@@ -147,6 +145,11 @@ export type AnalyticsEvent =
   | 'walk_discarded'
   | 'walk_recovered'
   | 'walk_sync_dropped'
+  // Lifecycle tracing — one structured breadcrumb per walk-lifecycle beat, so
+  // the "tracking indicator stays lit after finish" bug can be reconstructed
+  // from real-device (TestFlight) evidence instead of theory. Low volume: a
+  // walk emits a handful, not a stream. See lib/walk/walkTrace.ts.
+  | 'walk_trace'
   | 'walk_shared'
   // Paw Moment share card — the walk→Instagram loop. `viewed` fires when the
   // card preview opens, `shared` when the native sheet completes (the OS
@@ -165,6 +168,14 @@ export type AnalyticsEvent =
   | 'pawprint_milestone_celebrated'
   | 'pawprint_recap_viewed'
   | 'pawprint_teaser_tapped'
+  // Earned share-card templates — the walk-count-gated library. `unlocked`
+  // fires when a gate is first crossed (persisted to pet_milestones),
+  // `locked_preview_viewed` when the picker pages onto a template the user
+  // hasn't earned yet, `unlock_celebrated` when the unlock moment is closed.
+  // Shares ride moment_card_shared with the `template` property.
+  | 'template_unlocked'
+  | 'template_locked_preview_viewed'
+  | 'template_unlock_celebrated'
   // Duplicate-activity guardrail — fires when the Activity tab's read-side
   // de-dupe drops stacked schedule rows. A non-zero rate in the wild means the
   // generator/DB guardrails regressed; ideally this stays silent forever.

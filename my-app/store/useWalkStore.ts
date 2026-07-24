@@ -53,10 +53,8 @@ import {
   startWalkLocationUpdates,
   WalkPermission,
 } from '../lib/walk/locationEngine';
+import { walkTrace } from '../lib/walk/walkTrace';
 import type { Pet } from './useActivePetStore';
-
-/** Buffer points younger than this on relaunch → the walk is still going. */
-const RESUME_WINDOW_MS = 3 * 60_000;
 
 export type WalkPhase = 'idle' | 'starting' | 'tracking' | 'saving' | 'summary';
 
@@ -81,6 +79,17 @@ export interface WalkResult {
 
 interface WalkState {
   phase: WalkPhase;
+  /**
+   * THE single source of truth for "should the OS be tracking right now."
+   * In-memory only and deliberately NOT persisted — a cold launch always starts
+   * false so nothing can inherit a stale intent and re-arm tracking. True from
+   * the moment a walk is committed to starting; flipped false SYNCHRONOUSLY the
+   * instant a finish/hard-stop begins, before any await or network. The
+   * reconciler enforces `trackingDesired === false ⇒ OS off` on every lifecycle
+   * event; a launch drives it false and NEVER resumes a walk. Never infer
+   * tracking intent from `phase` again.
+   */
+  trackingDesired: boolean;
   /** Persisted crash-recovery marker; non-null while a walk is live. */
   marker: ActiveWalkMarker | null;
   /** In-memory live session (rebuilt from the buffer after restarts). */
@@ -122,10 +131,44 @@ function replayBuffer(
   return s;
 }
 
+/**
+ * THE walk kill-switch — one synchronous, idempotent teardown of every live
+ * walk resource. This is what "Finish kills everything" means: the instant it
+ * runs, nothing walk-related is alive, and nothing after it can revive tracking.
+ *
+ *   • point listener detached  → no further _ingest batch can fire
+ *   • trackingDesired = false  → the reconciler enforces OS-off; no path
+ *                                believes a walk is active
+ *   • marker/session/cap clear → in ONE synchronous set, so recovery has
+ *                                nothing to re-arm even if the app is suspended
+ *                                the very next line
+ *   • OS location stop FIRED   → decisive; the caller's awaited verify and the
+ *                                reconciler confirm it actually released
+ *
+ * The 1s screen clock and the tick() auto-stop poll are keyed on `phase` and
+ * tear themselves down (useEffect cleanup) the moment it leaves 'tracking'. The
+ * global reconciler is intentionally NOT killed — it is the watchdog that keeps
+ * enforcing "stopped", not a walk-session loop.
+ *
+ * Everything about this is synchronous on purpose: the caller may still salvage
+ * the walk's data afterward (from the pre-teardown marker + the point buffer),
+ * but that salvage is pure downstream work that cannot start tracking again.
+ */
+function killWalkModule(
+  set: (partial: Partial<WalkState>) => void,
+  get: () => WalkState,
+  nextPhase: WalkPhase,
+): void {
+  setPointListener(null);
+  set({ phase: nextPhase, trackingDesired: false, marker: null, session: null, capReached: false });
+  void ensureWalkTrackingStopped();
+}
+
 export const useWalkStore = create<WalkState>()(
   persist(
     (set, get) => ({
       phase: 'idle',
+      trackingDesired: false,
       marker: null,
       session: null,
       capReached: false,
@@ -134,11 +177,12 @@ export const useWalkStore = create<WalkState>()(
       startWalk: async (pet: Pet, ownerId: string) => {
         if (get().phase === 'tracking' || get().phase === 'starting') return 'started';
         set({ phase: 'starting', lastResult: null, capReached: false });
+        walkTrace('start_begin', { phase: 'starting' });
 
         const permission = await requestWalkPermission();
         if (permission !== 'granted') {
           track('walk_tracking_denied', { reason: permission });
-          set({ phase: 'idle' });
+          set({ phase: 'idle', trackingDesired: false });
           return permission;
         }
 
@@ -159,27 +203,38 @@ export const useWalkStore = create<WalkState>()(
         };
 
         await clearPointBuffer();
-        set({ marker, session: createSession(marker.startedAt) });
+        // Commit the intent BEFORE starting the native task, so there is never a
+        // window where the OS is tracking while the source of truth says "off"
+        // (which the periodic reconcile would otherwise force-stop mid-start).
+        set({ marker, session: createSession(marker.startedAt), trackingDesired: true });
 
         setPointListener(points => get()._ingest(points));
         try {
           await startWalkLocationUpdates(pet.name);
         } catch (e: any) {
           setPointListener(null);
-          set({ phase: 'idle', marker: null, session: null });
+          set({ phase: 'idle', marker: null, session: null, trackingDesired: false });
+          walkTrace('start_failed', { detail: 'native_start_threw' });
           return 'denied';
         }
 
         // Race guard: if the user finished/left while the native start was in
-        // flight, the walk is already over — kill the just-started service
-        // instead of resurrecting a phase the user ended.
+        // flight, endWalk already flipped trackingDesired=false — honor it and
+        // kill the just-started service instead of resurrecting an ended walk.
         if (get().phase !== 'starting') {
           setPointListener(null);
           await ensureWalkTrackingStopped();
+          walkTrace('start_raced_finish', { trackingDesired: get().trackingDesired });
           return 'started';
         }
 
         set({ phase: 'tracking' });
+        walkTrace('start_tracking', {
+          walkSessionId: marker.walkSessionId,
+          phase: 'tracking',
+          trackingDesired: true,
+          hasStarted: await isTracking(),
+        });
         track('walk_tracking_started', {
           pet_id: pet.id,
           size_category: profile.sizeCategory,
@@ -230,20 +285,42 @@ export const useWalkStore = create<WalkState>()(
       endWalk: async (reason: EndReason) => {
         const { marker, session, phase } = get();
         if (!marker || (phase !== 'tracking' && phase !== 'starting')) return;
-        set({ phase: 'saving' });
 
-        // Kill the OS-level tracking FIRST, before any of the heavier async
-        // work below (buffer read, reverse-geocode, Supabase sync). Any delay
-        // between Finish and this call is time the iOS status-bar indicator
-        // stays lit and the Android foreground-service notification persists.
-        setPointListener(null);
+        // Snapshot the marker/session BEFORE the kill switch clears them — the
+        // salvage below finalizes the walk's data from this snapshot.
+        const activeMarker = marker;
+        const activeSession = session;
+
+        walkTrace('end_begin', {
+          walkSessionId: activeMarker.walkSessionId,
+          prevPhase: phase,
+          phase: 'saving',
+          reason,
+        });
+
+        // ── KILL SWITCH FIRST ──
+        // The instant Finish runs, tear down EVERYTHING walk-related in one
+        // synchronous step: listener off, intent off, store cleared (marker
+        // included), OS stop fired. Nothing after this line can revive tracking,
+        // and recovery has no marker to re-arm even if the app dies next.
+        killWalkModule(set, get, 'saving');
+
+        // Verify the OS stop actually released (bounded retries) so a foreground
+        // summary never appears with the indicator lit. Correctness no longer
+        // depends on this await — the kill already happened; a backgrounded
+        // finish leans on the reconciler + launch teardown instead.
         await ensureWalkTrackingStopped();
+        walkTrace('end_after_stop', {
+          walkSessionId: activeMarker.walkSessionId,
+          trackingDesired: false,
+          hasStarted: await isTracking(),
+        });
 
         // Authoritative rebuild from the buffer: it holds every point since
         // start, including ones delivered while the JS runtime was dead.
         const buffered = await readPointBuffer();
         const finalState =
-          buffered.length > 0 ? replayBuffer(marker, buffered) : (session ?? createSession(marker.startedAt));
+          buffered.length > 0 ? replayBuffer(activeMarker, buffered) : (activeSession ?? createSession(activeMarker.startedAt));
 
         // A walk that ended by stillness really ended when movement stopped —
         // the 10-minute confirmation wait is not part of the walk.
@@ -253,8 +330,13 @@ export const useWalkStore = create<WalkState>()(
             : Date.now();
 
         const summary = finalizeSession(finalState, endedAt, reason);
-        const verdict = validateWalk(summary, marker.profile);
+        const verdict = validateWalk(summary, activeMarker.profile);
         const route = simplifyRoute(summary.path);
+
+        // The marker/session were already cleared by the kill switch; now that
+        // the buffer has been replayed into finalState, clear it too so a later
+        // launch has nothing to salvage twice.
+        await clearPointBuffer();
 
         track('walk_completed', {
           end_reason: reason,
@@ -280,34 +362,34 @@ export const useWalkStore = create<WalkState>()(
         });
 
         const sync = await finalizeAndSyncWalk({
-          walkSessionId: marker.walkSessionId,
+          walkSessionId: activeMarker.walkSessionId,
           summary,
           route,
           verdict,
-          profile: marker.profile,
-          petId: marker.petId,
-          ownerId: marker.ownerId,
+          profile: activeMarker.profile,
+          petId: activeMarker.petId,
+          ownerId: activeMarker.ownerId,
           labels,
         });
 
-        await clearPointBuffer();
-        // Belt-and-braces re-stop: if the native start call resolved while
-        // this endWalk was running (start/finish race), the first stop ran
-        // before the task was registered — this one catches that case.
-        // Awaited so the summary screen never appears with the OS indicator
-        // still lit.
+        // Belt-and-braces re-stop: if a native start call resolved late (during
+        // this endWalk), the first stop ran before the task registered — this
+        // catches it. trackingDesired is already false, so this only ever stops.
         await ensureWalkTrackingStopped();
+        walkTrace('end_done', {
+          walkSessionId: activeMarker.walkSessionId,
+          phase: 'summary',
+          trackingDesired: false,
+          hasStarted: await isTracking(),
+        });
         set({
           phase: 'summary',
-          marker: null,
-          session: null,
-          capReached: false,
           lastResult: {
             summary,
             verdict,
             sync,
             route,
-            petName: marker.petName,
+            petName: activeMarker.petName,
             recovered: reason === 'recovered',
             labels,
           },
@@ -318,36 +400,43 @@ export const useWalkStore = create<WalkState>()(
         // Always give queued offline walks another shot on launch.
         flushWalkQueue().catch(() => {});
 
-        const { marker, phase } = get();
-        if (!marker) {
-          // No walk in flight — but a service from a previous session may have
-          // leaked (start/finish race, crash after finalize). Kill it.
-          if (await isTracking()) {
-            await ensureWalkTrackingStopped();
-          }
-          return;
+        // ── A LAUNCH NEVER RE-ARMS TRACKING ──
+        // This is the fix for the "reopen → tracking auto-starts → never stops
+        // until uninstall" bug. iOS can relaunch the app (cold start, or a
+        // background location wake) and resume the OS location task on its own;
+        // a backgrounded finish can also be suspended before its cleanup writes
+        // flush, leaving a persisted marker behind. The OLD code responded by
+        // RESUMING the walk — which re-armed tracking on every reopen, forever,
+        // because the resumed task kept writing fresh points that re-qualified
+        // the resume next launch. Uninstall was the only escape (it wiped the
+        // marker from AsyncStorage).
+        //
+        // Now a launch drives UNCONDITIONALLY to the inactive state: force the
+        // intent off, stop whatever the OS is running, and NEVER start. Only a
+        // manual startWalk may begin tracking again. An orphaned marker is
+        // salvaged (finalized from the buffer) but never resumed.
+        set({ trackingDesired: false });
+        const wasTracking = await isTracking();
+        walkTrace('recover_launch', { trackingDesired: false, hasStarted: wasTracking });
+        if (wasTracking) {
+          await ensureWalkTrackingStopped();
         }
-        if (phase === 'tracking' || phase === 'saving') return;
 
+        const { marker } = get();
+        if (!marker) return; // nothing to salvage — already inactive
+
+        // A marker survived a finish that couldn't finalize/clear, or a genuine
+        // mid-walk crash. Finalize the effort from the buffer WITHOUT restarting
+        // tracking, then clear the marker so this cannot recur next launch. The
+        // transient phase:'tracking' only satisfies endWalk's guard; tracking is
+        // already stopped and trackingDesired stays false throughout.
         const buffered = await readPointBuffer();
-        const lastPoint = buffered[buffered.length - 1];
-        const stillTracking = await isTracking();
-
-        // Foreground service survived the JS restart and points are fresh →
-        // the walk never ended. Rebuild and keep going.
-        if (
-          stillTracking &&
-          lastPoint &&
-          Date.now() - lastPoint.timestamp < RESUME_WINDOW_MS
-        ) {
-          set({ session: replayBuffer(marker, buffered), phase: 'tracking' });
-          setPointListener(points => get()._ingest(points));
-          return;
-        }
-
-        // Otherwise the walk is over — finalize what the buffer holds.
+        walkTrace('recover_finalize', {
+          walkSessionId: marker.walkSessionId,
+          hasStarted: wasTracking,
+        });
         track('walk_recovered', { buffered_points: buffered.length });
-        set({ session: replayBuffer(marker, buffered), phase: 'tracking' });
+        set({ session: replayBuffer(marker, buffered), phase: 'tracking', trackingDesired: false });
         await get().endWalk('recovered');
         // Recovery is silent: coins/rings arrive via the normal side effects,
         // and the summary stays available if the user opens the walk screen.
@@ -356,18 +445,22 @@ export const useWalkStore = create<WalkState>()(
       dismissSummary: () => set({ phase: 'idle', lastResult: null }),
 
       hardStopTracking: async () => {
-        // Detach FIRST so no late point batch resurrects a session mid-teardown.
-        setPointListener(null);
+        // The same kill switch, no finalize: everything walk-related dies
+        // synchronously, then we clear the buffer and verify the OS released.
+        walkTrace('hardstop_begin', { trackingDesired: false });
+        killWalkModule(set, get, 'idle');
         await ensureWalkTrackingStopped();
         await clearPointBuffer();
-        set({ phase: 'idle', marker: null, session: null, capReached: false });
+        walkTrace('hardstop_done', { trackingDesired: false, hasStarted: await isTracking() });
       },
     }),
     {
       name: 'walk-active-marker',
       storage: createJSONStorage(() => AsyncStorage),
-      // Only the crash-recovery marker persists — live session state is
-      // always rebuilt from the location engine's point buffer.
+      // ONLY the crash-recovery marker persists. `trackingDesired` is
+      // deliberately NOT persisted: a cold launch must always start with intent
+      // = false so nothing can inherit a stale "a walk is desired" and re-arm
+      // tracking. Live session state is always rebuilt from the point buffer.
       partialize: state => ({ marker: state.marker }),
     },
   ),

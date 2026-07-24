@@ -148,34 +148,17 @@ function RootLayoutNav() {
   }, []);
 
   // Walk-tracking reconciler: THE single guarantee that the OS location service
-  // is off whenever a walk isn't active. Subscribes to the walk phase and stops
-  // tracking on every transition out of the active phases — so cleanup no longer
-  // depends on any one button handler remembering to call it. This is what makes
-  // the "indicator stays lit after Finish" regression unable to silently return.
+  // is off whenever a walk isn't wanted. It keys on the persisted source of
+  // truth (trackingDesired) and enforces "trackingDesired === false ⇒ OS off"
+  // on every lever that can reveal a leak — the flag flipping, the app
+  // foregrounding, and a bounded periodic tick — so no completion path, slow
+  // finalize, backgrounded finish, or recovery can leave the "indicator stays
+  // lit after Finish" regression alive. This one reconciler replaces the old
+  // phase-transition subscription AND the separate AppState janitor.
   useEffect(() => {
     if (!WALK_TRACKING_ENABLED) return;
     const { startTrackingReconciler } = require('@/lib/walk/trackingReconciler');
     return startTrackingReconciler();
-  }, []);
-
-  // Walk-tracking janitor: every time the app returns to the foreground with
-  // no walk in flight, make sure the OS location service is actually off.
-  // This is the regression-proof backstop for the "location indicator stays
-  // lit after Finish" class of bug — whatever the cause, tracking dies the
-  // next time the user opens the app instead of requiring a force-close.
-  // Cheap when healthy: one native "is it running?" check per foreground.
-  useEffect(() => {
-    if (!WALK_TRACKING_ENABLED) return;
-    const { AppState } = require('react-native');
-    const { useWalkStore } = require('@/store/useWalkStore');
-    const { ensureWalkTrackingStopped } = require('@/lib/walk/locationEngine');
-    const sub = AppState.addEventListener('change', (state: string) => {
-      if (state !== 'active') return;
-      const phase = useWalkStore.getState().phase;
-      if (phase === 'tracking' || phase === 'starting' || phase === 'saving') return;
-      ensureWalkTrackingStopped().catch(() => {});
-    });
-    return () => sub.remove();
   }, []);
 
   // Initialize Meta (Facebook) SDK + ATT consent on mount.
@@ -298,7 +281,6 @@ function RootLayoutNav() {
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="walk" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="ask" options={{ presentation: 'card', headerShown: false }} />
-        <Stack.Screen name="preview-home" options={{ presentation: 'card', headerShown: false, gestureEnabled: false }} />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>
