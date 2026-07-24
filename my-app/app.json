@@ -11,7 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "68",
+      "buildNumber": "70",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Pawtchi uses your camera to scan your pet's food and analyse its nutritional content.",
