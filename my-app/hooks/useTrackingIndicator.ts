@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import { useWalkStore, WalkPhase } from '../store/useWalkStore';
-import { isTracking } from '../lib/walk/locationEngine';
+import { isRunning as isTracking } from '../lib/walk/walkTracker';
 
 export type IndicatorMode = 'active' | 'leak';
 

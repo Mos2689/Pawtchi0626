@@ -145,11 +145,14 @@ export type AnalyticsEvent =
   | 'walk_discarded'
   | 'walk_recovered'
   | 'walk_sync_dropped'
-  // Lifecycle tracing — one structured breadcrumb per walk-lifecycle beat, so
-  // the "tracking indicator stays lit after finish" bug can be reconstructed
-  // from real-device (TestFlight) evidence instead of theory. Low volume: a
-  // walk emits a handful, not a stream. See lib/walk/walkTrace.ts.
-  | 'walk_trace'
+  // Background-tracker lifecycle (walkTracker). `bg_self_stopped` fires when the
+  // OS delivers location with no active-walk record and the task unregisters
+  // itself — a stale registration being killed (should fire at most once right
+  // after a stale reopen, then never). `recover_reconnect`/`recover_finalize`
+  // record which launch path an orphaned record took.
+  | 'walk_bg_self_stopped'
+  | 'walk_recover_reconnect'
+  | 'walk_recover_finalize'
   | 'walk_shared'
   // Paw Moment share card — the walk→Instagram loop. `viewed` fires when the
   // card preview opens, `shared` when the native sheet completes (the OS

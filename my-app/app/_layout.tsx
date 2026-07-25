@@ -41,10 +41,11 @@ import { supabase } from '@/lib/supabase';
 import { WALK_TRACKING_ENABLED } from '@/constants/features';
 import { initFirebaseAnalytics, setFirebaseUserId } from '@/lib/firebaseAnalytics';
 // Side-effect import: defines the walk-tracking background task at bundle
-// load so the OS can deliver GPS fixes without any walk screen mounted.
-// Kept even while walks are disabled — defineTask is inert JS registration
-// (already try/caught) and the OS never starts the task without a walk.
-import '@/lib/walk/locationEngine';
+// load so the OS can deliver GPS fixes without any walk screen mounted, and so
+// a stale OS registration self-stops on the first delivery (the task reads the
+// durable record). Kept even while walks are disabled — defineTask is inert JS
+// registration (already try/caught) and the task self-stops with no record.
+import '@/lib/walk/walkTracker';
 
 const INFORMATIONAL_ENTITLEMENT_VERIFICATION =
   'INFORMATIONAL' as NonNullable<PurchasesConfiguration['entitlementVerificationMode']>;
@@ -128,37 +129,19 @@ function RootLayoutNav() {
     initFirebaseAnalytics();
   }, []);
 
-  // Tracked walks: recover an enabled feature, or clean up a persisted/native
-  // session left by an older enabled build when the release flag is off. This
-  // makes disabling Walk safe for users who update while a session is active.
+  // Tracked walks, launch reconcile: the ONLY launch-time tracking action. It
+  // reads the durable active-walk record and either continues a genuinely
+  // ongoing walk or finalizes an orphan — and, with the flag off, hard-stops any
+  // leftover session. It NEVER starts tracking; a stale OS registration is also
+  // self-stopped by the task itself on its first delivery. No reconciler or
+  // AppState janitor needed — the record is the single authority.
   useEffect(() => {
     const { useWalkStore } = require('@/store/useWalkStore');
-    const run = () => {
-      const store = useWalkStore.getState();
-      const operation = WALK_TRACKING_ENABLED
-        ? store.recoverOrphanedWalk()
-        : store.hardStopTracking();
-      operation.catch(() => {});
-    };
-    if (useWalkStore.persist.hasHydrated()) run();
-    else {
-      const unsub = useWalkStore.persist.onFinishHydration(run);
-      return unsub;
-    }
-  }, []);
-
-  // Walk-tracking reconciler: THE single guarantee that the OS location service
-  // is off whenever a walk isn't wanted. It keys on the persisted source of
-  // truth (trackingDesired) and enforces "trackingDesired === false ⇒ OS off"
-  // on every lever that can reveal a leak — the flag flipping, the app
-  // foregrounding, and a bounded periodic tick — so no completion path, slow
-  // finalize, backgrounded finish, or recovery can leave the "indicator stays
-  // lit after Finish" regression alive. This one reconciler replaces the old
-  // phase-transition subscription AND the separate AppState janitor.
-  useEffect(() => {
-    if (!WALK_TRACKING_ENABLED) return;
-    const { startTrackingReconciler } = require('@/lib/walk/trackingReconciler');
-    return startTrackingReconciler();
+    const store = useWalkStore.getState();
+    const operation = WALK_TRACKING_ENABLED
+      ? store.recoverOrphanedWalk()
+      : store.hardStopTracking();
+    operation.catch(() => {});
   }, []);
 
   // Initialize Meta (Facebook) SDK + ATT consent on mount.
