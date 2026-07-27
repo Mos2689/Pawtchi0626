@@ -1,5 +1,5 @@
-import React from 'react';
-import { Share, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { color, font, space } from '../../constants/design';
 import { track } from '../../lib/analytics';
 import {
@@ -7,11 +7,11 @@ import {
   buildConfirmationBody,
   buildConfirmationHeadline,
   buildTransitionHeadline,
-  buildWalksignShareMessage,
 } from '../../lib/walksign/copy';
 import type { PendingWalksignCelebration } from '../../lib/walksign/walksignSync';
 import { PawtchiModal } from '../PawtchiModal';
 import { WalksignCrest } from './WalksignCrest';
+import { WalksignShareModal } from './WalksignShareModal';
 
 interface Props {
   celebration: PendingWalksignCelebration | null;
@@ -28,6 +28,12 @@ interface Props {
  * never a toast, never repeated.
  */
 export function WalksignMomentModal({ celebration, petName, petGender, onClose }: Props) {
+  const [shareOpen, setShareOpen] = useState(false);
+
+  useEffect(() => {
+    if (!celebration) setShareOpen(false);
+  }, [celebration]);
+
   if (!celebration) return null;
 
   const { sign, event, transitionKind } = celebration;
@@ -40,32 +46,40 @@ export function WalksignMomentModal({ celebration, petName, petGender, onClose }
       ? WALKSIGN_COPY[sign].manifesto
       : buildConfirmationBody(sign, petName);
 
-  const handleShare = async () => {
+  const handleShare = () => {
     track('walksign_shared', { sign, surface: 'modal' });
-    try {
-      await Share.share({ message: buildWalksignShareMessage(sign, petName, petGender) });
-    } catch {
-      // Sheet dismissed or unavailable — the moment already landed.
-    }
+    setShareOpen(true);
+  };
+
+  const closeShare = () => {
+    setShareOpen(false);
     onClose();
   };
 
   return (
-    <PawtchiModal
-      visible
-      onClose={onClose}
-      title={title}
-      actions={[
-        { label: 'Share', onPress: handleShare },
-        { label: 'Done', onPress: onClose, variant: 'secondary' },
-      ]}
-    >
-      <View style={styles.body}>
-        <WalksignCrest sign={sign} size={88} color={color.ink} />
-        <Text style={styles.signName}>{WALKSIGN_COPY[sign].displayName}</Text>
-        <Text style={styles.manifesto}>{body}</Text>
-      </View>
-    </PawtchiModal>
+    <>
+      <PawtchiModal
+        visible={!shareOpen}
+        onClose={onClose}
+        title={title}
+        actions={[
+          { label: 'Share', onPress: handleShare },
+          { label: 'Done', onPress: onClose, variant: 'secondary' },
+        ]}
+      >
+        <View style={styles.body}>
+          <WalksignCrest sign={sign} size={88} color={color.ink} />
+          <Text style={styles.signName}>{WALKSIGN_COPY[sign].displayName}</Text>
+          <Text style={styles.manifesto}>{body}</Text>
+        </View>
+      </PawtchiModal>
+      <WalksignShareModal
+        visible={shareOpen}
+        onClose={closeShare}
+        sign={sign}
+        petName={petName}
+      />
+    </>
   );
 }
 

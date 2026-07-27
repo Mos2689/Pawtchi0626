@@ -34,6 +34,7 @@ import {
 } from '../../lib/appError';
 import { useFocusEffect } from '@react-navigation/native';
 import { WalksignCrest } from '../../components/walksign/WalksignCrest';
+import { WalksignShareModal } from '../../components/walksign/WalksignShareModal';
 import {
   WALKSIGN_COPY,
   buildStatusLine,
@@ -729,6 +730,7 @@ export default function ProfileScreen() {
       ? (activePet.walksign as WalksignId)
       : null;
   const [walksignModalOpen, setWalksignModalOpen] = useState(false);
+  const [walksignShareOpen, setWalksignShareOpen] = useState(false);
   // Re-run the sticky state machine on focus — staleness-guarded inside, so
   // this is a cheap no-op most visits but catches life transitions (a dog
   // ages into seniority with no walk to trigger the evaluation).
@@ -1111,11 +1113,18 @@ export default function ProfileScreen() {
       {/* Walksign detail — the full manifesto */}
       {walksignId && (
         <PawtchiModal
-          visible={walksignModalOpen}
+          visible={walksignModalOpen && !walksignShareOpen}
           onClose={() => setWalksignModalOpen(false)}
           title={WALKSIGN_COPY[walksignId].displayName}
           actions={[
-            { label: 'Close', onPress: () => setWalksignModalOpen(false) },
+            {
+              label: 'Share',
+              onPress: () => {
+                track('walksign_shared', { sign: walksignId, surface: 'profile' });
+                setWalksignShareOpen(true);
+              },
+            },
+            { label: 'Close', onPress: () => setWalksignModalOpen(false), variant: 'secondary' },
           ]}
         >
           <View style={styles.walksignModalBody}>
@@ -1125,6 +1134,14 @@ export default function ProfileScreen() {
             <Text style={styles.walksignModalCaption}>A Pawtchi Walksign</Text>
           </View>
         </PawtchiModal>
+      )}
+      {walksignId && (
+        <WalksignShareModal
+          visible={walksignShareOpen}
+          onClose={() => setWalksignShareOpen(false)}
+          sign={walksignId}
+          petName={activePet?.name}
+        />
       )}
 
       <RoutineSheet

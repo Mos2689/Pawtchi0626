@@ -58,7 +58,8 @@ export interface ShareMomentContext {
     | 'home_feed'
     | 'milestone'
     | 'monthly_recap'
-    | 'walk_gallery';
+    | 'walk_gallery'
+    | 'walksign';
   /** Which ground the card was shared with (map / paper / photo). */
   ground?: string;
 }
@@ -156,7 +157,7 @@ export async function shareMoment(
 
     await Sharing.shareAsync(uri, {
       mimeType: 'image/png',
-      dialogTitle: 'Share this walk',
+      dialogTitle: context.source === 'walksign' ? 'Share this Walksign' : 'Share this walk',
       UTI: 'public.png',
     });
 
