@@ -4,7 +4,12 @@
     "appVersionSource": "local"
   },
   "build": {
+    "base": {
+      "//": "Pins the toolchain so the builder resolves dependencies the same way the lockfile was written. Builds failed repeatedly on `npm ci` with 'lock file's ajv@6.14.0 does not satisfy ajv@8.20.0 / Missing: ajv@6.15.0': eslint declares ajv ^6.14.0, ajv 6.15.0 was published, and the builder's older npm resolved the range to the newer release while the lockfile pinned the older one. Without a pin this recurs every time any transitive dependency publishes a patch.",
+      "node": "24.13.0"
+    },
     "development": {
+      "extends": "base",
       "developmentClient": true,
       "distribution": "internal",
       "android": {
@@ -12,13 +17,15 @@
       }
     },
     "preview": {
+      "extends": "base",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
-      "autoIncrement": true,
+      "extends": "base",
+      "autoIncrement": false,
       "android": {
         "buildType": "app-bundle"
       }
@@ -32,9 +39,9 @@
       },
       "ios": {
         "ascAppId": "6762331927",
-        "ascApiKeyPath": "./AuthKey_C63H8ANS29.p8",
+        "ascApiKeyPath": "./AuthKey_RTCAHSPA5J.p8",
         "ascApiKeyIssuerId": "ac0f2e03-c5b0-4d70-9c30-dd6b8d91ff2a",
-        "ascApiKeyId": "C63H8ANS29"
+        "ascApiKeyId": "RTCAHSPA5J"
       }
     }
   }
