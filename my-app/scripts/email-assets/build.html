@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pawtchi email asset build</title>
+<body style="font:13px system-ui;padding:20px;background:#F7F5F0;">
+<pre id="log">building…</pre>
+<script>
+const log = m => { document.getElementById('log').textContent += '\n' + m; };
+
+async function save(name, dataUrl) {
+  const r = await fetch('/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, dataUrl }),
+  });
+  const j = await r.json();
+  log(name.padEnd(28) + (j.bytes / 1024).toFixed(0) + ' KB');
+  return j;
+}
+
+// ── Photos ────────────────────────────────────────────────────────────────
+// Downscaled to 2x the widest slot the template uses (536px full-bleed, so
+// 1200px is generous) and re-encoded as progressive-ish JPEG. Quality is tuned
+// per image below: the source PNGs are 1.7-2.7 MB, which is fine on a desktop
+// and hostile on mobile data.
+async function photo(src, out, targetW, quality) {
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const scale = Math.min(1, targetW / img.naturalWidth);
+  const w = Math.round(img.naturalWidth * scale);
+  const h = Math.round(img.naturalHeight * scale);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  // JPEG has no alpha; without this any transparent edge composites to black.
+  ctx.fillStyle = '#FFFDFA';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  await save(out, c.toDataURL('image/jpeg', quality));
+  log('   ' + w + 'x' + h);
+}
+
+// ── Icons ─────────────────────────────────────────────────────────────────
+// Drawn as vectors and rasterised rather than generated as images: eight marks
+// need identical stroke weight, cap style and optical size, and that is a thing
+// code does reliably and an image model does not. 48px for a 24px slot.
+const S = 24;
+const ICONS = {
+  // A running figure.
+  activity: 'M12.3 5.2a1.7 1.7 0 1 0 3.4 0 1.7 1.7 0 1 0-3.4 0M14.6 20.2v-3.7l-3.4-2.6.9-5.0M7.3 12.6V10l4.8-.9 2.6 2.6 2.6.9M4.5 17.1l4.2.9.6-1.3',
+  // A food bowl.
+  nutrition: 'M3.4 11h17.2c0 4.2-3.8 7.4-8.6 7.4S3.4 15.2 3.4 11ZM7 11c0-2.6 2.2-4.6 5-4.6s5 2 5 4.6',
+  // A water droplet.
+  hydration: 'M12 3.2c3.4 4 5.6 6.8 5.6 9.6a5.6 5.6 0 1 1-11.2 0c0-2.8 2.2-5.6 5.6-9.6Z',
+  // A weighing scale.
+  weight: 'M4 20h16M6 20V9.5h12V20M9 9.5 12 4l3 5.5M12 13v3.5',
+  // A sun.
+  sun: 'M12 7.2a4.8 4.8 0 1 1 0 9.6 4.8 4.8 0 0 1 0-9.6ZM12 2.2v2.2M12 19.6v2.2M2.2 12h2.2M19.6 12h2.2M5.1 5.1l1.6 1.6M17.3 17.3l1.6 1.6M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6',
+  // A heart.
+  heart: 'M12 20.2S3.6 15.4 3.6 9.6A4.4 4.4 0 0 1 12 7.6a4.4 4.4 0 0 1 8.4 2c0 5.8-8.4 10.6-8.4 10.6Z',
+  // A lightning bolt.
+  bolt: 'M13.4 2.4 4.6 13.6h6.2L10.6 21.6l8.8-11.2h-6.2l.2-8Z',
+  // Two overlapping circles — companionship.
+  bond: 'M9.6 15.4a5.4 5.4 0 1 1 0-10.8 5.4 5.4 0 0 1 0 10.8ZM14.4 19.4a5.4 5.4 0 1 1 0-10.8 5.4 5.4 0 0 1 0 10.8Z',
+};
+
+async function icon(name, d) {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="' + S + '" height="' + S + '" viewBox="0 0 ' + S + ' ' + S + '">' +
+    '<path d="' + d + '" fill="none" stroke="#1A1A1A" stroke-width="1.7" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const img = new Image();
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = 48; c.height = 48;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, 48, 48); // transparent PNG, no background fill
+  await save('icons/' + name + '.png', c.toDataURL('image/png'));
+}
+
+(async () => {
+  try {
+    document.getElementById('log').textContent = 'photos';
+    await photo('../.tmp-assets/src-together.png', 'default-together.jpg', 1200, 0.82);
+    await photo('../.tmp-assets/src-leash.png',    'default-leash.jpg',    1200, 0.82);
+    await photo('../.tmp-assets/src-rest.png',     'default-rest.jpg',     1200, 0.82);
+    // Narrower and slightly softer than the others: it is the only portrait,
+    // so at 900px it came out at 208 KB — over the 200 KB budget in the README.
+    await photo('../.tmp-assets/src-beach.png',    'default-beach.jpg',    820,  0.80);
+    log('\nicons');
+    for (const [n, d] of Object.entries(ICONS)) await icon(n, d);
+    log('\nDONE');
+  } catch (e) {
+    log('FAILED ' + e.message);
+  }
+})();
+</script>
+</body>

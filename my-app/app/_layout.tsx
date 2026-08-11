@@ -22,6 +22,13 @@ import {
   Inter_600SemiBold,
   Inter_700Bold,
 } from '@expo-google-fonts/inter';
+import {
+  Geist_300Light,
+  Geist_400Regular,
+  Geist_500Medium,
+  Geist_600SemiBold,
+} from '@expo-google-fonts/geist';
+import { GeistMono_400Regular } from '@expo-google-fonts/geist-mono';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -37,9 +44,14 @@ import { consumeFreshSignup } from '@/lib/onboardingFunnel';
 import { isRecoveryInProgress } from '@/lib/passwordRecovery';
 import { PostHogProvider } from 'posthog-react-native';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { useEmailDeepLinks } from '@/hooks/useEmailDeepLinks';
+import * as QuickActions from 'expo-quick-actions';
+import { useQuickActionCallback } from 'expo-quick-actions/hooks';
+import { WRITE_TO_FOUNDER_LABEL } from '@/lib/founderLetters';
 import { supabase } from '@/lib/supabase';
 import { WALK_TRACKING_ENABLED } from '@/constants/features';
 import { initFirebaseAnalytics, setFirebaseUserId } from '@/lib/firebaseAnalytics';
+import { installBreadcrumbs } from '@/lib/support/breadcrumbs';
 // Side-effect import: defines the walk-tracking background task at bundle
 // load so the OS can deliver GPS fixes without any walk screen mounted, and so
 // a stale OS registration self-stops on the first delivery (the task reads the
@@ -47,25 +59,92 @@ import { initFirebaseAnalytics, setFirebaseUserId } from '@/lib/firebaseAnalytic
 // registration (already try/caught) and the task self-stops with no record.
 import '@/lib/walk/walkTracker';
 
+// Start recording the in-memory breadcrumb trail that support requests carry.
+// At module scope rather than in an effect so the very first events of a cold
+// start — the ones surrounding a launch crash — are already being captured
+// before any component mounts. Idempotent, and it stores event NAMES only:
+// see lib/support/breadcrumbs.ts for why props are deliberately excluded.
+installBreadcrumbs();
+
 const INFORMATIONAL_ENTITLEMENT_VERIFICATION =
   'INFORMATIONAL' as NonNullable<PurchasesConfiguration['entitlementVerificationMode']>;
 
-// Push registration + token sync, once per session — not per Home mount.
-// Rendered only while a session exists, so the permission prompt still fires
-// on the first authed screen (same timing as when this lived in Home).
+// Push token sync + notification routing, once per session.
+//
+// This deliberately does NOT request permission. It used to: the hook fired
+// requestPermissionsAsync() the instant a session existed, so the OS prompt
+// landed on the first authed frame — before the owner had seen a single screen
+// of value, sometimes mid-onboarding. iOS grants exactly one prompt per
+// install, and spending it there left opt-in at 9% (16 valid tokens across 177
+// users), which hard-caps the reach of every notification the product sends.
+//
+// The ask now lives in components/NotificationPrimer.tsx, after the plan
+// reveal, behind an explicit tap. This bridge only registers a token when
+// permission has already been granted, and keeps it fresh across rotations.
 function PushNotificationsBridge({ userId }: { userId: string }) {
-  const { expoPushToken } = usePushNotifications();
+  const { registration, setMarkOpened } = usePushNotifications();
+
   useEffect(() => {
-    if (userId && expoPushToken) {
-      supabase.rpc('register_push_token', { push_token: expoPushToken })
+    setMarkOpened((dedupeKey: string) => {
+      supabase.rpc('mark_notification_opened', { p_dedupe_key: dedupeKey })
         .then(({ error }) => {
-          if (error) console.error('Failed to sync push token:', error.message);
+          // Open tracking is telemetry — never let it surface to the user.
+          if (error && __DEV__) console.log('mark_notification_opened:', error.message);
         });
-    }
-  }, [userId, expoPushToken]);
+    });
+  }, [setMarkOpened]);
+
+  useEffect(() => {
+    if (!userId || !registration?.token) return;
+    supabase.rpc('register_push_token', {
+      push_token: registration.token,
+      platform: registration.platform,
+      timezone: registration.timezone,
+    }).then(({ error }) => {
+      if (error) console.error('Failed to sync push token:', error.message);
+    });
+  }, [userId, registration?.token, registration?.platform, registration?.timezone]);
+
   return null;
 }
 
+
+/**
+ * Home Screen quick actions — the long-press shortcut on the app icon.
+ *
+ * Registered only once there is a session: a shortcut that drops a signed-out
+ * person on the auth screen is worse than no shortcut. Mounted alongside the
+ * push bridge for the same reason.
+ *
+ * Native module, so this does nothing in Expo Go — the item only appears in a
+ * build that has run prebuild.
+ */
+function QuickActionsBridge() {
+  const router = useRouter();
+
+  useEffect(() => {
+    QuickActions.setItems([
+      {
+        id: 'write-to-founder',
+        title: WRITE_TO_FOUNDER_LABEL,
+        subtitle: 'A letter to the people who make Pawtchi',
+        icon: 'compose',
+        params: { href: '/letter?source=quick_action' },
+      },
+    ]).catch(() => {
+      // Unsupported launcher, or too many items. Never fatal — every entry
+      // point this feature has also exists inside the app.
+    });
+  }, []);
+
+  // Fires for both a cold launch from the shortcut and a warm tap.
+  useQuickActionCallback((action) => {
+    const href = action?.params?.href;
+    if (typeof href === 'string') router.push(href as never);
+  });
+
+  return null;
+}
 
 export const unstable_settings = {
   initialRouteName: '(tabs)',
@@ -78,6 +157,12 @@ function RootLayoutNav() {
   const router = useRouter();
   const navState = useRootNavigationState();
   const pathname = usePathname();
+
+  // Emailed universal links. Mounted here rather than in the push bridge
+  // because that bridge only renders for a signed-in user, and a link tapped
+  // by somebody logged out still needs to route once the auth gate resolves
+  // rather than silently dropping them on the home tab.
+  useEmailDeepLinks();
 
   // Brand fonts load once here for the whole app (screens never call useFonts
   // themselves). The splash stays up until both fonts and auth state resolve,
@@ -95,6 +180,13 @@ function RootLayoutNav() {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
+    // Walk Story ("Popsicle") typography — Geist for display + labels, Geist
+    // Mono for the tag/meta lines. Story viewer only.
+    Geist_300Light,
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    GeistMono_400Regular,
   });
 
   // Initialize RevenueCat SDK on mount
@@ -218,6 +310,11 @@ function RootLayoutNav() {
     // Wait until auth is resolved AND the root navigator is mounted.
     if (authLoading || !navState?.key) return;
     const first = segments[0];
+    // The privacy policy sits outside the gate entirely — neither redirect
+    // applies. APP 5 / IPP 3 require the collection notice to be readable
+    // BEFORE an account exists, and Profile links to the same screen after,
+    // so bouncing it in either direction breaks one of the two.
+    if (first === 'privacy') return;
     const inPublic = first === 'welcome' || first === '(auth)';
     if (!session && !inPublic) {
       // Logged out while on an authed screen → welcome. Uses the explicit
@@ -256,6 +353,7 @@ function RootLayoutNav() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       {session?.user?.id && <PushNotificationsBridge userId={session.user.id} />}
+      {session?.user?.id && <QuickActionsBridge />}
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="welcome" options={{ headerShown: false, animation: 'none' }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
@@ -263,7 +361,20 @@ function RootLayoutNav() {
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="walk" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="walk-story" options={{ presentation: 'fullScreenModal', headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="ask" options={{ presentation: 'card', headerShown: false }} />
+        {/* Write to the Founder. `letter/index` is a brand moment on the navy
+            ground; compose and the thread are operational surfaces. */}
+        <Stack.Screen name="letter/index" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="letter/compose" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="letter/[id]" options={{ presentation: 'card', headerShown: false }} />
+        {/* Help & Support. The structured sibling of the letter above: same
+            white ground and two-colour system, different voice — the team
+            rather than the founders. All three are operational surfaces. */}
+        <Stack.Screen name="support/index" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="support/new" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="support/[id]" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="notifications" options={{ presentation: 'card', headerShown: false }} />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>

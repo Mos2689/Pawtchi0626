@@ -18,45 +18,53 @@ interface WeeklySummaryProps {
   ownerName?: string;
   petName?: string;
   weekRange?: string;
+  /**
+   * One sentence derived from the owner's real numbers, or null when the data
+   * does not support one. Never write a fixed string here.
+   */
+  insight?: string | null;
   stats?: {
     caloriesConsumed: number;
     calorieGoal: number;
     activitiesLogged: number;
-    waterIntakeScore: string; 
+    daysLogged?: number;
   };
 }
 
 export const WeeklySummaryEmail = ({
   ownerName = "there",
-  petName = "your pet",
+  // Not "your pet": Copy Spec v1 requires the animal's name. A digest that
+  // cannot name the animal should not be sent, and the candidate query
+  // guarantees one, so this default is only ever a preview placeholder.
+  petName = "Milo",
   weekRange = "this past week",
+  insight = null,
   stats = {
     caloriesConsumed: 4500,
     calorieGoal: 4200,
     activitiesLogged: 7,
-    waterIntakeScore: "Excellent",
+    daysLogged: 6,
   },
 }: WeeklySummaryProps) => {
-  // Simple logic to see if they hit their activity goal
-  const activityStatus = stats.activitiesLogged >= 5 ? "On target" : "Room to improve";
+  const daysLogged = stats.daysLogged ?? 0;
 
   return (
     <Html>
       <Head />
-      <Preview>{petName}'s weekly health summary is ready.</Preview>
+      <Preview>{petName}'s week, in numbers.</Preview>
       <Body style={main}>
         <Container style={container}>
           {/* Header */}
           <Section style={header}>
             <Text style={logoText}>Pawtchi</Text>
-            <Text style={weekText}>Weekly Summary: {weekRange}</Text>
+            <Text style={weekText}>Weekly recap: {weekRange}</Text>
           </Section>
 
           {/* Intro Section */}
           <Section style={heroSection}>
-            <Text style={heading}>Hey {ownerName}, here is {petName}'s week in review!</Text>
+            <Text style={heading}>{ownerName}, here is {petName}'s week</Text>
             <Text style={paragraph}>
-              Tracking nutrition and activity consistently is the best way to ensure {petName} lives a long, healthy life. Let's look at the numbers.
+              {daysLogged} of the last seven days have logs against them. Here is what they add up to.
             </Text>
           </Section>
 
@@ -64,29 +72,38 @@ export const WeeklySummaryEmail = ({
           <Section style={statsContainer}>
             <Row>
               <Column style={statCard}>
-                <Text style={statLabel}>Calories Consumed</Text>
+                <Text style={statLabel}>Calories logged</Text>
                 <Text style={statValue}>{stats.caloriesConsumed.toLocaleString()}</Text>
-                <Text style={statSubvalue}>Goal: {stats.calorieGoal.toLocaleString()}</Text>
+                <Text style={statSubvalue}>
+                  {stats.calorieGoal > 0 ? `Target: ${stats.calorieGoal.toLocaleString()}` : "No target set"}
+                </Text>
               </Column>
               <Column style={statCardRight}>
-                <Text style={statLabel}>Activities Logged</Text>
+                <Text style={statLabel}>Walks logged</Text>
                 <Text style={statValue}>{stats.activitiesLogged}</Text>
-                <Text style={statSubvalue}>{activityStatus}</Text>
+                <Text style={statSubvalue}>{daysLogged} days logged</Text>
               </Column>
             </Row>
           </Section>
 
-          <Section style={insightSection}>
-            <Text style={insightHeading}>What we noticed this week</Text>
-            <Text style={insightText}>
-              {petName} is slightly over the weekly calorie goal. Extending the evening walk by 10 minutes would help balance the intake.
-            </Text>
-          </Section>
+          {/*
+            Derived from the owner's actual numbers by notify-weekly-digest, and
+            omitted entirely when the data does not support a claim. This block
+            used to be a hardcoded string telling every single owner their
+            animal was "slightly over the weekly calorie goal", regardless of
+            what they had logged.
+          */}
+          {insight ? (
+            <Section style={insightSection}>
+              <Text style={insightHeading}>What stood out</Text>
+              <Text style={insightText}>{insight}</Text>
+            </Section>
+          ) : null}
 
           {/* Action Button */}
           <Section style={buttonContainer}>
             <Button style={button} href="https://pawtchi.com/app/health">
-              View Full Dashboard
+              Open the dashboard
             </Button>
           </Section>
 
@@ -95,7 +112,7 @@ export const WeeklySummaryEmail = ({
           {/* Footer */}
           <Section style={footer}>
             <Text style={footerText}>
-              Keep up the great work. If you want to unsubscribe from weekly summaries, you can adjust your <Link href="https://pawtchi.com/app/settings" style={link}>notification preferences</Link>.
+              To stop these, turn off the weekly recap in <Link href="https://pawtchi.com/app/settings" style={link}>notification settings</Link>.
             </Text>
             <Text style={footerCopyright}>
               © 2026 Hey Living Club Pty Ltd. All rights reserved.

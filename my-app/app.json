@@ -11,8 +11,12 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "70",
+      "buildNumber": "74",
       "supportsTablet": true,
+      "associatedDomains": [
+        "applinks:pawtchi.com",
+        "applinks:www.pawtchi.com"
+      ],
       "infoPlist": {
         "NSCameraUsageDescription": "Pawtchi uses your camera to scan your pet's food and analyse its nutritional content.",
         "NSPhotoLibraryUsageDescription": "Pawtchi uses your photo library to let you set your pet's profile picture.",
@@ -21,7 +25,18 @@
           "instagram",
           "instagram-stories"
         ],
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "SKAdNetworkItems": [
+          {
+            "SKAdNetworkIdentifier": "cstr6suwn9.skadnetwork"
+          },
+          {
+            "SKAdNetworkIdentifier": "v9wttpbfk9.skadnetwork"
+          },
+          {
+            "SKAdNetworkIdentifier": "n38lu8286q.skadnetwork"
+          }
+        ]
       },
       "splash": {
         "image": "./assets/images/splash-icon.png",
@@ -34,8 +49,26 @@
       "package": "com.pawtchi.app",
       "versionCode": 33,
       "permissions": [
-        "android.permission.INTERNET",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.INTERNET"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "pawtchi.com",
+              "pathPrefix": "/app"
+            },
+            {
+              "scheme": "https",
+              "host": "www.pawtchi.com",
+              "pathPrefix": "/app"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
       ],
       "adaptiveIcon": {
         "backgroundColor": "#FFFF00",
@@ -91,6 +124,7 @@
       ],
       "expo-tracking-transparency",
       "expo-video",
+      "expo-quick-actions",
       "expo-localization",
       "expo-font",
       "@maplibre/maplibre-react-native",

@@ -50,8 +50,8 @@ export type AnalyticsEvent =
   | 'plan_reveal_continued'
   // Walksigns — the identity discovered from how a dog moves through the
   // world. `assigned` covers provisional readings (incl. quiet re-readings),
-  // `confirmed` the fifth-valid-walk confirmation, `transition` the
-  // celebrated life-moment changes (graduation, seniority).
+  // `confirmed` a confidence-gated confirmation, `transition` a celebrated
+  // life-stage or sustained behavioral evolution.
   | 'walksign_assigned'
   | 'walksign_reveal_viewed'
   | 'walksign_confirmed'
@@ -107,6 +107,11 @@ export type AnalyticsEvent =
   // predicted_used=true means they dismissed and the drift-predicted score
   // advanced the plan instead.
   | 'bcs_rescored'
+  // Canonical, versioned weight-plan pipeline.
+  | 'weight_measurement_recorded'
+  | 'weight_measurement_rejected'
+  | 'weight_assessment_recorded'
+  | 'weight_plan_transition'
   // Photo BCS read — the background Gemini estimate of body condition from
   // the avatar photo, and what happened to its suggestion on the goal screen.
   // requested/returned/failed track the pipeline; shown/suppressed track the
@@ -179,10 +184,88 @@ export type AnalyticsEvent =
   | 'template_unlocked'
   | 'template_locked_preview_viewed'
   | 'template_unlock_celebrated'
+  // Walk Story — the auto-generated, in-app story played from the Home avatar.
+  // `generated` fires when a finished walk stashes a fresh story, `ring_shown`
+  // when the Home avatar lights its story ring, `opened` when the viewer
+  // launches, `beat_viewed` per slide, `completed` when the last slide is
+  // reached, and `shared` when the closer hands off to the moment share sheet.
+  | 'walk_story_generated'
+  | 'walk_story_ring_shown'
+  | 'walk_story_opened'
+  | 'walk_story_beat_viewed'
+  | 'walk_story_completed'
+  | 'walk_story_shared'
   // Duplicate-activity guardrail — fires when the Activity tab's read-side
   // de-dupe drops stacked schedule rows. A non-zero rate in the wild means the
   // generator/DB guardrails regressed; ideally this stays silent forever.
-  | 'activity_duplicates_detected';
+  | 'activity_duplicates_detected'
+  // Notifications. Before August 2026 this catalogue had no notification
+  // events at all, which meant opt-in, delivery, open rate and session
+  // recovery were unmeasurable in principle — the pipeline could (and did)
+  // fail completely for months without a single metric moving.
+  //
+  // The funnel reads: primer_shown → primer_accepted → permission_result
+  // → push_token_registered → notification_received → notification_opened.
+  // Every send-side event carries `campaign_key` so open rate and CTR slice
+  // per campaign and variant.
+  | 'notification_primer_shown'
+  | 'notification_primer_accepted'
+  | 'notification_primer_declined'
+  | 'notification_permission_result'
+  | 'push_token_registered'
+  | 'push_token_failed'
+  | 'notification_received'
+  | 'notification_opened'
+  | 'notification_settings_opened'
+  | 'notification_settings_changed'
+  // Email. The counterpart to notification_opened, and the only click signal
+  // this channel has that a machine cannot fake: Apple Mail Privacy Protection
+  // pre-fetches images for a large share of recipients, so a Resend "opened"
+  // webhook means the message arrived, not that a person read it. A tap that
+  // reaches the app did involve a person.
+  //
+  // `routed` distinguishes "the link worked" from "the app opened and dumped
+  // them somewhere" — the failure mode where routeForUrl exists but nothing
+  // calls it, which is exactly how this shipped the first time.
+  | 'email_link_opened'
+  // Write to the Founder. `entry_tapped` carries `entry_source` so we can tell
+  // whether the Home Screen quick action earns the native rebuild it costs.
+  //
+  // The number this feature lives or dies by is reply → return visit, which
+  // reads as letter_reply_push_opened / letter_sent. Sending is a one-off act;
+  // a reply that pulls someone back into the app is the whole point.
+  | 'letter_entry_tapped'
+  | 'letter_compose_started'
+  | 'letter_sent'
+  | 'letter_send_failed'
+  | 'letter_thread_opened'
+  | 'letter_reply_push_opened'
+  // Pawtchi Support — the structured channel beside the founder letter.
+  //
+  // Two numbers decide whether this feature works:
+  //
+  //  1. Deflection. `support_faq_expanded` with no `support_ticket_submitted`
+  //     after it means the FAQ answered the question. If that ratio is near
+  //     zero the FAQ is answering questions nobody has.
+  //  2. Reply → return visit, read as support_reply_push_opened over replies
+  //     sent. Same reasoning as the founder letter above: submitting is a
+  //     one-off act, and a reply that pulls someone back is the whole point.
+  //
+  // `prefilled` on support_compose_started is the one that validates the
+  // premise of the design — if the area chip is usually already correct when
+  // someone arrives from a failure, the context-aware routing is earning its
+  // keep. If it is usually wrong, tune the map in lib/support/copy.ts rather
+  // than adding a step to the form.
+  | 'support_home_viewed'
+  | 'support_faq_expanded'
+  | 'support_door_tapped'
+  | 'support_compose_started'
+  | 'support_ticket_submitted'
+  | 'support_ticket_failed'
+  | 'support_ticket_capped'
+  | 'support_diagnostics_expanded'
+  | 'support_thread_opened'
+  | 'support_reply_push_opened';
 
 export type AnalyticsProps = Record<string, string | number | boolean | null | undefined>;
 
