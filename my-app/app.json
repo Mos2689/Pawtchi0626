@@ -11,7 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "74",
+      "buildNumber": "75",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:pawtchi.com",
@@ -47,7 +47,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 33,
+      "versionCode": 34,
       "permissions": [
         "android.permission.INTERNET"
       ],
@@ -67,7 +67,10 @@
               "pathPrefix": "/app"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ],
       "adaptiveIcon": {
@@ -79,7 +82,7 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/icon.png"
     },
     "plugins": [
       "expo-router",
