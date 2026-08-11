@@ -4,22 +4,22 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { MaterialIcons, Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons, MaterialIcons, Ionicons } from '@expo/vector-icons';
 import Svg from 'react-native-svg';
 import Reanimated, {
   useSharedValue, useAnimatedStyle, withSequence, withSpring,
 } from 'react-native-reanimated';
 import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
 import { AnimatedCounter } from '../../components/AnimatedCounter';
 import { entrance } from '../../components/motionPresets';
 import { PawLoader } from '../../components/loader/PawLoader';
 import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
-import { PREVIEW_SEEN_KEY } from '../preview-home';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { usePawPrintStore } from '../../store/usePawPrintStore';
 import { useStreakStore } from '../../store/useStreakStore';
+import { useWalkStoryStore } from '../../store/useWalkStoryStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { computeWaterTargetMl } from '../../lib/hydration';
 import { resolvePetImage } from '../../lib/petFallbackImage';
@@ -36,24 +36,54 @@ import { getAgeMonths } from '../../lib/lifeStage';
 import { deriveGoal as deriveGoalFn } from '../../lib/healthMath';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SecondOpinionCard } from '../../components/SecondOpinionCard';
+import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
 import { WalkPostCard } from '../../components/WalkPostCard';
-import { useTodayWalks } from '../../hooks/useTodayWalks';
+import { useRecentWalks } from '../../hooks/useRecentWalks';
+import { getLocalYMD } from '../../lib/dateUtils';
 import { MilestoneJourneyCard } from '../../components/MilestoneJourneyCard';
 import { VetCheckinNudge } from '../../components/VetCheckinNudge';
 import { getMonthlyUsage, getPendingCheckin, type MonthlyUsage, type PendingCheckin } from '../../lib/askVet';
 import { track } from '../../lib/analytics';
 import { haptic } from '../../lib/haptics';
-import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import { useWalkEnabled } from '../../hooks/useWalkEnabled';
+import { WALK_STORY_ENABLED } from '../../constants/features';
+import { armWalkStart } from '../../lib/walk/walkStartIntent';
+import { WalkStoryRing } from '../../components/WalkStoryRing';
 import { WalksignCrest } from '../../components/walksign/WalksignCrest';
 import { WalksignMomentModal } from '../../components/walksign/WalksignMomentModal';
 import { PawPrintTeaser } from '../../components/pawprints/PawPrintTeaser';
 import { MilestoneCelebration } from '../../components/pawprints/MilestoneCelebration';
+import { TemplateUnlockCelebration } from '../../components/moments/TemplateUnlockCelebration';
 import {
   clearPendingWalksignCelebration,
   readPendingWalksignCelebration,
   type PendingWalksignCelebration,
 } from '../../lib/walksign/walksignSync';
 import type { WalksignId } from '../../lib/walksign/types';
+import { createWalkStorySnapshot } from '../../lib/walkStorySnapshot';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '../../lib/supabase';
+import { useNotificationPermission } from '../../hooks/useNotificationPermission';
+import { usePushNotifications } from '../../hooks/usePushNotifications';
+import { NotificationBellChip } from '../../components/NotificationBellChip';
+import { NotificationPrimer } from '../../components/NotificationPrimer';
+
+/** Cooldown between value-moment asks, so a decline is never a nag. */
+const PRIMER_COOLDOWN_KEY = 'notification_primer_last_shown';
+
+/** "Yesterday" / "Monday" / "Sat 20 Jul" — the day divider label above walks
+ *  from a given date when the 7-day toggle is active. */
+function formatWalkDay(walkDate: Date, todayYmd: string): string {
+  const walkYmd = getLocalYMD(walkDate);
+  if (walkYmd === todayYmd) return 'Today';
+  const y = new Date();
+  y.setHours(0, 0, 0, 0);
+  y.setDate(y.getDate() - 1);
+  if (walkYmd === getLocalYMD(y)) return 'Yesterday';
+  const daysAgo = Math.round((Date.now() - walkDate.getTime()) / (24 * 60 * 60_000));
+  if (daysAgo < 7) return walkDate.toLocaleDateString([], { weekday: 'long' });
+  return walkDate.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+}
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -62,13 +92,50 @@ export default function HomeScreen() {
   // any unrelated store mutation (pantry, isLoading, etc.).
   const activePet = useActivePetStore(s => s.activePet);
   const isTailoring = useActivePetStore(s => s.isTailoring);
+  // Walks are dogs-only — every walk surface below hides for a cat profile.
+  const walkEnabled = useWalkEnabled();
   const currentStreak = useStreakStore(s => s.currentStreak);
   const pawCoins = useStreakStore(s => s.pawCoins);
   const fetchStreak = useStreakStore(s => s.fetchStreak);
+
+  // ── Notification reach ────────────────────────────────────────────────────
+  // 148 of 161 onboarded owners have no push token, and until now none of them
+  // had any route to being asked: the primer only ever mounted at the end of
+  // onboarding, which they had all already passed. These two surfaces are that
+  // route — a header chip while they are unreachable, and one primer shown at a
+  // moment when the app has already demonstrated it is worth hearing from.
+  const notifPermission = useNotificationPermission();
+  const { requestPermission: requestNotificationPermission } = usePushNotifications();
+  const [homePrimerVisible, setHomePrimerVisible] = React.useState(false);
+  const primerConsidered = React.useRef(false);
+
+  // Re-read on focus, not just on app foreground. Returning from the settings
+  // screen after flipping the master switch is an in-app navigation, so without
+  // this the chip would still claim the owner is unreachable.
+  const refreshNotifPermission = notifPermission.refresh;
+  useFocusEffect(
+    React.useCallback(() => {
+      void refreshNotifPermission();
+    }, [refreshNotifPermission]),
+  );
   const { user } = useAuth();
   const { isFreemiumActive, daysSinceCreation, hasFullAccess } = useSubscription();
   // Today's tracked walks — surfaced as shareable post cards under Second Opinion.
-  const { walks: todayWalks } = useTodayWalks(activePet?.id);
+  // Fetch the widest window we support (7 days) once; the range toggle
+  // slices locally so switching between Today and 7 days is instant.
+  const { walks: recentWalks } = useRecentWalks(activePet?.id, 7);
+  const storyTotals = usePawPrintStore(s => s.totals);
+  const primeWalkStory = useWalkStoryStore(s => s.prime);
+  type WalkRange = 1 | 7;
+  const [walkRange, setWalkRange] = React.useState<WalkRange>(1);
+  const todayYmd = React.useMemo(() => getLocalYMD(new Date()), []);
+  const visibleWalks = React.useMemo(
+    () =>
+      walkRange === 1
+        ? recentWalks.filter(w => getLocalYMD(new Date(w.started_at)) === todayYmd)
+        : recentWalks,
+    [recentWalks, walkRange, todayYmd],
+  );
   const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
 
   // Coin pill pulse — a one-shot scale bump whenever the balance grows, so an
@@ -107,24 +174,11 @@ export default function HomeScreen() {
   const todayCarbs = usePetContextStore(s => s.todayCarbs);
   const todayFats = usePetContextStore(s => s.todayFats);
   const treatBudget = usePetContextStore(s => s.treatBudget);
-  const treatsConsumed = usePetContextStore(s => s.treatsConsumed);
   const treatCaloriesConsumed = usePetContextStore(s => s.treatCaloriesConsumed);
   const caloriesRemaining = usePetContextStore(s => s.caloriesRemaining);
   const refreshToday = usePetContextStore(s => s.refreshToday);
   const daysSinceLastFoodLog = usePetContextStore(s => s.daysSinceLastFoodLog);
   const longestStreak = useStreakStore(s => s.longestStreak);
-
-  // Brand-new user with no real data yet — surface the future-state preview entry.
-  const isLowData = daysSinceLastFoodLog === null && todayScans.length === 0;
-
-  // The preview is a one-time view: once seen (or closed), it never resurfaces.
-  // Default `true` keeps the card hidden on first render so it never flashes.
-  const [previewSeen, setPreviewSeen] = React.useState(true);
-  React.useEffect(() => {
-    AsyncStorage.getItem(PREVIEW_SEEN_KEY)
-      .then((v) => setPreviewSeen(v === 'true'))
-      .catch(() => {});
-  }, []);
 
   useFocusEffect(useCallback(() => {
     if (activePet?.id) refreshToday(activePet.id);
@@ -160,6 +214,60 @@ export default function HomeScreen() {
     setWalksignMoment(null);
     clearPendingWalksignCelebration();
   }, []);
+
+  // Walk Story ring — the Home avatar as the daily engine (dogs only, via
+  // useWalkEnabled). A walk from the last 24h keeps the ring lit with a story
+  // to replay; otherwise the ring becomes a calm "take a walk" nudge. Driven
+  // off the recent-walks feed rather than the seen-marker, so it stays lit for
+  // the full window whether or not the story has been opened.
+  const storyRingEnabled = WALK_STORY_ENABLED && walkEnabled;
+  const STORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const latestWalkAt = recentWalks[0]?.started_at;
+  const hasFreshStory =
+    storyRingEnabled &&
+    !!latestWalkAt &&
+    Date.now() - new Date(latestWalkAt).getTime() < STORY_WINDOW_MS;
+
+  const onStartWalk = useCallback(() => {
+    if (hasFullAccess) armWalkStart();
+    router.push((hasFullAccess ? '/walk' : '/paywall') as any);
+  }, [hasFullAccess, router]);
+
+  const latestWalkId = recentWalks[0]?.id;
+  const openLatestWalkStory = useCallback(() => {
+    const latestWalk = recentWalks[0];
+    if (!latestWalk || !activePet) return;
+    const snapshot = createWalkStorySnapshot({
+      walkSessionId: latestWalk.id,
+      petId: activePet.id,
+      petName: activePet.name,
+      petGender: activePet.gender,
+      breed: activePet.breed,
+      ageYears: activePet.age_years,
+      startedAt: latestWalk.started_at,
+      durationS: latestWalk.duration_s,
+      movingTimeS: latestWalk.moving_time_s,
+      distanceM: latestWalk.distance_m,
+      avgSpeedKmh: latestWalk.avg_speed_kmh,
+      route: latestWalk.route,
+      pausePoints: latestWalk.pause_points,
+      sniffPoints: latestWalk.sniff_points,
+      startLabel: latestWalk.start_label,
+      endLabel: latestWalk.end_label,
+      farthestLabel: latestWalk.farthest_label,
+      weather: latestWalk.weather,
+      totals: storyTotals,
+    });
+    if (snapshot) primeWalkStory(snapshot);
+    router.push({
+      pathname: '/walk-story',
+      params: { id: latestWalk.id, source: 'ring' },
+    });
+  }, [activePet, primeWalkStory, recentWalks, router, storyTotals]);
+
+  React.useEffect(() => {
+    if (hasFreshStory) track('walk_story_ring_shown', {});
+  }, [hasFreshStory, latestWalkId]);
 
   // Computed values
   const calorieProgress = Math.min(calPercent / 100, 1);
@@ -211,6 +319,72 @@ export default function HomeScreen() {
 
   const petName = activePet?.name || 'Buddy';
 
+  // ── The value-moment ask ──────────────────────────────────────────────────
+  // Deliberately not on first launch. iOS grants exactly one permission prompt
+  // per install; spending it on someone who has not yet seen the app do
+  // anything is how opt-in ended up at 9%. The gate is: they have a pet, they
+  // have logged at least once (so the core loop has paid off), the OS will
+  // still show a prompt, and we have not asked in the last 14 days.
+  React.useEffect(() => {
+    if (primerConsidered.current) return;
+    if (!activePet || notifPermission.status === 'loading') return;
+    if (!notifPermission.canAsk || notifPermission.isGranted) return;
+    // `todayCalories > 0` or an existing streak both mean they have logged.
+    const hasLogged = todayCalories > 0 || currentStreak > 0;
+    if (!hasLogged) return;
+
+    primerConsidered.current = true;
+    void (async () => {
+      const last = await AsyncStorage.getItem(PRIMER_COOLDOWN_KEY);
+      const lastAt = last ? Number(last) : 0;
+      const fourteenDays = 14 * 24 * 60 * 60 * 1000;
+      if (Date.now() - lastAt < fourteenDays) return;
+      setHomePrimerVisible(true);
+      await AsyncStorage.setItem(PRIMER_COOLDOWN_KEY, String(Date.now()));
+      supabase.rpc('record_notification_permission', {
+        p_status: notifPermission.status,
+        p_primer_shown: true,
+      }).then(() => {});
+    })();
+  }, [activePet, notifPermission.status, notifPermission.canAsk, notifPermission.isGranted, todayCalories, currentStreak]);
+
+  /**
+   * Routes by *why* notifications are off, because the three states need three
+   * different fixes. A blocked user cannot be re-prompted by anything the app
+   * renders — only the system settings app can help them.
+   */
+  const handleNotificationChipPress = () => {
+    track('ui_button_tapped', { button: 'home_notification_chip', state: notifPermission.status });
+    if (notifPermission.isBlocked) {
+      // Spent OS prompt — nothing the app renders can reopen it.
+      notifPermission.openSystemSettings();
+    } else if (!notifPermission.isGranted && notifPermission.canAsk) {
+      setHomePrimerVisible(true);
+    } else {
+      // Granted at the OS level but switched off inside Pawtchi.
+      router.push('/notifications' as any);
+    }
+  };
+
+  const handleHomePrimerAccept = async () => {
+    setHomePrimerVisible(false);
+    try {
+      await requestNotificationPermission();
+    } catch {
+      // A denied prompt or a missing native module both just mean no token.
+    }
+    await notifPermission.refresh();
+  };
+
+  // Only surface the chip once we know the real answer — `loading` would flash
+  // it on every Home mount for users who already have notifications on.
+  //
+  // Gated on `isReachable`, not `isGranted`: an owner can have granted at the
+  // OS level and still have Pawtchi's own master switch off, in which case they
+  // receive nothing and the chip is exactly what they need to see.
+  const notificationsUnreachable =
+    notifPermission.status !== 'loading' && !notifPermission.isReachable;
+
   return (
     <View style={styles.container}>
       <TrialBanner />
@@ -260,29 +434,63 @@ export default function HomeScreen() {
           time, landing here after the walk fully wraps (never mid-walk). */}
       <MilestoneCelebration />
 
+      {/* Earned share-card unlocks — waits for the milestone queue to clear,
+          then shows the qualifying walk wearing its new template. */}
+      <TemplateUnlockCelebration />
+
+      <NotificationPrimer
+        visible={homePrimerVisible}
+        petName={petName}
+        source="home_value_moment"
+        onAccept={handleHomePrimerAccept}
+        onDecline={() => setHomePrimerVisible(false)}
+      />
+
       {/* Header - Always visible at top */}
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <View style={styles.headerLeft}>
-          <View style={styles.avatarMini}>
-            <Image
-              source={{ uri: activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 200) }}
-              style={styles.avatarMiniImg}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-              transition={200}
+          {storyRingEnabled ? (
+            <WalkStoryRing
+              imageUri={activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 200)}
+              // Lit with a story to replay when there's a walk from the last 24h;
+              // otherwise a nudge that starts a walk. The avatar is the engine.
+              mode={hasFreshStory ? 'story' : 'nudge'}
+              onPress={hasFreshStory ? openLatestWalkStory : onStartWalk}
+              petName={activePet?.name ?? null}
             />
-          </View>
+          ) : (
+            <View style={styles.avatarMini}>
+              <Image
+                source={{ uri: activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 200) }}
+                style={styles.avatarMiniImg}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={200}
+              />
+            </View>
+          )}
           <View>
             <Text style={styles.headerTitle}>PAWTCHI</Text>
             <Text style={styles.headerDate}>{getDateString()}</Text>
           </View>
         </View>
-        <Reanimated.View style={[styles.coinPill, coinPillStyle]}>
-          <View style={styles.coinIcon}>
-            <Text style={styles.coinIconText}>P</Text>
-          </View>
-          <AnimatedCounter value={pawCoins} style={styles.coinText} />
-        </Reanimated.View>
+        {/* The header slot is the chip while notifications are off, and the
+            coin pill once they are on. It resolves itself rather than becoming
+            permanent furniture. */}
+        {notificationsUnreachable ? (
+          <NotificationBellChip
+            visible
+            isBlocked={notifPermission.isBlocked}
+            onPress={handleNotificationChipPress}
+          />
+        ) : (
+          <Reanimated.View style={[styles.coinPill, coinPillStyle]}>
+            <View style={styles.coinIcon}>
+              <Text style={styles.coinIconText}>P</Text>
+            </View>
+            <AnimatedCounter value={pawCoins} style={styles.coinText} />
+          </Reanimated.View>
+        )}
       </View>
 
       <Animated.ScrollView
@@ -306,24 +514,6 @@ export default function HomeScreen() {
 
         {/* Profile completion — quiet, dismissible, deep-links to the right editor */}
         <ProfileCompletionCard />
-
-        {/* Future-state preview re-entry — only before it's been seen, and only while the user has no real data yet */}
-        {isLowData && !previewSeen && (
-          <TouchableOpacity
-            style={styles.previewCard}
-            onPress={() => router.push('/preview-home' as any)}
-            activeOpacity={0.9}
-          >
-            <View style={styles.previewIcon}>
-              <MaterialIcons name="auto-awesome" size={22} color="#07202A" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.previewTitle}>See where you and {petName} are headed</Text>
-              <Text style={styles.previewSub}>A preview of your home as {petName}&apos;s story builds.</Text>
-            </View>
-            <MaterialIcons name="chevron-right" size={24} color="#cbd5e1" />
-          </TouchableOpacity>
-        )}
 
         {/* Greeting */}
         <Reanimated.View entering={entrance(0)} style={styles.greetingRow}>
@@ -410,7 +600,8 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* One quiet ledger line for macros */}
+          {/* One quiet ledger line for macros — treats ride on the right as
+              another stat in the same pattern. */}
           <View style={styles.macroLine}>
             <View style={[styles.macroDot, { backgroundColor: '#ec4899' }]} />
             <Text style={styles.macroText}>{todayProtein}g protein</Text>
@@ -418,37 +609,25 @@ export default function HomeScreen() {
             <Text style={styles.macroText}>{todayCarbs}g carbs</Text>
             <View style={[styles.macroDot, { backgroundColor: color.viz.hydrate }]} />
             <Text style={styles.macroText}>{todayFats}g fats</Text>
+            {targetCal > 0 && (() => {
+              const treatLeft = Math.max(0, treatBudget - treatCaloriesConsumed);
+              const over = caloriesRemaining < 0;
+              const warn = over || treatLeft === 0;
+              return (
+                <>
+                  <View style={styles.macroSpacer} />
+                  <View style={[styles.macroDot, { backgroundColor: warn ? color.error : color.navy }]} />
+                  <Text
+                    style={[styles.macroText, styles.macroTreat, warn && styles.macroTreatWarning]}
+                    numberOfLines={1}
+                  >
+                    {over ? `${Math.abs(caloriesRemaining)} kcal over` : `${treatLeft} kcal left · treats`}
+                  </Text>
+                </>
+              );
+            })()}
           </View>
         </Reanimated.View>
-
-        {/* Treat Banner */}
-        {targetCal > 0 && (() => {
-          const overLimit = caloriesRemaining < 0;
-          const treatBudgetLeft = Math.max(0, treatBudget - treatCaloriesConsumed);
-          const treatWarning = overLimit || treatBudgetLeft === 0;
-          return (
-            <TouchableOpacity
-              style={[styles.treatBanner, treatWarning && styles.treatBannerWarning]}
-              onPress={() => router.push('/(tabs)/meal')}
-              activeOpacity={0.8}
-            >
-              <View style={styles.treatIcon}>
-                <MaterialIcons name="pets" size={20} color={treatWarning ? '#ef4444' : '#a3a3a3'} />
-              </View>
-              <View style={styles.treatContent}>
-                <Text style={[styles.treatTitle, treatWarning && styles.treatTitleWarning]}>
-                  {overLimit ? 'Treat limit reached' : treatsConsumed > 0 ? `${treatsConsumed} treat${treatsConsumed !== 1 ? 's' : ''} enjoyed` : 'Treat Intake'}
-                </Text>
-                <Text style={[styles.treatSubtitle, treatWarning && styles.treatSubtitleWarning]}>
-                  {overLimit
-                    ? `${Math.abs(caloriesRemaining)} kcal over daily budget`
-                    : `${treatBudgetLeft} kcal left for treats`}
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={20} color={treatWarning ? '#ef4444' : '#16a34a'} />
-            </TouchableOpacity>
-          );
-        })()}
 
         {/* Streak Nudge */}
         {currentStreak === 0 && longestStreak > 0 && (
@@ -467,6 +646,39 @@ export default function HomeScreen() {
             <MaterialIcons name="chevron-right" size={18} color="#b45309" />
           </TouchableOpacity>
         )}
+
+        {/* Primary actions — equal, compact cards that share one responsive row. */}
+        <Reanimated.View entering={entrance(4)} style={styles.actionCardsRow}>
+          {walkEnabled && (
+            <TouchableOpacity
+              style={styles.walkCard}
+              onPress={() => { if (hasFullAccess) armWalkStart(); router.push((hasFullAccess ? '/walk' : '/paywall') as any); }}
+              activeOpacity={0.85}
+              hitSlop={space.xs}
+              accessibilityRole="button"
+              accessibilityLabel={`Walk ${petName}. Ready when you are`}
+              accessibilityHint="Starts walk tracking"
+            >
+              <RunningDogIcon size={76} color={color.navy} />
+
+              <View style={styles.walkContentRow}>
+                <View style={styles.walkText}>
+                  <Text style={styles.walkTitle}>Walk {petName}</Text>
+                  <Text style={styles.walkSub} numberOfLines={1}>Ready when you are</Text>
+                </View>
+                <View style={styles.walkStart}>
+                  <MaterialIcons name="play-arrow" size={24} color={color.yellow} />
+                </View>
+              </View>
+            </TouchableOpacity>
+          )}
+
+          <SecondOpinionCard
+            remaining={askUsage?.remaining ?? null}
+            resetsAt={askUsage?.resetsAt}
+            onPress={() => router.push('/ask' as any)}
+          />
+        </Reanimated.View>
 
         {/* ─── Up next — flat editorial row, in column with TODAY / MEALS ─── */}
         {nextActivity && (
@@ -522,10 +734,10 @@ export default function HomeScreen() {
                   })()}
                 </Text>
               </View>
-              {WALK_TRACKING_ENABLED && nextActivity.activity_type === 'walk' ? (
+              {walkEnabled && nextActivity.activity_type === 'walk' ? (
                 <TouchableOpacity
                   style={styles.upNextTrackBtn}
-                  onPress={() => router.push((hasFullAccess ? '/walk' : '/paywall') as any)}
+                  onPress={() => { if (hasFullAccess) armWalkStart(); router.push((hasFullAccess ? '/walk' : '/paywall') as any); }}
                   activeOpacity={0.85}
                   hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
                 >
@@ -539,31 +751,80 @@ export default function HomeScreen() {
           </Reanimated.View>
         )}
 
-        {/* Primary CTA — Second Opinion */}
-        <Reanimated.View entering={entrance(4)} style={styles.ctaRow}>
-          <SecondOpinionCard
-            remaining={askUsage?.remaining ?? null}
-            resetsAt={askUsage?.resetsAt}
-            onPress={() => router.push('/ask' as any)}
-          />
-        </Reanimated.View>
-
-        {/* ─── Today's tracked walks — shareable post cards ─── */}
-        {WALK_TRACKING_ENABLED && activePet && todayWalks.length > 0 && (
+        {/* ─── Tracked walks — shareable post cards, Today by default with a
+            small toggle to widen to the last 7 days. Section stays visible
+            whenever the 7-day window has walks so the toggle is reachable
+            even on days with no fresh walk yet. ─── */}
+        {walkEnabled && activePet && recentWalks.length > 0 && (
           <Reanimated.View entering={entrance(4.5)}>
             <View style={styles.sectionHead}>
-              <Text style={styles.sectionLabel}>TODAY&apos;S WALKS</Text>
+              <Text style={styles.sectionLabel}>
+                {walkRange === 1 ? "TODAY'S WALKS" : 'LAST 7 DAYS'}
+              </Text>
               <View style={styles.sectionRule} />
-              <Text style={styles.sectionMeta}>{todayWalks.length} tracked</Text>
+              <View style={styles.rangeToggle}>
+                <TouchableOpacity
+                  onPress={() => setWalkRange(1)}
+                  hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                  style={[styles.rangePill, walkRange === 1 && styles.rangePillActive]}
+                >
+                  <Text
+                    style={[styles.rangePillText, walkRange === 1 && styles.rangePillTextActive]}
+                  >
+                    Today
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setWalkRange(7)}
+                  hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                  style={[styles.rangePill, walkRange === 7 && styles.rangePillActive]}
+                >
+                  <Text
+                    style={[styles.rangePillText, walkRange === 7 && styles.rangePillTextActive]}
+                  >
+                    7 days
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            {todayWalks.map((walk, i) => (
-              <WalkPostCard key={walk.id} walk={walk} pet={activePet} index={i} />
-            ))}
+            {visibleWalks.length === 0 ? (
+              // Range set to Today but the day has no walks yet — surface a
+              // gentle nudge instead of hiding the toggle.
+              <TouchableOpacity
+                style={styles.walkEmpty}
+                activeOpacity={0.85}
+                onPress={() => setWalkRange(7)}
+              >
+                <MaterialCommunityIcons name="paw-outline" size={16} color={color.slateFaint} />
+                <Text style={styles.walkEmptyText}>
+                  No walks logged today — see the last 7 days
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              (() => {
+                let lastYmd: string | null = null;
+                return visibleWalks.map((walk, i) => {
+                  const walkYmd = getLocalYMD(new Date(walk.started_at));
+                  const showDivider = walkRange === 7 && walkYmd !== lastYmd;
+                  lastYmd = walkYmd;
+                  return (
+                    <React.Fragment key={walk.id}>
+                      {showDivider && (
+                        <Text style={styles.walkDayDivider}>
+                          {formatWalkDay(new Date(walk.started_at), todayYmd)}
+                        </Text>
+                      )}
+                      <WalkPostCard walk={walk} pet={activePet} index={i} />
+                    </React.Fragment>
+                  );
+                });
+              })()
+            )}
           </Reanimated.View>
         )}
 
         {/* ─── Paw Prints — gallery teaser (self-hiding until ≥2 walks) ─── */}
-        {WALK_TRACKING_ENABLED && activePet && (
+        {walkEnabled && activePet && (
           <Reanimated.View entering={entrance(4.7)} style={{ marginBottom: space.lg }}>
             <PawPrintTeaser />
           </Reanimated.View>
@@ -644,8 +905,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
 
-  // Primary CTA
-  ctaRow: {
+  // Primary actions
+  actionCardsRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: space.md,
     width: '100%',
   },
 
@@ -836,6 +1100,57 @@ const styles = StyleSheet.create({
     color: color.slateFaint,
   },
 
+  // ─── Walk range toggle (Today / 7 days) ───
+  rangeToggle: {
+    flexDirection: 'row',
+    backgroundColor: color.track,
+    borderRadius: radius.pill,
+    padding: 2,
+  },
+  rangePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  rangePillActive: {
+    backgroundColor: color.surface,
+  },
+  rangePillText: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 0.4,
+    color: color.slateMuted,
+  },
+  rangePillTextActive: {
+    color: color.ink,
+  },
+  walkDayDivider: {
+    fontFamily: font.semibold,
+    fontSize: 11,
+    letterSpacing: 1.8,
+    color: color.slateFaint,
+    textTransform: 'uppercase',
+    marginTop: space.sm,
+    marginBottom: space.sm,
+  },
+  walkEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+    paddingVertical: space.lg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: color.hairline,
+    borderStyle: 'dashed',
+    marginBottom: space.lg,
+  },
+  walkEmptyText: {
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    color: color.slateMuted,
+  },
+
   // ─── Today — stats as typography, hairline-divided ───
   statRow: {
     flexDirection: 'row',
@@ -881,6 +1196,18 @@ const styles = StyleSheet.create({
     color: color.slateMuted,
     marginRight: 7,
   },
+  macroSpacer: {
+    flex: 1,
+    minWidth: space.sm,
+  },
+  macroTreat: {
+    marginRight: 0,
+    color: color.ink,
+    flexShrink: 1,
+  },
+  macroTreatWarning: {
+    color: color.error,
+  },
 
   // ─── Invite — quiet end-of-feed row ───
   inviteRow: {
@@ -910,78 +1237,48 @@ const styles = StyleSheet.create({
     color: color.slateMuted,
     marginTop: 1,
   },
-  previewCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#07202A',
-    borderRadius: 20,
-    padding: 18,
-    ...makeShadow(8, 20, 0.15, '#000'),
-  },
-  previewIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#F7F602',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  previewTitle: {
-    fontFamily: 'Montserrat_800ExtraBold',
-    fontSize: 15,
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  previewSub: {
-    fontFamily: 'Montserrat_500Medium',
-    fontSize: 12,
-    color: '#94a3b8',
-    lineHeight: 17,
-  },
   // ─── Treats — quiet ledger strip; red only when earned ───
-  treatBanner: {
+  // ─── Walk button — white card, navy foreground, prominent play ───
+  walkCard: {
+    flex: 1,
+    justifyContent: 'space-between',
+    gap: space.xs,
+    backgroundColor: color.surface,
+    borderRadius: radius.lg,
+    borderWidth: 0.5,
+    borderColor: color.hairline,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    ...makeShadow(2, 8, 0.08, '#000'),
+  },
+  walkContentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    paddingVertical: space.md,
-    paddingHorizontal: 2,
-    borderTopWidth: 1,
-    borderTopColor: '#ece9e2',
+    gap: space.sm,
   },
-  treatBannerWarning: {
-    backgroundColor: color.errorSoft,
-    borderTopWidth: 0,
-    borderRadius: radius.lg,
-    paddingHorizontal: space.lg,
-  },
-  treatIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: color.track,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  treatContent: {
+  walkText: {
     flex: 1,
+    minWidth: 0,
   },
-  treatTitle: {
+  walkTitle: {
     fontFamily: font.bold,
-    fontSize: 13.5,
-    color: color.ink,
+    fontSize: 14,
+    color: color.navy,
+    letterSpacing: -0.3,
   },
-  treatTitleWarning: {
-    color: color.error,
-  },
-  treatSubtitle: {
+  walkSub: {
     fontFamily: font.medium,
-    fontSize: 11.5,
+    fontSize: 11,
     color: color.slateMuted,
     marginTop: 1,
   },
-  treatSubtitleWarning: {
-    color: color.error,
+  walkStart: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 36,
+    height: 36,
+    backgroundColor: color.navy,
+    borderRadius: radius.pill,
   },
 
   // ─── Streak nudge — soft, calm prompt ───
