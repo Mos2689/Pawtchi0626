@@ -34,6 +34,11 @@ interface PetState {
    */
   firstDog: boolean | null;
   /**
+   * Number of people who regularly walk this dog. `3` is the Packheart
+   * threshold; null means the optional onboarding question was skipped.
+   */
+  householdWalkers: number | null;
+  /**
    * Reproductive status — only meaningful when gender === 'female' && !isNeutered.
    * Pregnant / nursing dogs and cats need 1.5–4× maintenance kcal; we don't try
    * to nail the exact multiplier ourselves, but we do flag the profile so the
@@ -91,6 +96,7 @@ interface PetState {
   setMedicalConditions: (conditions: string[]) => void;
   setBodyConditionScore: (score: number | null) => void;
   setFirstDog: (firstDog: boolean | null) => void;
+  setHouseholdWalkers: (householdWalkers: number | null) => void;
   setBcsPhotoEstimate: (update: {
     status: 'idle' | 'pending' | 'ready' | 'unavailable';
     raw: BcsPhotoEstimateRaw | null;
@@ -109,12 +115,58 @@ interface PetState {
     healthyBandHigh?: number | null;
   }) => void;
 
+  /**
+   * Fill the draft from an existing pet row.
+   *
+   * The health completion flow reuses the onboarding screens, and those screens
+   * read and write this draft. Entering them from the Health tab with an empty
+   * draft would show a dog owner blank fields for facts they already gave us —
+   * and worse, writing that draft back would erase them. Hydrating first makes
+   * the flow an edit rather than a re-entry.
+   *
+   * Deliberately skips the sentinel weight that createLightweightPet writes:
+   * `0` means "never measured", and showing it as a prefilled answer would
+   * invite someone to just tap past it.
+   */
+  hydrateFromPet: (pet: HydratablePet) => void;
+
   // Reset
   resetForm: () => void;
 }
 
+/** The subset of a `pets` row the draft can be rebuilt from. */
+export interface HydratablePet {
+  species?: string | null;
+  name?: string | null;
+  breed?: string | null;
+  gender?: string | null;
+  is_neutered?: boolean | null;
+  age_years?: number | null;
+  current_weight_kg?: number | null;
+  activity_level?: string | null;
+  allergies?: string[] | null;
+  medical_conditions?: string[] | null;
+  body_condition_score?: number | null;
+  image_url?: string | null;
+  reproductive_status?: string | null;
+  pregnancy_weeks?: number | null;
+}
+
 const initialState = {
-  species: null,
+  /**
+   * Dog by default, because onboarding no longer asks.
+   *
+   * Pawtchi is a walk-first, dog-only product now, so the species picker was
+   * removed and identity is the first screen. This default is what makes that
+   * safe: every downstream `species === 'dog'` branch — the walk-ready exit,
+   * the first-dog and household-walkers questions, the name placeholder, the
+   * step counter — already reads from here, so none of them needed touching.
+   *
+   * It is a DRAFT default, not a schema change. `species` stays on the row and
+   * in the type, `hydrateFromPet` still resolves a stored cat to 'cat', and
+   * every existing cat profile keeps working exactly as it did.
+   */
+  species: 'dog' as Species,
   name: '',
   breed: '',
   weight: '',
@@ -130,6 +182,7 @@ const initialState = {
   medicalConditions: [] as string[],
   bodyConditionScore: null as number | null,
   firstDog: null as boolean | null,
+  householdWalkers: null as number | null,
   bcsPhotoStatus: 'idle' as 'idle' | 'pending' | 'ready' | 'unavailable',
   bcsPhotoRaw: null as BcsPhotoEstimateRaw | null,
   bcsPhotoSourceUri: null as string | null,
@@ -163,6 +216,7 @@ export const usePetStore = create<PetState>((set) => ({
   setMedicalConditions: (medicalConditions) => set({ medicalConditions }),
   setBodyConditionScore: (bodyConditionScore) => set({ bodyConditionScore }),
   setFirstDog: (firstDog) => set({ firstDog }),
+  setHouseholdWalkers: (householdWalkers) => set({ householdWalkers }),
   setBcsPhotoEstimate: ({ status, raw, sourceUri }) => set({
     bcsPhotoStatus: status,
     bcsPhotoRaw: raw,
@@ -180,5 +234,44 @@ export const usePetStore = create<PetState>((set) => ({
     healthyBandLow: summary.healthyBandLow ?? null,
     healthyBandHigh: summary.healthyBandHigh ?? null,
   }),
+  hydrateFromPet: (pet) => {
+    const ageYears = typeof pet.age_years === 'number' && pet.age_years > 0 ? pet.age_years : null;
+    const wholeYears = ageYears != null ? Math.floor(ageYears) : null;
+    const months = ageYears != null ? Math.round((ageYears - wholeYears!) * 12) : null;
+    const weight = pet.current_weight_kg;
+
+    set({
+      species: pet.species === 'cat' ? 'cat' : pet.species === 'dog' ? 'dog' : null,
+      name: pet.name ?? '',
+      breed: pet.breed ?? '',
+      gender: pet.gender === 'male' || pet.gender === 'female' ? pet.gender : null,
+      isNeutered: pet.is_neutered ?? false,
+      ageYears: wholeYears != null ? String(wholeYears) : '',
+      ageMonths: months ? String(months) : '',
+      // 0 is the "never measured" sentinel — leave the field empty so it reads
+      // as a question rather than an answer.
+      weight: typeof weight === 'number' && weight > 0 ? String(weight) : '',
+      activityLevel:
+        pet.activity_level === 'sedentary' ||
+        pet.activity_level === 'active' ||
+        pet.activity_level === 'highly_active'
+          ? pet.activity_level
+          : 'normal',
+      allergies: pet.allergies ?? [],
+      medicalConditions: pet.medical_conditions ?? [],
+      bodyConditionScore:
+        typeof pet.body_condition_score === 'number' && pet.body_condition_score > 0
+          ? pet.body_condition_score
+          : null,
+      imageUri: pet.image_url ?? null,
+      reproductiveStatus:
+        pet.reproductive_status === 'pregnant' ||
+        pet.reproductive_status === 'nursing' ||
+        pet.reproductive_status === 'neither'
+          ? pet.reproductive_status
+          : null,
+      pregnancyWeeks: pet.pregnancy_weeks ?? null,
+    });
+  },
   resetForm: () => set(initialState),
 }));

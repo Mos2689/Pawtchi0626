@@ -14,15 +14,13 @@
 
 import {
   buildMomentHeadline,
-  buildMomentJourneyLine,
-  buildMomentStats,
   momentDateLine,
   type MomentRoutePoint,
-  type MomentStat,
   type MomentStats,
   type SniffStop,
 } from './momentCard';
 import type { WalkLabels } from './walk/geoLabels';
+import { hasImage, sortKeepsakes, type Keepsake } from './walk/keepsake';
 import type { WalkTotals } from './pawPrints';
 
 /** Weather captured at walk time (Open-Meteo). Null when unavailable. */
@@ -36,12 +34,10 @@ export interface WalkWeather {
 
 export type StoryBeatId =
   | 'opener'
-  | 'journey'
+  | 'keepsake'
   | 'sniff_spot'
-  | 'pace'
   | 'golden_hour'
   | 'weather'
-  | 'distance'
   | 'closer';
 
 /** How seasoned this walker is — drives narration richness, not which beats
@@ -55,14 +51,26 @@ interface OpenerBeat {
   /** "Walk 42" for returning walkers — a quiet progression mark. Null for the
    *  first couple of walks, where a number would read as pressure. */
   chapter: string | null;
+  /** "4.8 km/h" — folded in here rather than a dedicated slide; null when the
+   *  walk is too short to honestly characterise a pace. */
+  speedLabel: string | null;
 }
 
-interface JourneyBeat {
-  id: 'journey';
-  /** "Riverside Park to Elm Street", or null — the slide falls back to a title. */
-  journeyLine: string | null;
-  stats: MomentStat[];
-  hasRoute: boolean;
+/**
+ * The moments captured on this walk.
+ *
+ * Every other beat in this file is a pure function of six data fields, which is
+ * exactly why the story habituates: walk the same loop and the same beats come
+ * back in the same order with different numbers. This is the one beat whose
+ * content the walk itself cannot predict, so it is the only real source of
+ * per-walk variance the story has.
+ */
+interface KeepsakeBeat {
+  id: 'keepsake';
+  /** Chronological, and only ones with an image to show. */
+  keepsakes: Keepsake[];
+  count: number;
+  line: string;
 }
 
 interface SniffBeat {
@@ -70,12 +78,6 @@ interface SniffBeat {
   count: number;
   /** Longest single dwell, in whole seconds. */
   longestDwellS: number;
-  line: string;
-}
-
-interface PaceBeat {
-  id: 'pace';
-  speedLabel: string;
   line: string;
 }
 
@@ -93,14 +95,6 @@ interface WeatherBeat {
   line: string;
 }
 
-interface DistanceBeat {
-  id: 'distance';
-  distanceLabel: string;
-  /** "a personal best" when this walk is the longest in the archive. */
-  isLongest: boolean;
-  line: string;
-}
-
 interface CloserBeat {
   id: 'closer';
   title: string;
@@ -109,12 +103,10 @@ interface CloserBeat {
 
 export type StoryBeat =
   | OpenerBeat
-  | JourneyBeat
+  | KeepsakeBeat
   | SniffBeat
-  | PaceBeat
   | GoldenHourBeat
   | WeatherBeat
-  | DistanceBeat
   | CloserBeat;
 
 export interface WalkStoryInput {
@@ -132,6 +124,11 @@ export interface WalkStoryInput {
   weather: WalkWeather | null;
   /** Archive aggregate — progression + longest-walk context. Null when unknown. */
   totals: WalkTotals | null;
+  /**
+   * Moments captured on this walk. Optional so every existing caller — and
+   * every walk recorded before keepsakes existed — keeps working unchanged.
+   */
+  keepsakes?: readonly Keepsake[];
 }
 
 export interface WalkStory {
@@ -167,11 +164,6 @@ function dwellPhrase(dwellS: number): string {
 function formatSpeed(kmh: number): string {
   const s = kmh.toFixed(1);
   return `${s.endsWith('.0') ? s.slice(0, -2) : s} km/h`;
-}
-
-function formatKm(km: number): string {
-  const s = km >= 10 ? km.toFixed(0) : km.toFixed(1);
-  return s.endsWith('.0') ? s.slice(0, -2) : s;
 }
 
 // ── Time of day ──────────────────────────────────────────────────────────────
@@ -256,8 +248,16 @@ export function buildWalkStory(input: WalkStoryInput): WalkStory {
   const beats: StoryBeat[] = [];
 
   const sniffCount = input.sniffStops.length;
-  const km = input.stats.distanceM / 1000;
-  const hasRoute = input.route.length >= 2;
+
+  // A walk this short can't honestly headline its pace — a 90-second doorstep
+  // loop's average speed is noise, not character.
+  const speedLabel =
+    input.avgSpeedKmh != null &&
+    input.avgSpeedKmh > 0 &&
+    input.stats.durationS >= PACE_MIN_DURATION_S &&
+    input.stats.distanceM >= PACE_MIN_DISTANCE_M
+      ? formatSpeed(input.avgSpeedKmh)
+      : null;
 
   // ── Opener ──
   beats.push({
@@ -266,15 +266,26 @@ export function buildWalkStory(input: WalkStoryInput): WalkStory {
     dateLine: momentDateLine(input.startedAt),
     // A number only once it reads as a streak, not a scoreboard.
     chapter: walkCount != null && walkCount >= 3 ? `Walk ${walkCount}` : null,
+    speedLabel,
   });
 
-  // ── Journey (route + where) ──
-  beats.push({
-    id: 'journey',
-    journeyLine: buildMomentJourneyLine(input.labels),
-    stats: buildMomentStats(input.stats, sniffCount),
-    hasRoute,
-  });
+  // ── Keepsakes ──
+  // Placed straight after the journey, ahead of every derived beat: when the
+  // walk produced something the data could not have predicted, that leads.
+  // Only moments with an image qualify — a slide whose whole job is showing a
+  // photograph cannot be built from a caption.
+  const showable = sortKeepsakes((input.keepsakes ?? []).filter(hasImage));
+  if (showable.length >= 1) {
+    beats.push({
+      id: 'keepsake',
+      keepsakes: showable,
+      count: showable.length,
+      line:
+        showable.length === 1
+          ? 'One moment kept from this walk.'
+          : `${showable.length} moments kept along the way.`,
+    });
+  }
 
   // ── Sniff spot ──
   if (sniffCount >= 1) {
@@ -312,36 +323,6 @@ export function buildWalkStory(input: WalkStoryInput): WalkStory {
       tempLabel: `${Math.round(input.weather.tempC)}°`,
       conditionLabel: input.weather.label,
       line: `${Math.round(input.weather.tempC)}° and ${input.weather.label}. Out you went anyway.`,
-    });
-  }
-
-  // ── Pace ──
-  if (
-    input.avgSpeedKmh != null &&
-    input.avgSpeedKmh > 0 &&
-    input.stats.durationS >= PACE_MIN_DURATION_S &&
-    input.stats.distanceM >= PACE_MIN_DISTANCE_M
-  ) {
-    beats.push({
-      id: 'pace',
-      speedLabel: formatSpeed(input.avgSpeedKmh),
-      line: `A steady ${formatSpeed(input.avgSpeedKmh)}, start to finish.`,
-    });
-  }
-
-  // ── Distance (veterans get the archive context: longest yet) ──
-  const isLongest =
-    input.totals?.longestWalk != null &&
-    input.totals.longestWalk.sessionId === input.sessionId &&
-    km > 0;
-  if (hasRoute && km > 0 && (depth === 'seasoned' || depth === 'veteran' || isLongest)) {
-    beats.push({
-      id: 'distance',
-      distanceLabel: `${formatKm(km)} km`,
-      isLongest,
-      line: isLongest
-        ? `${formatKm(km)} km — a new farthest for ${name || 'them'}.`
-        : `${formatKm(km)} km on the map today.`,
     });
   }
 

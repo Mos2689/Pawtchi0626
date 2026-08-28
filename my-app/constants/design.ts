@@ -19,6 +19,11 @@
 
 import { Platform } from 'react-native';
 
+export const BRAND_YELLOW = '#F4F600' as const;
+
+export const brandYellowAlpha = (opacity: number) =>
+  `rgba(244, 246, 0, ${opacity})`;
+
 export const color = {
   // Brand ground (navy surface)
   navy: '#07202A',
@@ -29,13 +34,79 @@ export const color = {
   hairlineOnNavy: 'rgba(244, 241, 236, 0.14)',
 
   // The one yellow (brand electric)
-  yellow: '#F7F602',
-  yellowSoft: 'rgba(247, 246, 2, 0.14)',
+  yellow: BRAND_YELLOW,
+  yellowSoft: brandYellowAlpha(0.14),
+
+  // ── Electric blue — the Walk Home exception ────────────────────────────────
+  // A sanctioned, explicitly-approved third colour, introduced with the
+  // walk-first Home redesign (design 4a). It carries *discovery and identity*
+  // signals only: the Walksign name, the record button's inner glyph, and the
+  // sniff-stop count (the one walk stat that is about curiosity, not effort).
+  //
+  // It is NOT a second CTA colour. Yellow still marks the one thing that
+  // matters per surface; blue never fills a button, never carries body text,
+  // and never appears on the navy ground. Reach for it only when the thing
+  // being marked is something the dog *found*.
+  electric: '#144EFF',
+  electricSoft: 'rgba(20, 78, 255, 0.10)',
 
   // Operational ground (light surface)
   surface: '#FFFFFF',
   surfaceSubtle: '#F8F7F4', // warm paper, not gray
   hairline: '#eef2f6',
+
+  // A light wash that quiets a raster basemap behind app chrome (Home's map
+  // canopy on Android, where OSM tiles are images and individual features can't
+  // be styled away the way Apple Maps' POIs can). Deliberately far lighter than
+  // `moment.paperWash`: this one has to keep the streets readable, not reduce
+  // the map to a texture behind a share card.
+  basemapWash: 'rgba(255, 255, 255, 0.30)',
+
+  // ── Map markers ────────────────────────────────────────────────────────────
+  // Pastels for pins dropped ON the basemap, and only there. They are the
+  // quietest colours in the system by design: a marker has to be findable
+  // against pale roads and parkland without competing with the yellow CTA, so
+  // these carry category (which walk, which spot) and never state or action.
+  //
+  // Assigned round-robin by index rather than by meaning — there is no
+  // taxonomy of spot types to encode, and inventing one in colour would imply
+  // a distinction the data does not make. `ink` is the selected marker.
+  marker: {
+    pink: '#F7C8D8',
+    mint: '#C8E6D0',
+    butter: '#FBE2A7',
+    sky: '#C9DEFF',
+    ink: '#0F172A',
+    // The one saturated pin, and the one place a marker carries meaning rather
+    // than category: a sniff stop on the selected walk's route.
+    //
+    // This is `color.electric` (#144EFF) — repeated as a literal only because
+    // an object cannot reference its own sibling. It is the sanctioned use, not
+    // an exception: the rule is to reach for electric when the thing being
+    // marked is something the dog *found*, and the sniff count on a walk card
+    // already uses it for exactly that reason. These pins are that stat's
+    // geography.
+    sniff: '#144EFF',
+  },
+
+  // ── Correspondence surface (Write to Founder) ──────────────────────────────
+  // A white-ground, postal-themed surface with its own two-colour system. It is
+  // scoped to the letter flow on purpose: this is the only place in the app
+  // where a blue carries structural meaning, and letting it leak into the tabs
+  // would put a third colour in competition with navy and yellow everywhere.
+  //
+  // Contrast rule carried over from the brand book: yellow does not hold as
+  // *ink* on white. Use it only as a filled block behind navy text (the CTA,
+  // the highlighter), never as text, hairlines, or thin marks on a white ground.
+  letter: {
+    yellow: BRAND_YELLOW,
+    yellowSoft: brandYellowAlpha(0.16),
+    accent: '#1447f1',       // structural blue — rules, stamp, chevrons
+    accentSoft: 'rgba(20, 71, 241, 0.08)',
+    accentInk: '#0E31A8',    // darkened blue for small text on white (AA)
+    paper: '#FFFFFF',
+    hairline: '#E8EAF2',
+  },
 
   // Text on light
   ink: '#0f172a',
@@ -56,7 +127,7 @@ export const color = {
   // Data-viz (rings, charts) — distinct from UI accents on purpose
   viz: {
     calories: '#f97316',
-    move: '#F7F602',
+    move: BRAND_YELLOW,
     hydrate: '#3091F9',
     amber: '#FFC400',
     green: '#4ade80',
@@ -65,10 +136,9 @@ export const color = {
 
   // Social artifacts (Paw Moment cards) — "Two lines, one walk", the card
   // identity locked 2026-07-10: light paper grounds, the human's path in warm
-  // ink, the dog's path in a deepened Pawtchi yellow. These tokens exist only
-  // for shareable surfaces (cards that leave the app); do not reach for them
-  // in app chrome, and do not swap the deepened yellow for the electric app
-  // yellow — #F7F602 does not hold on white.
+  // ink, and the dog's path in Pawtchi's electric yellow. These tokens exist
+  // only for shareable surfaces (cards that leave the app); do not reach for
+  // them in app chrome.
   moment: {
     paper: '#FCFBF7',        // plain ground
     paperMap: '#FBF9F4',     // ground under the washed map
@@ -77,13 +147,25 @@ export const color = {
     inkSoft: '#6F6A60',      // secondary text, headline
     inkFaint: '#A9A498',     // captions, units, place label
     hairline: '#E9E4D8',     // rules
-    yellow: '#F2CC0F',       // the dog's line — deepened for light grounds
-    yellowOnPhoto: '#F7F602', // electric brand yellow — only over the dark photo scrim, never on white
+    yellow: BRAND_YELLOW,        // the dog's line — the same electric brand yellow on every ground
+    yellowOnPhoto: BRAND_YELLOW, // explicit alias keeps photo-ground intent readable
+    sniff: '#144EFF',         // electric blue — a place the dog found
     onPhoto: '#FFFFFF',      // lockup on the photo ground
     onPhotoSoft: 'rgba(255, 255, 255, 0.78)',
     onPhotoFaint: 'rgba(255, 255, 255, 0.6)',
     photoScrim: 'rgba(20, 18, 14, 0.30)', // flat legibility wash behind photo lockup
+
+    // Earned-template additions (moment card library). The gold is the
+    // Signature card's ink — gilded, not brassy; it exists ONLY on the navy
+    // ground and must never appear on paper (it reads muddy on white).
+    gold: '#C9A227',
+    // "Dusk" premium colorway — night ground with an amber line. Colorway
+    // tokens live here so a colorway is a token-set swap, never a re-style.
+    duskGround: '#101A22',
+    duskLine: '#E8A87C',
+    duskHairline: '#2A3540',
   },
+
 } as const;
 
 export const radius = {
@@ -154,6 +236,19 @@ export const font = {
   semibold: 'Montserrat_600SemiBold',
   bold: 'Montserrat_700Bold',
   extrabold: 'Montserrat_800ExtraBold',
+  // ── Editorial serif — the Walk Memory page only ──
+  // A fifth family, added deliberately and fenced tightly. It exists for one
+  // surface: the full-page moment viewer, where the whole point is that a
+  // photograph is being presented as a page from the dog's biography rather
+  // than previewed as a file. A serif is what makes that read as editorial;
+  // none of the four existing families can do it.
+  //
+  // It is NOT a general heading face. Screens, cards, buttons and every other
+  // surface stay on Montserrat — reaching for this anywhere else turns a
+  // deliberate exception into an inconsistent product.
+  memoryTitle: 'PlayfairDisplay_500Medium',
+  memoryTitleItalic: 'PlayfairDisplay_500Medium_Italic',
+
   // Social-artifact type (Paw Moment cards only) — quiet, editorial Inter.
   // Weight-per-family, same as Montserrat.
   momentRegular: 'Inter_400Regular',
@@ -161,6 +256,29 @@ export const font = {
   momentSemibold: 'Inter_600SemiBold',
   momentBold: 'Inter_700Bold',
 } as const;
+
+// Bebas Neue is an all-caps display face whose glyphs fill — and slightly
+// overflow — the em box. React Native centres the glyph in the line box and
+// clips whatever spills, so any `lineHeight` at or below `fontSize` shears the
+// tops off digits and caps. (This shipped twice: the health weight readout at
+// 76/72 and the activity mission counter at 64/60.)
+//
+// 1.2 is the smallest ratio that clears the ascenders at every size we ship.
+// `includeFontPadding: false` stops Android adding its own compensating pad on
+// top, which would otherwise re-open the vertical-centring gap.
+//
+// Never hand-write a `lineHeight` next to `font.display` — spread this instead:
+//
+//   valueText: { ...displayLine(64), letterSpacing: 1, color: color.cream },
+//
+const DISPLAY_LINE_RATIO = 1.2;
+
+export const displayLine = (size: number) => ({
+  fontFamily: font.display,
+  fontSize: size,
+  lineHeight: Math.ceil(size * DISPLAY_LINE_RATIO),
+  includeFontPadding: false,
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Motion language — one restrained, tactile feel app-wide. Pull durations,
@@ -190,6 +308,20 @@ export const motion = {
     copyRotate: 1700,
     minVisibleDelay: 400,
     resolve: 420,
+  },
+  // The Success Ribbon — signature walk-finish transition. A flowing brand
+  // ribbon is painted across the screen in a left→right→left wag; the walk
+  // screen crossfades to the success screen underneath it (no flat cover); the
+  // ribbon flows off and the content settles in. Clocks for the transition +
+  // the summary reveal stagger; easings live at call sites / in the module.
+  // Relaxed, unhurried pace — always plays fully.
+  tailWhip: {
+    anticipation: 120, //  press freeze before the ribbon draws
+    sweep: 1100, //        the ribbon paints in, flows across, and off
+    reveal: 260, //        per-block duration of the content stagger
+    revealStagger: 40,
+    uiShift: 2, //         secondary-motion nudge (px)
+    particleFade: 400, //  fur-dust fade as the ribbon flows off
   },
 } as const;
 

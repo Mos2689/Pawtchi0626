@@ -6,7 +6,7 @@ import { useIsFocused } from '@react-navigation/native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, cancelAnimation,
 } from 'react-native-reanimated';
-import { color, font, radius, shadow } from '../constants/design';
+import { brandYellowAlpha, color, font, radius, space } from '../constants/design';
 import { PulseMark } from './PulseMark';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -64,6 +64,9 @@ export function SecondOpinionCard({ remaining, resetsAt, onPress }: SecondOpinio
     <AnimatedPressable
       style={[styles.card, cardStyle]}
       onPress={onPress}
+      hitSlop={space.xs}
+      accessibilityRole="button"
+      accessibilityLabel={`Second opinion. ${subtitle}`}
       onPressIn={() => {
         press.value = withTiming(0.985, { duration: 110 });
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -80,48 +83,54 @@ export function SecondOpinionCard({ remaining, resetsAt, onPress }: SecondOpinio
         <Text style={styles.title}>Second opinion</Text>
         <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
       </View>
-      
-      <MaterialIcons name="chevron-right" size={20} color={color.ink} style={{ opacity: 0.6 }} />
+
+      <View style={styles.action}>
+        <MaterialIcons name="chevron-right" size={20} color={color.cream} />
+      </View>
     </AnimatedPressable>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    height: 56,
-    backgroundColor: color.yellow,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: color.yellow,
-    paddingHorizontal: 12,
-    ...shadow.card,
+    gap: space.md,
+    backgroundColor: color.navy,
+    borderRadius: 20,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm + 2,
   },
   chip: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: color.navy,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: brandYellowAlpha(0.12),
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: color.navyRaised,
   },
   chipResting: { opacity: 0.6 },
   copy: { flex: 1, minWidth: 0 },
   title: {
     fontFamily: font.bold,
-    fontSize: 15,
-    color: color.ink,
+    fontSize: 14,
+    color: color.cream,
     letterSpacing: -0.3,
   },
   subtitle: {
     fontFamily: font.medium,
     fontSize: 11,
-    color: color.ink,
-    opacity: 0.7,
+    color: 'rgba(244, 241, 236, 0.6)',
     marginTop: 1,
+  },
+  action: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 241, 236, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

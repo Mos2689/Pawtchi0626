@@ -152,7 +152,7 @@ const header = {
 const logoText = {
   fontSize: "24px",
   fontWeight: "bold",
-  color: "#FACC15", 
+  color: "#F4F600",
   margin: "0",
 };
 

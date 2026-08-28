@@ -15,8 +15,15 @@ import { supabase } from '../supabase';
 import { track } from '../analytics';
 import { deriveLifeStage } from '../lifeStage';
 import { getBreedDefaults, sizeCategoryFromWeight } from '../breedData';
+import { resolveSniffStops } from '../momentCard';
+import type { GeoPoint } from '../walk/geo';
 import { useActivePetStore } from '../../store/useActivePetStore';
-import { aggregateWalks, evaluateWalksign } from './walksignEngine';
+import {
+  aggregateWalks,
+  BROAD_EVIDENCE_WALK_COUNT,
+  evaluateWalksign,
+  EVOLUTION_WALK_COUNT,
+} from './walksignEngine';
 import type {
   WalksignEventKind,
   WalksignHistoryEntry,
@@ -26,7 +33,34 @@ import type {
   WalksignWalkRow,
 } from './types';
 
-const CELEBRATION_KEY = 'walksign:pending_celebration';
+/**
+ * The pending-celebration marker is per ACCOUNT. It was a single device-global
+ * key, so a reading earned by one owner's dog was still sitting there for the
+ * next account created on the same phone; Home only avoided showing it because
+ * it also compares petId. Namespaced on the Supabase user id, like
+ * `hooks/useFirstWalkIntro.ts` — signing back in restores your own pending
+ * moment, and nobody inherits someone else's.
+ */
+const CELEBRATION_PREFIX = 'walksign:pending_celebration';
+
+/** Per-account storage key. */
+export function walksignCelebrationKey(userId: string): string {
+  return `${CELEBRATION_PREFIX}:${userId}`;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseGeoPoints(value: unknown): GeoPoint[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    const point = raw as Partial<GeoPoint> | null;
+    const lat = Number(point?.lat);
+    const lng = Number(point?.lng);
+    return Number.isFinite(lat) && Number.isFinite(lng)
+      ? [{ lat, lng }]
+      : [];
+  });
+}
 
 /** What the celebration modal needs to stage the moment. */
 export interface PendingWalksignCelebration {
@@ -39,18 +73,24 @@ export interface PendingWalksignCelebration {
   at: string;
 }
 
-export async function readPendingWalksignCelebration(): Promise<PendingWalksignCelebration | null> {
+export async function readPendingWalksignCelebration(
+  userId: string | null | undefined,
+): Promise<PendingWalksignCelebration | null> {
+  if (!userId) return null;
   try {
-    const raw = await AsyncStorage.getItem(CELEBRATION_KEY);
+    const raw = await AsyncStorage.getItem(walksignCelebrationKey(userId));
     return raw ? (JSON.parse(raw) as PendingWalksignCelebration) : null;
   } catch {
     return null;
   }
 }
 
-export async function clearPendingWalksignCelebration(): Promise<void> {
+export async function clearPendingWalksignCelebration(
+  userId: string | null | undefined,
+): Promise<void> {
+  if (!userId) return;
   try {
-    await AsyncStorage.removeItem(CELEBRATION_KEY);
+    await AsyncStorage.removeItem(walksignCelebrationKey(userId));
   } catch {
     // Worst case the moment shows again — better than losing it.
   }
@@ -66,9 +106,15 @@ const lastEvaluatedAt = new Map<string, number>();
  * Evaluate and persist the pet's Walksign. Returns the pending celebration
  * it staged, if any (callers may present it immediately instead of waiting
  * for the next Home focus).
+ *
+ * `ownerId` only scopes the stored celebration marker; the sign itself lives on
+ * the pet row. Without an owner the reading is still saved — the moment just
+ * isn't stashed for a later Home focus, because there is no account to stash it
+ * against.
  */
 export async function maybeEvaluateWalksign(
   petId: string,
+  ownerId: string | null | undefined,
   options?: { force?: boolean },
 ): Promise<PendingWalksignCelebration | null> {
   const now = Date.now();
@@ -82,7 +128,7 @@ export async function maybeEvaluateWalksign(
     const { data: pet, error: petErr } = await supabase
       .from('pets')
       .select(
-        'id, species, breed, age_years, current_weight_kg, activity_level, first_dog, created_at, walksign, walksign_status, walksign_history',
+        'id, species, breed, age_years, current_weight_kg, activity_level, first_dog, household_walkers, created_at, walksign, walksign_status, walksign_assigned_at, walksign_history',
       )
       .eq('id', petId)
       .single();
@@ -101,7 +147,7 @@ export async function maybeEvaluateWalksign(
     const { data: sessions, error: walkErr } = await supabase
       .from('walk_sessions')
       .select(
-        'started_at, duration_s, moving_time_s, distance_m, avg_speed_kmh, end_reason, start_label, end_label, farthest_label, pause_points',
+        'started_at, duration_s, moving_time_s, distance_m, avg_speed_kmh, end_reason, start_label, end_label, farthest_label, route, sniff_points, pause_points',
       )
       .eq('pet_id', petId)
       .eq('validation_verdict', 'valid')
@@ -109,18 +155,25 @@ export async function maybeEvaluateWalksign(
       .limit(100);
     if (walkErr) return null;
 
-    const rows: WalksignWalkRow[] = (sessions ?? []).map(s => ({
-      startedAt: s.started_at,
-      durationS: s.duration_s ?? 0,
-      movingTimeS: s.moving_time_s ?? 0,
-      distanceM: s.distance_m ?? 0,
-      avgSpeedKmh: s.avg_speed_kmh ?? 0,
-      endReason: s.end_reason ?? 'manual',
-      startLabel: s.start_label ?? null,
-      endLabel: s.end_label ?? null,
-      farthestLabel: s.farthest_label ?? null,
-      pauseCount: Array.isArray(s.pause_points) ? s.pause_points.length : 0,
-    }));
+    const rows: WalksignWalkRow[] = (sessions ?? []).map((session) => {
+      const pausePoints = parseGeoPoints(session.pause_points);
+      return {
+        startedAt: session.started_at,
+        durationS: session.duration_s ?? 0,
+        movingTimeS: session.moving_time_s ?? 0,
+        distanceM: session.distance_m ?? 0,
+        avgSpeedKmh: session.avg_speed_kmh ?? 0,
+        endReason: session.end_reason ?? 'manual',
+        startLabel: session.start_label ?? null,
+        endLabel: session.end_label ?? null,
+        farthestLabel: session.farthest_label ?? null,
+        sniffCount: resolveSniffStops(
+          session.sniff_points,
+          pausePoints,
+        ).length,
+        route: parseGeoPoints(session.route),
+      };
+    });
 
     const current =
       pet.walksign && pet.walksign_status
@@ -130,6 +183,32 @@ export async function maybeEvaluateWalksign(
           }
         : null;
 
+    const storedHistory =
+      (pet.walksign_history as WalksignHistoryEntry[] | null) ?? [];
+    const latestHistoryAt =
+      [...storedHistory]
+        .reverse()
+        .find((entry) => Boolean(entry?.at))?.at ?? null;
+    const assignmentDate = pet.walksign_assigned_at ?? latestHistoryAt;
+    const assignedAtMs = assignmentDate
+      ? new Date(assignmentDate).getTime()
+      : Number.NaN;
+    const hasAssignmentDate = Number.isFinite(assignedAtMs);
+    const validWalksSinceAssignment = hasAssignmentDate
+      ? rows.filter((row) => {
+          const startedAtMs = new Date(row.startedAt).getTime();
+          return (
+            Number.isFinite(startedAtMs) &&
+            startedAtMs > assignedAtMs
+          );
+        }).length
+      : 0;
+    const daysSinceAssignment = hasAssignmentDate
+      ? Math.max(0, (now - assignedAtMs) / DAY_MS)
+      : 0;
+    const recentRows = rows.slice(0, EVOLUTION_WALK_COUNT);
+    const evidenceRows = rows.slice(0, BROAD_EVIDENCE_WALK_COUNT);
+
     const { change } = evaluateWalksign({
       current,
       facts: {
@@ -137,10 +216,18 @@ export async function maybeEvaluateWalksign(
         lifeStage,
         firstDog: pet.first_dog,
         ownershipMonths,
+        householdWalkers: pet.household_walkers,
         activityLevel: pet.activity_level ?? null,
       },
-      aggregates: rows.length > 0 ? aggregateWalks(rows) : null,
+      aggregates:
+        evidenceRows.length > 0 ? aggregateWalks(evidenceRows) : null,
       validWalkCount: rows.length,
+      recentAggregates:
+        recentRows.length >= EVOLUTION_WALK_COUNT
+          ? aggregateWalks(recentRows)
+          : null,
+      validWalksSinceAssignment,
+      daysSinceAssignment,
     });
     if (!change) return null;
 
@@ -151,7 +238,7 @@ export async function maybeEvaluateWalksign(
       reason: change.assignment.reason,
       at: atIso,
     };
-    const history = [...((pet.walksign_history as WalksignHistoryEntry[] | null) ?? []), entry];
+    const history = [...storedHistory, entry];
 
     const { error: updateErr } = await supabase
       .from('pets')
@@ -184,6 +271,13 @@ export async function maybeEvaluateWalksign(
       status: change.assignment.status,
       reason: change.assignment.reason,
       ...(change.transitionKind ? { transition_kind: change.transitionKind } : {}),
+      ...(change.evidence
+        ? {
+            evidence_score: change.evidence.score,
+            evidence_margin: change.evidence.margin,
+            evidence_walk_count: change.evidence.walkCount,
+          }
+        : {}),
     });
 
     // Confirmations and transitions are celebrated; quiet provisional
@@ -199,7 +293,12 @@ export async function maybeEvaluateWalksign(
         at: atIso,
       };
       try {
-        await AsyncStorage.setItem(CELEBRATION_KEY, JSON.stringify(celebration));
+        if (ownerId) {
+          await AsyncStorage.setItem(
+            walksignCelebrationKey(ownerId),
+            JSON.stringify(celebration),
+          );
+        }
       } catch {
         // The moment is lost but the sign is saved — acceptable.
       }

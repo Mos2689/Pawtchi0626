@@ -17,10 +17,11 @@ import Svg, { Polyline, Circle } from 'react-native-svg';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { color, font, radius, shadow, space } from '../constants/design';
+import { color, font, shadow } from '../constants/design';
 import WalkMap from './walk/WalkMap';
 import { MomentShareModal } from './MomentShareModal';
 import { projectRouteToSvg } from '../lib/walk/routeSvg';
+import { resolveSniffStops } from '../lib/momentCard';
 import { track } from '../lib/analytics';
 import { estimateActivityBurn } from '../lib/activityBurn';
 import { deriveDogWalkProfile, intensityForPace } from '../lib/walk/dogCalibration';
@@ -37,8 +38,10 @@ export interface WalkPostCardData {
   moving_time_s: number;
   distance_m: number;
   route: GeoPoint[] | null;
-  /** Sniff-stop coordinates — the loops on the shareable Paw Moment card. */
+  /** Session pause coordinates — legacy fallback for the card loops. */
   pause_points: GeoPoint[];
+  /** Sniff episodes ({lat,lng,dwellS}); null on rows predating the detector. */
+  sniff_points: unknown[] | null;
   avg_speed_kmh: number | null;
   start_label: string | null;
   end_label: string | null;
@@ -54,6 +57,12 @@ export interface WalkPostCardProps {
    * map/trace toggle — a belt-and-braces cap on simultaneous GL surfaces.
    */
   index?: number;
+  /**
+   * The hero card directly under the canopy on Home: a taller route surface, so
+   * the most recent walk reads as the thing that just happened rather than the
+   * first row of a list. Purely presentational — same data, same behaviour.
+   */
+  featured?: boolean;
 }
 
 /** How many top cards auto-upgrade from SVG placeholder to a live basemap. */
@@ -61,6 +70,8 @@ const MAP_AUTOMOUNT_LIMIT = 3;
 
 const SVG_WIDTH = 320;
 const SVG_HEIGHT = 150;
+/** Route surface height for the hero card under the canopy. */
+const FEATURED_HEIGHT = 190;
 
 function formatWhen(iso: string): string {
   try {
@@ -75,8 +86,9 @@ function pluralizeMin(n: number): string {
   return `${n} min`;
 }
 
-export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index = 0 }: WalkPostCardProps) {
+export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index = 0, featured = false }: WalkPostCardProps) {
   const petName = pet.name?.trim() || 'your dog';
+  const routeHeight = featured ? FEATURED_HEIGHT : SVG_HEIGHT;
   // Match Home's existing avatar convention: wearable overlay wins over the raw
   // profile photo; paw glyph is the last-resort fallback if neither is set.
   const petPhotoUri = pet.current_avatar_url || pet.image_url || null;
@@ -104,8 +116,16 @@ export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index 
   }, [pet.species, pet.breed, pet.age_years, pet.current_weight_kg, pet.medical_conditions, walk.avg_speed_kmh, activeMinutes]);
 
   const projection = useMemo(
-    () => projectRouteToSvg(walk.route ?? [], SVG_WIDTH, SVG_HEIGHT, 18),
-    [walk.route],
+    () => projectRouteToSvg(walk.route ?? [], SVG_WIDTH, routeHeight, 18),
+    [walk.route, routeHeight],
+  );
+
+  // Real sniff episodes, with the legacy auto-pause fallback for rows that
+  // predate the detector — the same resolution the share card uses, so the two
+  // can never disagree about how curious a walk was.
+  const sniffCount = useMemo(
+    () => resolveSniffStops(walk.sniff_points, walk.pause_points).length,
+    [walk.sniff_points, walk.pause_points],
   );
 
   const showRoutePins = useWalkPostPrefsStore(s => s.showRoutePins);
@@ -241,12 +261,12 @@ export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index 
       {/* Route surface — a real basemap by default, abstract trace on tap */}
       <View style={styles.routeCard}>
         {showMap ? (
-          <View style={styles.postMap}>
+          <View style={[styles.postMap, { height: routeHeight }]}>
             <WalkMap mode="summary" path={walk.route ?? []} interactive={false} />
           </View>
         ) : projection.points ? (
           <>
-          <Svg width="100%" height={SVG_HEIGHT} viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}>
+          <Svg width="100%" height={routeHeight} viewBox={`0 0 ${SVG_WIDTH} ${routeHeight}`}>
             <Polyline
               points={projection.points}
               fill="none"
@@ -291,13 +311,16 @@ export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index 
           )}
           </>
         ) : (
-          <View style={styles.routePlaceholder}>
+          <View style={[styles.routePlaceholder, { height: routeHeight }]}>
             <MaterialIcons name="terrain" size={26} color={color.slateFaint} />
           </View>
         )}
       </View>
 
-      {/* Stat row — minutes, km, kcal (dog-calibrated) */}
+      {/* Stat row — minutes, km, sniff stops, kcal (dog-calibrated).
+          Sniff stops carry the electric blue: of everything on this card it is
+          the only number about what the dog *found* rather than what the walk
+          cost, which is exactly what that colour is reserved for. */}
       <View style={styles.statRow}>
         <View style={styles.stat}>
           <Text style={styles.statValue}>{minutes}</Text>
@@ -308,6 +331,15 @@ export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index 
           <Text style={styles.statValue}>{km.toFixed(2)}</Text>
           <Text style={styles.statLabel}>KM</Text>
         </View>
+        {sniffCount > 0 && (
+          <>
+            <View style={styles.statDivider} />
+            <View style={styles.stat}>
+              <Text style={[styles.statValue, styles.statValueFound]}>{sniffCount}</Text>
+              <Text style={styles.statLabel}>SNIFF STOPS</Text>
+            </View>
+          </>
+        )}
         {kcal > 0 && (
           <>
             <View style={styles.statDivider} />
@@ -328,7 +360,7 @@ export const WalkPostCard = React.memo(function WalkPostCard({ walk, pet, index 
           petGender={pet.gender ?? null}
           startedAt={new Date(walk.started_at).getTime()}
           route={walk.route ?? []}
-          pausePoints={walk.pause_points}
+          sniffStops={resolveSniffStops(walk.sniff_points, walk.pause_points)}
           labels={momentLabels}
           stats={{
             durationS: walk.duration_s,
@@ -347,10 +379,13 @@ const styles = StyleSheet.create({
     backgroundColor: color.surface,
     borderRadius: 20,
     padding: 16,
-    marginTop: space.lg,
     borderWidth: 0.5,
     borderColor: color.hairline,
     ...shadow.card,
+    // Deliberately no margin. Spacing between cards belongs to whatever is
+    // stacking them — a self-applied marginTop here added itself to the Home
+    // sheet's section `gap` and made this card sit further from the shelf above
+    // it than any other pair of sections on the screen.
   },
   header: {
     flexDirection: 'row',
@@ -461,6 +496,10 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     color: color.navy,
     letterSpacing: 0.5,
+  },
+  // Discovery, not effort — see the `electric` note in constants/design.ts.
+  statValueFound: {
+    color: color.electric,
   },
   statLabel: {
     fontFamily: font.semibold,

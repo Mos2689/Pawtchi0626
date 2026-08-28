@@ -2,7 +2,7 @@
   "expo": {
     "name": "Pawtchi",
     "slug": "pawtchi",
-    "version": "1.0.18",
+    "version": "1.0.20",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "pawtchi",
@@ -11,9 +11,9 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "75",
+      "buildNumber": "87",
       "supportsTablet": true,
-      "associatedDomains": [
+      "__associatedDomains_temp": [
         "applinks:pawtchi.com",
         "applinks:www.pawtchi.com"
       ],
@@ -42,12 +42,12 @@
         "image": "./assets/images/splash-icon.png",
         "imageWidth": 240,
         "resizeMode": "contain",
-        "backgroundColor": "#FFFF00"
+        "backgroundColor": "#F4F600"
       }
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 34,
+      "versionCode": 36,
       "permissions": [
         "android.permission.INTERNET"
       ],
@@ -74,7 +74,7 @@
         }
       ],
       "adaptiveIcon": {
-        "backgroundColor": "#FFFF00",
+        "backgroundColor": "#F4F600",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
       },
       "edgeToEdgeEnabled": true,
@@ -92,7 +92,7 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 240,
           "resizeMode": "contain",
-          "backgroundColor": "#FFFF00",
+          "backgroundColor": "#F4F600",
           "dark": {
             "backgroundColor": "#000000"
           }
@@ -109,7 +109,7 @@
         "expo-notifications",
         {
           "icon": "./assets/images/notification-icon.png",
-          "color": "#FFFF00"
+          "color": "#F4F600"
         }
       ],
       [

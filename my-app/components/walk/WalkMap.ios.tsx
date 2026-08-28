@@ -15,11 +15,12 @@
  * drops the /walk route). In Expo Go we render a friendly placeholder.
  */
 
-import React, { useMemo } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Constants from 'expo-constants';
 import { color, radius, space, type as typeTokens } from '../../constants/design';
 import type { GeoPoint } from '../../lib/walk/geo';
+import { fromViewportZoom, toRegionZoom } from '../../lib/walk/mapCamera';
 import type { WalkMapProps } from './WalkMap';
 
 const LIVE_ZOOM = 17;
@@ -35,6 +36,25 @@ if (Constants.appOwnership !== 'expo') {
     AppleMaps = null;
   }
 }
+
+/**
+ * Whether a real basemap can be drawn at all — ground truth, not an environment
+ * guess. Callers that want to render their own surface instead of this file's
+ * "not in Expo Go" placeholder (the Home canopy, which has an SVG trace to fall
+ * back to) check this rather than re-sniffing appOwnership, which is deprecated
+ * and already known to be unreliable on its own.
+ */
+export const NATIVE_MAP_AVAILABLE = AppleMaps !== null;
+
+/**
+ * MapKit tells us where it is only once the gesture ENDS.
+ *
+ * expo-maps hard-codes `.onMapCameraChange(frequency: .onEnd)` in its SwiftUI
+ * view, so there is no continuous stream to subscribe to — mid-drag we are
+ * genuinely blind. Callers that float their own views over the map use this to
+ * hide them while a finger is down instead of leaving them somewhere wrong.
+ */
+export const MAP_CAMERA_STREAMS = false;
 
 function midpoint(path: GeoPoint[]): GeoPoint | null {
   if (path.length === 0) return null;
@@ -66,30 +86,117 @@ function summaryZoom(path: GeoPoint[]): number {
   return Math.max(SUMMARY_MIN_ZOOM, Math.min(LIVE_ZOOM, z));
 }
 
-export default function WalkMap({ path, currentPosition, mode, style, interactive = true }: WalkMapProps) {
+/** Framing for a place we can only point at, not trace: a block or two across. */
+const PLACE_ZOOM = 16;
+
+/**
+ * Backdrop framing — wider than a walk card's, on purpose.
+ *
+ * A summary card is about ONE walk, so it frames that walk tightly. Home's
+ * canopy is about where this dog lives: at card zoom it filled the hero with
+ * two streets and a car park, which reads as a stretched close-up rather than a
+ * place. Pulling back roughly two zoom steps puts the surrounding neighbourhood
+ * in frame, which is what makes the map worth looking at every morning.
+ */
+const BACKDROP_PLACE_ZOOM = 14;
+/** How far to pull back from a route's own framing when used as a backdrop. */
+const BACKDROP_ZOOM_OUT = 1.4;
+
+/**
+ * Backdrop styling for `quiet` mode.
+ *
+ * String literals rather than the AppleMaps enums on purpose: expo-maps is
+ * require()d lazily so this file still loads in Expo Go, and reaching for the
+ * enum objects at module scope would reintroduce the import we are avoiding.
+ * They are string enums, so `'MUTED'` is exactly the value `AppleMapsMapStyle
+ * Emphasis.MUTED` carries. An empty `including` list hides every POI category.
+ */
+const QUIET_PROPERTIES = {
+  emphasis: 'MUTED',
+  pointsOfInterest: { including: [] as string[] },
+};
+
+export default function WalkMap({
+  path,
+  currentPosition,
+  center,
+  mode,
+  style,
+  interactive = true,
+  quiet = false,
+  spots = [],
+  camera,
+  onCameraChange,
+}: WalkMapProps) {
+  /**
+   * The map's own pixel size, measured rather than assumed.
+   *
+   * Both zoom conversions below need it, and it is genuinely different per call
+   * site: full-screen on Home's canopy, a short wide rectangle inside a walk
+   * card. Guessing with `useWindowDimensions` would silently misplace every pin
+   * on the card path.
+   */
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const onLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setSize(prev =>
+      prev && Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1
+        ? prev
+        : { width, height },
+    );
+  }, []);
+  // Two strokes, not one: a navy casing with the brand yellow riding on top.
+  //
+  // The route is yellow everywhere in Pawtchi, but the brand book is explicit
+  // that yellow does not hold as ink on a light ground — a bare yellow line on
+  // pale map tiles is close to invisible. The casing is the standard
+  // cartographic answer: it gives the yellow an edge to read against without
+  // changing what colour the route is.
   const polylines = useMemo(() => {
     if (path.length < 2) return [];
+    const coordinates = path.map(p => ({ latitude: p.lat, longitude: p.lng }));
     return [
-      {
-        coordinates: path.map(p => ({ latitude: p.lat, longitude: p.lng })),
-        color: color.navy,
-        width: 5,
-      },
+      { coordinates, color: color.navy, width: 7.5 },
+      { coordinates, color: color.yellow, width: 4.5 },
     ];
   }, [path]);
 
-  // Yellow start dot — reads as the "you began here" spark against the navy trace.
+  // Yellow start dot — reads as the "you began here" spark against the navy
+  // trace — plus any spots the caller dropped.
+  //
+  // Spots ride the markers array rather than `circles` because a circle's
+  // radius is in METRES: at Home's pulled-back backdrop zoom a 9m dot is
+  // sub-pixel, and it would swell as the map zoomed in. Markers are screen-space
+  // and hold their size, which is what a pin has to do.
   const markers = useMemo(() => {
-    if (path.length === 0) return [];
-    const start = path[0];
-    return [
-      {
+    const pins: {
+      coordinates: { latitude: number; longitude: number };
+      systemImage: string;
+      tintColor: string;
+    }[] = [];
+
+    // Suppressed as a backdrop: MapKit draws a marker as a balloon pin, and on
+    // Home — which places its own flat pastel dots over the map — that balloon
+    // was the loudest object on the screen and belonged to no design.
+    if (path.length > 0 && !quiet) {
+      const start = path[0];
+      pins.push({
         coordinates: { latitude: start.lat, longitude: start.lng },
         systemImage: 'circle.fill',
         tintColor: color.yellow,
-      },
-    ];
-  }, [path]);
+      });
+    }
+
+    for (const spot of spots) {
+      pins.push({
+        coordinates: { latitude: spot.lat, longitude: spot.lng },
+        systemImage: 'circle.fill',
+        tintColor: color.marker[spot.tone],
+      });
+    }
+
+    return pins;
+  }, [path, spots, quiet]);
 
   // Our own puck — a filled circle at the last accepted GPS point. Meters
   // scale with zoom, but live mode pins zoom to LIVE_ZOOM so it reads as a
@@ -108,47 +215,120 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
   }, [mode, currentPosition]);
 
   const cameraPosition = useMemo(() => {
-    if (mode === 'summary') {
-      const center = midpoint(path);
-      if (!center) return undefined;
+    // An explicit camera wins outright — the caller is drawing its own overlay
+    // against these exact numbers, so the map must not second-guess them.
+    if (camera) {
       return {
-        coordinates: { latitude: center.lat, longitude: center.lng },
-        zoom: summaryZoom(path),
+        coordinates: { latitude: camera.center.lat, longitude: camera.center.lng },
+        // Converted, NOT passed through. expo-maps builds its region as
+        // `longitudeDelta = 360 / 2^zoom`, which means something different by
+        // "zoom" than Web Mercator does on any view that isn't 256px wide —
+        // see lib/walk/mapCamera.ts#toRegionZoom. Handing it the raw number
+        // rendered the map about 1.5x closer than the projector believed and
+        // dragged every overlay pin toward the middle of the screen.
+        //
+        // Before the first layout we have no width to convert with. Passing the
+        // raw zoom for that one frame is the honest fallback: it is the old
+        // behaviour, and the measured value arrives immediately after.
+        zoom: size ? toRegionZoom(camera, size.width, size.height) : camera.zoom,
       };
     }
-    const target = currentPosition ?? path[path.length - 1] ?? null;
+    if (mode === 'summary') {
+      // A traceable route frames itself; anything shorter falls back to the
+      // caller's place, so the map still shows the right streets.
+      const mid = path.length >= 2 ? midpoint(path) : null;
+      if (mid) {
+        const framed = summaryZoom(path);
+        return {
+          coordinates: { latitude: mid.lat, longitude: mid.lng },
+          zoom: quiet ? Math.max(SUMMARY_MIN_ZOOM, framed - BACKDROP_ZOOM_OUT) : framed,
+        };
+      }
+      const place = path[0] ?? center ?? null;
+      if (!place) return undefined;
+      return {
+        coordinates: { latitude: place.lat, longitude: place.lng },
+        zoom: quiet ? BACKDROP_PLACE_ZOOM : PLACE_ZOOM,
+      };
+    }
+    const target = currentPosition ?? path[path.length - 1] ?? center ?? null;
     if (!target) return undefined;
     return {
       coordinates: { latitude: target.lat, longitude: target.lng },
       zoom: LIVE_ZOOM,
     };
-  }, [mode, path, currentPosition]);
+  }, [mode, path, currentPosition, center, quiet, camera, size]);
+
+  /**
+   * MapKit's settled camera, translated back into the projector's units.
+   *
+   * What it reports is the true visible longitude span — a horizontal fact with
+   * no aspect fitting in it — so the inverse here is simpler than the forward
+   * conversion, and deliberately not the same function.
+   */
+  const handleCameraMove = useCallback(
+    (event: {
+      coordinates?: { latitude?: number; longitude?: number };
+      zoom?: number;
+    }) => {
+      if (!onCameraChange || !size) return;
+      const lat = event?.coordinates?.latitude;
+      const lng = event?.coordinates?.longitude;
+      const zoom = event?.zoom;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(zoom)) {
+        return;
+      }
+      onCameraChange({
+        center: { lat: lat as number, lng: lng as number },
+        zoom: fromViewportZoom(zoom as number, size.width),
+      });
+    },
+    [onCameraChange, size],
+  );
 
   if (!AppleMaps) {
     return <MapFallback style={style} />;
   }
 
   return (
-    <View style={[styles.container, style]}>
+    <View style={[styles.container, style]} onLayout={onLayout}>
       <AppleMaps.View
         style={StyleSheet.absoluteFill}
+        onCameraMove={onCameraChange ? handleCameraMove : undefined}
         cameraPosition={cameraPosition}
         polylines={polylines}
         markers={markers}
         circles={circles}
-        properties={{ isMyLocationEnabled: false, selectionEnabled: false }}
+        properties={{
+          isMyLocationEnabled: false,
+          selectionEnabled: false,
+          ...(quiet ? QUIET_PROPERTIES : null),
+        }}
         uiSettings={{
           compassEnabled: false,
           myLocationButtonEnabled: false,
           scaleBarEnabled: false,
           togglePitchEnabled: false,
-          // Static preview inside a feed card — lock every touch gesture so the
-          // map can't hijack the parent ScrollView's vertical drag.
-          scrollEnabled: interactive,
-          zoomEnabled: interactive,
-          rotationEnabled: interactive,
         }}
       />
+
+      {/*
+        The gesture lock, done in React rather than in the SDK.
+
+        `AppleMapsUISettings` has exactly four fields — compass, my-location
+        button, scale bar, pitch toggle. There is no scrollEnabled, no
+        zoomEnabled, no rotationEnabled; we were passing all three and expo-maps
+        was silently dropping them, so `interactive={false}` did nothing on iOS
+        at all. Nothing caught it because `AppleMaps` is require()d lazily and
+        therefore typed `any`.
+
+        Two things depended on that promise: walk cards inside a scrolling feed,
+        where a live map steals the parent's vertical drag, and any caller
+        floating its own views over the basemap. A transparent sheet over the
+        map swallows the touches before MapKit's own recognisers ever see them,
+        which is the same guarantee by a different route.
+      */}
+      {!interactive && <View style={StyleSheet.absoluteFill} />}
     </View>
   );
 }

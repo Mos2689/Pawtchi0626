@@ -44,7 +44,7 @@ export interface NotificationPayload {
 
 /** Where each campaign lands. Every campaign must have an entry. */
 export const CAMPAIGN_ROUTE: Record<CampaignKey, string> = {
-  onboarding_incomplete: '/onboarding/species',
+  onboarding_incomplete: '/onboarding/identity',
   first_log_prompt: '/(tabs)/meal',
   meal_window: '/(tabs)/meal',
   weigh_in_due: '/(tabs)/health',

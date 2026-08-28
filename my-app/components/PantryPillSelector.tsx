@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { makeShadow } from '../constants/design';
+import { color, makeShadow } from '../constants/design';
 
 interface PantryItem {
   id: string;
@@ -117,9 +117,9 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
   },
   pillSelected: {
-    backgroundColor: '#F7F602',
-    borderColor: '#F7F602',
-    ...makeShadow(4, 8, 0.2, '#F7F602'),
+    backgroundColor: color.yellow,
+    borderColor: color.yellow,
+    ...makeShadow(4, 8, 0.2, color.yellow),
   },
   pillText: {
     fontSize: 14,

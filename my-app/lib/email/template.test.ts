@@ -268,12 +268,15 @@ describe('reply fallback', () => {
   });
 
   // The two senders must sound like different people — that separation is what
-  // keeps the letter feeling personal.
+  // keeps the letter feeling personal. Neither prints a founder's name any
+  // more; the letter is unsigned in the app and stays unsigned here too.
   test('the letter and support voices stay distinct', () => {
     const letter = JSON.stringify(replyFallbackBlocks({ kind: 'founder', body: 'x', entityId: 'a' }));
     const support = JSON.stringify(replyFallbackBlocks({ kind: 'support', body: 'x', entityId: 'a' }));
-    expect(letter).toContain('Pra and Mos');
-    expect(support).not.toContain('Pra and Mos');
+    expect(letter).not.toContain('Pra');
+    expect(letter).not.toContain('Mos');
+    expect(letter).not.toContain('Pawtchi team');
+    expect(support).not.toContain('Pra');
     expect(support).toContain('Pawtchi team');
   });
 

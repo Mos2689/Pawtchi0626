@@ -65,6 +65,7 @@ export function MealHero({ eyebrow, item, bowlSize, species = 'dog', dailyKcalTa
       labelGramsPerServing,
       perMealKcalTarget,
       kcalPer100g,
+      kcalPerServing: item.kcal_per_serving ?? null,
     });
   }, [item.serving_unit, item.kcal_per_serving, item.kcal_per_100g_as_fed, species, bowlSize, dailyKcalTarget]);
 
@@ -235,7 +236,7 @@ export function MealHero({ eyebrow, item, bowlSize, species = 'dog', dailyKcalTa
             </Text>
             <Text style={styles.portionHint} numberOfLines={1}>
               {mode === 'weight'
-                ? `Stepper · ${stepper.step} g`
+                ? `Stepper · ${Math.round(stepperGramsDelta)} g`
                 : `1 ${presets.unitLabel} ≈ ${gramsPerUnit} g`}
             </Text>
           </View>

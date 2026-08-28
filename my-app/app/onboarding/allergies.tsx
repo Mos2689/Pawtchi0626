@@ -1,15 +1,20 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { usePetStore } from '../../store/usePetStore';
+import { forwardCompletionParams } from '../../lib/onboarding/completionMode';
 import { getBreedDefaults } from '../../lib/breedData';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
+import { TextField } from '../../components/ui/TextField';
 import { OnboardingHeader } from '../../components/OnboardingHeader';
+import {
+  OnboardingFormScaffold, ScaffoldField,
+} from '../../components/onboarding/OnboardingFormScaffold';
 import { color, font, radius, space, motion } from '../../constants/design';
 import {
   stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
@@ -34,6 +39,7 @@ function formatAllergenList(items: string[]): string {
 // first allergen is picked.
 export default function AllergiesScreen() {
   const router = useRouter();
+  const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
   const insets = useSafeAreaInsets();
   useOnboardingStepTracking('allergies');
 
@@ -94,14 +100,14 @@ export default function AllergiesScreen() {
     const allAllergens = Array.from(selected);
     setAllergies(allAllergens);
     trackStepCompleted('allergies', { count: allAllergens.length, none: noneSelected });
-    router.push('/onboarding/body-check');
+    router.push({ pathname: '/onboarding/body-check', params: forwardCompletionParams(completionParams) } as never);
   };
 
   const handleSkip = () => {
     setAllergies([]);
     trackFieldSkipped('allergies', 'allergens');
     trackStepCompleted('allergies', { count: 0, none: true, skipped: true });
-    router.push('/onboarding/body-check');
+    router.push({ pathname: '/onboarding/body-check', params: forwardCompletionParams(completionParams) } as never);
   };
 
   const isChipSelected = (allergen: string) => selected.has(allergen);
@@ -112,7 +118,24 @@ export default function AllergiesScreen() {
     <View style={styles.container}>
       <OnboardingHeader step={stepIndex('allergies')} stepId="allergies" onSkip={handleSkip} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <OnboardingFormScaffold
+        contentContainerStyle={styles.scrollContent}
+        footer={
+          <LinearGradient
+            colors={['transparent', 'rgba(255,255,255,0.95)', color.surface]}
+            style={[styles.footerGradient, { paddingBottom: insets.bottom + space.xl }]}
+            locations={[0, 0.4, 1]}
+          >
+            <PawtchiButton
+              title="Next"
+              variant="primary"
+              iconName="arrow-forward"
+              iconPosition="right"
+              onPress={handleNext}
+            />
+          </LinearGradient>
+        }
+      >
         <Animated.View entering={FadeInDown.duration(420)}>
           <Text style={styles.eyebrow}>STEP {stepIndex('allergies')}</Text>
           <Text style={styles.title}>Any food{'\n'}sensitivities?</Text>
@@ -209,15 +232,29 @@ export default function AllergiesScreen() {
 
         {/* Add custom */}
         <View style={styles.customRow}>
-          <TextInput
-            style={styles.customInput}
-            placeholder="Add another allergen"
-            placeholderTextColor={color.slateFaint}
-            value={customInput}
-            onChangeText={setCustomInput}
-            onSubmitEditing={addCustomAllergen}
-            returnKeyType="done"
-          />
+          {/* "Add" on the accessory bar is the same call the return key makes —
+              it just stops the owner having to find the return key to use it. */}
+          <ScaffoldField
+            id="custom-allergen"
+            label="Add an allergen"
+            actionLabel="Add"
+            onAction={addCustomAllergen}
+            style={styles.customFieldSpacing}
+          >
+            {({ onFocus, onBlur }) => (
+              <TextField
+                height={48}
+                fontSize={15}
+                placeholder="Add another allergen"
+                value={customInput}
+                onChangeText={setCustomInput}
+                onSubmitEditing={addCustomAllergen}
+                onFocus={onFocus}
+                onBlur={onBlur}
+                returnKeyType="done"
+              />
+            )}
+          </ScaffoldField>
           <TouchableOpacity
             style={[styles.addBtn, !customInput.trim() && { opacity: 0.4 }]}
             onPress={addCustomAllergen}
@@ -262,24 +299,7 @@ export default function AllergiesScreen() {
             </View>
           </Animated.View>
         )}
-      </ScrollView>
-
-      {/* Sticky footer — one exit; Skip lives quietly in the header */}
-      <View style={styles.stickyFooterContainer}>
-        <LinearGradient
-          colors={['transparent', 'rgba(255,255,255,0.95)', color.surface]}
-          style={[styles.footerGradient, { paddingBottom: insets.bottom + space.xl }]}
-          locations={[0, 0.4, 1]}
-        >
-          <PawtchiButton
-            title="Next"
-            variant="primary"
-            iconName="arrow-forward"
-            iconPosition="right"
-            onPress={handleNext}
-          />
-        </LinearGradient>
-      </View>
+      </OnboardingFormScaffold>
     </View>
   );
 }
@@ -439,17 +459,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: space.xl,
   },
-  customInput: {
+  // Spacing only — the box is TextField's (lib/ui/textFieldLayout.ts).
+  customFieldSpacing: {
     flex: 1,
-    height: 48,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    borderRadius: radius.lg,
-    paddingHorizontal: space.lg,
-    fontFamily: font.medium,
-    fontSize: 15,
-    color: color.ink,
-    backgroundColor: color.surfaceSubtle,
   },
   addBtn: {
     width: 48,
@@ -495,12 +507,7 @@ const styles = StyleSheet.create({
     color: color.error,
   },
 
-  stickyFooterContainer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-  },
+  // The absolute positioning that used to live here is the scaffold's job now.
   footerGradient: {
     paddingHorizontal: space.xxl,
     paddingTop: space.xxl,

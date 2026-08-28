@@ -5,8 +5,7 @@
   },
   "build": {
     "base": {
-      "//": "Pins the toolchain so the builder resolves dependencies the same way the lockfile was written. Builds failed repeatedly on `npm ci` with 'lock file's ajv@6.14.0 does not satisfy ajv@8.20.0 / Missing: ajv@6.15.0': eslint declares ajv ^6.14.0, ajv 6.15.0 was published, and the builder's older npm resolved the range to the newer release while the lockfile pinned the older one. Without a pin this recurs every time any transitive dependency publishes a patch.",
-      "node": "24.13.0"
+      "node": "22.12.0"
     },
     "development": {
       "extends": "base",

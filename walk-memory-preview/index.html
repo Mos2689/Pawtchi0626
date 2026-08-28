@@ -1,0 +1,2185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07202A" />
+  <link rel="icon" href="data:," />
+  <title>Pawtchi Walk Memory Preview</title>
+  <style>
+    @font-face {
+      font-family: "Pawtchi Sans";
+      src: url("../my-app/node_modules/@expo-google-fonts/montserrat/400Regular/Montserrat_400Regular.ttf");
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Pawtchi Sans";
+      src: url("../my-app/node_modules/@expo-google-fonts/montserrat/600SemiBold/Montserrat_600SemiBold.ttf");
+      font-weight: 600;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Pawtchi Sans";
+      src: url("../my-app/node_modules/@expo-google-fonts/montserrat/700Bold/Montserrat_700Bold.ttf");
+      font-weight: 700;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Pawtchi Display";
+      src: url("../my-app/node_modules/@expo-google-fonts/bebas-neue/400Regular/BebasNeue_400Regular.ttf");
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Pawtchi Story";
+      src: url("../my-app/node_modules/@expo-google-fonts/inter/400Regular/Inter_400Regular.ttf");
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Pawtchi Story";
+      src: url("../my-app/node_modules/@expo-google-fonts/inter/600SemiBold/Inter_600SemiBold.ttf");
+      font-weight: 600;
+      font-display: swap;
+    }
+
+    :root {
+      --navy: #07202a;
+      --navy-raised: #0b2a36;
+      --cream: #f4f1ec;
+      --paper: #fbf9f4;
+      --surface: #fffefd;
+      --surface-subtle: #f8f7f4;
+      --yellow: #f7f602;
+      --yellow-soft: rgba(247, 246, 2, 0.15);
+      --electric: #144eff;
+      --electric-soft: rgba(20, 78, 255, 0.1);
+      --ink: #0f172a;
+      --slate: #475569;
+      --muted: #64748b;
+      --faint: #94a3b8;
+      --hairline: #e8ecef;
+      --success: #18784d;
+      --shadow: 0 28px 72px rgba(7, 32, 42, 0.2);
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      color-scheme: light;
+      background: #edf1ef;
+    }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 18%, rgba(247, 246, 2, 0.14), transparent 27rem),
+        radial-gradient(circle at 88% 80%, rgba(20, 78, 255, 0.08), transparent 30rem),
+        #edf1ef;
+      font-family: "Pawtchi Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button {
+      border: 0;
+      font: inherit;
+    }
+
+    button:focus-visible,
+    [role="button"]:focus-visible {
+      outline: 3px solid rgba(20, 78, 255, 0.42);
+      outline-offset: 3px;
+    }
+
+    .prototype {
+      width: min(1180px, calc(100% - 40px));
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 24px 0 32px;
+    }
+
+    .prototype-bar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+
+    .prototype-mark {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--navy);
+    }
+
+    .prototype-paw {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      background: var(--navy);
+      color: var(--yellow);
+      font-size: 18px;
+    }
+
+    .prototype-name {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.2;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    .prototype-label {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .stage-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid rgba(7, 32, 42, 0.09);
+      border-radius: 15px;
+      background: rgba(255, 254, 253, 0.8);
+    }
+
+    .stage-tab {
+      min-height: 42px;
+      padding: 0 14px;
+      border-radius: 11px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 180ms var(--ease), background 180ms var(--ease), transform 180ms var(--ease);
+    }
+
+    .stage-tab:hover {
+      color: var(--navy);
+      background: rgba(7, 32, 42, 0.04);
+    }
+
+    .stage-tab:active {
+      transform: scale(0.97);
+    }
+
+    .stage-tab[aria-current="step"] {
+      color: var(--cream);
+      background: var(--navy);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(310px, 1fr) 440px minmax(250px, 0.8fr);
+      align-items: center;
+      gap: clamp(28px, 5vw, 70px);
+    }
+
+    .concept-copy {
+      align-self: center;
+      max-width: 430px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .concept-title {
+      max-width: 10ch;
+      margin: 0;
+      color: var(--navy);
+      font-size: clamp(42px, 5.5vw, 72px);
+      line-height: 0.98;
+      font-weight: 700;
+      letter-spacing: -0.055em;
+    }
+
+    .concept-lede {
+      max-width: 38ch;
+      margin: 22px 0 0;
+      color: var(--slate);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .concept-rule {
+      width: 54px;
+      height: 4px;
+      margin: 26px 0;
+      border-radius: 99px;
+      background: var(--yellow);
+    }
+
+    .concept-point {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      align-items: start;
+      margin: 0 0 18px;
+    }
+
+    .point-number {
+      color: var(--navy);
+      font-family: "Pawtchi Display", sans-serif;
+      font-size: 25px;
+      line-height: 1;
+      letter-spacing: 0.04em;
+    }
+
+    .point-copy strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--navy);
+      font-size: 13px;
+    }
+
+    .point-copy span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .phone-wrap {
+      position: relative;
+      display: grid;
+      place-items: center;
+    }
+
+    .phone-shadow {
+      position: absolute;
+      inset: 7% -6% -3%;
+      border-radius: 80px;
+      background: rgba(7, 32, 42, 0.12);
+      filter: blur(34px);
+      transform: translateY(24px);
+      pointer-events: none;
+    }
+
+    .phone {
+      position: relative;
+      width: 390px;
+      height: 844px;
+      overflow: hidden;
+      border: 9px solid #10282f;
+      border-radius: 52px;
+      background: var(--surface-subtle);
+      box-shadow: var(--shadow), inset 0 0 0 1px rgba(244, 241, 236, 0.2);
+    }
+
+    .phone::before {
+      content: "";
+      position: absolute;
+      z-index: 30;
+      top: 9px;
+      left: 50%;
+      width: 112px;
+      height: 31px;
+      border-radius: 19px;
+      background: #07191f;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+
+    .status-bar {
+      position: absolute;
+      z-index: 28;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 49px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 2px 24px 0 27px;
+      color: var(--navy);
+      font-size: 11px;
+      font-weight: 700;
+      pointer-events: none;
+      transition: color 180ms var(--ease);
+    }
+
+    .status-icons {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .signal {
+      display: flex;
+      align-items: flex-end;
+      gap: 1px;
+      height: 10px;
+    }
+
+    .signal i {
+      display: block;
+      width: 2px;
+      border-radius: 1px;
+      background: currentColor;
+    }
+
+    .signal i:nth-child(1) { height: 4px; }
+    .signal i:nth-child(2) { height: 6px; }
+    .signal i:nth-child(3) { height: 8px; }
+    .signal i:nth-child(4) { height: 10px; }
+
+    .battery {
+      width: 18px;
+      height: 9px;
+      padding: 1px;
+      border: 1px solid currentColor;
+      border-radius: 3px;
+    }
+
+    .battery::after {
+      content: "";
+      display: block;
+      width: 12px;
+      height: 5px;
+      border-radius: 1px;
+      background: currentColor;
+    }
+
+    .screens {
+      position: absolute;
+      inset: 0;
+    }
+
+    .demo-screen {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      visibility: hidden;
+      opacity: 0;
+      transform: translateX(18px);
+      transition: opacity 220ms var(--ease), transform 240ms var(--ease), visibility 0s linear 240ms;
+      pointer-events: none;
+    }
+
+    .demo-screen.is-active {
+      visibility: visible;
+      opacity: 1;
+      transform: translateX(0);
+      transition-delay: 0s;
+      pointer-events: auto;
+    }
+
+    .screen-before {
+      padding: 63px 22px 20px;
+      background: var(--surface-subtle);
+    }
+
+    .app-topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .wordmark {
+      color: var(--navy);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .avatar {
+      width: 38px;
+      height: 38px;
+      overflow: hidden;
+      border: 2px solid var(--surface);
+      border-radius: 50%;
+      background: var(--navy);
+      box-shadow: 0 4px 12px rgba(7, 32, 42, 0.12);
+    }
+
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .screen-kicker {
+      margin: 32px 0 8px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.3;
+      font-weight: 700;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+
+    .screen-title {
+      margin: 0;
+      color: var(--navy);
+      font-size: 31px;
+      line-height: 1.08;
+      font-weight: 700;
+      letter-spacing: -0.045em;
+    }
+
+    .familiarity {
+      display: inline-flex;
+      align-items: center;
+      align-self: flex-start;
+      gap: 7px;
+      min-height: 31px;
+      margin-top: 14px;
+      padding: 0 11px;
+      border: 1px solid rgba(7, 32, 42, 0.1);
+      border-radius: 999px;
+      color: var(--navy);
+      background: var(--surface);
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .repeat-mark {
+      color: var(--electric);
+      font-size: 15px;
+    }
+
+    .route-paper {
+      position: relative;
+      height: 300px;
+      margin: 23px 0 20px;
+      overflow: hidden;
+      border-radius: 28px;
+      background: #f1eee8;
+    }
+
+    .route-paper::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border: 1px solid rgba(7, 32, 42, 0.06);
+      border-radius: inherit;
+      pointer-events: none;
+    }
+
+    .route-label {
+      position: absolute;
+      z-index: 2;
+      left: 16px;
+      bottom: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .route-label strong {
+      color: var(--navy);
+      font-size: 12px;
+    }
+
+    .route-label span {
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .route-svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .street {
+      fill: none;
+      stroke: #ddd9d1;
+      stroke-linecap: round;
+    }
+
+    .street.major {
+      stroke: #d1cdc4;
+    }
+
+    .park-shape {
+      fill: #dfe8d9;
+    }
+
+    .water-shape {
+      fill: #dce7ec;
+    }
+
+    .route-old {
+      fill: none;
+      stroke: rgba(7, 32, 42, 0.2);
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-dasharray: 3 9;
+    }
+
+    .route-new {
+      fill: none;
+      stroke: var(--yellow);
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 2px 0 rgba(7, 32, 42, 0.16));
+    }
+
+    .route-outline {
+      fill: none;
+      stroke: var(--navy);
+      stroke-width: 10;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0.8;
+    }
+
+    .route-progress {
+      fill: none;
+      stroke: var(--yellow);
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-dasharray: 420;
+      stroke-dashoffset: 136;
+    }
+
+    .is-active .route-progress {
+      animation: route-in 900ms var(--ease) both;
+    }
+
+    @keyframes route-in {
+      from { stroke-dashoffset: 420; }
+      to { stroke-dashoffset: 136; }
+    }
+
+    .before-copy {
+      margin: 0;
+      color: var(--slate);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .screen-footer {
+      margin-top: auto;
+    }
+
+    .primary-button,
+    .secondary-button,
+    .quiet-button {
+      min-height: 54px;
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      border-radius: 16px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 150ms var(--ease), opacity 150ms var(--ease), background 180ms var(--ease);
+    }
+
+    .primary-button {
+      color: var(--navy);
+      background: var(--yellow);
+    }
+
+    .primary-button:hover {
+      background: #ffff35;
+    }
+
+    .primary-button:active,
+    .secondary-button:active,
+    .quiet-button:active,
+    .round-action:active,
+    .drawer-row:active {
+      transform: scale(0.975);
+    }
+
+    .secondary-button {
+      color: var(--cream);
+      background: var(--navy);
+    }
+
+    .quiet-button {
+      color: var(--navy);
+      background: transparent;
+    }
+
+    .lock-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 32px;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 600;
+    }
+
+    .screen-map {
+      background: #eef0eb;
+    }
+
+    .live-map {
+      position: absolute;
+      inset: 0;
+      background: #edf0ea;
+    }
+
+    .map-wash {
+      position: absolute;
+      inset: 0;
+      background: rgba(255, 254, 253, 0.18);
+      pointer-events: none;
+    }
+
+    .live-header {
+      position: absolute;
+      z-index: 4;
+      top: 62px;
+      left: 18px;
+      right: 18px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .live-chip {
+      padding: 10px 13px;
+      border: 1px solid rgba(7, 32, 42, 0.06);
+      border-radius: 15px;
+      background: rgba(255, 254, 253, 0.96);
+      box-shadow: 0 8px 18px rgba(7, 32, 42, 0.09);
+    }
+
+    .live-chip small {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .live-chip strong {
+      color: var(--navy);
+      font-size: 13px;
+    }
+
+    .tracking-dot {
+      width: 9px;
+      height: 9px;
+      margin-right: 6px;
+      display: inline-block;
+      border-radius: 50%;
+      background: var(--yellow);
+      box-shadow: 0 0 0 4px var(--yellow-soft);
+    }
+
+    .round-action {
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(7, 32, 42, 0.06);
+      border-radius: 18px;
+      color: var(--navy);
+      background: rgba(255, 254, 253, 0.96);
+      box-shadow: 0 8px 18px rgba(7, 32, 42, 0.09);
+      cursor: pointer;
+      transition: transform 150ms var(--ease);
+    }
+
+    .camera-icon {
+      width: 23px;
+      height: 18px;
+      position: relative;
+      border: 2px solid currentColor;
+      border-radius: 6px;
+    }
+
+    .camera-icon::before {
+      content: "";
+      position: absolute;
+      top: -6px;
+      left: 4px;
+      width: 10px;
+      height: 5px;
+      border-radius: 3px 3px 0 0;
+      background: currentColor;
+    }
+
+    .camera-icon::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 7px;
+      width: 6px;
+      height: 6px;
+      border: 2px solid currentColor;
+      border-radius: 50%;
+    }
+
+    .map-pin {
+      filter: drop-shadow(0 4px 4px rgba(7, 32, 42, 0.18));
+    }
+
+    .pocket-sheet,
+    .discovery-sheet {
+      position: absolute;
+      z-index: 5;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      padding: 23px 20px 14px;
+      border: 1px solid rgba(7, 32, 42, 0.06);
+      border-radius: 27px 27px 37px 37px;
+      background: var(--surface);
+      box-shadow: 0 20px 40px rgba(7, 32, 42, 0.16);
+    }
+
+    .sheet-handle {
+      width: 34px;
+      height: 4px;
+      margin: -8px auto 20px;
+      border-radius: 99px;
+      background: #d9dddf;
+    }
+
+    .quiet-status {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .quiet-status::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+
+    .live-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin: 17px 0 14px;
+    }
+
+    .live-stat {
+      min-width: 0;
+    }
+
+    .live-stat + .live-stat {
+      padding-left: 18px;
+      border-left: 1px solid var(--hairline);
+    }
+
+    .stat-value {
+      display: block;
+      color: var(--navy);
+      font-family: "Pawtchi Display", "Arial Narrow", sans-serif;
+      font-size: 42px;
+      line-height: 0.95;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-label {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .attention-copy {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      margin: 0 0 18px;
+      padding: 12px 13px;
+      border-radius: 14px;
+      background: var(--surface-subtle);
+      color: var(--slate);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .attention-copy strong {
+      display: block;
+      margin-bottom: 1px;
+      color: var(--navy);
+      font-size: 10px;
+    }
+
+    .pocket-icon {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 24px;
+      border: 2px solid var(--navy);
+      border-radius: 4px 4px 8px 8px;
+      position: relative;
+    }
+
+    .pocket-icon::after {
+      content: "";
+      position: absolute;
+      left: 4px;
+      right: 4px;
+      top: 4px;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--navy);
+    }
+
+    .sheet-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sheet-actions .primary-button,
+    .sheet-actions .secondary-button {
+      flex: 1;
+    }
+
+    .sheet-actions .round-action {
+      flex: 0 0 54px;
+      background: var(--surface-subtle);
+      box-shadow: none;
+    }
+
+    .discovery-sheet {
+      padding-top: 22px;
+    }
+
+    .discovery-kicker {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--electric);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .discovery-kicker::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--electric);
+      box-shadow: 0 0 0 4px var(--electric-soft);
+    }
+
+    .discovery-title {
+      margin: 12px 0 8px;
+      color: var(--navy);
+      font-size: 23px;
+      line-height: 1.08;
+      letter-spacing: -0.035em;
+    }
+
+    .discovery-copy {
+      margin: 0;
+      color: var(--slate);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .memory-saved {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      margin: 12px 0 11px;
+      color: var(--success);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .media-chip {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      margin: 12px 0 10px;
+      padding: 5px 8px 5px 5px;
+      border-radius: 12px;
+      background: var(--surface-subtle);
+      color: var(--navy);
+      font-size: 9px;
+      font-weight: 600;
+    }
+
+    .media-linked .media-chip {
+      display: flex;
+    }
+
+    .media-thumb {
+      width: 34px;
+      height: 34px;
+      object-fit: cover;
+      border-radius: 9px;
+    }
+
+    .screen-recap {
+      padding: 62px 22px 21px;
+      color: var(--cream);
+      background: var(--navy);
+    }
+
+    .screen-recap .status-safe,
+    .screen-memory .status-safe {
+      color: var(--cream);
+    }
+
+    .recap-kicker {
+      margin-top: 22px;
+      color: rgba(244, 241, 236, 0.62);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .recap-title {
+      max-width: 310px;
+      margin: 12px 0 0;
+      color: var(--cream);
+      font-size: 31px;
+      line-height: 1.08;
+      letter-spacing: -0.045em;
+    }
+
+    .recap-subcopy {
+      margin: 11px 0 0;
+      color: rgba(244, 241, 236, 0.68);
+      font-size: 11px;
+    }
+
+    .recap-art {
+      position: relative;
+      height: 332px;
+      margin: 24px 0 18px;
+      overflow: hidden;
+      border: 1px solid rgba(244, 241, 236, 0.12);
+      border-radius: 26px;
+      background: var(--navy-raised);
+    }
+
+    .recap-photo {
+      position: absolute;
+      inset: 0;
+      display: none;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.54;
+    }
+
+    .media-linked .recap-photo {
+      display: block;
+    }
+
+    .recap-art::after {
+      content: "";
+      position: absolute;
+      inset: 45% 0 0;
+      background: linear-gradient(to bottom, transparent, rgba(7, 32, 42, 0.9));
+      pointer-events: none;
+    }
+
+    .recap-route {
+      position: absolute;
+      z-index: 2;
+      inset: 15px;
+      width: calc(100% - 30px);
+      height: calc(100% - 30px);
+    }
+
+    .recap-badge {
+      position: absolute;
+      z-index: 3;
+      top: 16px;
+      left: 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 999px;
+      color: var(--navy);
+      background: var(--yellow);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .recap-difference {
+      position: absolute;
+      z-index: 3;
+      left: 17px;
+      right: 17px;
+      bottom: 17px;
+    }
+
+    .recap-difference small {
+      color: var(--yellow);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .recap-difference p {
+      max-width: 28ch;
+      margin: 7px 0 0;
+      color: var(--cream);
+      font-size: 13px;
+      line-height: 1.5;
+      font-weight: 600;
+    }
+
+    .recap-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      margin-bottom: 18px;
+    }
+
+    .recap-stat {
+      text-align: center;
+    }
+
+    .recap-stat + .recap-stat {
+      border-left: 1px solid rgba(244, 241, 236, 0.14);
+    }
+
+    .recap-stat strong {
+      display: block;
+      color: var(--cream);
+      font-family: "Pawtchi Display", sans-serif;
+      font-size: 22px;
+      line-height: 1;
+      font-weight: 400;
+      letter-spacing: 0.03em;
+    }
+
+    .recap-stat span {
+      display: block;
+      margin-top: 5px;
+      color: rgba(244, 241, 236, 0.5);
+      font-size: 6.5px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .screen-memory {
+      color: var(--cream);
+      background: var(--navy);
+      font-family: "Pawtchi Story", "Pawtchi Sans", sans-serif;
+    }
+
+    .memory-photo {
+      position: absolute;
+      inset: 0;
+      display: none;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .media-linked .memory-photo {
+      display: block;
+    }
+
+    .memory-scrim {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(to bottom, rgba(7, 25, 31, 0.5), rgba(7, 25, 31, 0.02) 36%),
+        linear-gradient(to bottom, transparent 44%, rgba(7, 25, 31, 0.94) 84%);
+    }
+
+    .screen-memory.media-none {
+      color: var(--navy);
+      background: var(--paper);
+    }
+
+    .screen-memory.media-none .memory-scrim {
+      background:
+        radial-gradient(circle at 80% 18%, var(--yellow-soft), transparent 180px),
+        linear-gradient(to bottom, rgba(255, 254, 253, 0), rgba(7, 32, 42, 0.03));
+    }
+
+    .memory-content {
+      position: relative;
+      z-index: 3;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 68px 22px 20px;
+    }
+
+    .memory-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .memory-brand {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+
+    .memory-close {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: inherit;
+      background: rgba(255, 254, 253, 0.14);
+      font-size: 22px;
+      cursor: pointer;
+    }
+
+    .screen-memory.media-none .memory-close {
+      background: rgba(7, 32, 42, 0.06);
+    }
+
+    .story-route {
+      position: absolute;
+      z-index: 1;
+      top: 125px;
+      left: 35px;
+      width: 320px;
+      height: 360px;
+      opacity: 0.93;
+    }
+
+    .media-linked .story-route {
+      top: 162px;
+      opacity: 0.88;
+    }
+
+    .memory-missing {
+      position: absolute;
+      z-index: 4;
+      top: 150px;
+      left: 22px;
+      right: 22px;
+      display: none;
+      padding: 19px;
+      border: 1px solid rgba(244, 241, 236, 0.16);
+      border-radius: 20px;
+      color: var(--cream);
+      background: var(--navy-raised);
+    }
+
+    .media-missing .memory-missing {
+      display: block;
+    }
+
+    .media-missing .memory-photo,
+    .media-missing .story-route {
+      display: none;
+    }
+
+    .memory-missing strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .memory-missing p {
+      margin: 0 0 12px;
+      color: rgba(244, 241, 236, 0.68);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .missing-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .missing-actions button {
+      min-height: 42px;
+      padding: 0 12px;
+      border-radius: 12px;
+      color: var(--navy);
+      background: var(--yellow);
+      font-size: 9px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .missing-actions button:last-child {
+      color: var(--cream);
+      background: rgba(244, 241, 236, 0.1);
+    }
+
+    .memory-lockup {
+      margin-top: auto;
+    }
+
+    .memory-date {
+      margin: 0 0 11px;
+      color: var(--yellow);
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+
+    .screen-memory.media-none .memory-date {
+      color: var(--electric);
+    }
+
+    .memory-headline {
+      max-width: 330px;
+      margin: 0;
+      color: inherit;
+      font-size: 31px;
+      line-height: 1.06;
+      font-weight: 600;
+      letter-spacing: -0.035em;
+    }
+
+    .memory-story {
+      max-width: 34ch;
+      margin: 13px 0 0;
+      color: rgba(244, 241, 236, 0.76);
+      font-size: 11px;
+      line-height: 1.62;
+    }
+
+    .screen-memory.media-none .memory-story {
+      color: var(--slate);
+    }
+
+    .memory-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 20px 0 15px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(244, 241, 236, 0.18);
+    }
+
+    .screen-memory.media-none .memory-meta {
+      border-top-color: rgba(7, 32, 42, 0.1);
+    }
+
+    .memory-meta span {
+      font-size: 9px;
+      font-weight: 600;
+    }
+
+    .provenance {
+      min-height: 38px;
+      padding: 0 11px;
+      border: 1px solid rgba(244, 241, 236, 0.2);
+      border-radius: 999px;
+      color: inherit;
+      background: rgba(7, 32, 42, 0.22);
+      font-size: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .screen-memory.media-none .provenance {
+      border-color: rgba(7, 32, 42, 0.1);
+      background: rgba(7, 32, 42, 0.04);
+    }
+
+    .archive-note {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: rgba(244, 241, 236, 0.64);
+      font-size: 8px;
+    }
+
+    .screen-memory.media-none .archive-note {
+      color: var(--muted);
+    }
+
+    .media-none .provenance {
+      display: none;
+    }
+
+    .home-indicator {
+      position: absolute;
+      z-index: 40;
+      left: 50%;
+      bottom: 8px;
+      width: 118px;
+      height: 4px;
+      border-radius: 999px;
+      background: currentColor;
+      opacity: 0.62;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+
+    .prototype-notes {
+      align-self: center;
+      max-width: 300px;
+    }
+
+    .note-step {
+      color: var(--electric);
+      font-family: "Pawtchi Display", sans-serif;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: 0.03em;
+    }
+
+    .note-title {
+      margin: 10px 0 8px;
+      color: var(--navy);
+      font-size: 20px;
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+    }
+
+    .note-body {
+      min-height: 80px;
+      margin: 0;
+      color: var(--slate);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .note-divider {
+      height: 1px;
+      margin: 22px 0;
+      background: rgba(7, 32, 42, 0.11);
+    }
+
+    .review-label {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .review-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    .review-chip {
+      min-height: 42px;
+      padding: 0 11px;
+      border: 1px solid rgba(7, 32, 42, 0.1);
+      border-radius: 12px;
+      color: var(--navy);
+      background: rgba(255, 254, 253, 0.8);
+      font-size: 9px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .review-chip[aria-pressed="true"] {
+      border-color: var(--navy);
+      color: var(--cream);
+      background: var(--navy);
+    }
+
+    .review-chip:hover {
+      border-color: rgba(7, 32, 42, 0.3);
+    }
+
+    .restart {
+      margin-top: 14px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .restart:hover {
+      color: var(--navy);
+    }
+
+    .overlay {
+      position: absolute;
+      z-index: 60;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      visibility: hidden;
+      opacity: 0;
+      background: rgba(7, 25, 31, 0.46);
+      transition: opacity 180ms var(--ease), visibility 0s linear 180ms;
+      pointer-events: none;
+    }
+
+    .overlay.is-open {
+      visibility: visible;
+      opacity: 1;
+      transition-delay: 0s;
+      pointer-events: auto;
+    }
+
+    .drawer {
+      width: 100%;
+      padding: 12px 18px 24px;
+      border-radius: 28px 28px 42px 42px;
+      background: var(--surface);
+      transform: translateY(28px);
+      transition: transform 220ms var(--ease);
+    }
+
+    .overlay.is-open .drawer {
+      transform: translateY(0);
+    }
+
+    .drawer h2 {
+      margin: 0;
+      color: var(--navy);
+      font-size: 19px;
+      letter-spacing: -0.03em;
+    }
+
+    .drawer > p {
+      margin: 6px 0 16px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .drawer-row {
+      width: 100%;
+      min-height: 62px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 4px;
+      border-top: 1px solid var(--hairline);
+      color: var(--navy);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      transition: transform 150ms var(--ease);
+    }
+
+    .drawer-row-icon {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      color: var(--navy);
+      background: var(--yellow);
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .drawer-row strong,
+    .drawer-row span {
+      display: block;
+    }
+
+    .drawer-row strong {
+      margin-bottom: 3px;
+      font-size: 11px;
+    }
+
+    .drawer-row span {
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .drawer-close {
+      width: 100%;
+      min-height: 48px;
+      margin-top: 5px;
+      border-radius: 14px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .privacy-grid {
+      margin-top: 15px;
+      border-top: 1px solid var(--hairline);
+    }
+
+    .privacy-line {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 12px;
+      padding: 13px 0;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .privacy-line strong {
+      color: var(--navy);
+      font-size: 9px;
+    }
+
+    .privacy-line span {
+      color: var(--slate);
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    .toast {
+      position: absolute;
+      z-index: 80;
+      left: 18px;
+      right: 18px;
+      bottom: 28px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      min-height: 58px;
+      padding: 11px 14px;
+      border-radius: 17px;
+      color: var(--cream);
+      background: var(--navy);
+      box-shadow: 0 14px 30px rgba(7, 32, 42, 0.26);
+      opacity: 0;
+      transform: translateY(16px);
+      transition: opacity 180ms var(--ease), transform 220ms var(--ease);
+      pointer-events: none;
+    }
+
+    .toast.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast-mark {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: var(--navy);
+      background: var(--yellow);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .toast strong,
+    .toast span {
+      display: block;
+    }
+
+    .toast strong {
+      font-size: 10px;
+    }
+
+    .toast span {
+      margin-top: 2px;
+      color: rgba(244, 241, 236, 0.64);
+      font-size: 8px;
+    }
+
+    @media (max-width: 1080px) {
+      .workspace {
+        grid-template-columns: minmax(260px, 1fr) 410px;
+        gap: 42px;
+      }
+
+      .prototype-notes {
+        display: none;
+      }
+
+      .phone {
+        width: 380px;
+        height: 822px;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .prototype {
+        width: 100%;
+        padding: 14px 0 24px;
+      }
+
+      .prototype-bar {
+        padding: 0 16px;
+        margin-bottom: 16px;
+      }
+
+      .prototype-mark {
+        display: none;
+      }
+
+      .stage-nav {
+        width: 100%;
+        overflow-x: auto;
+        justify-content: flex-start;
+        scrollbar-width: none;
+      }
+
+      .stage-nav::-webkit-scrollbar {
+        display: none;
+      }
+
+      .stage-tab {
+        flex: 0 0 auto;
+      }
+
+      .workspace {
+        display: block;
+      }
+
+      .concept-copy,
+      .prototype-notes,
+      .phone-shadow {
+        display: none;
+      }
+
+      .phone {
+        width: min(390px, calc(100vw - 20px));
+        height: min(844px, calc((100vw - 20px) * 2.164));
+        min-height: 730px;
+        border-width: 7px;
+        border-radius: 46px;
+        box-shadow: 0 20px 54px rgba(7, 32, 42, 0.2);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 1ms !important;
+        transition-duration: 1ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype">
+    <header class="prototype-bar">
+      <div class="prototype-mark" aria-label="Pawtchi concept preview">
+        <div class="prototype-paw" aria-hidden="true">●</div>
+        <div>
+          <p class="prototype-name">Pawtchi</p>
+          <p class="prototype-label">Walk Memory prototype</p>
+        </div>
+      </div>
+      <nav class="stage-nav" aria-label="Demo stages">
+        <button class="stage-tab" data-stage="before" aria-current="step">Before</button>
+        <button class="stage-tab" data-stage="walking">Walking</button>
+        <button class="stage-tab" data-stage="discovery">Discovery</button>
+        <button class="stage-tab" data-stage="recap">Recap</button>
+        <button class="stage-tab" data-stage="memory">Memory</button>
+      </nav>
+    </header>
+
+    <section class="workspace">
+      <aside class="concept-copy">
+        <p class="eyebrow">Concept C+ · Walk Chapters</p>
+        <h1 class="concept-title">Same route. A different story.</h1>
+        <p class="concept-lede">The route stays passive. Pawtchi notices the day’s meaningful difference, accepts an optional photo, then authors the finished memory.</p>
+        <div class="concept-rule"></div>
+        <div class="concept-point">
+          <span class="point-number">01</span>
+          <div class="point-copy">
+            <strong>Pocket-first</strong>
+            <span>No interaction is required while Bruno is moving.</span>
+          </div>
+        </div>
+        <div class="concept-point">
+          <span class="point-number">02</span>
+          <div class="point-copy">
+            <strong>Context creates novelty</strong>
+            <span>Today’s weather, pauses, and history explain what changed.</span>
+          </div>
+        </div>
+        <div class="concept-point">
+          <span class="point-number">03</span>
+          <div class="point-copy">
+            <strong>The story is automatic</strong>
+            <span>The owner can add a moment, but Pawtchi does the authorship.</span>
+          </div>
+        </div>
+      </aside>
+
+      <div class="phone-wrap">
+        <div class="phone-shadow"></div>
+        <div class="phone" id="phone">
+          <div class="status-bar" id="statusBar">
+            <span id="statusTime">6:18</span>
+            <span class="status-icons" aria-hidden="true">
+              <span class="signal"><i></i><i></i><i></i><i></i></span>
+              <span>⌁</span>
+              <span class="battery"></span>
+            </span>
+          </div>
+
+          <div class="screens">
+            <section class="demo-screen screen-before is-active" data-screen="before" aria-label="Before the walk">
+              <div class="app-topline">
+                <span class="wordmark">Pawtchi</span>
+                <div class="avatar">
+                  <img src="../my-app/assets/images/paywall/park-puppy.png" alt="Bruno, a golden retriever" />
+                </div>
+              </div>
+              <p class="screen-kicker">Bruno’s walk</p>
+              <h2 class="screen-title">Same loop.<br />New chapter.</h2>
+              <div class="familiarity"><span class="repeat-mark">↻</span> Sunday loop · walked 7 times</div>
+
+              <div class="route-paper" aria-label="Map of Bruno's familiar Sunday loop">
+                <svg class="route-svg" viewBox="0 0 340 300" role="img" aria-label="Familiar neighborhood route">
+                  <path class="park-shape" d="M20 18h110c22 14 24 42 7 58l-13 13c-21 17-44 8-56-4L20 45z" />
+                  <path class="water-shape" d="M301 -5c-28 46-30 83-5 114 25 31 21 74-3 101-24 27-19 64 7 93h42V-5z" />
+                  <path class="street major" stroke-width="18" d="M-20 237C68 220 92 200 152 176s126-16 211-42" />
+                  <path class="street" stroke-width="9" d="M62 -20c10 67 14 121 2 181S24 265 22 330M161 -20c-7 80-9 134 9 187s50 97 61 153M255 -10c-14 61-21 102-17 149s19 104 10 172" />
+                  <path class="street" stroke-width="7" d="M-20 104c77 9 141-2 201-22s118-16 181 8M-20 275c68-3 116 2 175 17s121 8 207-13" />
+                  <path class="route-old" d="M87 239C54 213 49 164 70 125c21-38 55-65 95-69 46-4 84 20 99 59 16 41-3 88-34 116-31 28-80 37-112 24-13-5-23-10-31-16z" />
+                  <circle cx="87" cy="239" r="8" fill="#07202a" />
+                  <circle cx="87" cy="239" r="3" fill="#f7f602" />
+                </svg>
+                <div class="route-label"><strong>Northwood · 2.4 km</strong><span>Bruno’s familiar evening route</span></div>
+              </div>
+
+              <p class="before-copy">Pawtchi looks for what makes today different, so your phone can stay away.</p>
+              <div class="screen-footer">
+                <button class="primary-button" data-go="walking">Start tracking</button>
+                <div class="lock-note"><span aria-hidden="true">▣</span> Works with your screen locked</div>
+              </div>
+            </section>
+
+            <section class="demo-screen screen-map" data-screen="walking" aria-label="Pocket mode walk tracking">
+              <div class="live-map" aria-hidden="true">
+                <svg class="route-svg" viewBox="0 0 372 826">
+                  <path class="park-shape" d="M-10 75h154c28 26 28 77 2 104l-36 38c-26 21-66 9-81-18L-10 151z" />
+                  <path class="water-shape" d="M335 -20c-41 88-32 149-1 204 31 55 24 118-9 167s-22 119 47 168V-20z" />
+                  <path class="street major" stroke-width="28" d="M-30 583C68 550 118 495 177 436s129-69 224-91" />
+                  <path class="street" stroke-width="12" d="M70 -30c8 116 30 197 5 299S18 506 22 875M181 -30c-22 137-9 256 19 361s38 254 8 546M289 -20c-29 111-42 222-26 326s48 204 33 338-3 182 22 237" />
+                  <path class="street" stroke-width="9" d="M-30 238c96 17 166-14 239-57s129-37 201-13M-30 704c94-9 162 1 229 32s131 25 211-18" />
+                  <path class="route-outline" d="M95 662C45 593 43 465 77 353s88-195 153-202c67-7 101 76 88 163-14 92-52 183-103 253-46 63-85 104-120 95z" />
+                  <path class="route-progress" d="M95 662C45 593 43 465 77 353s88-195 153-202c67-7 101 76 88 163-14 92-52 183-103 253-46 63-85 104-120 95z" />
+                  <circle class="map-pin" cx="196" cy="196" r="15" fill="#144eff" />
+                  <circle cx="196" cy="196" r="5" fill="#fffefd" />
+                  <circle class="map-pin" cx="94" cy="662" r="13" fill="#07202a" />
+                  <circle cx="94" cy="662" r="4" fill="#f7f602" />
+                </svg>
+                <div class="map-wash"></div>
+              </div>
+              <div class="live-header">
+                <div class="live-chip">
+                  <small><span class="tracking-dot"></span>Tracking</small>
+                  <strong>Walking with Bruno</strong>
+                </div>
+                <button class="round-action" data-open="mediaDrawer" aria-label="Add a moment">
+                  <span class="camera-icon" aria-hidden="true"></span>
+                </button>
+              </div>
+              <div class="pocket-sheet">
+                <div class="sheet-handle"></div>
+                <div class="quiet-status">Tracking quietly</div>
+                <div class="live-stats">
+                  <div class="live-stat">
+                    <span class="stat-value">12:48</span>
+                    <span class="stat-label">Time</span>
+                  </div>
+                  <div class="live-stat">
+                    <span class="stat-value">1.14</span>
+                    <span class="stat-label">Kilometres</span>
+                  </div>
+                </div>
+                <div class="attention-copy">
+                  <span class="pocket-icon" aria-hidden="true"></span>
+                  <span><strong>Nothing needs your attention.</strong> Tracking continues with the screen locked.</span>
+                </div>
+                <div class="sheet-actions">
+                  <button class="round-action" data-open="mediaDrawer" aria-label="Add a photo">
+                    <span class="camera-icon" aria-hidden="true"></span>
+                  </button>
+                  <button class="primary-button" data-go="recap">Finish walk</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="demo-screen screen-map" data-screen="discovery" aria-label="Safe contextual discovery">
+              <div class="live-map" aria-hidden="true">
+                <svg class="route-svg" viewBox="0 0 372 826">
+                  <path class="park-shape" d="M-10 75h154c28 26 28 77 2 104l-36 38c-26 21-66 9-81-18L-10 151z" />
+                  <path class="water-shape" d="M335 -20c-41 88-32 149-1 204 31 55 24 118-9 167s-22 119 47 168V-20z" />
+                  <path class="street major" stroke-width="28" d="M-30 583C68 550 118 495 177 436s129-69 224-91" />
+                  <path class="street" stroke-width="12" d="M70 -30c8 116 30 197 5 299S18 506 22 875M181 -30c-22 137-9 256 19 361s38 254 8 546M289 -20c-29 111-42 222-26 326s48 204 33 338-3 182 22 237" />
+                  <path class="street" stroke-width="9" d="M-30 238c96 17 166-14 239-57s129-37 201-13M-30 704c94-9 162 1 229 32s131 25 211-18" />
+                  <path class="route-outline" d="M95 662C45 593 43 465 77 353s88-195 153-202c67-7 101 76 88 163-14 92-52 183-103 253-46 63-85 104-120 95z" />
+                  <path class="route-new" d="M95 662C45 593 43 465 77 353s88-195 153-202c67-7 101 76 88 163-14 92-52 183-103 253-46 63-85 104-120 95z" />
+                  <circle class="map-pin" cx="196" cy="196" r="20" fill="rgba(20,78,255,.18)" />
+                  <circle class="map-pin" cx="196" cy="196" r="13" fill="#144eff" />
+                  <circle cx="196" cy="196" r="4" fill="#fffefd" />
+                </svg>
+                <div class="map-wash"></div>
+              </div>
+              <div class="live-header">
+                <div class="live-chip">
+                  <small>Paused · 18 sec</small>
+                  <strong>Banyan tree</strong>
+                </div>
+              </div>
+              <div class="discovery-sheet">
+                <div class="sheet-handle"></div>
+                <div class="discovery-kicker">Today’s difference</div>
+                <h2 class="discovery-title">Bruno lingered here.</h2>
+                <p class="discovery-copy">2 min 06 sec at the banyan tree, his longest stop on this familiar loop.</p>
+                <div class="media-chip">
+                  <img class="media-thumb" src="../my-app/assets/images/paywall/park-puppy.png" alt="" />
+                  <span>Photo linked. Original stays in Photos.</span>
+                </div>
+                <div class="memory-saved">✓ Added to today’s memory</div>
+                <div class="sheet-actions">
+                  <button class="round-action" data-open="mediaDrawer" aria-label="Add a photo">
+                    <span class="camera-icon" aria-hidden="true"></span>
+                  </button>
+                  <button class="primary-button" data-go="recap">Finish walk</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="demo-screen screen-recap" data-screen="recap" aria-label="Automatic walk recap">
+              <p class="recap-kicker">Walk complete</p>
+              <h2 class="recap-title">The banyan tree held Bruno’s attention.</h2>
+              <p class="recap-subcopy">Your Walk Memory is ready.</p>
+              <div class="recap-art">
+                <img class="recap-photo" src="../my-app/assets/images/paywall/park-puppy.png" alt="" />
+                <div class="recap-badge">Today’s difference</div>
+                <svg class="recap-route" viewBox="0 0 310 300" aria-hidden="true">
+                  <path d="M67 245C27 206 38 128 72 74c37-59 98-77 143-47 44 30 55 99 28 151-28 55-89 90-139 81-15-2-28-7-37-14z" fill="none" stroke="rgba(7,32,42,.46)" stroke-width="10" stroke-linecap="round" />
+                  <path d="M67 245C27 206 38 128 72 74c37-59 98-77 143-47 44 30 55 99 28 151-28 55-89 90-139 81-15-2-28-7-37-14z" fill="none" stroke="#f7f602" stroke-width="5" stroke-linecap="round" />
+                  <circle cx="211" cy="49" r="12" fill="#144eff" stroke="#fffefd" stroke-width="3" />
+                </svg>
+                <div class="recap-difference">
+                  <small>What made today different</small>
+                  <p>Bruno stayed here about twice as long as usual.</p>
+                </div>
+              </div>
+              <div class="recap-stats" aria-label="Walk statistics">
+                <div class="recap-stat"><strong>26</strong><span>Minutes</span></div>
+                <div class="recap-stat"><strong>2.4</strong><span>Kilometres</span></div>
+                <div class="recap-stat"><strong>6</strong><span>Sniff stops</span></div>
+                <div class="recap-stat"><strong>27°</strong><span>Drizzle</span></div>
+              </div>
+              <div class="screen-footer">
+                <button class="primary-button" data-go="memory">Open memory</button>
+                <button class="quiet-button" data-go="before" style="color:rgba(244,241,236,.64)">Done</button>
+              </div>
+            </section>
+
+            <section class="demo-screen screen-memory media-none" data-screen="memory" aria-label="Finished Walk Memory">
+              <img class="memory-photo" src="../my-app/assets/images/paywall/park-puppy.png" alt="Bruno playing in warm evening light" />
+              <div class="memory-scrim"></div>
+              <svg class="story-route" viewBox="0 0 320 360" aria-hidden="true">
+                <path d="M66 310C13 253 31 149 78 77 119 14 193 6 242 53c53 50 43 141 7 202-37 62-106 92-156 73-11-4-20-10-27-18z" fill="none" stroke="rgba(7,32,42,.46)" stroke-width="12" stroke-linecap="round" />
+                <path d="M66 310C13 253 31 149 78 77 119 14 193 6 242 53c53 50 43 141 7 202-37 62-106 92-156 73-11-4-20-10-27-18z" fill="none" stroke="#f7f602" stroke-width="6" stroke-linecap="round" />
+                <circle cx="235" cy="48" r="13" fill="#144eff" stroke="#fffefd" stroke-width="3" />
+              </svg>
+              <div class="memory-missing">
+                <strong>Photo not found on this phone</strong>
+                <p>The route, story, and walk details are still here.</p>
+                <div class="missing-actions">
+                  <button data-action="relink">Relink photo</button>
+                  <button data-action="remove-media">Keep without photo</button>
+                </div>
+              </div>
+              <div class="memory-content">
+                <div class="memory-top">
+                  <span class="memory-brand">Pawtchi</span>
+                  <button class="memory-close" data-go="before" aria-label="Close memory">×</button>
+                </div>
+                <div class="memory-lockup">
+                  <p class="memory-date">Walk 42 · Sunday 26 July</p>
+                  <h2 class="memory-headline">Bruno followed the drizzle.</h2>
+                  <p class="memory-story">Six sniff stops, one clear favourite. Beneath the banyan tree, Bruno stayed twice as long as usual.</p>
+                  <div class="memory-meta">
+                    <button class="provenance" data-open="privacyDrawer">⌁ Original in Photos</button>
+                    <span class="archive-note">✓ Saved in Bruno’s archive</span>
+                  </div>
+                  <button class="primary-button" data-action="share">Share memory</button>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="overlay" id="mediaDrawer" aria-hidden="true">
+            <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="mediaTitle">
+              <div class="sheet-handle"></div>
+              <h2 id="mediaTitle">Add a photo</h2>
+              <p>Optional. The original stays in your photo library.</p>
+              <button class="drawer-row" data-action="link-photo">
+                <span class="drawer-row-icon">◎</span>
+                <span><strong>Take photo</strong><span>Opens your camera</span></span>
+              </button>
+              <button class="drawer-row" data-action="link-photo">
+                <span class="drawer-row-icon">▧</span>
+                <span><strong>Choose recent photo</strong><span>Pick one from today</span></span>
+              </button>
+              <button class="drawer-close" data-close="mediaDrawer">Not now</button>
+            </div>
+          </div>
+
+          <div class="overlay" id="privacyDrawer" aria-hidden="true">
+            <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="privacyTitle">
+              <div class="sheet-handle"></div>
+              <h2 id="privacyTitle">Your photo stays yours</h2>
+              <p>Pawtchi preserves the story without becoming your photo library.</p>
+              <div class="privacy-grid">
+                <div class="privacy-line"><strong>Original photo</strong><span>Stored in your system photo library</span></div>
+                <div class="privacy-line"><strong>Pawtchi keeps</strong><span>Walk details and a link on this phone</span></div>
+                <div class="privacy-line"><strong>When you share</strong><span>A temporary image is created, then removed</span></div>
+              </div>
+              <button class="primary-button" data-close="privacyDrawer" style="margin-top:16px">Got it</button>
+            </div>
+          </div>
+
+          <div class="toast" id="toast" role="status" aria-live="polite">
+            <div class="toast-mark">✓</div>
+            <div>
+              <strong id="toastTitle">Share preview ready</strong>
+              <span id="toastBody">Temporary composite created on this device.</span>
+            </div>
+          </div>
+          <div class="home-indicator"></div>
+        </div>
+      </div>
+
+      <aside class="prototype-notes" aria-live="polite">
+        <span class="note-step" id="noteStep">01</span>
+        <h2 class="note-title" id="noteTitle">Anticipation without a chore</h2>
+        <p class="note-body" id="noteBody">The familiar route is acknowledged, not treated as a failure. Pawtchi promises a new chapter while letting tracking stay passive.</p>
+        <div class="note-divider"></div>
+        <p class="review-label">Prototype controls</p>
+        <div class="review-actions">
+          <button class="review-chip" id="photoToggle" data-action="toggle-photo" aria-pressed="false">Photo linked</button>
+          <button class="review-chip" id="missingToggle" data-action="toggle-missing" aria-pressed="false">Missing photo</button>
+        </div>
+        <button class="restart" data-action="restart">↻ Restart walkthrough</button>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const order = ["before", "walking", "discovery", "recap", "memory"];
+      const notes = {
+        before: {
+          step: "01",
+          title: "Anticipation without a chore",
+          body: "The familiar route is acknowledged, not treated as a failure. Pawtchi promises a new chapter while letting tracking stay passive."
+        },
+        walking: {
+          step: "02",
+          title: "The phone can stay pocketed",
+          body: "Nothing asks for attention. Capture is available only if the owner already chooses to open Pawtchi, and it never blocks walk completion."
+        },
+        discovery: {
+          step: "03",
+          title: "Context makes repetition specific",
+          body: "A safe, stationary moment becomes today’s difference. It is saved automatically, so ignoring the prompt loses nothing."
+        },
+        recap: {
+          step: "04",
+          title: "Pawtchi does the authorship",
+          body: "Route, dwell time, weather, sniff stops, and optional media become one finished recap. The owner does not edit a timeline."
+        },
+        memory: {
+          step: "05",
+          title: "A private artifact worth keeping",
+          body: "The original photo remains in the system library. Pawtchi keeps the story shell, and sharing creates only a temporary composite."
+        }
+      };
+
+      let stage = "before";
+      let media = "none";
+      let toastTimer = null;
+
+      const phone = document.getElementById("phone");
+      const statusBar = document.getElementById("statusBar");
+      const statusTime = document.getElementById("statusTime");
+      const photoToggle = document.getElementById("photoToggle");
+      const missingToggle = document.getElementById("missingToggle");
+
+      function render() {
+        document.querySelectorAll("[data-screen]").forEach(function (screen) {
+          const active = screen.getAttribute("data-screen") === stage;
+          screen.classList.toggle("is-active", active);
+          screen.setAttribute("aria-hidden", String(!active));
+          screen.classList.toggle("media-linked", media === "linked");
+          screen.classList.toggle("media-missing", media === "missing");
+          screen.classList.toggle("media-none", media === "none");
+        });
+
+        document.querySelectorAll("[data-stage]").forEach(function (tab) {
+          const active = tab.getAttribute("data-stage") === stage;
+          if (active) tab.setAttribute("aria-current", "step");
+          else tab.removeAttribute("aria-current");
+        });
+
+        const dark = stage === "recap" || (stage === "memory" && media !== "none");
+        statusBar.style.color = dark ? "#f4f1ec" : "#07202a";
+        document.querySelector(".home-indicator").style.color = dark ? "#f4f1ec" : "#07202a";
+        statusTime.textContent = stage === "before" ? "6:18" : stage === "memory" ? "6:47" : "6:31";
+        document.querySelector(".provenance").textContent =
+          media === "missing" ? "⌁ Photo needs relinking" : "⌁ Original in Photos";
+
+        const note = notes[stage];
+        document.getElementById("noteStep").textContent = note.step;
+        document.getElementById("noteTitle").textContent = note.title;
+        document.getElementById("noteBody").textContent = note.body;
+
+        photoToggle.setAttribute("aria-pressed", String(media === "linked"));
+        missingToggle.setAttribute("aria-pressed", String(media === "missing"));
+        missingToggle.disabled = media === "none";
+        missingToggle.style.opacity = media === "none" ? "0.45" : "1";
+      }
+
+      function go(next) {
+        if (!order.includes(next)) return;
+        stage = next;
+        closeAllDrawers();
+        render();
+      }
+
+      function setMedia(next) {
+        media = next;
+        render();
+      }
+
+      function openDrawer(id) {
+        const drawer = document.getElementById(id);
+        if (!drawer) return;
+        drawer.classList.add("is-open");
+        drawer.setAttribute("aria-hidden", "false");
+        const firstButton = drawer.querySelector("button");
+        if (firstButton) window.setTimeout(function () { firstButton.focus(); }, 220);
+      }
+
+      function closeDrawer(id) {
+        const drawer = document.getElementById(id);
+        if (!drawer) return;
+        drawer.classList.remove("is-open");
+        drawer.setAttribute("aria-hidden", "true");
+      }
+
+      function closeAllDrawers() {
+        document.querySelectorAll(".overlay").forEach(function (drawer) {
+          drawer.classList.remove("is-open");
+          drawer.setAttribute("aria-hidden", "true");
+        });
+      }
+
+      function showToast(title, body) {
+        const toast = document.getElementById("toast");
+        document.getElementById("toastTitle").textContent = title;
+        document.getElementById("toastBody").textContent = body;
+        toast.classList.add("is-visible");
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(function () {
+          toast.classList.remove("is-visible");
+        }, 2800);
+      }
+
+      document.addEventListener("click", function (event) {
+        const target = event.target.closest("button");
+        if (!target) return;
+
+        if (target.dataset.stage) go(target.dataset.stage);
+        if (target.dataset.go) go(target.dataset.go);
+        if (target.dataset.open) openDrawer(target.dataset.open);
+        if (target.dataset.close) closeDrawer(target.dataset.close);
+
+        if (target.dataset.action === "link-photo") {
+          setMedia("linked");
+          closeAllDrawers();
+          showToast("Photo linked", "Original stays in your photo library.");
+        }
+        if (target.dataset.action === "share") {
+          showToast("Share preview ready", "Temporary composite created on this device.");
+        }
+        if (target.dataset.action === "toggle-photo") {
+          setMedia(media === "linked" ? "none" : "linked");
+        }
+        if (target.dataset.action === "toggle-missing" && media !== "none") {
+          setMedia(media === "missing" ? "linked" : "missing");
+          if (stage !== "memory") go("memory");
+        }
+        if (target.dataset.action === "relink") {
+          setMedia("linked");
+          openDrawer("mediaDrawer");
+        }
+        if (target.dataset.action === "remove-media") {
+          setMedia("none");
+          showToast("Memory kept", "The route and story remain in Bruno’s archive.");
+        }
+        if (target.dataset.action === "restart") {
+          setMedia("none");
+          go("before");
+        }
+      });
+
+      document.querySelectorAll(".overlay").forEach(function (overlay) {
+        overlay.addEventListener("click", function (event) {
+          if (event.target === overlay) closeDrawer(overlay.id);
+        });
+      });
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") closeAllDrawers();
+      });
+
+      render();
+      phone.setAttribute("data-ready", "true");
+    })();
+  </script>
+</body>
+</html>

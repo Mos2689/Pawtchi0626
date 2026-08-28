@@ -296,6 +296,8 @@ export default function AskScreen() {
           icon="error-outline"
           onAction={handleFailureAction}
           onDismiss={() => setFailure(null)}
+          errorContext="ask_vet"
+          screen="/ask"
         />
       </View>
     ) : null;

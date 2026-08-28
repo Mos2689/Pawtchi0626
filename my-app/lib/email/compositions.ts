@@ -272,16 +272,17 @@ export interface ReplyFallbackData {
  * waited should not have to open an app to discover what was said, and this
  * only fires because push already failed to reach them.
  *
- * The two senders are worded to sound like different people, matching the push
- * catalogue: the letter is two named humans writing back, support is the team
- * answering a request. Collapsing them would make the letter stop feeling
- * personal, because the same voice would be arriving on routine support answers.
+ * The two senders are worded to sound like different people without either one
+ * naming anyone, matching the push catalogue and the letter screens: the letter
+ * quote carries no attribution at all (unsigned, same as the app), support's
+ * carries "The Pawtchi team". Collapsing the two would make the letter read
+ * like a routine support answer.
  */
 export function replyFallbackBlocks(d: ReplyFallbackData): EmailBlock[] {
   const isLetter = d.kind === 'founder';
   return [
-    { kind: 'hero', text: isLetter ? 'Pra and Mos wrote back.' : 'We replied to your request.' },
-    { kind: 'quote', text: d.body, attribution: isLetter ? 'Pra and Mos' : 'The Pawtchi team' },
+    { kind: 'hero', text: isLetter ? 'We wrote back.' : 'We replied to your request.' },
+    { kind: 'quote', text: d.body, attribution: isLetter ? undefined : 'The Pawtchi team' },
     {
       kind: 'text',
       text: isLetter

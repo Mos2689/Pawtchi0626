@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { withTimeout } from '../../lib/withTimeout';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, Linking } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { PawLoader } from '../../components/loader/PawLoader';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,10 +15,10 @@ import { resolvePetImage } from '../../lib/petFallbackImage';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { BOWL_SIZES } from '../../constants/brandData';
-import { useStreakStore } from '../../store/useStreakStore';
-import { usePetContextStore } from '../../store/usePetContextStore';
 import { useSubscription } from '../../hooks/useSubscription';
 import { openManageSubscription } from '../../lib/manageSubscription';
+import { WRITE_TO_FOUNDER_LABEL } from '../../lib/founderLetters';
+import { SUPPORT_LABEL } from '../../lib/support/copy';
 import { useWalkthrough } from '../../providers/WalkthroughContext';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
@@ -28,9 +28,11 @@ import { RoutineSheet } from '../../components/RoutineSheet';
 import type { OwnerPrefsRow } from '../../lib/routineDefaults';
 import { prepareImageForUpload } from '../../lib/imagePrep';
 import { PawtchiModal } from '../../components/PawtchiModal';
+import { FailureModal } from '../../components/FailureModal';
+import type { FailureMeta } from '../../lib/support/handoff';
 import {
   appError, errorCopy, extractInvokeErrorCode, fromEdgeBody, isAppError, reportError, toAppError,
-  type ErrorContext, type ErrorCopy,
+  type ErrorContext, type ErrorCopy, type RecoveryActionId,
 } from '../../lib/appError';
 import { useFocusEffect } from '@react-navigation/native';
 import { WalksignCrest } from '../../components/walksign/WalksignCrest';
@@ -42,6 +44,15 @@ import {
 import type { WalksignId } from '../../lib/walksign/types';
 import { maybeEvaluateWalksign } from '../../lib/walksign/walksignSync';
 import { track } from '../../lib/analytics';
+import {
+  recordWeightAssessment,
+  recordWeightMeasurement,
+  requestWeightPlanReassessment,
+} from '../../lib/weightPlanService';
+import { weightPlanViewModelFromRecord } from '../../lib/weightPlanRecord';
+import { TextField } from '../../components/ui/TextField';
+import { isAssessableWeightKg } from '../../lib/weightPlan';
+import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
 
 // Profile — the pet's identity card. A navy hero carries who they are; the
 // light sections below are quiet, single-recipe rows. One yellow per surface:
@@ -81,20 +92,44 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
 
   const { user, isSigningOut, signOut } = useAuth();
+  const profileWeightSubmissionRef = React.useRef<{
+    id: string;
+    measuredAt: string;
+    weightKg: number;
+  } | null>(null);
   // Fine-grained selectors — re-render only on the fields this screen reads,
   // not on any unrelated store mutation. Actions are stable references.
   const activePet = useActivePetStore(s => s.activePet);
-  const clearPet = useActivePetStore(s => s.clearPet);
   const foodPantry = useActivePetStore(s => s.foodPantry);
   const addPantryItem = useActivePetStore(s => s.addPantryItem);
   const fetchPantry = useActivePetStore(s => s.fetchPantry);
   const togglePantryFavorite = useActivePetStore(s => s.togglePantryFavorite);
   const setPantryExpiry = useActivePetStore(s => s.setPantryExpiry);
-  const clearStreak = useStreakStore(s => s.clearStreak);
-  const clearContext = usePetContextStore(s => s.clearContext);
   const { status: subStatus, daysLeft: subDaysLeft, isPro, hasFullAccess } = useSubscription();
   // Subscribers manage their plan in the store; everyone else sees the purchase paywall.
-  const openBilling = () => (isPro ? openManageSubscription() : router.push('/paywall' as any));
+  //
+  // For subscribers this now stops once to offer the founder letter. Leaving is
+  // the single highest-signal moment we will ever get to hear why. The offer is
+  // strictly a detour: `openManageSubscription()` stays one tap away and is the
+  // primary action, so nothing about cancelling is obstructed.
+  const [showLeavingSheet, setShowLeavingSheet] = useState(false);
+  const openBilling = () => {
+    if (!isPro) {
+      router.push('/paywall' as any);
+      return;
+    }
+    setShowLeavingSheet(true);
+  };
+
+  const continueToStore = () => {
+    setShowLeavingSheet(false);
+    openManageSubscription();
+  };
+
+  const writeBeforeLeaving = () => {
+    setShowLeavingSheet(false);
+    router.push({ pathname: '/letter', params: { source: 'cancel_intent' } } as never);
+  };
 
   // Routine sheet — re-opened with current prefs for inline editing.
   const ownerPrefs = useOwnerPrefsStore(s => s.prefs);
@@ -105,10 +140,24 @@ export default function ProfileScreen() {
   // Branded failure sheet — all failure paths on this screen land here via
   // errorCopy(). OS alerts remain only for confirmations and success notes.
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
-  const presentFailure = (err: unknown, context: ErrorContext) => {
+  // What the failure was, for the support composer: the area chip arrives
+  // preselected and the kind rides along into diagnostics.
+  const [failureMeta, setFailureMeta] = useState<FailureMeta | null>(null);
+  // Replays whatever failed when "Try again" is tapped. Every presentFailure
+  // call passes one — a retry button that does nothing is the same bug as a
+  // support button that does nothing.
+  const retryRef = useRef<null | (() => void)>(null);
+  const presentFailure = (err: unknown, context: ErrorContext, retry?: () => void) => {
     const appErr = isAppError(err) ? err : toAppError(err);
     reportError(appErr, context);
+    retryRef.current = retry ?? null;
+    setFailureMeta({ kind: appErr.kind, context });
     setFailure(errorCopy(appErr, { context, petName: activePet?.name }));
+  };
+  // Only the action this screen owns — FailureModal handles contact support,
+  // settings and back.
+  const handleRecovery = (action: RecoveryActionId) => {
+    if (action === 'retry') retryRef.current?.();
   };
   const [routineSubmitting, setRoutineSubmitting] = useState(false);
   useEffect(() => { if (user?.id) fetchPrefs(user.id); }, [user?.id, fetchPrefs]);
@@ -119,10 +168,12 @@ export default function ProfileScreen() {
     setRoutineSubmitting(false);
     setRoutineSheetOpen(false);
     if (!ok) {
+      retryRef.current = () => void handleRoutineSubmit(row);
+      setFailureMeta({ context: 'account' });
       setFailure({
         title: 'The routine didn’t save',
         message: 'Nothing was lost — try saving again in a moment.',
-        actions: [{ label: 'OK', action: 'dismiss' }],
+        actions: [{ label: 'Try again', action: 'retry' }, { label: 'Not now', action: 'dismiss' }],
       });
     }
   };
@@ -171,8 +222,8 @@ export default function ProfileScreen() {
   } | null>(null);
   const [inlineEditValue, setInlineEditValue] = useState('');
 
-  // Chips picker — shared modal for allergies, medical conditions, parent title.
-  type ChipsKind = 'allergies' | 'medical_conditions' | 'parent_title';
+  // Chips picker — shared modal for allergies and medical conditions.
+  type ChipsKind = 'allergies' | 'medical_conditions';
   const [chipsKind, setChipsKind] = useState<ChipsKind | null>(null);
   const [chipsSelected, setChipsSelected] = useState<string[]>([]);
   const [chipsCustomInput, setChipsCustomInput] = useState('');
@@ -260,7 +311,11 @@ export default function ProfileScreen() {
       if (useCamera) {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
         if (!permission.granted) {
-          presentFailure(appError('permission', 'camera permission denied (pantry scan)'), 'food_scan');
+          presentFailure(
+            appError('permission', 'camera permission denied (pantry scan)'),
+            'food_scan',
+            () => void handleScanFoodLabel(useCamera),
+          );
           return;
         }
         result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7, allowsEditing: true });
@@ -293,6 +348,7 @@ export default function ProfileScreen() {
           fromEdgeBody(data)
             ?? toAppError(error ?? new Error('scan returned no analysis'), { errorCode: await extractInvokeErrorCode(error) }),
           'food_scan',
+          () => void handleScanFoodLabel(useCamera),
         );
         setIsScanningLabel(false);
         return;
@@ -343,7 +399,7 @@ export default function ProfileScreen() {
         Alert.alert('Added to Pantry', `${a.brand || a.food_name} has been saved.`);
       }
     } catch (err: unknown) {
-      presentFailure(err, 'food_scan');
+      presentFailure(err, 'food_scan', () => void handleScanFoodLabel(useCamera));
     } finally {
       setIsScanningLabel(false);
     }
@@ -393,32 +449,15 @@ export default function ProfileScreen() {
               if (error) throw error;
               await signOut();
             } catch (e: unknown) {
-              presentFailure(e, 'account');
+              // Retry re-opens the confirmation rather than re-firing the
+              // delete: this is the one action that must never happen twice
+              // off a single "yes".
+              presentFailure(e, 'account', handleDeleteAccount);
             }
           },
         },
       ]
     );
-  };
-
-  const updateParentTitle = async (title: string) => {
-    if (!activePet || !checkAccess()) return;
-
-    // Optistic update
-    useActivePetStore.setState({
-      activePet: { ...activePet, parent_title: title }
-    });
-
-    const { error } = await supabase
-      .from('pets')
-      .update({ parent_title: title })
-      .eq('id', activePet.id);
-
-    if (error) {
-      console.error('Failed to update parent title:', error);
-      // Revert if error
-      useActivePetStore.setState({ activePet });
-    }
   };
 
   const handleUpdateBowlSize = async (size: string) => {
@@ -498,7 +537,7 @@ export default function ProfileScreen() {
     setIsUpdatingProfile(false);
 
     if (error) {
-      presentFailure(error, 'account');
+      presentFailure(error, 'account', () => void handleUpdateProfile());
     } else {
       setEditModalVisible(false);
       useActivePetStore.getState().fetchPet(user.id, { silent: true });
@@ -507,12 +546,15 @@ export default function ProfileScreen() {
 
   const openInlineEdit = (dbColumn: string, label: string, value: string, placeholder: string, keyboardType: 'default' | 'numeric' | 'email-address' = 'default') => {
     if (!checkAccess()) return;
+    if (dbColumn === 'current_weight_kg') {
+      profileWeightSubmissionRef.current = null;
+    }
     setInlineEditField({ dbColumn, label, value, placeholder, keyboardType });
     setInlineEditValue(value.toString());
     setInlineEditVisible(true);
   };
 
-  const handleInlineSave = async () => {
+  const handleInlineSave = async (confirmUnusual = false) => {
     if (!activePet || !inlineEditField || !user) return;
     setIsUpdatingProfile(true);
 
@@ -526,10 +568,49 @@ export default function ProfileScreen() {
         parsedValue = arr;
     }
 
+    if (inlineEditField.dbColumn === 'current_weight_kg') {
+      try {
+        if (
+          !profileWeightSubmissionRef.current ||
+          profileWeightSubmissionRef.current.weightKg !== parsedValue
+        ) {
+          const measuredAt = new Date().toISOString();
+          profileWeightSubmissionRef.current = {
+            id: `profile:${activePet.id}:${measuredAt}:${Number(parsedValue).toFixed(3)}`,
+            measuredAt,
+            weightKg: parsedValue,
+          };
+        }
+        const submission = profileWeightSubmissionRef.current;
+        const result = await recordWeightMeasurement({
+          pet: activePet,
+          weightKg: parsedValue,
+          source: 'profile',
+          measuredAt: submission.measuredAt,
+          sourceEventId: submission.id,
+          confirmUnusual,
+        });
+        setIsUpdatingProfile(false);
+        if (result.status === 'confirmation_required') {
+          Alert.alert('Confirm weight', result.message, [
+            { text: 'Check again', style: 'cancel' },
+            { text: 'Save weight', onPress: () => void handleInlineSave(true) },
+          ]);
+          return;
+        }
+        profileWeightSubmissionRef.current = null;
+        setInlineEditVisible(false);
+        void useActivePetStore.getState().fetchPet(user.id, { silent: true });
+      } catch (error) {
+        setIsUpdatingProfile(false);
+        presentFailure(error, 'account', () => void handleInlineSave(confirmUnusual));
+      }
+      return;
+    }
+
     // Optimistic Update
-    useActivePetStore.setState({
-      activePet: { ...activePet, [inlineEditField.dbColumn]: parsedValue }
-    });
+    const updatedPet = { ...activePet, [inlineEditField.dbColumn]: parsedValue };
+    useActivePetStore.setState({ activePet: updatedPet });
 
     const { error } = await supabase
       .from('pets')
@@ -539,22 +620,103 @@ export default function ProfileScreen() {
     setIsUpdatingProfile(false);
 
     if (error) {
-      presentFailure(error, 'account');
+      presentFailure(error, 'account', () => void handleInlineSave(confirmUnusual));
       useActivePetStore.getState().fetchPet(user.id, { silent: true }); // rollback
     } else {
+      if (['breed', 'age_years'].includes(inlineEditField.dbColumn)) {
+        if (!isAssessableWeightKg(updatedPet.current_weight_kg)) {
+          // No measured weight yet (walk-first profile). There is nothing to
+          // reassess against, so record the intent and move on silently —
+          // editing a breed should not raise a failure the owner cannot act on.
+          await requestWeightPlanReassessment(
+            updatedPet,
+            `${inlineEditField.dbColumn}_changed_without_weight`,
+          );
+        } else if (!activePet.body_condition_score) {
+          await requestWeightPlanReassessment(
+            updatedPet,
+            `${inlineEditField.dbColumn}_changed_without_bcs`,
+          );
+        } else {
+          // Named so "Try again" on the failure sheet can replay exactly this
+          // and nothing else — the field itself already saved above.
+          const runAssessment = async () => {
+            const assessment = await recordWeightAssessment({
+              pet: updatedPet,
+              bcs: activePet.body_condition_score!,
+              source: 'profile_change',
+            });
+            if (assessment.discloseIdealChange && assessment.idealWeightKg != null) {
+              Alert.alert(
+                'Plan updated',
+                `The confirmed ideal changed from ${assessment.previousIdealWeightKg?.toFixed(1)} kg to ${assessment.idealWeightKg.toFixed(1)} kg using the corrected profile details.`,
+              );
+            }
+          };
+          try {
+            await runAssessment();
+          } catch (assessmentError) {
+            presentFailure(assessmentError, 'account', () => void runAssessment());
+            await requestWeightPlanReassessment(
+              updatedPet,
+              `${inlineEditField.dbColumn}_assessment_failed`,
+            );
+          }
+        }
+      }
       setInlineEditVisible(false);
       useActivePetStore.getState().fetchPet(user.id, { silent: true });
     }
   };
 
-  // Generic optimistic field setter (mirrors updateParentTitle / handleUpdateBowlSize).
+  // Generic optimistic field setter (mirrors handleUpdateBowlSize).
   const persistPetField = async (column: string, value: any) => {
     if (!activePet) return;
-    useActivePetStore.setState({ activePet: { ...activePet, [column]: value } as any });
+    const updatedPet = { ...activePet, [column]: value } as typeof activePet;
+    useActivePetStore.setState({ activePet: updatedPet });
     const { error } = await supabase.from('pets').update({ [column]: value }).eq('id', activePet.id);
     if (error) {
       console.error(`Failed to update ${column}:`, error);
       useActivePetStore.setState({ activePet });
+      return;
+    }
+    if (
+      column === 'gender' ||
+      column === 'reproductive_status'
+    ) {
+      if (!isAssessableWeightKg(updatedPet.current_weight_kg)) {
+        // See the inline-edit path above: nothing to assess without a weight.
+        await requestWeightPlanReassessment(
+          updatedPet,
+          `${column}_changed_without_weight`,
+        );
+      } else if (!activePet.body_condition_score) {
+        await requestWeightPlanReassessment(
+          updatedPet,
+          `${column}_changed_without_bcs`,
+        );
+      } else try {
+        const assessment = await recordWeightAssessment({
+          pet: updatedPet,
+          bcs: activePet.body_condition_score,
+          source:
+            column === 'reproductive_status'
+              ? 'life_stage'
+              : 'profile_change',
+        });
+        if (assessment.discloseIdealChange && assessment.idealWeightKg != null) {
+          Alert.alert(
+            'Plan updated',
+            `The confirmed ideal changed from ${assessment.previousIdealWeightKg?.toFixed(1)} kg to ${assessment.idealWeightKg.toFixed(1)} kg using the corrected profile details.`,
+          );
+        }
+      } catch (assessmentError) {
+        console.error('Failed to reassess weight plan:', assessmentError);
+        await requestWeightPlanReassessment(
+          updatedPet,
+          `${column}_assessment_failed`,
+        );
+      }
     }
   };
 
@@ -568,10 +730,6 @@ export default function ProfileScreen() {
     'Heart disease', 'Kidney disease', 'Dental disease', 'Obesity',
     'Epilepsy', 'Thyroid issues',
   ];
-  const PARENT_TITLE_OPTIONS = [
-    'Mom', 'Dad', 'Mama', 'Papa', 'Buddy', 'Auntie', 'Uncle', 'Pawrent',
-  ];
-
   // Per-kind config for the shared sheet. Keeps the JSX small and the rules
   // (single vs multi, copy, presets, custom input) all in one place.
   const chipsPetName = activePet?.name || 'your pet';
@@ -599,17 +757,6 @@ export default function ProfileScreen() {
           empty: 'No active conditions',
           saveLabel: 'Save conditions',
         },
-        parent_title: {
-          title: 'Parent title',
-          subtitle: `What does ${chipsPetName} call you?`,
-          icon: 'favorite-border' as const,
-          presets: PARENT_TITLE_OPTIONS,
-          allowCustom: false,
-          multi: false,
-          customPlaceholder: '',
-          empty: '',
-          saveLabel: 'Save',
-        },
       } as const)[chipsKind]
     : null;
 
@@ -620,8 +767,6 @@ export default function ProfileScreen() {
       setChipsSelected(activePet.allergies || []);
     } else if (kind === 'medical_conditions') {
       setChipsSelected(activePet.medical_conditions || []);
-    } else if (kind === 'parent_title') {
-      setChipsSelected(activePet.parent_title ? [activePet.parent_title] : []);
     }
     setChipsKind(kind);
   };
@@ -655,14 +800,9 @@ export default function ProfileScreen() {
   const saveChipsPicker = async () => {
     if (!chipsKind) return;
     setIsSavingChips(true);
-    if (chipsKind === 'parent_title') {
-      const value = chipsSelected[0] || '';
-      await updateParentTitle(value);
-    } else {
-      // De-dup while preserving order.
-      const cleaned = Array.from(new Set(chipsSelected.map((s) => s.trim()).filter(Boolean)));
-      await persistPetField(chipsKind, cleaned);
-    }
+    // De-dup while preserving order.
+    const cleaned = Array.from(new Set(chipsSelected.map((s) => s.trim()).filter(Boolean)));
+    await persistPetField(chipsKind, cleaned);
     setIsSavingChips(false);
     closeChipsPicker();
   };
@@ -676,6 +816,28 @@ export default function ProfileScreen() {
     ]);
   };
 
+  const handleSetReproductiveStatus = () => {
+    if (!activePet || !checkAccess()) return;
+    Alert.alert(`${activePet.name || 'Your pet'}'s life phase`, undefined, [
+      {
+        text: 'Not pregnant or nursing',
+        onPress: () =>
+          persistPetField('reproductive_status', 'neither'),
+      },
+      {
+        text: 'Pregnant',
+        onPress: () =>
+          persistPetField('reproductive_status', 'pregnant'),
+      },
+      {
+        text: 'Nursing',
+        onPress: () =>
+          persistPetField('reproductive_status', 'nursing'),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   const handleSetBcs = () => {
     if (!activePet || !checkAccess()) return;
     setSelectedBcs(activePet.body_condition_score ?? 5);
@@ -684,10 +846,54 @@ export default function ProfileScreen() {
 
   const handleSaveBcs = async () => {
     if (!activePet || selectedBcs === null) return;
+
+    // A body score describes a weight, so there is nothing to turn one into
+    // until a weight exists. Walk-first profiles sit at the 0 sentinel, which
+    // is exactly the value the assessment table rejects — so say what is
+    // needed and offer the field, rather than attempting a doomed write and
+    // reporting the failure as though something broke.
+    if (!isAssessableWeightKg(activePet.current_weight_kg)) {
+      const name = activePet.name?.trim();
+      setBcsModalVisible(false);
+      Alert.alert(
+        'A weight comes first',
+        name
+          ? `Pawtchi needs ${name}'s current weight before a body score can become a plan.`
+          : 'Pawtchi needs a current weight before a body score can become a plan.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          {
+            text: 'Add weight',
+            onPress: () =>
+              openInlineEdit('current_weight_kg', 'Weight (kg)', '', 'e.g. 15.5', 'numeric'),
+          },
+        ],
+      );
+      return;
+    }
+
     setIsSavingBcs(true);
-    await persistPetField('body_condition_score', selectedBcs);
-    setIsSavingBcs(false);
-    setBcsModalVisible(false);
+    try {
+      const assessment = await recordWeightAssessment({
+        pet: activePet,
+        bcs: selectedBcs,
+        source: 'owner_bcs',
+      });
+      setBcsModalVisible(false);
+      if (assessment.discloseIdealChange && assessment.idealWeightKg != null) {
+        Alert.alert(
+          'Plan updated',
+          `The confirmed ideal changed from ${assessment.previousIdealWeightKg?.toFixed(1)} kg to ${assessment.idealWeightKg.toFixed(1)} kg after this body check.`,
+        );
+      }
+      if (user) {
+        void useActivePetStore.getState().fetchPet(user.id, { silent: true });
+      }
+    } catch (error) {
+      presentFailure(error, 'account', () => void handleSaveBcs());
+    } finally {
+      setIsSavingBcs(false);
+    }
   };
 
   const promptAddFood = () => {
@@ -723,6 +929,31 @@ export default function ProfileScreen() {
   }, [focus, activePet?.id]);
 
   const petName = activePet?.name || 'My Pet';
+  const weightPlan = activePet
+    ? weightPlanViewModelFromRecord(activePet)
+    : null;
+  const weightPlanSummary = weightPlan
+    ? [
+        `${weightPlan.currentWeightKg.toFixed(1)} kg now`,
+        weightPlan.targetWeightKg != null
+          ? `${weightPlan.targetWeightKg.toFixed(1)} kg next`
+          : null,
+        weightPlan.idealWeightKg != null
+          ? `${weightPlan.idealWeightKg.toFixed(1)} kg ideal`
+          : 'body check needed',
+        weightPlan.healthyBand
+          ? `${weightPlan.healthyBand.low.toFixed(1)}–${weightPlan.healthyBand.high.toFixed(1)} kg healthy range`
+          : null,
+        activePet?.weight_assessed_at
+          ? `assessed ${new Date(activePet.weight_assessed_at).toLocaleDateString(undefined, {
+              day: 'numeric',
+              month: 'short',
+            })}${activePet.weight_assessment_source ? ` via ${activePet.weight_assessment_source.replace(/_/g, ' ')}` : ''}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : 'No plan yet';
 
   // ── Walksign identity (dogs only) ──
   const walksignId: WalksignId | null =
@@ -737,9 +968,9 @@ export default function ProfileScreen() {
   useFocusEffect(
     React.useCallback(() => {
       if (activePet?.id && activePet.species === 'dog') {
-        maybeEvaluateWalksign(activePet.id).catch(() => {});
+        maybeEvaluateWalksign(activePet.id, user?.id).catch(() => {});
       }
-    }, [activePet?.id, activePet?.species]),
+    }, [activePet?.id, activePet?.species, user?.id]),
   );
   const breedLine = [
     activePet?.breed || (activePet?.species ? activePet.species : null),
@@ -1005,33 +1236,42 @@ export default function ProfileScreen() {
               loadingMessage="Scanning food label…"
             />
           </View>
-        </View>
 
-        {/* ─── Bowl size ─── */}
-        <Text style={styles.sectionLabel}>BOWL SIZE</Text>
-        <View style={[styles.card, styles.bowlCard]}>
-          <Text style={styles.bowlHint}>The bowl {petName} usually eats from — it sharpens portion estimates.</Text>
-          <View style={styles.bowlRow}>
-            {BOWL_SIZES.map(s => {
-              const isSelected = activePet?.bowl_size === s.value;
-              return (
-                <TouchableOpacity
-                  key={s.value}
-                  style={[styles.bowlPill, isSelected && styles.bowlPillSelected]}
-                  onPress={() => handleUpdateBowlSize(s.value)}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[styles.bowlPillLabel, isSelected && styles.bowlPillLabelSelected]}>{s.label}</Text>
-                  <Text style={[styles.bowlPillDesc, isSelected && styles.bowlPillDescSelected]}>{s.description}</Text>
-                </TouchableOpacity>
-              );
-            })}
+          {/* Bowl size — an extension of Pantry rather than its own section.
+              What's fed and what it's served in are the same fact from the
+              portion engine's point of view, so they now live in one card
+              under one label; the top hairline is what marks the hand-off. */}
+          <View style={styles.bowlSection}>
+            <Text style={styles.bowlSectionLabel}>BOWL SIZE</Text>
+            <Text style={styles.bowlHint}>The bowl {petName} usually eats from — it sharpens portion estimates.</Text>
+            <View style={styles.bowlRow}>
+              {BOWL_SIZES.map(s => {
+                const isSelected = activePet?.bowl_size === s.value;
+                return (
+                  <TouchableOpacity
+                    key={s.value}
+                    style={[styles.bowlPill, isSelected && styles.bowlPillSelected]}
+                    onPress={() => handleUpdateBowlSize(s.value)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.bowlPillLabel, isSelected && styles.bowlPillLabelSelected]}>{s.label}</Text>
+                    <Text style={[styles.bowlPillDesc, isSelected && styles.bowlPillDescSelected]}>{s.description}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
         </View>
 
         {/* ─── Health ─── */}
         <Text style={styles.sectionLabel}>HEALTH</Text>
         <View style={styles.card}>
+          <Row
+            icon="timeline"
+            label="Weight plan"
+            sub={weightPlanSummary}
+            onPress={() => router.push('/(tabs)/health')}
+          />
           <Row
             icon="monitor-weight"
             label="Body condition score"
@@ -1043,6 +1283,22 @@ export default function ProfileScreen() {
             trailing="edit"
             onPress={handleSetBcs}
           />
+          {activePet?.gender === 'female' &&
+            !activePet.is_neutered && (
+              <Row
+                icon="pets"
+                label="Life phase"
+                sub={
+                  activePet.reproductive_status === 'pregnant'
+                    ? 'Pregnant · supervised weight plan'
+                    : activePet.reproductive_status === 'nursing'
+                      ? 'Nursing · supervised weight plan'
+                      : 'Not pregnant or nursing'
+                }
+                trailing="edit"
+                onPress={handleSetReproductiveStatus}
+              />
+            )}
           <Row
             icon="coronavirus"
             label="Known allergies"
@@ -1063,13 +1319,6 @@ export default function ProfileScreen() {
         {/* ─── Account ─── */}
         <Text style={styles.sectionLabel}>ACCOUNT</Text>
         <View style={styles.card}>
-          <Row
-            icon="favorite-border"
-            label="Parent title"
-            sub={activePet?.parent_title || 'Mom / Dad'}
-            trailing="edit"
-            onPress={() => openChipsPicker('parent_title')}
-          />
           <Row icon="person-outline" label="Owner profile" onPress={() => router.push('/owner' as any)} />
           <Row
             icon="schedule"
@@ -1079,12 +1328,31 @@ export default function ProfileScreen() {
             onPress={() => setRoutineSheetOpen(true)}
           />
           <Row
+            icon="notifications-none"
+            label="Notifications"
+            onPress={() => router.push('/notifications' as any)}
+          />
+          <Row
             icon="credit-card"
             label={isPro ? 'Manage subscription' : 'Billing & subscription'}
             sub={subStatus === 'active' ? 'Pawtchi Plus — active' : subStatus === 'trial' ? `Trial — ${subDaysLeft} days left` : 'Upgrade to Pawtchi Plus'}
             onPress={openBilling}
           />
           <Row icon="group-add" label="Invite a friend" onPress={() => router.push('/invite' as any)} />
+          {/* The two human doors sit together, functional first: support is for
+              "something is wrong", the letter for "here is what I think". */}
+          <Row
+            icon="help-outline"
+            label={SUPPORT_LABEL}
+            sub="Report a problem, ask a question, or read common answers"
+            onPress={() => router.push({ pathname: '/support', params: { source: 'profile' } } as never)}
+          />
+          <Row
+            icon="drafts"
+            label={WRITE_TO_FOUNDER_LABEL}
+            sub="A letter straight to the people who make Pawtchi"
+            onPress={() => router.push({ pathname: '/letter', params: { source: 'profile' } } as never)}
+          />
           <Row icon="security" label="Privacy & security" last onPress={() => router.push('/privacy' as any)} />
         </View>
 
@@ -1155,19 +1423,31 @@ export default function ProfileScreen() {
         isSubmitting={routineSubmitting}
       />
 
-      {/* Branded failure sheet — every failure path on this screen. */}
+      {/* Offered once on the way to the store's subscription screen. Cancelling
+          must never feel like a trap: "Continue" is the primary action, it is
+          always visible, it is one tap, and the backdrop dismisses too. This is
+          an invitation, not a retention gate. */}
       <PawtchiModal
-        visible={failure != null}
+        visible={showLeavingSheet}
+        onClose={continueToStore}
+        title="Before you go"
+        icon={{ name: 'drafts', color: color.navy }}
+        message="If Pawtchi isn't earning its place, we'd genuinely like to know why — it's the most useful thing anyone sends."
+        actions={[
+          { label: 'Continue to subscriptions', onPress: continueToStore },
+          { label: `${WRITE_TO_FOUNDER_LABEL} first`, onPress: writeBeforeLeaving, variant: 'ghost' },
+        ]}
+      />
+
+      {/* Branded failure sheet — every failure path on this screen. The copy's
+          own actions render as written now: this used to collapse everything
+          that wasn't a permission prompt down to a single "OK", which quietly
+          threw away both the retry and the support door. */}
+      <FailureModal
+        copy={failure}
         onClose={() => setFailure(null)}
-        title={failure?.title ?? ''}
-        message={failure?.message}
-        icon={{ name: 'wb-cloudy', color: color.alertDeep }}
-        actions={(failure?.actions ?? []).some((a) => a.action === 'open_settings')
-          ? [
-              { label: 'Open Settings', onPress: () => { setFailure(null); Linking.openSettings().catch(() => {}); } },
-              { label: 'Not now', onPress: () => setFailure(null), variant: 'ghost' },
-            ]
-          : [{ label: 'OK', onPress: () => setFailure(null) }]}
+        onAction={handleRecovery}
+        meta={{ ...failureMeta, screen: '/(tabs)/profile' }}
       />
 
       {/* Edit Profile Modal */}
@@ -1198,10 +1478,11 @@ export default function ProfileScreen() {
               </View>
 
               <Text style={styles.editFieldLabel}>Pet name</Text>
-              <TextInput
-                style={styles.editInput}
+              <TextField
+                containerStyle={styles.editFieldSpacing}
+                height={52}
+                fontSize={15}
                 placeholder="Pet name"
-                placeholderTextColor={color.slateFaint}
                 value={editName}
                 onChangeText={setEditName}
               />
@@ -1360,12 +1641,13 @@ export default function ProfileScreen() {
               {/* Free-text add row */}
               {chipsConfig?.allowCustom && (
                 <View style={styles.profileCustomRow}>
-                  <TextInput
-                    style={styles.profileCustomInput}
+                  <TextField
+                    containerStyle={styles.profileCustomFieldSpacing}
+                    height={48}
+                    fontSize={14}
                     value={chipsCustomInput}
                     onChangeText={setChipsCustomInput}
                     placeholder={chipsConfig.customPlaceholder}
-                    placeholderTextColor={color.slateFaint}
                     returnKeyType="done"
                     onSubmitEditing={addCustomChip}
                   />
@@ -1406,10 +1688,11 @@ export default function ProfileScreen() {
             </View>
             <View style={styles.editModalBody}>
               <Text style={styles.editFieldLabel}>{inlineEditField?.label}</Text>
-              <TextInput
-                style={styles.editInput}
+              <TextField
+                containerStyle={styles.editFieldSpacing}
+                height={52}
+                fontSize={15}
                 placeholder={inlineEditField?.placeholder}
-                placeholderTextColor={color.slateFaint}
                 value={inlineEditValue}
                 onChangeText={setInlineEditValue}
                 keyboardType={inlineEditField?.keyboardType || 'default'}
@@ -1420,7 +1703,7 @@ export default function ProfileScreen() {
                 title="Save"
                 variant="primary"
                 loading={isUpdatingProfile}
-                onPress={handleInlineSave}
+                onPress={() => void handleInlineSave()}
               />
             </View>
           </View>
@@ -1531,7 +1814,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: space.xl,
-    paddingBottom: 120, // accommodate tab bar
+    paddingBottom: 120 + TAB_BAR_CLEARANCE, // floating tab bar overlaps content
   },
 
   // ─── Hero ───
@@ -1895,8 +2178,19 @@ const styles = StyleSheet.create({
     padding: space.lg,
   },
 
-  // ─── Bowl size ───
-  bowlCard: { padding: space.lg },
+  // ─── Bowl size — nested inside the Pantry card, not its own section ───
+  bowlSection: {
+    padding: space.lg,
+    borderTopWidth: 1,
+    borderTopColor: color.hairline,
+  },
+  bowlSectionLabel: {
+    fontFamily: font.semibold,
+    fontSize: 10.5,
+    letterSpacing: 1.8,
+    color: color.slateFaint,
+    marginBottom: space.sm,
+  },
   bowlHint: {
     fontFamily: font.regular,
     fontSize: 12.5,
@@ -2023,16 +2317,9 @@ const styles = StyleSheet.create({
     marginBottom: space.sm,
     marginLeft: 4,
   },
-  editInput: {
-    backgroundColor: color.surfaceSubtle,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    borderRadius: radius.lg,
-    paddingHorizontal: space.lg,
-    height: 52,
-    fontFamily: font.medium,
-    fontSize: 15,
-    color: color.ink,
+  // Spacing only — the box itself is TextField's. A height here would put us
+  // straight back into the bug documented in lib/ui/textFieldLayout.ts.
+  editFieldSpacing: {
     marginBottom: space.xl,
   },
 
@@ -2145,17 +2432,8 @@ const styles = StyleSheet.create({
     gap: space.sm,
     marginTop: space.lg,
   },
-  profileCustomInput: {
+  profileCustomFieldSpacing: {
     flex: 1,
-    height: 48,
-    backgroundColor: color.surfaceSubtle,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    paddingHorizontal: space.lg,
-    fontFamily: font.medium,
-    fontSize: 14,
-    color: color.ink,
   },
   profileAddBtn: {
     width: 48,

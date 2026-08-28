@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Share, TouchableOpacity, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import {
+  completionReturnPath,
+  isCompletionMode,
+} from '../../lib/onboarding/completionMode';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -9,7 +13,7 @@ import Animated, {
   useSharedValue, useAnimatedStyle, withSequence, withTiming,
 } from 'react-native-reanimated';
 
-import { color, font, radius, space, motion } from '../../constants/design';
+import { color, displayLine, font, radius, space, motion } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { PortionPlateCard } from '../../components/PortionPlateCard';
 import { WatchOutsCard } from '../../components/WatchOutsCard';
@@ -31,6 +35,10 @@ import { SAFE_PCT_PER_WEEK } from '../../lib/weightLossRate';
 import { WalksignCrest } from '../../components/walksign/WalksignCrest';
 import { WALKSIGN_COPY, buildProvisionalNote, buildRevealTitle } from '../../lib/walksign/copy';
 import type { WalksignId } from '../../lib/walksign/types';
+import { useSubscription } from '../../hooks/useSubscription';
+import { usePushNotifications } from '../../hooks/usePushNotifications';
+import { useNotificationPermission } from '../../hooks/useNotificationPermission';
+import { NotificationPrimer } from '../../components/NotificationPrimer';
 
 // The reveal — the missing climax. The whole onboarding exists to compute one
 // magic number: the daily calorie plan. Old flow ran calculateDailyKcal
@@ -66,7 +74,13 @@ const PHASE_MS = 400;
 
 export default function RevealScreen() {
   const router = useRouter();
+  const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
+  const completing = isCompletionMode(completionParams);
+  const notifPermission = useNotificationPermission();
   const insets = useSafeAreaInsets();
+  const { isPro } = useSubscription();
+  const { requestPermission } = usePushNotifications();
+  const [primerVisible, setPrimerVisible] = useState(false);
 
   const {
     name, breed, species, weight, ageYears, ageMonths, bodyConditionScore,
@@ -248,10 +262,60 @@ export default function RevealScreen() {
     }
   };
 
+  // Leaving the reveal is the single best moment to ask for notifications:
+  // the owner has just seen the plan Pawtchi built for their animal, so the
+  // ask has something concrete behind it. Previously the OS prompt fired on
+  // the first authed frame with no context at all, and opt-in sat at 9%.
+  const finishReveal = () => {
+    resetForm();
+    // Onboarding lands on Home; a health-profile completion lands back on the
+    // feature that asked for the data, so the owner arrives at the thing they
+    // were originally trying to do rather than being dropped at the map.
+    //
+    // The paywall fires either way. It was never tied to onboarding — it is
+    // tied to having just been shown a personalised plan, which is exactly what
+    // both paths have in common.
+    router.replace(
+      (completing ? completionReturnPath(completionParams.feature) : '/(tabs)') as never,
+    );
+    if (!isPro) {
+      setTimeout(() => router.push('/paywall' as any), 120);
+    }
+  };
+
   const handleContinue = () => {
     track('plan_reveal_continued', {});
-    resetForm();
-    router.replace('/preview-home' as any);
+    // Only ask when asking can still achieve something.
+    //
+    // This screen used to be reachable only by a brand-new account, so an
+    // unconditional primer was always a first ask. It is now also the end of
+    // the health-completion flow, which existing owners reach — and showing
+    // someone who already granted notifications a card asking them to turn
+    // notifications on reads as a broken app. `canAsk` is false once the OS
+    // prompt has been spent, in either direction.
+    if (notifPermission.status === 'loading' || notifPermission.isGranted || !notifPermission.canAsk) {
+      finishReveal();
+      return;
+    }
+    setPrimerVisible(true);
+  };
+
+  const handlePrimerAccept = async () => {
+    setPrimerVisible(false);
+    // Failure here must never block the funnel — a denied prompt, a simulator,
+    // or a network error all just mean no token yet.
+    try {
+      await requestPermission();
+    } catch {
+      // Nothing to do; the owner can enable notifications from Profile later.
+    }
+    finishReveal();
+  };
+
+  const handlePrimerDecline = () => {
+    setPrimerVisible(false);
+    // The OS prompt was never fired, so we can ask again from Profile.
+    finishReveal();
   };
 
   return (
@@ -479,6 +543,14 @@ export default function RevealScreen() {
           </View>
         </>
       )}
+
+      <NotificationPrimer
+        visible={primerVisible}
+        petName={petName}
+        source="plan_reveal"
+        onAccept={handlePrimerAccept}
+        onDecline={handlePrimerDecline}
+      />
     </View>
   );
 }
@@ -573,9 +645,7 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   heroNumber: {
-    fontFamily: font.display,
-    fontSize: 96,
-    lineHeight: 92,
+    ...displayLine(96),
     letterSpacing: 1,
     color: color.cream,
   },

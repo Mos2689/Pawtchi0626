@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Animated } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStreakStore } from '../store/useStreakStore';
-import { makeShadow } from '../constants/design';
+import { color, makeShadow } from '../constants/design';
 
 const MILESTONE_MESSAGES: Record<number, string> = {
   3: '3-day streak',
@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#F7F602',
+    backgroundColor: color.yellow,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
   },
   coinsTextMilestone: {
-    color: '#F7F602',
+    color: color.yellow,
   },
   reasonText: {
     fontFamily: 'Montserrat_600SemiBold',

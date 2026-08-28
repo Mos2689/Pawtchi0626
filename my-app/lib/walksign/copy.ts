@@ -10,8 +10,7 @@
  * renaming a sign is an edit to this file only.
  */
 
-import { possessivePronoun } from '../referral';
-import { PAWTCHI_INVITE_URL } from '../referral';
+import { PAWTCHI_INVITE_URL, possessivePronoun } from '../referral';
 import type { WalksignId, WalksignStatus, WalksignTransitionKind } from './types';
 
 interface WalksignCopy {
@@ -116,12 +115,14 @@ export function buildConfirmationHeadline(
 export function buildConfirmationBody(
   sign: WalksignId,
   petName?: string | null,
+  validWalkCount = 5,
 ): string {
   const name = cleanName(petName);
   const display = WALKSIGN_COPY[sign].displayName;
+  const count = Math.max(5, Math.floor(validWalkCount));
   return name
-    ? `Five real walks agree. ${name} is a ${display}.`
-    : `Five real walks agree on it. A ${display}.`;
+    ? `${count} real walks agree. ${name} is a ${display}.`
+    : `${count} real walks agree on it. A ${display}.`;
 }
 
 /** Transition headline — the celebrated life-moment reassignments. */
@@ -135,7 +136,10 @@ export function buildTransitionHeadline(
   if (kind === 'wonderbound_graduation') {
     return `Wonderbound, graduated. ${name} walks as a ${display} now.`;
   }
-  return `${name} has walked enough paths to carry them. Storywalker.`;
+  if (kind === 'storywalker_arrival') {
+    return `${name} has walked enough paths to carry them. Storywalker.`;
+  }
+  return `${name}'s walks have found a new rhythm. ${display}.`;
 }
 
 /** Share text for the identity itself (modal + profile share actions). */

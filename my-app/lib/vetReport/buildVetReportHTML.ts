@@ -291,7 +291,23 @@ export function buildVetReportHTML(data: VetReportData): string {
         <div class="stat-val">${
           v.targetWeightKg !== null ? `${esc(v.targetWeightKg)} kg` : '—'
         }</div>
-        <div class="stat-lbl">Target weight</div>
+        <div class="stat-lbl">Next milestone</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val">${
+          v.idealWeightKg !== null && v.idealWeightKg !== undefined
+            ? `${esc(v.idealWeightKg)} kg`
+            : 'â€”'
+        }</div>
+        <div class="stat-lbl">Confirmed ideal</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val">${
+          v.healthyBandLowKg != null && v.healthyBandHighKg != null
+            ? `${esc(v.healthyBandLowKg)}â€“${esc(v.healthyBandHighKg)} kg`
+            : 'â€”'
+        }</div>
+        <div class="stat-lbl">Confirmed healthy range</div>
       </div>
       <div class="stat">
         <div class="stat-val">${v.bcs !== null ? `${esc(v.bcs)}/9` : '—'}</div>
@@ -302,6 +318,13 @@ export function buildVetReportHTML(data: VetReportData): string {
         <div class="stat-lbl">Activity level</div>
       </div>
     </div>
+    ${
+      v.weightAssessedAt
+        ? `<p style="margin:10px 0 0;color:#667085;font-size:10px">
+            Weight plan: ${esc(v.weightPlanStatus ?? 'unknown')} · last assessed ${esc(v.weightAssessedAt)}${v.weightAssessmentSource ? ` via ${esc(v.weightAssessmentSource.replace(/_/g, ' '))}` : ''}
+          </p>`
+        : ''
+    }
   </section>
 
   <section>

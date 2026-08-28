@@ -9,11 +9,12 @@ import { MaterialIcons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
+import { File } from 'expo-file-system';
 
 import { Header } from '../components/Header';
 import { Typography } from '../components/Typography';
 import { PawtchiButton } from '../components/PawtchiButton';
-import { PawtchiModal } from '../components/PawtchiModal';
+import { FailureModal } from '../components/FailureModal';
 import { PawLoader } from '../components/loader/PawLoader';
 import { color, font, radius, shadow, space } from '../constants/design';
 import { useActivePetStore } from '../store/useActivePetStore';
@@ -21,7 +22,7 @@ import { useAuth } from '../providers/AuthProvider';
 import { useSubscription } from '../hooks/useSubscription';
 import { supabase } from '../lib/supabase';
 import { track } from '../lib/analytics';
-import { errorCopy, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../lib/appError';
+import { errorCopy, reportError, toAppError, type AppErrorKind, type ErrorCopy, type RecoveryActionId } from '../lib/appError';
 import { getThread } from '../lib/askVet';
 import { buildVetReportHTML } from '../lib/vetReport/buildVetReportHTML';
 import { getLocalYMD, localDayStartUtcISO } from '../lib/dateUtils';
@@ -30,8 +31,28 @@ import type {
   VetReportData, Medication, Vaccination, WeightHistoryEntry,
   DietItem, RecentVetVisit,
 } from '../lib/vetReport/types';
+import { weightPlanViewModelFromRecord } from '../lib/weightPlanRecord';
 
 // ─── Label maps ───
+// The last PDF written by printToFileAsync, kept so the next export can bin it.
+// Module scope, not a ref: the file outlives the screen, so the cleanup has to
+// as well. Not persisted — a report from a previous app run is left to the OS
+// cache eviction, which is the tradeoff for never yanking a file the receiving
+// app might still be reading.
+let lastVetReportPdfUri: string | null = null;
+
+function discardLastVetReportPdf(): void {
+  if (!lastVetReportPdfUri) return;
+  try {
+    const stale = new File(lastVetReportPdfUri);
+    if (stale.exists) stale.delete();
+  } catch {
+    // Already gone, or the cache was evicted under us. Either way it's handled.
+  } finally {
+    lastVetReportPdfUri = null;
+  }
+}
+
 const ACTIVITY_LABEL: Record<string, string> = {
   sedentary: 'Sedentary',
   normal: 'Normal',
@@ -107,9 +128,13 @@ export default function VetReportScreen() {
   const [generating, setGenerating] = useState(false);
   // Branded failure sheet; retryRef replays the share when "Try again" is tapped.
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  // Carried into the support composer's diagnostics. Null for the two
+  // hand-written sheets below (no pet, no share sheet), which are states of the
+  // device rather than errors with a kind.
+  const [failureKind, setFailureKind] = useState<AppErrorKind | null>(null);
   const retryRef = React.useRef<null | (() => void)>(null);
+  // Only the action this screen owns — FailureModal handles the rest.
   const handleRecovery = (action: RecoveryActionId) => {
-    setFailure(null);
     if (action === 'retry') retryRef.current?.();
   };
 
@@ -277,6 +302,7 @@ export default function VetReportScreen() {
 
   function buildData(): VetReportData {
     const pet = activePet!;
+    const weightPlan = weightPlanViewModelFromRecord(pet);
     const diet: DietItem[] = (foodPantry || []).map((p) => ({
       brand: p.brand || null,
       productName: p.product_name,
@@ -296,7 +322,13 @@ export default function VetReportScreen() {
       owner: { name: ownerName, email: user?.email ?? null },
       vitals: {
         currentWeightKg: pet.current_weight_kg ?? null,
-        targetWeightKg: pet.target_weight_kg ?? null,
+        targetWeightKg: weightPlan.targetWeightKg,
+        idealWeightKg: weightPlan.idealWeightKg,
+        healthyBandLowKg: weightPlan.healthyBand?.low ?? null,
+        healthyBandHighKg: weightPlan.healthyBand?.high ?? null,
+        weightPlanStatus: weightPlan.status,
+        weightAssessedAt: pet.weight_assessed_at ?? null,
+        weightAssessmentSource: pet.weight_assessment_source ?? null,
         bcs: pet.body_condition_score ?? null,
         activityLevel: ACTIVITY_LABEL[pet.activity_level] || null,
       },
@@ -317,6 +349,7 @@ export default function VetReportScreen() {
   const handleShare = async () => {
     if (!checkAccess()) return;
     if (!activePet) {
+      setFailureKind(null);
       setFailure({
         title: 'No pet yet',
         message: 'Set up a pet profile first, then share their summary.',
@@ -327,6 +360,13 @@ export default function VetReportScreen() {
     retryRef.current = handleShare;
     setGenerating(true);
     try {
+      // Bin the PREVIOUS export before writing a new one. The exported PDF is a
+      // full health record plus the owner's name, and printToFileAsync leaves it
+      // in the cache dir forever otherwise. It is deleted on the next export
+      // rather than straight after sharing because Android hands the receiving
+      // app a content URI it may still be reading — so at most one cached report
+      // exists at a time, instead of one per share.
+      discardLastVetReportPdf();
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       const data = buildData();
       data.petPhotoDataUri = await fetchImageDataUri(activePet.image_url);
@@ -339,8 +379,10 @@ export default function VetReportScreen() {
 
       const html = buildVetReportHTML(data);
       const { uri } = await Print.printToFileAsync({ html });
+      lastVetReportPdfUri = uri;
 
       if (!(await Sharing.isAvailableAsync())) {
+        setFailureKind(null);
         setFailure({
           title: 'Sharing isn’t available',
           message: 'This device can’t open the share sheet right now.',
@@ -357,6 +399,7 @@ export default function VetReportScreen() {
     } catch (e: unknown) {
       const appErr = toAppError(e);
       reportError(appErr, 'report');
+      setFailureKind(appErr.kind);
       setFailure(errorCopy(appErr, { context: 'report', petName }));
     } finally {
       setGenerating(false);
@@ -399,6 +442,19 @@ export default function VetReportScreen() {
   }
 
   const summary = [
+    ...(activePet ? (() => {
+      const plan = weightPlanViewModelFromRecord(activePet);
+      return [
+        {
+          label: 'Next milestone',
+          value: plan.targetWeightKg != null ? `${plan.targetWeightKg.toFixed(1)} kg` : '—',
+        },
+        {
+          label: 'Confirmed ideal',
+          value: plan.idealWeightKg != null ? `${plan.idealWeightKg.toFixed(1)} kg` : 'Needs assessment',
+        },
+      ];
+    })() : []),
     { label: 'Patient', value: `${petName}${activePet.breed ? ` · ${activePet.breed}` : ''}` },
     { label: 'Current weight', value: activePet.current_weight_kg ? `${activePet.current_weight_kg} kg` : '—' },
     { label: 'Body condition', value: activePet.body_condition_score ? `${activePet.body_condition_score}/9` : '—' },
@@ -539,16 +595,14 @@ export default function VetReportScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <PawtchiModal
-        visible={failure != null}
+      {/* FailureModal owns contact support, settings and back; handleRecovery
+          owns the retry. */}
+      <FailureModal
+        copy={failure}
         onClose={() => setFailure(null)}
-        title={failure?.title ?? ''}
+        onAction={handleRecovery}
         icon={{ name: 'error-outline', color: color.error }}
-        message={failure?.message}
-        actions={(failure?.actions ?? []).map(a => ({
-          label: a.label,
-          onPress: () => handleRecovery(a.action),
-        }))}
+        meta={{ kind: failureKind, context: 'report', screen: '/vet-report' }}
       />
     </SafeAreaView>
   );

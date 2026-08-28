@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { dietTagsFromPantry } from '../lib/hydration';
 import { withTimeout } from '../lib/withTimeout';
+import type { WeightPlanStatus } from '../lib/weightPlan';
 
 export interface PantryItem {
     id: string;
@@ -39,14 +40,22 @@ export interface Pet {
     gender?: 'male' | 'female';
     is_neutered: boolean;
     age_years?: number;
+    age_months?: number | null;
     current_weight_kg: number;
-    target_weight_kg?: number;
+    target_weight_kg?: number | null;
     activity_level: 'sedentary' | 'normal' | 'active' | 'highly_active';
     image_url?: string;
     target_daily_calories?: number;
-    body_condition_score?: number;
+    body_condition_score?: number | null;
     allergies?: string[];
     medical_conditions?: string[];
+    /**
+     * @deprecated Retired Aug 2026 with the pet-voice notification copy that
+     * was its only consumer ("Hey Dad, my tummy is rumbling"). Pawtchi now
+     * speaks about the animal, never as it, so there is no surface for a
+     * parent title. The `pets.parent_title` column is intentionally kept —
+     * 19 owners set a real value — but nothing reads it.
+     */
     parent_title?: string;
     diet_type?: string[];
     food_brands?: {
@@ -73,6 +82,22 @@ export interface Pet {
     walksign_history?: { sign: string; status: string; reason: string; at: string }[];
     /** Whether this is the owner's first dog — the Newbond signal. */
     first_dog?: boolean | null;
+    /** Regular walkers in the household; three or more is the Packheart signal. */
+    household_walkers?: number | null;
+    /** Locked destination from the active accepted weight assessment. */
+    ideal_weight_kg?: number | null;
+    healthy_band_low_kg?: number | null;
+    healthy_band_high_kg?: number | null;
+    weight_assessment_kg?: number | null;
+    weight_assessment_bcs?: number | null;
+    weight_assessed_at?: string | null;
+    weight_assessment_source?: string | null;
+    weight_assessment_confidence?: 'high' | 'low' | null;
+    weight_plan_status?: WeightPlanStatus | null;
+    weight_plan_revision?: number | null;
+    current_weight_logged_at?: string | null;
+    weight_journey_start_kg?: number | null;
+    weight_journey_started_at?: string | null;
 }
 
 interface ActivePetState {
@@ -90,6 +115,7 @@ interface ActivePetState {
     setPantryExpiry: (itemId: string, dateIso: string | null) => Promise<void>;
     clearPet: () => void;
     updatePetWeight: (weightKg: number, targetCalories: number) => void;
+    applyPetPatch: (patch: Partial<Pet>) => void;
     unlockItem: (itemId: string) => Promise<boolean>;
     toggleEquipItem: (itemId: string) => Promise<boolean>;
     isTailoring: boolean;
@@ -304,6 +330,11 @@ export const useActivePetStore = create<ActivePetState>()(persist((set, get) => 
         const { activePet } = get();
         if (!activePet) return;
         set({ activePet: { ...activePet, current_weight_kg: weightKg, target_daily_calories: targetCalories } });
+    },
+    applyPetPatch: (patch: Partial<Pet>) => {
+        const { activePet } = get();
+        if (!activePet) return;
+        set({ activePet: { ...activePet, ...patch } });
     },
 
     unlockItem: async (itemId: string) => {

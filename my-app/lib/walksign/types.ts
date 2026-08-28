@@ -8,6 +8,7 @@
  */
 
 import type { LifeStage } from '../lifeStage';
+import type { GeoPoint } from '../walk/geo';
 
 export type WalksignId =
   | 'newbond'      // the dog who made you a dog person
@@ -52,7 +53,7 @@ export interface WalksignPetFacts {
   firstDog?: boolean | null;
   /** Months since the pet row was created — the Newbond first-year window. */
   ownershipMonths?: number | null;
-  /** Future household feature; ≥3 regular walkers reads as Packheart. */
+  /** Three or more regular household walkers reads as Packheart. */
   householdWalkers?: number | null;
   activityLevel?: 'sedentary' | 'normal' | 'active' | 'highly_active' | null;
 }
@@ -68,8 +69,10 @@ export interface WalksignWalkRow {
   startLabel: string | null;
   endLabel: string | null;
   farthestLabel: string | null;
-  /** Sniff stops — length of the session's pause_points. */
-  pauseCount: number;
+  /** Real sniff episodes; legacy rows fall back to auto-pause points. */
+  sniffCount: number;
+  /** Simplified recorded GPS route. Empty only for legacy/patchy walks. */
+  route: GeoPoint[];
 }
 
 /** Behavioural fingerprint folded from a dog's valid walks. */
@@ -79,7 +82,7 @@ export interface WalkAggregates {
   sniffPerKm: number;
   /** Share of walks that ended by returning home (a real loop). */
   loopRatio: number;
-  /** Share of labelled walks on the single most-walked route. */
+  /** Share of GPS-backed walks in the largest geographically similar route cluster. */
   routeRepetitionRatio: number;
   /** Distinct place labels seen across starts, ends, and turnarounds. */
   distinctPlaceCount: number;
@@ -93,7 +96,8 @@ export interface WalkAggregates {
 
 export type WalksignTransitionKind =
   | 'wonderbound_graduation'
-  | 'storywalker_arrival';
+  | 'storywalker_arrival'
+  | 'behavioral_evolution';
 
 export type WalksignEventKind = 'assigned' | 'confirmed' | 'transition';
 
@@ -103,5 +107,10 @@ export interface WalksignEvaluation {
     assignment: WalksignAssignment;
     event: WalksignEventKind;
     transitionKind?: WalksignTransitionKind;
+    evidence?: {
+      score: number;
+      margin: number;
+      walkCount: number;
+    };
   } | null;
 }

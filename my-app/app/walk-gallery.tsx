@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { SectionList, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { Redirect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import { color, font, radius, space } from '../constants/design';
-import { WALK_TRACKING_ENABLED } from '../constants/features';
+import { useWalkEnabled } from '../hooks/useWalkEnabled';
 import { supabase } from '../lib/supabase';
 import { track } from '../lib/analytics';
 import { haptic } from '../lib/haptics';
@@ -17,10 +17,19 @@ import {
   PawPrintWalk,
   previousMonthKey,
 } from '../lib/pawPrints';
+import {
+  MOMENT_TEMPLATES,
+  nextTemplateChipLine,
+  unlockedTemplateIds,
+} from '../lib/momentTemplates';
+import { resolveSniffStops } from '../lib/momentCard';
+import { chunk, groupSummary, groupWalksByPlace } from '../lib/walkGallery';
 import { evaluatePawPrints } from '../lib/pawPrintsSync';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useAuth } from '../providers/AuthProvider';
 import { WalkTile } from '../components/pawprints/WalkTile';
+import { fetchKeepsakeCounts } from '../lib/walk/keepsakeSync';
+import { WALK_CAMERA_ENABLED } from '../constants/features';
 import { PawPrintRecapCard } from '../components/pawprints/PawPrintRecapCard';
 import { PawPrintShareModal } from '../components/pawprints/PawPrintShareModal';
 import { MomentShareModal } from '../components/MomentShareModal';
@@ -35,6 +44,8 @@ interface GalleryRow {
   distance_m: number;
   route: GeoPoint[] | null;
   pause_points: GeoPoint[] | null;
+  /** Sniff episodes ({lat,lng,dwellS}); null on rows predating the detector. */
+  sniff_points: unknown[] | null;
   start_label: string | null;
   end_label: string | null;
   farthest_label: string | null;
@@ -46,17 +57,19 @@ function toPawPrintWalk(r: GalleryRow): PawPrintWalk {
     startedAt: r.started_at,
     distanceM: Number(r.distance_m) || 0,
     durationS: r.duration_s ?? 0,
-    sniffCount: Array.isArray(r.pause_points) ? r.pause_points.length : 0,
+    sniffCount: resolveSniffStops(r.sniff_points, r.pause_points).length,
     startLabel: r.start_label,
     endLabel: r.end_label,
     farthestLabel: r.farthest_label,
   };
 }
 
-// Gate wrapper, same pattern as walk.tsx — with walks disabled this route
-// (and any deep link to it) bounces straight back to the tabs.
+// Gate wrapper, same pattern as walk.tsx — when walks are unavailable (release
+// flag off, or a cat profile — walks are dogs-only) this route and any deep
+// link to it bounce straight back to the tabs.
 export default function WalkGalleryScreen() {
-  if (!WALK_TRACKING_ENABLED) return <Redirect href="/(tabs)" />;
+  const walkEnabled = useWalkEnabled();
+  if (!walkEnabled) return <Redirect href="/(tabs)" />;
   return <WalkGalleryInner />;
 }
 
@@ -68,6 +81,7 @@ function WalkGalleryInner() {
   const activePet = useActivePetStore((s) => s.activePet);
 
   const [rows, setRows] = useState<GalleryRow[] | null>(null);
+  const [awardedIds, setAwardedIds] = useState<string[]>([]);
   const [sharedWalk, setSharedWalk] = useState<GalleryRow | null>(null);
   const [recapShareOpen, setRecapShareOpen] = useState(false);
   const recapViewedRef = React.useRef(false);
@@ -83,16 +97,31 @@ function WalkGalleryInner() {
     if (!petId) return;
     let cancelled = false;
     (async () => {
-      // Newest 120 valid walks — ~4 months of daily walking; pagination can
-      // come when an archive actually outgrows this.
+      // Newest 120 walks — ~4 months of daily walking; pagination can come
+      // when an archive actually outgrows this.
+      //
+      // `neq likely_vehicle`, exactly matching useRecentWalks. This used to be
+      // `eq valid`, which silently disagreed with Home: verdicts are one of
+      // valid / too_short / likely_vehicle / gps_junk, so a short amble or a
+      // patchy-GPS walk appeared in the Home rail and then could not be found
+      // here at all. A walk someone was shown must remain findable.
       const { data, error } = await supabase
         .from('walk_sessions')
-        .select('id, started_at, duration_s, moving_time_s, distance_m, route, pause_points, start_label, end_label, farthest_label')
+        .select('id, started_at, duration_s, moving_time_s, distance_m, route, pause_points, sniff_points, start_label, end_label, farthest_label')
         .eq('pet_id', petId)
-        .eq('validation_verdict', 'valid')
+        .neq('validation_verdict', 'likely_vehicle')
         .order('started_at', { ascending: false })
         .limit(120);
       if (!cancelled && !error) setRows((data ?? []) as GalleryRow[]);
+    })();
+    // The persisted awards — the shelf's earned/locked split reads these so
+    // an unlock survives even if the 120-row window undercounts the archive.
+    (async () => {
+      const { data } = await supabase
+        .from('pet_milestones')
+        .select('milestone_id')
+        .eq('pet_id', petId);
+      if (!cancelled && data) setAwardedIds(data.map((r) => r.milestone_id as string));
     })();
     // Catch-up award check — walks synced while the app was dead may have
     // crossed a rung nobody celebrated yet.
@@ -100,9 +129,36 @@ function WalkGalleryInner() {
     return () => { cancelled = true; };
   }, [petId, user?.id]);
 
+  /**
+   * Moment counts per walk, for the tile badges.
+   *
+   * One query for the whole grid, fired after the rows land. Absent counts read
+   * as zero, so a slow or failed fetch simply shows the gallery as it was —
+   * badges are an annotation on the collection, never a precondition for it.
+   */
+  const [momentCounts, setMomentCounts] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!WALK_CAMERA_ENABLED || !rows || rows.length === 0) return;
+    let cancelled = false;
+    void fetchKeepsakeCounts(rows.map(r => r.id)).then(counts => {
+      if (!cancelled) setMomentCounts(counts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
+
   const walks = useMemo(() => (rows ?? []).map(toPawPrintWalk), [rows]);
   const totals = useMemo(() => aggregateWalks(walks), [walks]);
   const nextMilestone = useMemo(() => nextDistanceMilestone(totals), [totals]);
+  const unlockedTemplates = useMemo(
+    () => unlockedTemplateIds(totals.walkCount, awardedIds),
+    [totals.walkCount, awardedIds],
+  );
+  const templateChip = useMemo(
+    () => nextTemplateChipLine(totals.walkCount),
+    [totals.walkCount],
+  );
   const recap = useMemo(
     () => buildMonthlyRecap(walks, previousMonthKey(new Date()), petName),
     [walks, petName],
@@ -124,6 +180,26 @@ function WalkGalleryInner() {
   const gap = space.sm;
   const tileSize = Math.floor((winW - pad * 2 - gap * 2) / 3);
 
+  /**
+   * The archive, clubbed by where each walk set off from.
+   *
+   * A flat date-ordered grid works for a handful of walks and stops working at
+   * fifty: every tile is a small grey squiggle and "the one along the beach" is
+   * unfindable by eye. Place is what people actually remember.
+   *
+   * SectionList cannot do `numColumns`, so each section's data is pre-chunked
+   * into rows of three and `renderItem` draws a row.
+   */
+  const sections = useMemo(() => {
+    const groups = groupWalksByPlace(rows ?? []);
+    return groups.map((group) => ({
+      key: group.key,
+      label: group.label,
+      summary: groupSummary(group),
+      data: chunk(group.walks, 3),
+    }));
+  }, [rows]);
+
   const sharedLabels: WalkLabels | null = sharedWalk
     ? {
         startLabel: sharedWalk.start_label,
@@ -144,11 +220,10 @@ function WalkGalleryInner() {
         <View style={{ width: 24 }} />
       </View>
 
-      <FlatList
-        data={rows ?? []}
-        keyExtractor={(r) => r.id}
-        numColumns={3}
-        columnWrapperStyle={{ gap }}
+      <SectionList
+        sections={sections}
+        keyExtractor={(row, index) => `${row[0]?.id ?? 'row'}-${index}`}
+        stickySectionHeadersEnabled={false}
         contentContainerStyle={{ paddingHorizontal: pad, paddingBottom: insets.bottom + 40, gap }}
         ListHeaderComponent={
           <View style={styles.headerBlock}>
@@ -163,6 +238,32 @@ function WalkGalleryInner() {
                   {' '}together · {formatKm(nextMilestone.remainingKm)} km to {nextMilestone.threshold}
                 </Text>
               </View>
+            )}
+
+            {/* The card shelf — earned templates bright, the rest waiting.
+                Tapping any walk tile opens the picker where they all live. */}
+            {rows && rows.length > 0 && (
+              <View style={styles.shelf}>
+                {MOMENT_TEMPLATES.map((t) => {
+                  const earned = unlockedTemplates.has(t.id);
+                  return (
+                    <View key={t.id} style={[styles.shelfChip, !earned && styles.shelfChipLocked]}>
+                      {earned ? (
+                        <MaterialCommunityIcons name="paw" size={12} color={color.navy} />
+                      ) : (
+                        <MaterialIcons name="lock" size={12} color={color.slateFaint} />
+                      )}
+                      <Text style={[styles.shelfChipText, !earned && styles.shelfChipTextLocked]}>
+                        {t.name}
+                        {!earned && t.unlockAtWalks != null ? ` · at ${t.unlockAtWalks}` : ''}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+            {rows && rows.length > 0 && templateChip && (
+              <Text style={styles.templateChipLine}>{templateChip}</Text>
             )}
 
             {/* Last month's Paw Print — tap to share. */}
@@ -194,17 +295,34 @@ function WalkGalleryInner() {
             </View>
           )
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => {
-              haptic.tap();
-              track('pawprint_tile_opened', { walk_session_id: item.id });
-              setSharedWalk(item);
-            }}
-          >
-            <WalkTile route={item.route} size={tileSize} />
-          </TouchableOpacity>
+        renderSectionHeader={({ section }) => (
+          <View style={styles.placeHeader}>
+            <Text style={styles.placeName} numberOfLines={1}>
+              {section.label}
+            </Text>
+            <Text style={styles.placeSummary}>{section.summary}</Text>
+          </View>
+        )}
+        renderItem={({ item: row }) => (
+          <View style={{ flexDirection: 'row', gap }}>
+            {row.map((walkRow) => (
+              <TouchableOpacity
+                key={walkRow.id}
+                activeOpacity={0.85}
+                onPress={() => {
+                  haptic.tap();
+                  track('pawprint_tile_opened', { walk_session_id: walkRow.id });
+                  setSharedWalk(walkRow);
+                }}
+              >
+                <WalkTile
+                  route={walkRow.route}
+                  size={tileSize}
+                  momentCount={momentCounts[walkRow.id] ?? 0}
+                />
+              </TouchableOpacity>
+            ))}
+          </View>
         )}
       />
 
@@ -218,7 +336,7 @@ function WalkGalleryInner() {
           petGender={activePet.gender ?? null}
           startedAt={new Date(sharedWalk.started_at).getTime()}
           route={sharedWalk.route ?? []}
-          pausePoints={sharedWalk.pause_points ?? []}
+          sniffStops={resolveSniffStops(sharedWalk.sniff_points, sharedWalk.pause_points)}
           labels={sharedLabels}
           stats={{
             durationS: sharedWalk.duration_s,
@@ -269,6 +387,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: color.slateMuted,
   },
+  // Sits directly on the page rather than in a card or a tinted band: the tiles
+  // below it are the content, and a heavy header would compete with the grid it
+  // is only there to label.
+  placeHeader: {
+    paddingTop: space.xl,
+    paddingBottom: space.sm,
+  },
+  placeName: {
+    fontFamily: font.bold,
+    fontSize: 16,
+    color: color.ink,
+    letterSpacing: -0.2,
+  },
+  placeSummary: {
+    fontFamily: font.regular,
+    fontSize: 12.5,
+    color: color.slateMuted,
+    marginTop: 1,
+  },
   progressChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -286,6 +423,37 @@ const styles = StyleSheet.create({
   },
   progressBold: {
     fontFamily: font.bold,
+  },
+  shelf: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.sm,
+  },
+  shelfChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: color.yellowSoft,
+    borderRadius: radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  shelfChipLocked: {
+    backgroundColor: color.track,
+  },
+  shelfChipText: {
+    fontFamily: font.semibold,
+    fontSize: 11.5,
+    color: color.navy,
+  },
+  shelfChipTextLocked: {
+    fontFamily: font.medium,
+    color: color.slateMuted,
+  },
+  templateChipLine: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    color: color.slateMuted,
   },
   recapWrap: {
     alignItems: 'center',

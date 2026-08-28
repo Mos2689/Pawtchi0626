@@ -24,7 +24,7 @@ interface Props {
    * calories, schedule) — this sheet is presentational only.
    */
   onSelect: (bcs: number) => void;
-  /** Owner skipped — the caller advances using the drift-predicted BCS. */
+  /** Owner skipped — no assessment or plan revision is created. */
   onDismiss: () => void;
 }
 
@@ -32,7 +32,7 @@ interface Props {
  * The recheck moment of the weight program: celebrate the milestone (when
  * there is one), then ask for a 10-second body-shape re-pick — the same
  * re-assessment a vet performs at every weight-management recheck. Skipping
- * is allowed; the plan advances on the predicted score instead of stalling.
+ * is allowed, but the confirmed ideal remains locked until a score is chosen.
  */
 export function BcsRescoreSheet({
   visible, petName, species, trigger, progressPct, onSelect, onDismiss,

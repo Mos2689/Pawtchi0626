@@ -20,6 +20,17 @@
  *     naive stationary clock forever; movement only counts as going somewhere
  *     once it escapes the anchor radius, so a phone on a shelf still
  *     auto-pauses and auto-stops however much its fix wanders.
+ *   - SNIFF EPISODES are detected independently of auto-pause. Auto-pause is
+ *     session plumbing (4-minute threshold, 25m anchor — tuned for drift
+ *     immunity and battery, not behavior). Real sniff investigations run
+ *     20–90s, so a second detector tracks micro-stops: consecutive fixes
+ *     inside a tight, accuracy-adaptive radius for ≥15s become an episode,
+ *     recorded at the CENTROID of its fixes (√N noise reduction) with its
+ *     dwell time. Episodes only count once closed by departure — the trailing
+ *     stationary spell at walk end is the walk ending, not a sniff. When GPS
+ *     accuracy degrades the detector suspends rather than minting false
+ *     spots. sniffPoints is the complete stop record (long pauses register
+ *     as episodes too); pausePoints stays purely for session management.
  */
 
 import { GeoPoint, haversineMeters } from './geo';
@@ -62,6 +73,20 @@ export interface SessionConfig {
   minDurationForHomeStopMs: number;
   /** Absolute session ceiling. */
   hardCapMs: number;
+
+  // ── Sniff-episode detector ──
+  /** Minimum dwell inside the sniff radius to record an episode. */
+  sniffMinDwellMs: number;
+  /** Episode radius = this × rolling median accuracy, clamped below. */
+  sniffRadiusFactor: number;
+  sniffRadiusMinM: number;
+  sniffRadiusMaxM: number;
+  /** Median accuracy above this suspends the detector — no false spots. */
+  sniffSuspendAccuracyM: number;
+  /** A new episode this close to the previous one… */
+  sniffMergeDistanceM: number;
+  /** …starting within this gap of it, merges (dog came back to the tree). */
+  sniffMergeGapMs: number;
 }
 
 export const DEFAULT_SESSION_CONFIG: SessionConfig = {
@@ -78,7 +103,23 @@ export const DEFAULT_SESSION_CONFIG: SessionConfig = {
   minExcursionM: 60,
   minDurationForHomeStopMs: 5 * 60_000,
   hardCapMs: 3 * 60 * 60_000,
+  sniffMinDwellMs: 15_000,
+  sniffRadiusFactor: 1.5,
+  sniffRadiusMinM: 6,
+  sniffRadiusMaxM: 15,
+  sniffSuspendAccuracyM: 20,
+  sniffMergeDistanceM: 20,
+  sniffMergeGapMs: 60_000,
 };
+
+/** One recorded sniff episode — centroid of its fixes plus how long the
+ *  investigation lasted. dwellS lets the cards weight loops and lets the
+ *  15s floor be re-tuned later without re-tracking anything. */
+export interface SniffPoint {
+  lat: number;
+  lng: number;
+  dwellS: number;
+}
 
 export type SessionStatus = 'active' | 'auto_paused';
 
@@ -116,6 +157,25 @@ export interface WalkSessionState {
   acceptedCount: number;
   rejectedForAccuracy: number;
   rejectedForSpeed: number;
+
+  // ── Sniff-episode detector (independent of the loiter anchor above) ──
+  /** Anchor of the open episode; null = no episode open. */
+  sniffAnchor: GeoPoint | null;
+  /** When the open episode's first fix landed. */
+  sniffAnchorSince: number | null;
+  /** Timestamp of the last fix INSIDE the radius — dwell measures to here,
+   *  never to the escaping fix. */
+  sniffLastInsideTs: number | null;
+  /** Running centroid accumulators for the open episode. */
+  sniffSumLat: number;
+  sniffSumLng: number;
+  sniffFixCount: number;
+  /** Last ~9 accepted accuracies — the rolling median the radius adapts to. */
+  recentAccuracies: number[];
+  /** When the most recently RECORDED episode closed — the merge-gap clock. */
+  lastSniffClosedTs: number | null;
+  /** Recorded episodes, in walk order. */
+  sniffPoints: SniffPoint[];
 }
 
 export function createSession(startedAt: number): WalkSessionState {
@@ -136,6 +196,218 @@ export function createSession(startedAt: number): WalkSessionState {
     acceptedCount: 0,
     rejectedForAccuracy: 0,
     rejectedForSpeed: 0,
+    sniffAnchor: null,
+    sniffAnchorSince: null,
+    sniffLastInsideTs: null,
+    sniffSumLat: 0,
+    sniffSumLng: 0,
+    sniffFixCount: 0,
+    recentAccuracies: [],
+    lastSniffClosedTs: null,
+    sniffPoints: [],
+  };
+}
+
+/** An investigation currently in progress — the open episode, read live. */
+export interface LiveSniff {
+  /** Where the dog is investigating. */
+  anchor: GeoPoint;
+  /** When the episode opened. Stable for its whole life, so callers can use it
+   *  as the episode's identity without the detector having to mint an id. */
+  since: number;
+  /** How long it has been open, measured to the last fix INSIDE the radius —
+   *  the same basis the recorded episode uses, so live and final agree. */
+  dwellMs: number;
+}
+
+/**
+ * Read the open sniff episode, if there is one.
+ *
+ * Purely derived: this inspects detector state and changes nothing. It exists
+ * so the walk UI can react while a dog is nose-down, rather than only learning
+ * about the stop once the walk is over.
+ *
+ * That live window is the one moment on a walk when the owner is reliably
+ * stationary, unoccupied, and holding a phone — which is why it, and not a
+ * button, is where a capture prompt belongs.
+ */
+export function liveSniffState(
+  state: Pick<WalkSessionState, 'sniffAnchor' | 'sniffAnchorSince' | 'sniffLastInsideTs'>,
+  now: number,
+): LiveSniff | null {
+  if (state.sniffAnchor === null || state.sniffAnchorSince === null) return null;
+
+  // Measure to the last fix inside the radius, never to `now`: if GPS has gone
+  // quiet or the dog has already wandered off, the dwell must stop growing.
+  const lastInside = state.sniffLastInsideTs ?? state.sniffAnchorSince;
+  return {
+    anchor: state.sniffAnchor,
+    since: state.sniffAnchorSince,
+    dwellMs: Math.max(0, Math.min(lastInside, now) - state.sniffAnchorSince),
+  };
+}
+
+// ── Sniff-episode advance ────────────────────────────────────────────────────
+
+/** How many accepted accuracies the rolling median looks back over. */
+const ACCURACY_WINDOW = 9;
+
+/** Assumed accuracy while none has been observed — typical open-sky phone. */
+const DEFAULT_ACCURACY_M = 10;
+
+function medianOf(values: number[]): number {
+  if (values.length === 0) return DEFAULT_ACCURACY_M;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+type SniffSlice = Pick<
+  WalkSessionState,
+  | 'sniffAnchor'
+  | 'sniffAnchorSince'
+  | 'sniffLastInsideTs'
+  | 'sniffSumLat'
+  | 'sniffSumLng'
+  | 'sniffFixCount'
+  | 'recentAccuracies'
+  | 'lastSniffClosedTs'
+  | 'sniffPoints'
+>;
+
+/**
+ * Advance the sniff detector by one ACCEPTED fix. Runs on every fix that
+ * passes the hygiene gates — stillness and movement branches alike — because
+ * a sniffing dog's fixes land in both (sub-3m wobble AND 3–10m wander are
+ * the same investigation).
+ *
+ * Open episodes churn freely while walking: each stride escapes the radius
+ * and re-anchors, closing a sub-threshold episode that records nothing. Only
+ * genuinely dwelling inside the radius for sniffMinDwellMs mints a point —
+ * at the CENTROID of the episode's fixes, dwell measured to the last fix
+ * inside (the escaping stride never pads it).
+ */
+function advanceSniff(
+  state: WalkSessionState,
+  point: RawGpsPoint,
+  p: GeoPoint,
+  config: SessionConfig,
+): SniffSlice {
+  const recentAccuracies =
+    point.accuracy !== null
+      ? [...state.recentAccuracies, point.accuracy].slice(-ACCURACY_WINDOW)
+      : state.recentAccuracies;
+  const median = medianOf(recentAccuracies);
+  const suspended = median > config.sniffSuspendAccuracyM;
+  const radius = Math.min(
+    config.sniffRadiusMaxM,
+    Math.max(config.sniffRadiusMinM, config.sniffRadiusFactor * median),
+  );
+
+  // No open episode → open one here, unless the fix quality can't carry it.
+  if (state.sniffAnchor === null || state.sniffAnchorSince === null) {
+    if (suspended) {
+      return { ...pickSniff(state), recentAccuracies };
+    }
+    return {
+      ...pickSniff(state),
+      recentAccuracies,
+      sniffAnchor: p,
+      sniffAnchorSince: point.timestamp,
+      sniffLastInsideTs: point.timestamp,
+      sniffSumLat: p.lat,
+      sniffSumLng: p.lng,
+      sniffFixCount: 1,
+    };
+  }
+
+  const inside =
+    !suspended && haversineMeters(state.sniffAnchor, p) <= radius;
+
+  if (inside) {
+    return {
+      ...pickSniff(state),
+      recentAccuracies,
+      sniffLastInsideTs: point.timestamp,
+      sniffSumLat: state.sniffSumLat + p.lat,
+      sniffSumLng: state.sniffSumLng + p.lng,
+      sniffFixCount: state.sniffFixCount + 1,
+    };
+  }
+
+  // Departure (or suspension) closes the episode. Record if it dwelt long
+  // enough; either way the detector re-anchors at the current fix (unless
+  // accuracy is too poor to open anything).
+  const lastInside = state.sniffLastInsideTs ?? state.sniffAnchorSince;
+  const dwellMs = lastInside - state.sniffAnchorSince;
+
+  let sniffPoints = state.sniffPoints;
+  let lastSniffClosedTs = state.lastSniffClosedTs;
+  if (dwellMs >= config.sniffMinDwellMs && state.sniffFixCount > 0) {
+    const episode: SniffPoint = {
+      lat: state.sniffSumLat / state.sniffFixCount,
+      lng: state.sniffSumLng / state.sniffFixCount,
+      dwellS: Math.round(dwellMs / 1000),
+    };
+    const prev = sniffPoints[sniffPoints.length - 1];
+    const gapMs =
+      lastSniffClosedTs !== null ? state.sniffAnchorSince - lastSniffClosedTs : Infinity;
+    if (
+      prev &&
+      gapMs <= config.sniffMergeGapMs &&
+      haversineMeters(prev, episode) <= config.sniffMergeDistanceM
+    ) {
+      // Same spot, brief detour — one investigation. Dwell-weighted centroid
+      // so the bigger half of the visit pulls the point its way.
+      const total = prev.dwellS + episode.dwellS;
+      const merged: SniffPoint = {
+        lat: (prev.lat * prev.dwellS + episode.lat * episode.dwellS) / total,
+        lng: (prev.lng * prev.dwellS + episode.lng * episode.dwellS) / total,
+        dwellS: total,
+      };
+      sniffPoints = [...sniffPoints.slice(0, -1), merged];
+    } else {
+      sniffPoints = [...sniffPoints, episode];
+    }
+    lastSniffClosedTs = lastInside;
+  }
+
+  if (suspended) {
+    return {
+      recentAccuracies,
+      sniffAnchor: null,
+      sniffAnchorSince: null,
+      sniffLastInsideTs: null,
+      sniffSumLat: 0,
+      sniffSumLng: 0,
+      sniffFixCount: 0,
+      lastSniffClosedTs,
+      sniffPoints,
+    };
+  }
+  return {
+    recentAccuracies,
+    sniffAnchor: p,
+    sniffAnchorSince: point.timestamp,
+    sniffLastInsideTs: point.timestamp,
+    sniffSumLat: p.lat,
+    sniffSumLng: p.lng,
+    sniffFixCount: 1,
+    lastSniffClosedTs,
+    sniffPoints,
+  };
+}
+
+function pickSniff(state: WalkSessionState): SniffSlice {
+  return {
+    sniffAnchor: state.sniffAnchor,
+    sniffAnchorSince: state.sniffAnchorSince,
+    sniffLastInsideTs: state.sniffLastInsideTs,
+    sniffSumLat: state.sniffSumLat,
+    sniffSumLng: state.sniffSumLng,
+    sniffFixCount: state.sniffFixCount,
+    recentAccuracies: state.recentAccuracies,
+    lastSniffClosedTs: state.lastSniffClosedTs,
+    sniffPoints: state.sniffPoints,
   };
 }
 
@@ -156,6 +428,7 @@ export function ingestPoint(
   if (!state.lastAccepted || !state.startPoint) {
     return {
       ...state,
+      ...advanceSniff(state, point, p, config),
       startPoint: state.startPoint ?? p,
       lastAccepted: { ...p, timestamp: point.timestamp },
       path: [...state.path, p],
@@ -185,10 +458,12 @@ export function ingestPoint(
     const stationarySince = state.stationarySince ?? state.lastAccepted.timestamp;
     const pausedLongEnough =
       point.timestamp - stationarySince >= config.autoPauseAfterMs;
-    // Sniff stop begins: record WHERE, exactly once per pause spell.
+    // Pause spell begins: record WHERE, exactly once per transition. (Session
+    // plumbing — the cards read sniffPoints, not this.)
     const becamePaused = pausedLongEnough && state.status === 'active';
     return {
       ...state,
+      ...advanceSniff(state, point, p, config),
       stationarySince,
       status: pausedLongEnough ? 'auto_paused' : state.status,
       pausePoints: becamePaused
@@ -223,6 +498,7 @@ export function ingestPoint(
 
   return {
     ...state,
+    ...advanceSniff(state, point, p, config),
     status: pausedLongEnough ? 'auto_paused' : 'active',
     pausePoints: becamePaused ? [...state.pausePoints, p] : state.pausePoints,
     lastAccepted: { ...p, timestamp: point.timestamp },
@@ -298,8 +574,12 @@ export interface WalkSummary {
   rejectedForAccuracy: number;
   rejectedForSpeed: number;
   endReason: EndReason;
-  /** Sniff stops — one point per auto-pause, in walk order. */
+  /** Session pauses — one point per auto-pause transition (plumbing). */
   pausePoints: GeoPoint[];
+  /** Sniff episodes — centroid + dwell, in walk order. The record the cards
+   *  and milestones read. Optional because summaries persisted to the sync
+   *  queue before the detector existed lack it (consumers `?? []`). */
+  sniffPoints?: SniffPoint[];
 }
 
 export function finalizeSession(
@@ -330,5 +610,10 @@ export function finalizeSession(
     rejectedForSpeed: state.rejectedForSpeed,
     endReason: reason,
     pausePoints: state.pausePoints,
+    // Open episodes are discarded on purpose: an episode only counts once
+    // it closes by DEPARTURE. The trailing stationary spell — arriving home,
+    // the 10-minute auto-stop, fiddling before pressing Finish — is the walk
+    // ending, not a sniff.
+    sniffPoints: state.sniffPoints,
   };
 }

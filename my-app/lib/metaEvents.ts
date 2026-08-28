@@ -72,8 +72,6 @@ const ALLOWED_PROPS: Partial<Record<AnalyticsEvent, readonly string[]>> = {
   // Post-onboarding
   plan_reveal_viewed:         ['daily_kcal', 'target_weight_kg'],
   plan_reveal_continued:      [],
-  preview_home_viewed:        [],
-  preview_home_cta:           [],        // NOTE: 'pet' (pet name) deliberately excluded — PII
   profile_completion_chip_tapped: [],
 
   // Paywall utility events

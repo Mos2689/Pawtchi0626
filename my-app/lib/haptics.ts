@@ -23,6 +23,7 @@ function run(fn: () => Promise<unknown>): void {
 
 export const haptic = {
   tap: () => run(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)),
+  soft: () => run(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft)),
   medium: () => run(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)),
   select: () => run(() => Haptics.selectionAsync()),
   success: () => run(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)),

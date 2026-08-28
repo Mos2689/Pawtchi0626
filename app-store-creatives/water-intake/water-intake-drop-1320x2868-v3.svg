@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1320"
+     height="2868"
+     viewBox="0 0 1320 2868">
+  <defs>
+    <linearGradient id="clean-status-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7F650"/>
+      <stop offset="0.82" stop-color="#F7F650"/>
+      <stop offset="1" stop-color="#F7F650" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="screen-clip">
+      <path d="M 155 2868
+               L 155 758
+               Q 155 680 233 680
+               L 1087 680
+               Q 1165 680 1165 758
+               L 1165 2868
+               Z"/>
+    </clipPath>
+    <filter id="screen-shadow" x="-10%" y="-5%" width="120%" height="115%">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#0D1F2A" flood-opacity="0.055"/>
+    </filter>
+  </defs>
+
+  <rect width="1320" height="2868" fill="#F0EE04"/>
+
+  <path d="M -36 2408
+           C 82 2332, 128 2114, 150 1764
+           C 157 1658, 197 1592, 308 1535
+           C 507 1433, 697 1451, 867 1502
+           C 1010 1545, 1096 1510, 1165 1441
+           C 1228 1378, 1275 1320, 1360 1293"
+        fill="none"
+        stroke="#050505"
+        stroke-width="12"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <g font-family="Century Gothic, Arial, sans-serif" text-anchor="middle">
+    <text x="660" y="295"
+          fill="#050505"
+          font-size="98"
+          font-weight="400"
+          letter-spacing="-1.2">Caught it in time.</text>
+
+    <text x="660" y="438"
+          fill="#053DF0"
+          font-size="100"
+          font-weight="700"
+          letter-spacing="-2.1">Water intake dropped</text>
+    <text x="660" y="568"
+          fill="#053DF0"
+          font-size="100"
+          font-weight="700"
+          letter-spacing="-2.1">14% over the week</text>
+  </g>
+
+  <g filter="url(#screen-shadow)">
+    <path d="M 155 2868
+             L 155 758
+             Q 155 680 233 680
+             L 1087 680
+             Q 1165 680 1165 758
+             L 1165 2868
+             Z"
+          fill="#F8F7F3"/>
+    <image x="155"
+           y="680"
+           width="1010"
+           height="2188"
+           xlink:href="source-water-intake.png"
+           preserveAspectRatio="none"
+           clip-path="url(#screen-clip)"/>
+
+    <g clip-path="url(#screen-clip)">
+      <rect x="155" y="680" width="1010" height="144" fill="url(#clean-status-bg)"/>
+
+      <text x="211" y="765"
+            fill="#0B1116"
+            font-family="Segoe UI, Arial, sans-serif"
+            font-size="43"
+            font-weight="700">11:26</text>
+
+      <g fill="#0B1116">
+        <rect x="962" y="750" width="9" height="14" rx="3"/>
+        <rect x="976" y="742" width="9" height="22" rx="3"/>
+        <rect x="990" y="733" width="9" height="31" rx="3"/>
+        <rect x="1004" y="723" width="9" height="41" rx="3"/>
+      </g>
+
+      <g fill="none" stroke="#0B1116" stroke-width="8" stroke-linecap="round">
+        <path d="M 1028 738 Q 1055 714 1082 738"/>
+        <path d="M 1038 749 Q 1055 734 1072 749"/>
+      </g>
+      <circle cx="1055" cy="760" r="5.5" fill="#0B1116"/>
+
+      <rect x="1093" y="724" width="58" height="39" rx="9" fill="#0B1116"/>
+      <rect x="1153" y="735" width="6" height="17" rx="3" fill="#0B1116"/>
+      <text x="1122" y="754"
+            fill="#F7F650"
+            font-family="Segoe UI, Arial, sans-serif"
+            font-size="25"
+            font-weight="700"
+            text-anchor="middle">66</text>
+    </g>
+
+    <path d="M 155 2868
+             L 155 758
+             Q 155 680 233 680
+             L 1087 680
+             Q 1165 680 1165 758
+             L 1165 2868"
+          fill="none"
+          stroke="#0D1F2A"
+          stroke-width="1.5"
+          stroke-opacity="0.18"/>
+  </g>
+</svg>

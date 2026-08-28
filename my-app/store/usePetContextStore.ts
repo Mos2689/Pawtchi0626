@@ -7,6 +7,7 @@ import { adjustDailyTarget, deriveGoal, calculateRER } from '../lib/healthMath';
 import { computeObservedMer, type ObservedMerResult, MIN_DAYS_FOR_RECALIB } from '../lib/observedMer';
 import { deriveActivityRestrictionLabels } from '../lib/activityRestrictions';
 import { computeWaterTargetMl } from '../lib/hydration';
+import { checkFeature } from '../lib/health/featureRequirements';
 import { getLocalYMD, localDayStartUtcISO } from '../lib/dateUtils';
 import { track } from '../lib/analytics';
 
@@ -140,6 +141,24 @@ interface PetContextState extends TodayData, DerivedToday, TrendData {
   _todayFetchedAt: number;
   _trendsFetchedAt: number;
   _contextPetId: string | null;
+
+  /**
+   * Monotonic "the pet's logged data changed" counter, bumped by
+   * invalidateContext().
+   *
+   * The timestamps above answer "is my copy stale?" for this store's own
+   * fetches. This answers a different question, for everyone else: "has
+   * anything been logged, completed or regenerated since I last looked?" —
+   * which a timestamp reset to 0 and then back to Date.now() cannot express.
+   *
+   * It exists so screens holding derived aggregates can refetch on a real
+   * change instead of on every focus. Every mutation path in the app already
+   * calls invalidateContext (manual logs, plan generation, and both completion
+   * routes via lib/completeActivity.ts), so tracked walks finishing on the walk
+   * screen bump it too. Never reset — a counter that goes backwards would read
+   * as "unchanged" to anyone comparing against it.
+   */
+  dataVersion: number;
 
   fetchContext: (petId: string) => Promise<void>;
   injectSubscriptionData: (isFreemiumActive: boolean, daysSinceCreation: number) => void;
@@ -343,7 +362,15 @@ export function computeDerived(
   };
 }
 
-function buildNudgeInput(state: PetContextState) {
+/**
+ * Shapes the store's today/trend slices into the engine's input.
+ *
+ * Exported for the notification center, which needs the identical input to
+ * derive its items. A second, hand-rolled copy of this mapping in the center
+ * store is exactly how the two would drift into disagreeing about whether a
+ * nudge applies.
+ */
+export function buildNudgeInput(state: PetContextState) {
   // Today's biggest single calorie contributor (used by nudges to name the offender)
   let topContributorScan: { food_name: string; calories: number } | null = null;
   if (state.todayScans && state.todayScans.length > 0) {
@@ -395,6 +422,53 @@ function buildNudgeInput(state: PetContextState) {
     consecutiveHighIntensityDays: state.consecutiveHighIntensityDays,
     daysSinceLastFoodLog: state.daysSinceLastFoodLog,
     exerciseCalorieRatio: state.exerciseCalorieRatio,
+    // Lets the engine address the animal by name rather than "your pet", which
+    // the copy spec bans. Absent before a pet is loaded; every message has a
+    // name-free fallback.
+    petName: useActivePetStore.getState().activePet?.name ?? null,
+    ...buildReadiness(state),
+  };
+}
+
+/**
+ * Which health domains this pet is actually set up for.
+ *
+ * Reuses `checkFeature` — the same gate `HealthProfileGate` puts in front of the
+ * Meal, Activity and Health tabs. Before this, that gate had exactly one
+ * consumer in the whole app and the nudge path walked straight past it, which is
+ * why a walk-first account could be told its meals were missing while the Meal
+ * tab it was being sent to was itself gated shut.
+ */
+function buildReadiness(state: PetContextState) {
+  const pet = useActivePetStore.getState().activePet;
+
+  // `checkFeature` gates on weight, age and BCS — but NOT on
+  // `target_daily_calories`, which is the number `calPercent` actually divides
+  // by. A pet can clear the gate and still have no target, so check it here.
+  const mealPlanned =
+    checkFeature('meal_logging', pet).ready && (pet?.target_daily_calories ?? 0) > 0;
+
+  return {
+    mealPlanned,
+    // The hydration target derives purely from weight, so a non-zero target IS
+    // the weight check — see computeWaterTargetMl.
+    hydrationPlanned: state.waterTarget > 0,
+    activityPlanned: checkFeature('activity_plan', pet).ready,
+
+    // Exact: `food_last` in get_pet_dashboard is unwindowed, so null here means
+    // this pet has never had a food scan at all.
+    hasEverLoggedMeal: state.daysSinceLastFoodLog !== null,
+
+    // Water and activity have no unwindowed equivalent, so these are 7-day
+    // proxies. The imprecision is in the safe direction and the failure mode is
+    // mild: an owner who logged water once a fortnight ago goes quiet for a week
+    // rather than being nagged. Adding `water_last` / `activity_last` to
+    // get_pet_dashboard, mirroring `food_last`, would make them exact.
+    hasEverLoggedWater: state.todayWater > 0 || (state.hydrationScore?.avgMl ?? 0) > 0,
+    hasEverCompletedActivity:
+      state.activityCompletionRate > 0 ||
+      (state.activityScore?.thisWeek ?? 0) > 0 ||
+      (state.activityScore?.lastWeek ?? 0) > 0,
   };
 }
 
@@ -423,6 +497,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
   _todayFetchedAt: 0,
   _trendsFetchedAt: 0,
   _contextPetId: null,
+  dataVersion: 0,
 
   fetchContext: async (petId: string) => {
     const state = get();
@@ -497,7 +572,12 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
             .eq('pet_id', petId)
             .gte('created_at', todayStart)
             .order('created_at', { ascending: false })
-            .limit(5),
+            // 50, not 5: today's treat calories and macro totals are reduced
+            // from this array below, so a capped list under-counts the day
+            // while daily_logs.calories_consumed keeps the full number. The
+            // feed still renders only the first three. Mirrors the limit in
+            // get_pet_dashboard.
+            .limit(50),
           supabase
             .from('activities')
             .select('id, activity_type, title, scheduled_time, status, duration_minutes, intensity, distance_km, notes')
@@ -1029,7 +1109,11 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
 
   // Mark today + trends stale so the next refreshToday/refreshTrends actually hits
   // the network. Called after any write that changes today's or trend data.
-  invalidateContext: () => set({ _todayFetchedAt: 0, _trendsFetchedAt: 0 }),
+  invalidateContext: () => set(s => ({
+    _todayFetchedAt: 0,
+    _trendsFetchedAt: 0,
+    dataVersion: s.dataVersion + 1,
+  })),
 
   clearContext: () => set({
     ...initialTodayData,

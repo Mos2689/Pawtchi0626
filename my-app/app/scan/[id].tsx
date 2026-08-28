@@ -6,11 +6,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import type { FoodAnalysis } from '../../lib/foodVerdict';
-import NutritionReferencePanel from '../../components/NutritionReferencePanel';
 import { usePetContextStore } from '../../store/usePetContextStore';
+import { getLocalYMD } from '../../lib/dateUtils';
 import { haptic } from '../../lib/haptics';
 import { PawLoader } from '../../components/loader/PawLoader';
-import { makeShadow } from '../../constants/design';
+import { color, makeShadow } from '../../constants/design';
 
 interface FoodScanDetails {
     id: string;
@@ -73,8 +73,12 @@ export default function ScanDetailScreen() {
 
     const logDate = new Date(scan.created_at);
     const timeStr = logDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    // The daily_logs row this scan rolled into (UTC date matches how it was written).
-    const scanLogDate = new Date(scan.created_at).toISOString().split('T')[0];
+    // The daily_logs row this scan rolled into. It was written with the LOCAL
+    // calendar date (getLocalYMD in the meal screen), so it has to be read back
+    // the same way — toISOString() gives the UTC date, which for owners east of
+    // UTC is yesterday for every meal logged before ~10am. Adjusting or
+    // deleting one of those was decrementing the wrong day's calorie total.
+    const scanLogDate = getLocalYMD(logDate);
 
     // Apply a calorie delta to the scan's daily_logs row, then refresh context.
     const adjustDailyTotal = async (deltaKcal: number, treatDelta: number) => {
@@ -223,34 +227,31 @@ export default function ScanDetailScreen() {
                     {/* Nutrition Grid */}
                     <View style={styles.srNutritionGrid}>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="local-fire-department" size={28} color="#F7F602" />
+                            <MaterialIcons name="local-fire-department" size={28} color={color.yellow} />
                             <Text style={styles.srNutritionValue}>{scan.ai_estimated_calories}</Text>
                             <Text style={styles.srNutritionLabel}>Calories</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="egg-alt" size={28} color="#F7F602" />
+                            <MaterialIcons name="egg-alt" size={28} color={color.yellow} />
                             <Text style={styles.srNutritionValue}>{scan.protein_g}g</Text>
                             <Text style={styles.srNutritionLabel}>Protein</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="grass" size={28} color="#F7F602" />
+                            <MaterialIcons name="grass" size={28} color={color.yellow} />
                             <Text style={styles.srNutritionValue}>{scan.carbs_g}g</Text>
                             <Text style={styles.srNutritionLabel}>Carbs</Text>
                         </View>
                         <View style={styles.srNutritionItem}>
-                            <MaterialIcons name="opacity" size={28} color="#F7F602" />
+                            <MaterialIcons name="opacity" size={28} color={color.yellow} />
                             <Text style={styles.srNutritionValue}>{scan.fat_g}g</Text>
                             <Text style={styles.srNutritionLabel}>Fats</Text>
                         </View>
                     </View>
 
-                    {/* Nutrition Reference (AAFCO + clinical adjustments) */}
-                    {scan.food_analysis && (
-                        <NutritionReferencePanel
-                            foodAnalysis={scan.food_analysis}
-                            mealKcalOverride={scan.ai_estimated_calories}
-                        />
-                    )}
+                    {/* The AAFCO nutrition-reference panel (Fat/Fiber/Calcium/
+                        Phosphorus vs. AAFCO minimums) used to render here.
+                        Hidden per product decision, same as the pre-log scan
+                        result in app/(tabs)/meal.tsx. */}
 
                     {/* Ingredients */}
                     {scan.ingredients && scan.ingredients.length > 0 && (
@@ -363,7 +364,7 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         height: 6,
-        backgroundColor: '#F7F602',
+        backgroundColor: color.yellow,
     },
     srFoodHeader: {
         flexDirection: 'row' as const,
@@ -414,7 +415,7 @@ const styles = StyleSheet.create({
     srHealthScoreValue: {
         fontFamily: 'Montserrat_800ExtraBold',
         fontSize: 28,
-        color: '#F7F602',
+        color: color.yellow,
     },
     srProgressBarBg: {
         width: '100%' as const,
@@ -426,7 +427,7 @@ const styles = StyleSheet.create({
     srProgressBarFill: {
         height: '100%' as const,
         borderRadius: 8,
-        backgroundColor: '#F7F602',
+        backgroundColor: color.yellow,
     },
     srHealthScoreDesc: {
         fontFamily: 'Montserrat_500Medium',

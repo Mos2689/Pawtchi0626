@@ -37,7 +37,7 @@ const BANNED_WORDS = [
   'ai-powered',
 ];
 
-const PROPER_NOUNS = new Set(['Pawtchi', 'Walksign', 'Milo', 'Bella', 'Pra', 'Mos', 'July']);
+const PROPER_NOUNS = new Set(['Pawtchi', 'Walksign', 'Milo', 'Bella', 'July']);
 
 const EMOJI =
   /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/u;

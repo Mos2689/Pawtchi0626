@@ -17,6 +17,12 @@ interface Props {
   onClose: () => void;
   /** Flows into every share/analytics event (milestone / monthly_recap / …). */
   source: ShareMomentContext['source'];
+  /** Which earned template the card is, when it is one — analytics only. */
+  template?: string;
+  /** Small letterspaced line above the card, OUTSIDE the captured pixels. */
+  eyebrow?: string;
+  /** Calm line under the card, also outside the capture. */
+  subline?: string;
   /** The card to capture — rendered live, so preview === shared pixels. */
   children: React.ReactNode;
 }
@@ -27,7 +33,15 @@ interface Props {
  * without its grounds/photo/caption editing — these cards have exactly one
  * form, so the sheet is preview + share + not-now, nothing else.
  */
-export function PawPrintShareModal({ visible, onClose, source, children }: Props) {
+export function PawPrintShareModal({
+  visible,
+  onClose,
+  source,
+  template,
+  eyebrow,
+  subline,
+  children,
+}: Props) {
   const insets = useSafeAreaInsets();
   const cardRef = useRef<View>(null);
   const [igAvailable, setIgAvailable] = useState(false);
@@ -45,11 +59,11 @@ export function PawPrintShareModal({ visible, onClose, source, children }: Props
     onClose();
   };
   const onShare = async () => {
-    const outcome = await shareMoment(cardRef, { source });
+    const outcome = await shareMoment(cardRef, { source, template });
     if (outcome === 'shared') onClose();
   };
   const onShareToStory = async () => {
-    const outcome = await shareMomentToInstagramStory(cardRef, { source });
+    const outcome = await shareMomentToInstagramStory(cardRef, { source, template });
     if (outcome === 'shared') onClose();
     else await onShare();
   };
@@ -57,9 +71,11 @@ export function PawPrintShareModal({ visible, onClose, source, children }: Props
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={dismiss}>
       <View style={styles.scrim}>
+        {eyebrow ? <Text style={styles.eyebrow}>{eyebrow.toUpperCase()}</Text> : null}
         <View ref={cardRef} collapsable={false}>
           {children}
         </View>
+        {subline ? <Text style={styles.subline}>{subline}</Text> : null}
 
         <View style={[styles.actions, { paddingBottom: insets.bottom + space.lg }]}>
           {igAvailable ? (
@@ -96,6 +112,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: space.xxl,
+  },
+  eyebrow: {
+    ...type.label,
+    color: color.creamDim,
+    letterSpacing: 2.4,
+    marginBottom: space.lg,
+  },
+  subline: {
+    ...type.body,
+    color: color.creamDim,
+    textAlign: 'center',
+    marginTop: space.lg,
   },
   actions: {
     alignSelf: 'stretch',

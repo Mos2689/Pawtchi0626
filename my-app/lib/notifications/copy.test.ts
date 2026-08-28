@@ -35,7 +35,7 @@ const BANNED_WORDS = [
 ];
 
 // Proper nouns that may legitimately carry a capital mid-sentence.
-const PROPER_NOUNS = new Set(['Pawtchi', 'Walksign', 'Milo', 'Bella', 'Pra', 'Mos']);
+const PROPER_NOUNS = new Set(['Pawtchi', 'Walksign', 'Milo', 'Bella']);
 
 const EMOJI =
   /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/u;

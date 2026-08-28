@@ -17,6 +17,12 @@ import {
   PawPrintWalk,
   WalkTotals,
 } from './pawPrints';
+import {
+  detectTemplateUnlocks,
+  MomentTemplateDef,
+  templateAwardId,
+} from './momentTemplates';
+import { resolveSniffStops } from './momentCard';
 import { usePawPrintStore } from '../store/usePawPrintStore';
 
 /** Row shape of the aggregate query — route deliberately NOT selected
@@ -27,6 +33,7 @@ interface WalkAggRow {
   distance_m: number;
   duration_s: number;
   pause_points: unknown[] | null;
+  sniff_points: unknown[] | null;
   start_label: string | null;
   end_label: string | null;
   farthest_label: string | null;
@@ -38,7 +45,8 @@ function mapRow(row: WalkAggRow): PawPrintWalk {
     startedAt: row.started_at,
     distanceM: Number(row.distance_m) || 0,
     durationS: row.duration_s ?? 0,
-    sniffCount: Array.isArray(row.pause_points) ? row.pause_points.length : 0,
+    // Episodes when the row has them; legacy rows fall back to pause count.
+    sniffCount: resolveSniffStops(row.sniff_points, (row.pause_points ?? []) as { lat: number; lng: number }[]).length,
     startLabel: row.start_label,
     endLabel: row.end_label,
     farthestLabel: row.farthest_label,
@@ -49,7 +57,7 @@ function mapRow(row: WalkAggRow): PawPrintWalk {
 export async function fetchValidWalks(petId: string): Promise<PawPrintWalk[]> {
   const { data, error } = await supabase
     .from('walk_sessions')
-    .select('id, started_at, distance_m, duration_s, pause_points, start_label, end_label, farthest_label')
+    .select('id, started_at, distance_m, duration_s, pause_points, sniff_points, start_label, end_label, farthest_label')
     .eq('pet_id', petId)
     .eq('validation_verdict', 'valid')
     .order('started_at', { ascending: true });
@@ -61,11 +69,15 @@ export interface AwardCheckResult {
   totals: WalkTotals;
   /** Rungs crossed for the first time by this check. */
   newAwards: MilestoneDef[];
+  /** Share-card templates whose gate this check crossed for the first time. */
+  newTemplateUnlocks: MomentTemplateDef[];
 }
 
 /**
- * Aggregate the archive, persist any newly crossed milestones, and return
- * them. Safe to call repeatedly; a retry or race can never double-award.
+ * Aggregate the archive, persist any newly crossed milestones AND template
+ * gates, and return them. Both ladders share the pet_milestones table with
+ * disjoint id spaces (rung ids vs `template_*`), so one idempotent upsert
+ * covers everything; a retry or race can never double-award.
  */
 export async function checkAndAwardMilestones(
   petId: string,
@@ -83,17 +95,24 @@ export async function checkAndAwardMilestones(
 
   const awarded = (awardedRows ?? []).map((r) => r.milestone_id as string);
   const crossed = detectCrossedMilestones(totals, awarded);
-  if (crossed.length === 0) return { totals, newAwards: [] };
+  const templates = detectTemplateUnlocks(totals.walkCount, awarded);
+  if (crossed.length === 0 && templates.length === 0) {
+    return { totals, newAwards: [], newTemplateUnlocks: [] };
+  }
 
-  const { error: insertErr } = await supabase.from('pet_milestones').upsert(
-    crossed.map((m) => ({
-      owner_id: ownerId,
-      pet_id: petId,
-      milestone_id: m.id,
-      walk_session_id: walkSessionId ?? null,
-    })),
-    { onConflict: 'pet_id,milestone_id', ignoreDuplicates: true },
-  );
+  const rows = [
+    ...crossed.map((m) => m.id),
+    ...templates.map((t) => templateAwardId(t.id)),
+  ].map((milestoneId) => ({
+    owner_id: ownerId,
+    pet_id: petId,
+    milestone_id: milestoneId,
+    walk_session_id: walkSessionId ?? null,
+  }));
+  const { error: insertErr } = await supabase.from('pet_milestones').upsert(rows, {
+    onConflict: 'pet_id,milestone_id',
+    ignoreDuplicates: true,
+  });
   if (insertErr) throw insertErr;
 
   for (const m of crossed) {
@@ -103,7 +122,14 @@ export async function checkAndAwardMilestones(
       threshold: m.threshold,
     });
   }
-  return { totals, newAwards: crossed };
+  for (const t of templates) {
+    track('template_unlocked', {
+      template: t.id,
+      unlock_at_walks: t.unlockAtWalks,
+      walk_count: totals.walkCount,
+    });
+  }
+  return { totals, newAwards: crossed, newTemplateUnlocks: templates };
 }
 
 /**
@@ -117,10 +143,29 @@ export async function evaluatePawPrints(
   walkSessionId?: string | null,
 ): Promise<void> {
   try {
-    const { totals, newAwards } = await checkAndAwardMilestones(petId, ownerId, walkSessionId);
+    const { totals, newAwards, newTemplateUnlocks } = await checkAndAwardMilestones(
+      petId,
+      ownerId,
+      walkSessionId,
+    );
     const store = usePawPrintStore.getState();
     store.setTotals(totals);
     if (newAwards.length > 0) store.enqueueMilestones(newAwards);
+    if (newTemplateUnlocks.length > 0) {
+      // Catch-up dampener: with no fresh walk in hand (gallery open after
+      // walks synced in the background), a long history could cross several
+      // gates at once — celebrate only the highest; the library quietly
+      // holds the rest. A live walk sync celebrates everything it crossed.
+      const toCelebrate = walkSessionId
+        ? newTemplateUnlocks
+        : newTemplateUnlocks.slice(-1);
+      store.enqueueTemplateUnlocks(
+        toCelebrate.map((t) => ({
+          templateId: t.id,
+          walkSessionId: walkSessionId ?? null,
+        })),
+      );
+    }
   } catch {
     // Next sync or gallery open retries; the DB idempotency makes that free.
   }

@@ -12,6 +12,8 @@ import { Platform } from 'react-native';
 import Purchases, { CustomerInfo, PurchasesPackage, PURCHASES_ERROR_CODE } from 'react-native-purchases';
 import { useAuth } from './AuthProvider';
 import { trackFirebaseEvent } from '../lib/firebaseAnalytics';
+import { track } from '../lib/analytics';
+import { recordEntitlementSeen, revokeProOffer } from '../lib/proOffer/client';
 
 // Subscription status types
 export type SubscriptionStatus = 'loading' | 'trial' | 'active' | 'expired' | 'none';
@@ -30,6 +32,8 @@ export interface SubscriptionContextValue extends SubscriptionState {
     restorePurchases: () => Promise<void>;
     purchasePackage: (pkg: PurchasesPackage) => Promise<boolean>;
     getOfferings: () => Promise<PurchasesPackage[]>;
+    /** A named offering's packages, or null when it is not available on this store. */
+    getOfferingById: (offeringId: string) => Promise<PurchasesPackage[] | null>;
     refresh: () => Promise<void>;
 }
 
@@ -55,6 +59,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         hasFullAccess: true,
     });
 
+    // Fires the pro-offer entitlement mirror at most once per mount. The RC
+    // listener re-delivers CustomerInfo on every refresh, and two RPCs per
+    // foreground is noise for a write-once column.
+    const entitlementMirroredRef = useRef(false);
+
     // Translate a RevenueCat CustomerInfo snapshot into our state.
     // Access rule: a subscriber always has access; everyone else has full access for the
     // first FREEMIUM_DAYS days (no gating in that window), then is gated.
@@ -69,6 +78,22 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
             }
 
             const entitlement = customerInfo.entitlements.active[ENTITLEMENT_ID];
+
+            // The win-back offer is for people who have NEVER subscribed, so
+            // any entitlement — active or lapsed — permanently disqualifies
+            // this account and closes any open offer.
+            //
+            // This runs here rather than in the paywall because the case it
+            // exists for is buying on a second device: the discount window has
+            // to close whether or not this device's owner ever opens the
+            // paywall again. Best-effort by design; the live `isPro` check in
+            // useProOffer is what actually keeps the screen away from a payer.
+            const everEntitled = !!customerInfo.entitlements.all[ENTITLEMENT_ID];
+            if (everEntitled && !entitlementMirroredRef.current) {
+                entitlementMirroredRef.current = true;
+                recordEntitlementSeen();
+                revokeProOffer(entitlement ? 'subscribed' : 'previously_subscribed');
+            }
 
             if (entitlement) {
                 const isTrial = entitlement.periodType === 'TRIAL';
@@ -114,6 +139,13 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     }, [processCustomerInfo]);
 
     useEffect(() => {
+        // A different account signing in on this device is a different
+        // entitlement history. Without this reset the mirror would stay latched
+        // from the previous user and the new one's offer would never be
+        // revoked — the same shape of cross-account leak the notification
+        // centre's runtimeItems reset exists to prevent.
+        entitlementMirroredRef.current = false;
+
         // RevenueCat is configured in the layout effect, which can run after this provider
         // mounts. Rather than bail when not configured, poll briefly until it is, then
         // attach the listener and read the live entitlement — removing the race that left
@@ -230,6 +262,16 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
                         product_id: productIdentifier,
                     });
                 }
+            } else if (entitlement) {
+                // Sold, granted, and NOT reported to Google Ads. Verification
+                // runs in informational mode, so an unverified entitlement is
+                // invisible everywhere else — the user is subscribed and the app
+                // behaves normally. Without this line the only symptom would be
+                // conversions quietly missing from Ads with nothing to point at.
+                track('purchase_conversion_unverified', {
+                    verification: entitlement.verification ?? 'unknown',
+                    period_type: entitlement.periodType,
+                });
             }
             return true;
         } catch (e: any) {
@@ -279,6 +321,30 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
+    // A specific, non-current offering by identifier — how the win-back paywall
+    // reaches the discounted SKU without disturbing `current`, which the
+    // standard paywall reads and which must keep meaning "the normal price".
+    //
+    // Returns null rather than falling back to `current` on a miss. A silent
+    // fallback here would render the win-back screen's discount framing around
+    // the full price, which is the one failure mode worse than showing nothing:
+    // the caller treats null as "show the standard paywall instead".
+    const getOfferingById = useCallback(
+        async (offeringId: string): Promise<PurchasesPackage[] | null> => {
+            try {
+                if (!(await Purchases.isConfigured())) return null;
+                const offerings = await Purchases.getOfferings();
+                const offering = offerings.all?.[offeringId];
+                if (!offering || offering.availablePackages.length === 0) return null;
+                return offering.availablePackages;
+            } catch (e) {
+                console.warn('Offering lookup failed:', offeringId, e);
+                return null;
+            }
+        },
+        [],
+    );
+
     const refresh = useCallback(async () => {
         try {
             if (!(await Purchases.isConfigured())) return;
@@ -297,8 +363,8 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const value = useMemo<SubscriptionContextValue>(
-        () => ({ ...state, restorePurchases, purchasePackage, getOfferings, refresh }),
-        [state, restorePurchases, purchasePackage, getOfferings, refresh],
+        () => ({ ...state, restorePurchases, purchasePackage, getOfferings, getOfferingById, refresh }),
+        [state, restorePurchases, purchasePackage, getOfferings, getOfferingById, refresh],
     );
 
     return <SubscriptionContext.Provider value={value}>{children}</SubscriptionContext.Provider>;

@@ -4,7 +4,7 @@ import Svg, { Circle } from 'react-native-svg';
 import Animated, {
   useSharedValue, useAnimatedProps, useAnimatedStyle, withTiming, withSequence, withSpring, Easing,
 } from 'react-native-reanimated';
-import { motion } from '../constants/design';
+import { color, motion } from '../constants/design';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -18,7 +18,7 @@ export const PHOTO_RADIUS = 82;
 
 export const RING_CONFIG = [
   { r: 130, color: '#f97316', stroke: 14 }, // outer — calories
-  { r: 108, color: '#F7F602', stroke: 13 }, // mid — move
+  { r: 108, color: color.viz.move, stroke: 13 }, // mid — move
   { r: 86, color: '#3091F9', stroke: 12 },  // inner — hydrate
 ];
 

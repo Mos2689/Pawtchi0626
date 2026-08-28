@@ -19,6 +19,17 @@
  * Offline: walks queue in AsyncStorage with per-step flags and are re-flushed
  * on demand (app launch, next walk). Verdicts other than 'valid' stop after
  * step 1 — a car ride must never close a walk ring.
+ *
+ * The queue is device-wide but every flush is OWNER-SCOPED. A queued walk
+ * carries the owner_id and pet_id it was recorded under, and the flush used to
+ * process whatever it found — so a walk left unsynced by one account could be
+ * written while a different account was signed in. RLS would have rejected most
+ * of those writes (they name another owner's ids), but "the server refuses it
+ * fifty times" is not a design: the retries were silent, they burned the attempt
+ * budget of a walk that could still succeed later, and any table whose policy is
+ * looser than walk_sessions' would have accepted it against the wrong account.
+ * Filtering by owner instead of clearing on sign-out means the first account's
+ * unsynced walks are still there, intact, when it signs back in.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -41,6 +52,9 @@ import { ValidationResult } from './walkValidator';
 import type { WalkLabels } from './geoLabels';
 import { maybeEvaluateWalksign } from '../walksign/walksignSync';
 import { evaluatePawPrints } from '../pawPrintsSync';
+import { setPendingWalkStory } from '../walkStorySync';
+import { fetchWalkWeather } from './weather';
+import { WALK_STORY_ENABLED } from '../../constants/features';
 
 const QUEUE_KEY = 'walk:sync_queue';
 const MAX_ATTEMPTS = 50;
@@ -108,6 +122,38 @@ async function writeQueue(queue: QueuedWalk[]): Promise<void> {
   }
 }
 
+export interface QueuedWalkDiscardState {
+  outcome: WalkSyncOutcome | null;
+  matchedActivityId: string | null;
+}
+
+/**
+ * Permanently remove a finished walk from the offline retry queue.
+ *
+ * Returns the queue's more precise outcome when a sync got part-way through
+ * before failing. The summary only knows `queued` in that situation, while
+ * the queued record may already know that it claimed or created an activity;
+ * discard needs that distinction to undo the partial write safely.
+ */
+export async function readWalkSyncQueueState(
+  walkSessionId: string,
+): Promise<QueuedWalkDiscardState | null> {
+  const queue = await readQueue();
+  const queued = queue.find(item => item.walkSessionId === walkSessionId) ?? null;
+  if (!queued) return null;
+  return {
+    outcome: queued.outcome,
+    matchedActivityId: queued.matchedActivityId,
+  };
+}
+
+/** Remove a discarded walk so a later offline flush cannot recreate it. */
+export async function removeWalkFromSyncQueue(walkSessionId: string): Promise<void> {
+  const queue = await readQueue();
+  await writeQueue(queue.filter(item => item.walkSessionId !== walkSessionId));
+  completedOutcomes.delete(walkSessionId);
+}
+
 export interface FinalizeWalkArgs {
   walkSessionId: string;
   summary: WalkSummary;
@@ -145,7 +191,7 @@ export async function finalizeAndSyncWalk(args: FinalizeWalkArgs): Promise<WalkS
   queue.push(item);
   await writeQueue(queue);
 
-  await flushWalkQueue();
+  await flushWalkQueue(args.ownerId);
 
   const after = await readQueue();
   const mine = after.find(q => q.walkSessionId === args.walkSessionId);
@@ -165,16 +211,45 @@ const completedOutcomes = new Map<string, WalkSyncResult>();
 
 let flushing = false;
 
-/** Process every queued walk. Safe to call often; concurrent calls coalesce. */
-export async function flushWalkQueue(): Promise<void> {
+/**
+ * The signed-in owner, from the locally cached session. `getSession` reads
+ * storage and never hits the network, so a launch-time flush stays offline-safe.
+ */
+async function signedInOwnerId(): Promise<string | null> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.user?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Process this owner's queued walks. Safe to call often; concurrent calls
+ * coalesce.
+ *
+ * Pass the owner explicitly when it is known (the walk that just finished);
+ * omit it and the signed-in account is used. Walks belonging to anyone else are
+ * left in the queue untouched — not attempted, not counted as an attempt — so
+ * they are still waiting when their own owner returns. With nobody signed in,
+ * nothing is flushed at all.
+ */
+export async function flushWalkQueue(ownerId?: string | null): Promise<void> {
   if (flushing) return;
   flushing = true;
   try {
+    const owner = ownerId ?? (await signedInOwnerId());
+    if (!owner) return;
+
     let queue = await readQueue();
     if (queue.length === 0) return;
 
     const remaining: QueuedWalk[] = [];
     for (const item of queue) {
+      if (item.ownerId !== owner) {
+        remaining.push(item);
+        continue;
+      }
       try {
         const result = await processQueuedWalk(item);
         completedOutcomes.set(item.walkSessionId, result);
@@ -222,6 +297,9 @@ async function processQueuedWalk(item: QueuedWalk): Promise<WalkSyncResult> {
         end_label: item.labels.endLabel,
         farthest_label: item.labels.farthestLabel,
         pause_points: s.pausePoints ?? [],
+        // Sniff episodes ({lat,lng,dwellS}) — the record the cards read.
+        // [] is a real "no sniffs"; only pre-episode rows are NULL.
+        sniff_points: s.sniffPoints ?? [],
       },
       { onConflict: 'id', ignoreDuplicates: true },
     );
@@ -358,10 +436,36 @@ async function processQueuedWalk(item: QueuedWalk): Promise<WalkSyncResult> {
       // transition. Fire-and-forget: the state machine is idempotent and a
       // failure just means the next walk tries again.
       if (item.verdict.verdict === 'valid') {
-        maybeEvaluateWalksign(item.petId, { force: true }).catch(() => {});
+        maybeEvaluateWalksign(item.petId, item.ownerId, { force: true }).catch(() => {});
         // Paw Prints: did this walk cross a milestone rung? Same contract —
         // idempotent, fire-and-forget, celebration queued via the store.
         evaluatePawPrints(item.petId, item.ownerId, item.walkSessionId).catch(() => {});
+      }
+      // Walk Story rides EVERY logged walk (a matched slot or its own row),
+      // matching the Home feed's inclusiveness: a too-short doorstep loop or a
+      // patchy-GPS amble is still a story, just as it's still shareable. Only a
+      // likely_vehicle ride is excluded — and that verdict already returned at
+      // step 1, so anything reaching here qualifies. Fire-and-forget: the story
+      // marker and the weather enrichment can never fail or delay completion.
+      if (WALK_STORY_ENABLED) {
+        setPendingWalkStory(item.walkSessionId, item.petId, item.ownerId).catch(() => {});
+        track('walk_story_generated', {
+          walk_session_id: item.walkSessionId,
+          verdict: item.verdict.verdict,
+        });
+        const start = item.route[0];
+        if (start) {
+          fetchWalkWeather(start.lat, start.lng)
+            .then((weather) => {
+              if (weather) {
+                return supabase
+                  .from('walk_sessions')
+                  .update({ weather })
+                  .eq('id', item.walkSessionId);
+              }
+            })
+            .catch(() => {});
+        }
       }
     }
     item.steps.sideEffectsFired = true;

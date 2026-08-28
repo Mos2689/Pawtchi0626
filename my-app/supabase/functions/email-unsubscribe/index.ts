@@ -173,7 +173,7 @@ function confirmPage(scope: string): string {
     <form method="POST">
       <button type="submit"
         style="display:block;width:100%;padding:16px;border:0;border-radius:12px;
-               background:#F7F602;color:#07202A;font-size:16px;font-weight:700;cursor:pointer;">
+               background:#F4F600;color:#07202A;font-size:16px;font-weight:700;cursor:pointer;">
         Unsubscribe
       </button>
     </form>`);

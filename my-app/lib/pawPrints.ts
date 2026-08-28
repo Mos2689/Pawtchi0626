@@ -25,7 +25,7 @@ export interface PawPrintWalk {
   startedAt: string;
   distanceM: number;
   durationS: number;
-  /** Real sniff-stop count (pause_points length). */
+  /** Sniff episodes on the walk (v2 detector); legacy rows count pauses. */
   sniffCount: number;
   startLabel: string | null;
   endLabel: string | null;
@@ -151,7 +151,10 @@ export const MILESTONES: MilestoneDef[] = [
   ...ladder('distance', 'kilometres', [10, 25, 50, 100, 250, 500]),
   ...ladder('walks', 'walks', [10, 25, 50, 100, 250]),
   ...ladder('places', 'places', [5, 15, 30]),
-  ...ladder('sniffs', 'good smells', [100, 500, 1000]),
+  // 2500/5000 appended for the episode-rate era: the v2 sniff detector
+  // counts 30s micro-stops (~5-10 per walk), so the ladder climbs faster
+  // than under the old 4-minute pauses. Earlier rungs keep their ids.
+  ...ladder('sniffs', 'good smells', [100, 500, 1000, 2500, 5000]),
 ];
 
 function familyMetric(totals: WalkTotals, family: MilestoneFamily): number {

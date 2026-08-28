@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Modal, Switch,
-  KeyboardAvoidingView, Platform,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Switch,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, {
@@ -13,35 +12,24 @@ import Animated, {
 
 import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
 import { usePetStore } from '../../store/usePetStore';
+import { BreedPickerModal } from '../../components/BreedPickerModal';
+import { VetReportScanner } from '../../components/onboarding/VetReportScanner';
+import { useActivePetStore } from '../../store/useActivePetStore';
+import { forwardCompletionParams, isCompletionMode } from '../../lib/onboarding/completionMode';
 import { validateWeight } from '../../lib/weightBounds';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
-import { AnimatedPressable } from '../../components/AnimatedPressable';
+import { TextField } from '../../components/ui/TextField';
 import { OnboardingHeader } from '../../components/OnboardingHeader';
+import {
+  OnboardingFormScaffold, ScaffoldField,
+} from '../../components/onboarding/OnboardingFormScaffold';
 import {
   stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
 import { track } from '../../lib/analytics';
 import { startBcsPhotoEstimate } from '../../lib/bcsPhotoEstimateClient';
 
-const DOG_BREEDS = [
-  'Mixed Breed',
-  'Labrador Retriever', 'Staffordshire Bull Terrier', 'French Bulldog', 'German Shepherd',
-  'Golden Retriever', 'Border Collie', 'Cavalier King Charles Spaniel', 'Australian Kelpie',
-  'Bulldog', 'Beagle', 'Rottweiler', 'Yorkshire Terrier', 'Boxer', 'Husky', 'Corgi',
-  'Pug', 'Australian Shepherd', 'Australian Cattle Dog', 'Shih Tzu', 'Pomeranian',
-  'Maltese', 'Jack Russell Terrier', 'Miniature Schnauzer', 'Cocker Spaniel',
-  'West Highland White Terrier',
-  'Toy Poodle', 'Miniature Poodle', 'Standard Poodle',
-  'Miniature Dachshund', 'Standard Dachshund',
-  'Cavoodle', 'Labradoodle', 'Groodle', 'Spoodle', 'Moodle', 'Puggle',
-  'Other',
-];
-const CAT_BREEDS = [
-  'Mixed Breed / Domestic Shorthair', 'Domestic Longhair', 'Ragdoll', 'Maine Coon', 'Persian',
-  'British Shorthair', 'Sphynx', 'Bengal', 'Abyssinian', 'Scottish Fold', 'Siamese',
-  'Russian Blue', 'Burmese', 'Birman', 'Other',
-];
 
 // Age is picked, not typed — bounded lists make impossible ages (e.g. 200
 // years) unrepresentable instead of validated after the fact. 25 years covers
@@ -52,6 +40,22 @@ const AGE_MONTHS_OPTIONS = Array.from({ length: 12 }, (_, i) => i); // 0–11
 // Step 3 of 6 — body basics. Five light fields on one screen, no scroll fatigue.
 export default function BodyBasicsScreen() {
   const router = useRouter();
+  const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
+  const completing = isCompletionMode(completionParams);
+
+  // Entering from a health gate rather than from onboarding: the draft store is
+  // empty, so rebuild it from the pet that already exists. Without this the
+  // owner is shown blank fields for facts they gave us at signup, and saving
+  // would write those blanks back over the row.
+  const hydrateFromPet = usePetStore(s => s.hydrateFromPet);
+  const hydratedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!completing || hydratedRef.current) return;
+    const pet = useActivePetStore.getState().activePet;
+    if (!pet) return;
+    hydratedRef.current = true;
+    hydrateFromPet(pet);
+  }, [completing, hydrateFromPet]);
   useOnboardingStepTracking('body_basics');
 
   const {
@@ -65,7 +69,6 @@ export default function BodyBasicsScreen() {
   } = usePetStore();
 
   const [breedModalVisible, setBreedModalVisible] = useState(false);
-  const [breedSearch, setBreedSearch] = useState('');
   const [ageModalVisible, setAgeModalVisible] = useState(false);
   const [weightError, setWeightError] = useState<string | null>(null);
   const [weightErrorLevel, setWeightErrorLevel] = useState<'soft' | 'error'>('error');
@@ -81,10 +84,7 @@ export default function BodyBasicsScreen() {
     ),
   }));
 
-  const closeBreedModal = () => {
-    setBreedModalVisible(false);
-    setBreedSearch('');
-  };
+  const closeBreedModal = () => setBreedModalVisible(false);
 
   const pickBreed = (value: string) => {
     // Haptic comes from the SelectableChip / AnimatedPressable surface.
@@ -106,18 +106,6 @@ export default function BodyBasicsScreen() {
       setWeightErrorLevel(validation.status === 'invalid' ? 'error' : 'soft');
     }
   };
-
-  // Filter the preset list against the search query, and decide whether to
-  // offer the typed value as a custom breed (only when no preset matches it).
-  const breedOptions = species === 'cat' ? CAT_BREEDS : DOG_BREEDS;
-  const breedQuery = breedSearch.trim();
-  const filteredBreeds = breedQuery
-    ? breedOptions.filter((b) => b.toLowerCase().includes(breedQuery.toLowerCase()))
-    : breedOptions;
-  const hasExactMatch = breedQuery
-    ? breedOptions.some((b) => b.toLowerCase() === breedQuery.toLowerCase())
-    : false;
-  const showCustomOption = breedQuery.length > 0 && !hasExactMatch;
 
   const petName = name.trim() || 'your pet';
 
@@ -191,23 +179,41 @@ export default function BodyBasicsScreen() {
     // waiting by the time the goal screen's shape picker renders. Never
     // blocks or throws; failures land as "no suggestion" on that screen.
     startBcsPhotoEstimate();
-    router.push('/onboarding/energy' as any);
+    router.push({
+      pathname: '/onboarding/energy',
+      params: forwardCompletionParams(completionParams),
+    } as never);
   };
 
   return (
     <View style={styles.container}>
       <OnboardingHeader step={stepIndex('body_basics')} stepId="body_basics" />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
-        keyboardVerticalOffset={20}
+      <OnboardingFormScaffold
+        contentContainerStyle={styles.scrollContent}
+        footer={
+          <View style={styles.sticky}>
+            <View style={styles.engineRow}>
+              <MaterialIcons name="auto-awesome" size={13} color={color.navy} />
+              <Animated.Text key={engineCount} entering={FadeIn.duration(motion.duration.base)} style={styles.engineText}>
+                Calorie engine · {engineCount} of {engineInputs.length} inputs
+              </Animated.Text>
+              <View style={styles.engineDots}>
+                {engineInputs.map((input) => (
+                  <View key={input.key} style={[styles.engineDot, input.done && styles.engineDotOn]} />
+                ))}
+              </View>
+            </View>
+            <PawtchiButton
+              title="Continue"
+              variant="primary"
+              iconName="arrow-forward"
+              iconPosition="right"
+              onPress={handleContinue}
+            />
+          </View>
+        }
       >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
           <Animated.View entering={FadeInDown.duration(420)}>
             <Text style={styles.eyebrow}>STEP {stepIndex('body_basics')}</Text>
             <Text style={styles.title}>The basics{'\n'}about {petName}.</Text>
@@ -256,19 +262,28 @@ export default function BodyBasicsScreen() {
             </View>
             <View style={styles.gridCell}>
               <Text style={styles.label}>Weight (kg)</Text>
-              <TextInput
-                style={[
-                  styles.numInput,
-                  weightError && (weightErrorLevel === 'error' ? styles.numInputError : styles.numInputWarn),
-                ]}
-                placeholder="12.5"
-                placeholderTextColor={color.slateFaint}
-                keyboardType="decimal-pad"
-                value={weight}
-                onChangeText={(v) => { if (weightError) setWeightError(null); setWeight(v); }}
-                onBlur={handleWeightBlur}
-                textAlign="center"
-              />
+              {/* A decimal pad has no return key on iOS, so this field had no
+                  way to close its own keyboard. The scaffold gives it a Done. */}
+              <ScaffoldField id="weight" label="Weight · kg" onBlur={handleWeightBlur}>
+                {({ onFocus, onBlur }) => (
+                  <TextField
+                    containerStyle={
+                      weightError
+                        ? (weightErrorLevel === 'error' ? styles.numInputError : styles.numInputWarn)
+                        : undefined
+                    }
+                    fontSize={18}
+                    inputStyle={styles.numInputType}
+                    placeholder="12.5"
+                    keyboardType="decimal-pad"
+                    value={weight}
+                    onChangeText={(v) => { if (weightError) setWeightError(null); setWeight(v); }}
+                    onFocus={onFocus}
+                    onBlur={onBlur}
+                    textAlign="center"
+                  />
+                )}
+              </ScaffoldField>
             </View>
           </Animated.View>
           {weightError && (
@@ -328,107 +343,22 @@ export default function BodyBasicsScreen() {
               thumbColor={color.surface}
             />
           </Animated.View>
-        </ScrollView>
 
-        <View style={styles.sticky}>
-          <View style={styles.engineRow}>
-            <MaterialIcons name="auto-awesome" size={13} color={color.navy} />
-            <Animated.Text key={engineCount} entering={FadeIn.duration(motion.duration.base)} style={styles.engineText}>
-              Calorie engine · {engineCount} of {engineInputs.length} inputs
-            </Animated.Text>
-            <View style={styles.engineDots}>
-              {engineInputs.map((input) => (
-                <View key={input.key} style={[styles.engineDot, input.done && styles.engineDotOn]} />
-              ))}
-            </View>
-          </View>
-          <PawtchiButton
-            title="Continue"
-            variant="primary"
-            iconName="arrow-forward"
-            iconPosition="right"
-            onPress={handleContinue}
-          />
-        </View>
-      </KeyboardAvoidingView>
+          {/* Vet-report autofill. It lives here rather than on the identity
+              screen because everything it extracts — weight, sex, desexed,
+              allergies, body condition — is asked for on this screen and the
+              ones after it. */}
+          <VetReportScanner />
+      </OnboardingFormScaffold>
 
       {/* Breed picker */}
-      <Modal visible={breedModalVisible} animationType="slide" transparent onRequestClose={closeBreedModal}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select breed</Text>
-              <TouchableOpacity onPress={closeBreedModal}>
-                <MaterialIcons name="close" size={22} color={color.ink} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Search + free-text input — covers breeds not in the preset list. */}
-            <View style={styles.breedSearchWrap}>
-              <MaterialIcons name="search" size={18} color={color.slateFaint} />
-              <TextInput
-                style={styles.breedSearchInput}
-                value={breedSearch}
-                onChangeText={setBreedSearch}
-                placeholder="Search or type and Add+ your own breed"
-                placeholderTextColor={color.slateFaint}
-                autoCorrect={false}
-                returnKeyType="done"
-                onSubmitEditing={() => {
-                  if (showCustomOption) pickBreed(breedQuery);
-                }}
-              />
-              {breedSearch.length > 0 && (
-                <TouchableOpacity onPress={() => setBreedSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <MaterialIcons name="close" size={16} color={color.slateFaint} />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            <ScrollView
-              style={{ maxHeight: 440 }}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {showCustomOption && (
-                <AnimatedPressable
-                  style={[styles.modalItem, styles.breedCustomItem]}
-                  haptic="select"
-                  scaleTo={motion.scale.press}
-                  onPress={() => pickBreed(breedQuery)}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, flex: 1 }}>
-                    <MaterialIcons name="add-circle-outline" size={18} color={color.navy} />
-                    <Text style={[styles.modalItemText, { color: color.ink, fontFamily: font.semibold }]} numberOfLines={1}>
-                      Use “{breedQuery}”
-                    </Text>
-                  </View>
-                </AnimatedPressable>
-              )}
-
-              {filteredBreeds.length === 0 && !showCustomOption && (
-                <Text style={styles.breedEmpty}>No matches. Try a different spelling.</Text>
-              )}
-
-              {filteredBreeds.map((b) => (
-                <SelectableChip
-                  key={b}
-                  selected={breed === b}
-                  style={styles.modalItem}
-                  scaleTo={motion.scale.press}
-                  onPress={() => pickBreed(b)}
-                >
-                  <Text style={[styles.modalItemText, breed === b && { fontFamily: font.bold, color: color.ink }]}>{b}</Text>
-                  {breed === b && <MaterialIcons name="check" size={18} color={color.navy} />}
-                </SelectableChip>
-              ))}
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <BreedPickerModal
+        visible={breedModalVisible}
+        species={species === 'cat' ? 'cat' : 'dog'}
+        value={breed}
+        onSelect={pickBreed}
+        onClose={closeBreedModal}
+      />
 
       {/* Age picker — bounded lists, same sheet language as the breed picker.
           Both columns visible at once so "2 yrs 3 mo" is one visit, not two. */}
@@ -504,7 +434,8 @@ export default function BodyBasicsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.surface },
-  scrollContent: { paddingHorizontal: space.xxl, paddingBottom: 120 },
+  // Bottom clearance is the scaffold's — it has to clear whichever bar is up.
+  scrollContent: { paddingHorizontal: space.xxl },
 
   eyebrow: {
     fontFamily: font.semibold,
@@ -588,15 +519,9 @@ const styles = StyleSheet.create({
     fontSize: 15.5,
     color: color.ink,
   },
-  numInput: {
-    backgroundColor: color.surfaceSubtle,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    height: 56,
+  // Type only — the box is TextField's (lib/ui/textFieldLayout.ts).
+  numInputType: {
     fontFamily: font.bold,
-    fontSize: 18,
-    color: color.ink,
   },
   numInputError: { borderColor: color.error },
   numInputWarn: { borderColor: color.alert },

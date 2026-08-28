@@ -1,15 +1,16 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import { PawLoader } from '../../components/loader/PawLoader';
 import { BreathingPaw } from '../../components/BreathingPaw';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, { FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
-import { color, font, radius, shadow, space } from '../../constants/design';
+import { color, displayLine, font, radius, shadow, space } from '../../constants/design';
 import { supabase } from '../../lib/supabase';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { HealthProfileGate } from '../../components/health/HealthProfileGate';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { contextualizeWalk } from '../../lib/contextualizer';
@@ -23,20 +24,27 @@ import { RoutineSheet } from '../../components/RoutineSheet';
 import type { OwnerPrefsRow } from '../../lib/routineDefaults';
 import { persistActivityCompletion, fireCompletionSideEffects } from '../../lib/completeActivity';
 import { dedupeActivities } from '../../lib/dedupeActivities';
+import { readActivityDay, writeActivityDay } from '../../lib/activity/todayCache';
 import { track } from '../../lib/analytics';
 import { trackFirebaseEvent } from '../../lib/firebaseAnalytics';
-import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import { useWalkEnabled } from '../../hooks/useWalkEnabled';
+import { armWalkStart } from '../../lib/walk/walkStartIntent';
 import {
   errorCopy, extractInvokeErrorCode, isAppError, reportError, toAppError,
   type ErrorContext, type ErrorCopy, type RecoveryActionId,
 } from '../../lib/appError';
 import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
-import { PawtchiModal, PawtchiSuccessModal } from '../../components/PawtchiModal';
+import { PawtchiSuccessModal, type WeekStripDay } from '../../components/PawtchiModal';
+import { FailureModal } from '../../components/FailureModal';
+import type { FailureMeta } from '../../lib/support/handoff';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
 import Slider from '@react-native-community/slider';
 import * as Haptics from 'expo-haptics';
+import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
+import { useNotificationCenterStore } from '../../store/useNotificationCenterStore';
+import { dayScope, stableId } from '../../lib/notificationCenter/stableId';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -44,7 +52,7 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * 28; // r=28
 
 // Activity Type Definitions
 const ACTIVITY_TYPES = [
-  { id: 'walk', label: 'Walk', icon: 'directions-walk', color: '#F7F602' },
+  { id: 'walk', label: 'Walk', icon: 'directions-walk', color: color.yellow },
   { id: 'play', label: 'Play', icon: 'sports-baseball', color: '#fef8c3' },
   { id: 'water', label: 'Water', icon: 'water-drop', color: '#cde0ea' },
   { id: 'medicine', label: 'Medicine', icon: 'healing', color: '#fca5a5' },
@@ -126,6 +134,8 @@ interface TimelineRowProps {
   onConfirm: (item: any, duration: number) => void;
   onCancel: () => void;
   onTrackWalk: () => void;
+  /** Dogs-only: hides the "Track walk" action on a cat profile. */
+  walkEnabled: boolean;
 }
 
 // One timeline entry (food or activity). Memoized so toggling expand/confirm on
@@ -134,7 +144,7 @@ interface TimelineRowProps {
 // confirming) → React.memo skips them.
 const TimelineRow = React.memo(function TimelineRow({
   item, isLast, isExpanded, isConfirming, confirmingDuration,
-  petName, currentWeightKg, onToggleExpand, onCheckTap, onSelectDuration, onConfirm, onCancel, onTrackWalk,
+  petName, currentWeightKg, onToggleExpand, onCheckTap, onSelectDuration, onConfirm, onCancel, onTrackWalk, walkEnabled,
 }: TimelineRowProps) {
   const isFood = item._feedType === 'food';
   const timeStr = item.scheduled_time
@@ -246,7 +256,7 @@ const TimelineRow = React.memo(function TimelineRow({
               </View>
             )}
             {isPending && !isFuture && (() => {
-              const trackable = WALK_TRACKING_ENABLED && item.activity_type === 'walk';
+              const trackable = walkEnabled && item.activity_type === 'walk';
               return (
                 <View style={styles.tlDetailActionsRow}>
                   {trackable && (
@@ -294,10 +304,36 @@ const TimelineRow = React.memo(function TimelineRow({
   );
 });
 
+/**
+ * The whole tab is gated, not just its empty state.
+ *
+ * Gating only the "generate a plan" card was not enough: the moment any plan
+ * rows exist — generated before the gate shipped, or on another device — the
+ * empty-state branch stops rendering and the ungated mission hero, timeline and
+ * activity-burn figures take over, all computed from a zero weight.
+ *
+ * This also reverses an earlier call of mine. I left this tab ungated because
+ * it hosted the "Track walk" affordances, and Walk must stay usable on a
+ * lightweight profile. That reasoning expired when the record button moved into
+ * the tab bar: walks now start from any screen, so gating this tab no longer
+ * blocks walking. What is left here — the 7-day plan, activity burn, the
+ * mission rings — is health, and reads weight and body score throughout.
+ */
 export default function ActivityScreen() {
+  const gatePet = useActivePetStore(s => s.activePet);
+  return (
+    <HealthProfileGate feature="activity_plan" pet={gatePet} petName={gatePet?.name}>
+      <ActivityScreenContent />
+    </HealthProfileGate>
+  );
+}
+
+function ActivityScreenContent() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const activePet = useActivePetStore(s => s.activePet);
+  // Walks are dogs-only — gates the "Track walk" affordances for cat profiles.
+  const walkEnabled = useWalkEnabled();
   // A weight change is rebuilding the schedule in the background. Read it so we
   // show "recalibrating" instead of the wrong "build from scratch" empty state.
   const recalibrating = useActivePetStore(s => s.recalibrating);
@@ -340,6 +376,7 @@ export default function ActivityScreen() {
     dailyKcal: number;
     deficitPct: number;
     totalMinutes: number;
+    perDay: WeekStripDay[];
   } | null>(null);
 
   // Branded schedule adjusted modal
@@ -349,16 +386,21 @@ export default function ActivityScreen() {
   // Branded error modal — always fed by errorCopy(), never a raw message.
   // retryRef replays whatever operation failed when "Try again" is tapped.
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  // What the failure was, for the support composer: the area chip arrives
+  // preselected and the kind rides along into diagnostics.
+  const [failureMeta, setFailureMeta] = useState<FailureMeta | null>(null);
   const retryRef = useRef<null | (() => void)>(null);
   const presentFailure = useCallback((err: unknown, context: ErrorContext, retry?: () => void) => {
     const appErr = isAppError(err) ? err : toAppError(err);
     reportError(appErr, context);
     retryRef.current = retry ?? null;
+    setFailureMeta({ kind: appErr.kind, context });
     setFailure(errorCopy(appErr, { context, petName: activePet?.name }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePet?.name]);
+  // Only the actions this screen owns land here — FailureModal handles the
+  // rest (contact support, settings, back) so none of them can go dead.
   const handleRecovery = useCallback((action: RecoveryActionId) => {
-    setFailure(null);
     if (action === 'retry') retryRef.current?.();
   }, []);
 
@@ -370,11 +412,14 @@ export default function ActivityScreen() {
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
 
   // Routine sheet — owner-aware schedule prefs. Opens on first plan generation
-  // when no prefs exist, and from the existing-user banner CTA when prefs are
-  // missing but activities already exist.
+  // when no prefs exist, and from the notification center's routine item
+  // (`?focus=routine`) when prefs are missing but activities already exist.
+  //
+  // There is no local "banner dismissed" flag any more: dismissal is the
+  // center's, and it persists there, so a prompt waved away on Tuesday no
+  // longer comes back the moment this screen remounts.
   const [routineSheetOpen, setRoutineSheetOpen] = useState(false);
   const [routineSubmitting, setRoutineSubmitting] = useState(false);
-  const [routineBannerDismissed, setRoutineBannerDismissed] = useState(false);
 
   // Modal state
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -391,6 +436,24 @@ export default function ActivityScreen() {
 
   const dateStr = getLocalYMD(currentDate);
 
+  /**
+   * The two fields the fetchers actually read, pulled out as primitives.
+   *
+   * Depending on the whole `activePet` object made both fetchers churn on every
+   * store write that replaced it — `applyPetPatch` spreads into a new object, and
+   * the weight-plan reconciler in (tabs)/_layout.tsx runs it on boot and on every
+   * return to the foreground. A new identity re-created `fetchData`, which
+   * re-created the `useFocusEffect` callback, which React Navigation treats as a
+   * dependency — so the screen silently ran its four queries again and re-rendered
+   * the whole timeline, for a patch that touched neither the pet id nor its weight.
+   */
+  const petId = activePet?.id;
+  const petWeightKg = activePet?.current_weight_kg;
+
+  // Declared here rather than beside the date strip below: the cache effects
+  // need it, and they run before that part of the component body.
+  const todayYMD = getLocalYMD(new Date());
+
   // Tracks whether the screen has completed at least one fetch. Used to keep the
   // full loading state to the FIRST load only — later refetches (tab focus, date
   // change, modal close) refresh in place so the timeline never unmounts (which is
@@ -398,7 +461,7 @@ export default function ActivityScreen() {
   const hasLoadedRef = useRef(false);
 
   const fetchData = useCallback(async () => {
-    if (!activePet) return;
+    if (!petId) return;
     if (!hasLoadedRef.current) setIsLoading(true);
 
     const startOfDay = new Date(currentDate);
@@ -412,20 +475,20 @@ export default function ActivityScreen() {
         supabase
           .from('daily_logs')
           .select('*')
-          .eq('pet_id', activePet.id)
+          .eq('pet_id', petId)
           .eq('log_date', dateStr)
           .single(),
         supabase
           .from('food_scans')
           .select('*')
-          .eq('pet_id', activePet.id)
+          .eq('pet_id', petId)
           .gte('created_at', startOfDay.toISOString())
           .lte('created_at', endOfDay.toISOString())
           .order('created_at', { ascending: false }),
         supabase
           .from('activities')
           .select('*')
-          .eq('pet_id', activePet.id)
+          .eq('pet_id', petId)
           .eq('scheduled_date', dateStr)
           .order('scheduled_time', { ascending: true }),
       ]);
@@ -438,7 +501,7 @@ export default function ActivityScreen() {
       const { rows: deduped, removed } = dedupeActivities(actsRes.data || []);
       if (removed > 0) {
         console.warn(`[activity] Dropped ${removed} duplicate activity row(s) for ${dateStr}`);
-        track('activity_duplicates_detected', { pet_id: activePet.id, date: dateStr, removed });
+        track('activity_duplicates_detected', { pet_id: petId, date: dateStr, removed });
       }
       setActivities(deduped);
     } catch (e) {
@@ -447,13 +510,46 @@ export default function ActivityScreen() {
       setIsLoading(false);
       hasLoadedRef.current = true;
     }
-  }, [activePet, currentDate, dateStr]);
+  }, [petId, currentDate, dateStr]);
 
-  // Check last 7 days completion rate for auto-adjustment, and derive the
-  // weekly burn card from the same rows (manual logs included — a logged walk
-  // burns calories whether or not Pawtchi scheduled it).
-  const fetchWeeklyStats = useCallback(async () => {
-    if (!activePet) return;
+  /**
+   * Signature of the aggregate currently in state: which pet, which day, and
+   * how many logged-data changes ago.
+   *
+   * The aggregate itself is the last 7 days' completion rate (for the
+   * auto-adjust prompt) and the weekly burn card, derived from the same rows —
+   * manual logs included, since a logged walk burns calories whether or not
+   * Pawtchi scheduled it.
+   *
+   * `dataVersion` is bumped by invalidateContext, which every mutation path
+   * already calls — a manual log here, a plan regeneration, and both completion
+   * routes in lib/completeActivity.ts, so a tracked walk finished over on the
+   * walk screen counts too. That makes it a real "something changed" signal
+   * rather than a proxy for it, which is what lets this stop refetching on
+   * focus: seven days of rows were being re-read every time the tab was opened,
+   * to recompute a number that had not moved.
+   */
+  const dataVersion = usePetContextStore(s => s.dataVersion);
+  const weeklyStatsKeyRef = useRef<string | null>(null);
+
+  /**
+   * Completions whose row is still being written.
+   *
+   * `fireCompletionSideEffects` bumps the data version *before* the write is
+   * awaited — deliberately, so coins and the toast do not wait on the network.
+   * The aggregate must not act on that bump: a refetch that beat the write
+   * would read the old `pending` status straight back and visibly undo the tick
+   * the owner just made. The write's own settlement forces the refresh instead,
+   * by which point the row is real.
+   */
+  const completionsInFlight = useRef(0);
+
+  const fetchWeeklyStats = useCallback(async (opts?: { force?: boolean }) => {
+    if (!petId) return;
+    const key = `${petId}:${todayYMD}:${dataVersion}`;
+    if (!opts?.force && weeklyStatsKeyRef.current === key) return;
+    weeklyStatsKeyRef.current = key;
+
     const today = new Date();
     const todayStr = getLocalYMD(today);
     const sevenDaysAgo = new Date(today);
@@ -463,7 +559,7 @@ export default function ActivityScreen() {
       const { data } = await supabase
         .from('activities')
         .select('status, activity_type, intensity, duration_minutes, active_minutes, scheduled_date, is_ai_generated')
-        .eq('pet_id', activePet.id)
+        .eq('pet_id', petId)
         .gte('scheduled_date', getLocalYMD(sevenDaysAgo))
         .lte('scheduled_date', todayStr);
 
@@ -484,20 +580,77 @@ export default function ActivityScreen() {
         // Burn card: trailing 7 days including today (query spans 8 days so
         // the banner keeps its full 7 past days — trim the oldest for burn).
         const burnRows = data.filter(a => a.scheduled_date > getLocalYMD(sevenDaysAgo));
-        setWeeklyBurn(computeWeeklyBurn(burnRows, activePet.current_weight_kg || 0));
+        setWeeklyBurn(computeWeeklyBurn(burnRows, petWeightKg || 0));
       }
     } catch (e) {
+      // Clear the signature so the next trigger retries. Leaving it set would
+      // record a failed read as the current answer and go stale until the day
+      // rolled over or something else was logged.
+      weeklyStatsKeyRef.current = null;
       console.error('Weekly stats error:', e);
     }
-  }, [activePet, adjustDismissed]);
+  }, [petId, petWeightKg, adjustDismissed, todayYMD, dataVersion]);
 
   useFocusEffect(
     useCallback(() => {
       fetchData();
-      fetchWeeklyStats();
       if (user?.id) fetchPrefs(user.id);
-    }, [fetchData, fetchWeeklyStats, fetchPrefs, user?.id])
+    }, [fetchData, fetchPrefs, user?.id])
   );
+
+  // Driven by the signature above rather than by focus. Re-runs when the pet,
+  // the calendar day or the data version changes, and is a cheap no-op on the
+  // openings where none of those have.
+  //
+  // Skipped while this screen has a completion in flight: that bump is its own,
+  // and the row behind it is not written yet. `confirmCompletion` forces the
+  // refresh once the write settles.
+  useEffect(() => {
+    if (completionsInFlight.current > 0) return;
+    void fetchWeeklyStats();
+  }, [fetchWeeklyStats]);
+
+  /**
+   * Paint the last known version of today before the four queries land.
+   *
+   * Today only, and only while today is what is being viewed: browsing to
+   * another date is a deliberate request for that day, and answering it with a
+   * cached one would be wrong rather than fast.
+   *
+   * `hasLoadedRef` is set so the fetch above stays silent — the timeline is
+   * already on screen, and flipping `isLoading` would pull it back down.
+   */
+  useEffect(() => {
+    if (!petId || dateStr !== todayYMD || hasLoadedRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      const cached = await readActivityDay(petId, todayYMD);
+      // The queries can beat the disk. Once they have answered they are the
+      // authority, and repainting a cached day over a live one would undo it.
+      if (cancelled || hasLoadedRef.current || !cached) return;
+      setActivities(cached.activities);
+      setFoodScans(cached.foodScans);
+      setDailyLog(cached.dailyLog);
+      setIsLoading(false);
+      hasLoadedRef.current = true;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [petId, dateStr, todayYMD]);
+
+  /**
+   * Keep the cache level with what is on screen.
+   *
+   * Driven off the rendered state rather than the fetch result so an optimistic
+   * completion — and its rollback if the write fails — is captured by the same
+   * code path. Storing only the fetch would persist a "pending" row the owner
+   * had already ticked off.
+   */
+  useEffect(() => {
+    if (!petId || dateStr !== todayYMD || isLoading || !hasLoadedRef.current) return;
+    void writeActivityDay(petId, { ymd: todayYMD, activities, foodScans, dailyLog });
+  }, [petId, dateStr, todayYMD, isLoading, activities, foodScans, dailyLog]);
 
   // When a background recalibration (weight log on Health) finishes, the plan
   // this tab fetched may be stale or mid-rebuild — pull the fresh schedule in
@@ -506,7 +659,9 @@ export default function ActivityScreen() {
   React.useEffect(() => {
     if (wasRecalibratingRef.current && !recalibrating) {
       fetchData();
-      fetchWeeklyStats();
+      // Forced: the rebuild rewrote the week's rows, and it happened in another
+      // screen's store rather than through this screen's data version.
+      fetchWeeklyStats({ force: true });
     }
     wasRecalibratingRef.current = recalibrating;
   }, [recalibrating, fetchData, fetchWeeklyStats]);
@@ -541,6 +696,12 @@ export default function ActivityScreen() {
   const weeklyBurnRef = useRef(weeklyBurn);
   weeklyBurnRef.current = weeklyBurn;
 
+  // Held in a ref so completing an activity does not depend on the fetcher's
+  // identity — that changes on every data-version bump, and `confirmCompletion`
+  // is passed to every memoized timeline row as `onConfirm`.
+  const fetchWeeklyStatsRef = useRef(fetchWeeklyStats);
+  fetchWeeklyStatsRef.current = fetchWeeklyStats;
+
   // Confirm completion (with optional duration override). Defined before
   // handleCheckTap because that handler depends on it.
   const confirmCompletion = useCallback(async (item: any, durationOverride: number | null) => {
@@ -565,7 +726,7 @@ export default function ActivityScreen() {
         item.activity_type,
         item.intensity,
         durationOverride ?? item.active_minutes ?? item.duration_minutes,
-        activePet?.current_weight_kg || 0,
+        petWeightKg || 0,
       ),
     );
     const prevBurn = weeklyBurnRef.current;
@@ -576,6 +737,12 @@ export default function ActivityScreen() {
         completedMinutes: prevBurn.completedMinutes + (doneDuration || 0),
       });
     }
+
+    // Claimed before the side effects below, which bump the data version — see
+    // completionsInFlight. Ordering here is the whole point: the guard has to be
+    // up before anything can react to that bump.
+    completionsInFlight.current += 1;
+
     // Coins + Home-ring invalidation + reminder cancel — shared with tracked
     // walks so both completion paths celebrate and settle identically.
     fireCompletionSideEffects({ userId: user?.id, activityId: item.id });
@@ -586,7 +753,7 @@ export default function ActivityScreen() {
       // so walk auto-completion runs the exact same code path.
       await persistActivityCompletion({
         activity: item,
-        petId: activePet!.id,
+        petId: petId!,
         dateStr, // Use viewed date instead of fixed Today
         durationMinutes: durationOverride,
       });
@@ -595,8 +762,16 @@ export default function ActivityScreen() {
       setActivities(prevActivities);
       setWeeklyBurn(prevBurn);
       presentFailure(e, 'log', () => confirmCompletion(item, durationOverride));
+    } finally {
+      completionsInFlight.current -= 1;
+      // Settled either way — reconcile the week against what is actually
+      // stored, replacing both the optimistic addition and any rollback with
+      // the authoritative figure.
+      if (completionsInFlight.current === 0) {
+        void fetchWeeklyStatsRef.current({ force: true });
+      }
     }
-  }, [activePet, dateStr, user]);
+  }, [petId, petWeightKg, dateStr, user]);
 
   const handleCheckTap = useCallback((item: any) => {
     if (!hasFullAccess) { router.push('/paywall' as any); return; }
@@ -630,6 +805,7 @@ export default function ActivityScreen() {
 
   // One-tap tracked walk — GPS measures it and completes the slot on its own.
   const handleTrackWalk = useCallback(() => {
+    if (hasFullAccess) armWalkStart();
     router.push((hasFullAccess ? '/walk' : '/paywall') as any);
   }, [router, hasFullAccess]);
 
@@ -667,6 +843,51 @@ export default function ActivityScreen() {
     setTimeout(() => generateSchedule(), 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, upsertPrefs]);
+
+  /**
+   * Per-day activity counts for the success sheet's week strip. Read back from
+   * the rows the generator just wrote rather than trusted from the response —
+   * the strip must show what's actually on the calendar. Returns [] on any
+   * failure so the sheet degrades to plain copy instead of blocking success.
+   */
+  const fetchWeekStrip = async (daysGenerated: number): Promise<WeekStripDay[]> => {
+    if (!activePet) return [];
+    const days = Math.min(Math.max(daysGenerated || 7, 1), 7);
+    const today = new Date();
+    const lastDay = new Date(today);
+    lastDay.setDate(lastDay.getDate() + days - 1);
+    const todayStr = getLocalYMD(today);
+
+    try {
+      const { data } = await supabase
+        .from('activities')
+        .select('scheduled_date')
+        .eq('pet_id', activePet.id)
+        .gte('scheduled_date', todayStr)
+        .lte('scheduled_date', getLocalYMD(lastDay));
+      if (!data) return [];
+
+      const counts = new Map<string, number>();
+      data.forEach((row: { scheduled_date: string }) => {
+        counts.set(row.scheduled_date, (counts.get(row.scheduled_date) ?? 0) + 1);
+      });
+
+      // Build every day in range, not just the days that returned rows — a rest
+      // day is part of the plan and should read as a short bar, not a gap.
+      return Array.from({ length: days }, (_, i) => {
+        const d = new Date(today);
+        d.setDate(d.getDate() + i);
+        const ymd = getLocalYMD(d);
+        return {
+          label: d.toLocaleDateString(undefined, { weekday: 'short' }),
+          value: counts.get(ymd) ?? 0,
+          highlight: ymd === todayStr,
+        };
+      });
+    } catch {
+      return [];
+    }
+  };
 
   // Generate AI Schedule
   const generateSchedule = async () => {
@@ -734,7 +955,9 @@ export default function ActivityScreen() {
       // dismissing it reveals a populated screen instead of triggering a
       // visible refetch-and-pop. Await deliberately — the spinner keeps
       // running the extra beat and the transition lands settled.
-      await Promise.all([fetchData(), fetchWeeklyStats()]);
+      // Forced: the rows were just written, and invalidateContext (which bumps
+      // the data version) does not run until further down this same function.
+      await Promise.all([fetchData(), fetchWeeklyStats({ force: true })]);
 
       // Show branded success modal instead of native Alert
       setScheduleSuccessData({
@@ -744,6 +967,7 @@ export default function ActivityScreen() {
         dailyKcal: data.activity_burn?.daily_kcal ?? 0,
         deficitPct: data.activity_burn?.deficit_contribution_pct ?? 0,
         totalMinutes: data.activity_burn?.total_minutes ?? 0,
+        perDay: await fetchWeekStrip(data.days_generated),
       });
       setShowScheduleSuccess(true);
       // New schedule changes today's activities → refresh Home's "up next".
@@ -775,8 +999,11 @@ export default function ActivityScreen() {
       if (!result.success) throw new Error(result.error || 'Adjustment failed.');
 
       // Refresh the timeline before the success modal appears (same reasoning
-      // as generateSchedule — no refetch-pop after dismissing the modal).
-      await fetchData();
+      // as generateSchedule — no refetch-pop after dismissing the modal). The
+      // aggregate goes with it: a rebuilt plan changes what the week has
+      // scheduled, so the burn card's "planned" side moved even though nothing
+      // was completed. It used to be left to the next tab focus to notice.
+      await Promise.all([fetchData(), fetchWeeklyStats({ force: true })]);
 
       setShowAdjustBanner(false);
       setAdjustDismissed(true);
@@ -909,29 +1136,62 @@ export default function ActivityScreen() {
   const heroWater = dailyLog?.water_ml || 0;
   const targetWater = computeWaterTargetMl(activePet?.current_weight_kg || 10, activePet?.diet_type);
 
-  const heroPlay = activities
-    .filter(a => ['walk', 'play', 'training'].includes(a.activity_type) && a.status === 'completed')
-    .reduce((sum, a) => sum + (a.duration_minutes || 0), 0);
+  /**
+   * Every figure the hero and the timeline header need, in a single pass.
+   *
+   * Was six filter/reduce chains plus a `find`, all re-run on every render —
+   * including the renders caused by expanding a row or dragging the duration
+   * slider, neither of which can change any of these. `estimateActivityBurn`
+   * was being called once per completed activity each time.
+   *
+   * Today's burn is completed activities only, computed on-device: the old
+   * version showed the plan-wide daily estimate from the last generation
+   * response, which was both stale and about planned (not done) work.
+   */
+  const dayStats = useMemo(() => {
+    const ACTIVE_TYPES = ['walk', 'play', 'training'];
+    let playDone = 0;
+    let playPlanned = 0;
+    let burn = 0;
+    let completed = 0;
+    let pending = 0;
+    let firstPending: any = null;
 
-  // Today's ACTUAL burn — completed activities only, computed on-device. The
-  // old version showed the plan-wide daily estimate from the last generation
-  // response, which was both stale and about planned (not done) work.
-  const heroBurn = Math.round(
-    activities
-      .filter(a => a.status === 'completed')
-      .reduce(
-        (sum, a) => sum + estimateActivityBurn(a.activity_type, a.intensity, a.active_minutes ?? a.duration_minutes, activePet?.current_weight_kg || 0),
-        0,
-      ),
-  );
+    for (const a of activities) {
+      const isActiveType = ACTIVE_TYPES.includes(a.activity_type);
+      const mins = a.duration_minutes || 0;
+      // Planned play counts every status, skipped included — it is the
+      // denominator of the ring, not a tally of what happened.
+      if (isActiveType) playPlanned += mins;
 
-  // Calculate target play based on generated activities (or fallback to 30)
-  const targetPlay = activities
-    .filter(a => ['walk', 'play', 'training'].includes(a.activity_type))
-    .reduce((sum, a) => sum + (a.duration_minutes || 0), 0) || 30;
+      if (a.status === 'completed') {
+        completed += 1;
+        if (isActiveType) playDone += mins;
+        burn += estimateActivityBurn(
+          a.activity_type,
+          a.intensity,
+          a.active_minutes ?? a.duration_minutes,
+          petWeightKg || 0,
+        );
+      } else if (a.status === 'pending') {
+        pending += 1;
+        // Rows arrive ordered by scheduled_time, so the first one found is the
+        // next thing due — the single most important card on the screen.
+        if (!firstPending) firstPending = a;
+      }
+    }
 
-  const completedCount = activities.filter(a => a.status === 'completed').length;
-  const pendingCount = activities.filter(a => a.status === 'pending').length;
+    return {
+      heroPlay: playDone,
+      targetPlay: playPlanned || 30,
+      heroBurn: Math.round(burn),
+      completedCount: completed,
+      pendingCount: pending,
+      nextPending: firstPending,
+    };
+  }, [activities, petWeightKg]);
+
+  const { heroPlay, targetPlay, heroBurn, completedCount, pendingCount, nextPending } = dayStats;
   const totalScheduled = completedCount + pendingCount;
   const completionPct = totalScheduled > 0 ? Math.round((completedCount / totalScheduled) * 100) : 0;
 
@@ -952,7 +1212,6 @@ export default function ActivityScreen() {
       return d;
     });
   }, []);
-  const todayYMD = getLocalYMD(new Date());
 
   const calPct = Math.min(1, targetCalories > 0 ? heroCalories / targetCalories : 0);
   const waterPct = Math.min(1, targetWater > 0 ? heroWater / targetWater : 0);
@@ -969,10 +1228,6 @@ export default function ActivityScreen() {
   const petName = activePet?.name?.trim() || 'your pet';
   const allDone = totalScheduled > 0 && completedCount === totalScheduled;
 
-  // The single most important card on the screen: the next pending activity.
-  // Decision fatigue is the enemy; we surface one clear next thing to do.
-  const nextPending = activities.find(a => a.status === 'pending');
-
   // Friendly status line that follows goal-gradient psychology
   let missionStatus = 'Ready when you are';
   if (completedCount > 0 && !allDone) {
@@ -982,6 +1237,76 @@ export default function ActivityScreen() {
   }
   if (allDone) missionStatus = 'All done';
 
+  // ── Publish this screen's two prompts to the notification center ──────────
+  //
+  // Both used to render as banners here. They cannot be *derived* the way the
+  // Home banners can — they depend on state this screen fetches and holds
+  // (owner prefs, last week's completion ratio) — so they are pushed instead,
+  // and retracted the moment their condition stops holding.
+  //
+  // The deep link carries `?focus=`, and the effect below honours it, so the
+  // one-tap route from prompt to action survives the move off this screen.
+  const publishNotification = useNotificationCenterStore(s => s.publish);
+  const retractNotification = useNotificationCenterStore(s => s.retract);
+
+  const routineNeeded = hasFetchedPrefs && !ownerPrefs && activities.length > 0 && isToday;
+  React.useEffect(() => {
+    const id = stableId('runtime', `routine_setup_${activePet?.id ?? 'none'}`, dayScope());
+    if (!routineNeeded) { retractNotification(id); return; }
+    publishNotification({
+      id,
+      source: 'runtime',
+      tone: 'action',
+      title: 'Make this plan fit your day',
+      body: `${petName}'s plan still runs on default times. Setting your routine rebuilds it around your day.`,
+      icon: 'schedule',
+      createdAt: new Date().toISOString(),
+      route: '/(tabs)/activity?focus=routine',
+      petId: activePet?.id ?? null,
+    });
+  }, [routineNeeded, petName, activePet?.id, publishNotification, retractNotification]);
+
+  /**
+   * Arriving from the notification center.
+   *
+   * `focus=routine` opens the routine sheet; `focus=adjust` runs the same
+   * rebuild the banner's primary button used to. Consumed once — `focusHandled`
+   * stops a re-render or a tab switch from re-firing it, which for `adjust`
+   * would mean regenerating the schedule a second time.
+   */
+  const { focus } = useLocalSearchParams<{ focus?: string }>();
+  const focusHandled = useRef<string | null>(null);
+  // Held in a ref rather than listed as a dependency: `adjustSchedule` is
+  // redefined every render, so depending on it would re-run this effect
+  // constantly. The ref keeps the effect's deps down to the param that actually
+  // decides whether it should do anything.
+  const adjustScheduleRef = useRef(adjustSchedule);
+  adjustScheduleRef.current = adjustSchedule;
+  React.useEffect(() => {
+    if (!focus || focusHandled.current === focus) return;
+    focusHandled.current = focus;
+    if (focus === 'routine') setRoutineSheetOpen(true);
+    else if (focus === 'adjust') void adjustScheduleRef.current();
+  }, [focus]);
+
+  const adjustNeeded = showAdjustBanner && isToday;
+  React.useEffect(() => {
+    const id = stableId('runtime', `lighten_week_${activePet?.id ?? 'none'}`, dayScope());
+    if (!adjustNeeded) { retractNotification(id); return; }
+    publishNotification({
+      id,
+      source: 'runtime',
+      tone: 'action',
+      title: 'A lighter week would help',
+      body: weeklyStats && weeklyStats.skipped > weeklyStats.completed
+        ? `Most of last week's tasks were skipped. Pawtchi can build a gentler plan ${petName} will actually keep.`
+        : `A few tasks slipped this week. Pawtchi can rebuild a lighter plan around what has been working for ${petName}.`,
+      icon: 'spa',
+      createdAt: new Date().toISOString(),
+      route: '/(tabs)/activity?focus=adjust',
+      petId: activePet?.id ?? null,
+    });
+  }, [adjustNeeded, weeklyStats, petName, activePet?.id, publishNotification, retractNotification]);
 
   return (
     <View style={styles.container}>
@@ -1221,7 +1546,7 @@ export default function ActivityScreen() {
                   </View>
                   {confirmingTaskId !== nextPending.id ? (
                     !isFuture ? (
-                      WALK_TRACKING_ENABLED && nextPending.activity_type === 'walk' ? (
+                      walkEnabled && nextPending.activity_type === 'walk' ? (
                         <View style={styles.upNextCtaRow}>
                           <TouchableOpacity
                             style={[styles.upNextCta, { flex: 1 }]}
@@ -1266,63 +1591,9 @@ export default function ActivityScreen() {
           </Animated.View>
         )}
 
-        {/* ════ ROUTINE BANNER — for existing users without prefs ════ */}
-        {hasFetchedPrefs && !ownerPrefs && activities.length > 0 && !routineBannerDismissed && isToday && (
-          <Animated.View entering={FadeInDown.duration(420).delay(40)} style={styles.routineBanner}>
-            <View style={styles.routineBannerHead}>
-              <MaterialIcons name="schedule" size={18} color={color.navy} />
-              <Text style={styles.routineBannerTitle}>Make this plan fit your day</Text>
-              <TouchableOpacity
-                style={styles.routineBannerDismiss}
-                onPress={() => setRoutineBannerDismissed(true)}
-                hitSlop={8}
-              >
-                <MaterialIcons name="close" size={16} color={color.slateMuted} />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.routineBannerDesc}>
-              {petName}&apos;s plan still runs on default times. Set your routine and we&apos;ll rebuild it around your day.
-            </Text>
-            <TouchableOpacity
-              style={styles.routineBannerCta}
-              onPress={() => setRoutineSheetOpen(true)}
-              activeOpacity={0.9}
-            >
-              <Text style={styles.routineBannerCtaText}>Set up routine</Text>
-            </TouchableOpacity>
-          </Animated.View>
-        )}
-
-        {/* ════ ADJUST BANNER — calm, supportive tone ════ */}
-        {showAdjustBanner && isToday && (
-          <Animated.View entering={FadeInDown.duration(420).delay(80)} style={styles.adjustBanner}>
-            <View style={styles.adjustBannerHead}>
-              <MaterialIcons name="spa" size={20} color={color.navy} />
-              <Text style={styles.adjustBannerTitle}>Let&apos;s lighten this week</Text>
-            </View>
-            <Text style={styles.adjustBannerDesc}>
-              {weeklyStats && weeklyStats.skipped > weeklyStats.completed
-                ? `Most of last week's tasks were skipped. Pawtchi can build a gentler plan ${petName} will actually keep.`
-                : `A few tasks slipped this week. Pawtchi can rebuild a lighter plan around what's been working for ${petName}.`}
-            </Text>
-            <View style={styles.adjustBannerActions}>
-              <TouchableOpacity
-                style={styles.adjustPrimary}
-                onPress={adjustSchedule}
-                disabled={isAdjusting}
-                activeOpacity={0.9}
-              >
-                <Text style={styles.adjustPrimaryText}>Adjust the plan</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.adjustSecondary}
-                onPress={() => { setShowAdjustBanner(false); setAdjustDismissed(true); }}
-              >
-                <Text style={styles.adjustSecondaryText}>Not now</Text>
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-        )}
+        {/* The routine and "lighten this week" banners used to sit here. Both
+            are notification-center items now; arriving from one carries
+            `?focus=` and opens the sheet it points at. */}
 
         {/* ════ TIMELINE — slim editorial, dot + rail ════ */}
         {!isLoading && activities.length > 0 && (
@@ -1370,6 +1641,7 @@ export default function ActivityScreen() {
                     onConfirm={confirmCompletion}
                     onCancel={handleCancelConfirm}
                     onTrackWalk={handleTrackWalk}
+                    walkEnabled={walkEnabled}
                   />
                 );
               })}
@@ -1519,7 +1791,7 @@ export default function ActivityScreen() {
                         step={5}
                         value={formDuration}
                         onValueChange={setFormDuration}
-                        minimumTrackTintColor="#F7F602"
+                        minimumTrackTintColor={color.yellow}
                         maximumTrackTintColor="#f3f4f6"
                         thumbTintColor="#1A1A1A"
                       />
@@ -1613,24 +1885,29 @@ export default function ActivityScreen() {
       <PawtchiSuccessModal
         visible={showScheduleSuccess}
         onClose={() => setShowScheduleSuccess(false)}
-        title="Schedule created"
-        icon={{ name: 'check-circle', color: '#F7F602' }}
+        title={`${petName}'s week is live`}
+        icon={{ name: 'check', color: color.navy }}
+        strip={scheduleSuccessData?.perDay}
         lines={[
           {
-            text: `${scheduleSuccessData?.activitiesCreated} activities planned across ${scheduleSuccessData?.daysGenerated} days — starting today. Your schedule begins now.`,
+            // The strip already shows the shape of the week, so this line only
+            // has to carry the totals — no restating day counts.
+            text: `${scheduleSuccessData?.activitiesCreated} activities · ${scheduleSuccessData?.totalMinutes} minutes across ${scheduleSuccessData?.daysGenerated} days.`,
             type: 'normal',
           },
           ...(scheduleSuccessData && scheduleSuccessData.weeklyKcal > 0
             ? [{
                 // Only mention the deficit when the plan actually has one —
                 // maintain/gain plans aren't hypocaloric.
-                text: `This week's activities burn ~${scheduleSuccessData.weeklyKcal} kcal (~${scheduleSuccessData.dailyKcal} kcal/day, ${scheduleSuccessData.totalMinutes} minutes total).${scheduleSuccessData.deficitPct > 0 ? ` Activity covers ${scheduleSuccessData.deficitPct}% of the weekly calorie deficit.` : ''}`,
+                // Minutes already appear in the line above — this one is about
+                // the burn alone.
+                text: `Burns ~${scheduleSuccessData.weeklyKcal} kcal this week, about ${scheduleSuccessData.dailyKcal} a day.${scheduleSuccessData.deficitPct > 0 ? ` That's ${scheduleSuccessData.deficitPct}% of the weekly deficit.` : ''}`,
                 type: 'burn' as const,
               }]
             : []),
         ]}
         primaryAction={{
-          label: 'Done',
+          label: 'Start with today',
           onPress: () => setShowScheduleSuccess(false),
         }}
       />
@@ -1640,7 +1917,7 @@ export default function ActivityScreen() {
         visible={showAdjustSuccess}
         onClose={() => setShowAdjustSuccess(false)}
         title="Schedule adjusted"
-        icon={{ name: 'self-improvement', color: '#F7F602' }}
+        icon={{ name: 'self-improvement', color: color.navy }}
         lines={[
           { text: adjustSuccessMsg, type: 'normal' },
         ]}
@@ -1650,17 +1927,14 @@ export default function ActivityScreen() {
         }}
       />
 
-      {/* Branded Error Modal */}
-      <PawtchiModal
-        visible={failure != null}
+      {/* Branded Error Modal. FailureModal owns the flow-independent actions
+          (support, settings, back); handleRecovery keeps only the retry. */}
+      <FailureModal
+        copy={failure}
         onClose={() => setFailure(null)}
-        title={failure?.title ?? ''}
+        onAction={handleRecovery}
         icon={{ name: 'error-outline', color: '#ef4444' }}
-        message={failure?.message}
-        actions={(failure?.actions ?? []).map(a => ({
-          label: a.label,
-          onPress: () => handleRecovery(a.action),
-        }))}
+        meta={{ ...failureMeta, screen: '/(tabs)/activity' }}
       />
 
       <RoutineSheet
@@ -1680,7 +1954,7 @@ export default function ActivityScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.surfaceSubtle },
-  scrollContent: { flexGrow: 1, paddingHorizontal: space.xxl, paddingTop: space.lg, paddingBottom: 180 },
+  scrollContent: { flexGrow: 1, paddingHorizontal: space.xxl, paddingTop: space.lg, paddingBottom: 180 + TAB_BAR_CLEARANCE },
 
   // ════ Status strip ════
   statusStrip: {
@@ -1789,9 +2063,7 @@ const styles = StyleSheet.create({
     marginBottom: space.md,
   },
   missionFractionNum: {
-    fontFamily: font.display,
-    fontSize: 64,
-    lineHeight: 60,
+    ...displayLine(64),
     letterSpacing: 1,
     color: color.cream,
   },
@@ -1832,9 +2104,7 @@ const styles = StyleSheet.create({
     marginHorizontal: space.sm,
   },
   missionStatValue: {
-    fontFamily: font.display,
-    fontSize: 22,
-    lineHeight: 22,
+    ...displayLine(22),
     letterSpacing: 0.4,
     color: color.cream,
   },
@@ -2083,53 +2353,7 @@ const styles = StyleSheet.create({
     color: color.slateMuted,
   },
 
-  // ════ Routine banner (existing-user nudge) ════
-  routineBanner: {
-    backgroundColor: color.surface,
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    padding: space.lg,
-    marginTop: space.lg,
-    ...shadow.card,
-  },
-  routineBannerHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
-  },
-  routineBannerTitle: {
-    fontFamily: font.bold,
-    fontSize: 14.5,
-    color: color.ink,
-    flex: 1,
-  },
-  routineBannerDismiss: {
-    width: 24, height: 24,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  routineBannerDesc: {
-    fontFamily: font.regular,
-    fontSize: 13,
-    lineHeight: 19,
-    color: color.slateMuted,
-    marginBottom: space.md,
-  },
-  routineBannerCta: {
-    alignSelf: 'flex-start',
-    backgroundColor: color.navy,
-    paddingHorizontal: space.md,
-    paddingVertical: 10,
-    borderRadius: radius.md,
-  },
-  routineBannerCtaText: {
-    fontFamily: font.semibold,
-    fontSize: 13,
-    color: color.cream,
-  },
-
-  // ════ Adjust banner ════
+  // ════ Recalibration banner — plan rebuild in progress ════
   recalibrateBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2146,60 +2370,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: color.navy,
   },
-  adjustBanner: {
-    backgroundColor: color.surface,
-    borderRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    padding: space.lg,
-    marginTop: space.xxl,
-    ...shadow.card,
-  },
-  adjustBannerHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
-  },
-  adjustBannerTitle: {
-    fontFamily: font.bold,
-    fontSize: 14.5,
-    color: color.ink,
-  },
-  adjustBannerDesc: {
-    fontFamily: font.regular,
-    fontSize: 13,
-    lineHeight: 19,
-    color: color.slateMuted,
-    marginBottom: space.md,
-  },
-  adjustBannerActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  adjustPrimary: {
-    flex: 1,
-    backgroundColor: color.yellow,
-    borderRadius: radius.pill,
-    paddingVertical: 11,
-    alignItems: 'center',
-  },
-  adjustPrimaryText: {
-    fontFamily: font.bold,
-    fontSize: 13,
-    color: color.navy,
-  },
-  adjustSecondary: {
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-    borderRadius: radius.pill,
-  },
-  adjustSecondaryText: {
-    fontFamily: font.semibold,
-    fontSize: 13,
-    color: color.slateMuted,
-  },
-
   // ════ Timeline — slim editorial ════
   timeline: {},
   tlRow: { flexDirection: 'row' },

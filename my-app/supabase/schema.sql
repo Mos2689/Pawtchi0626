@@ -50,6 +50,24 @@ CREATE TABLE pets (
   image_url TEXT,
   target_daily_calories INTEGER,
   body_condition_score INTEGER CHECK (body_condition_score BETWEEN 1 AND 9),
+  bcs_updated_at TIMESTAMP WITH TIME ZONE,
+  reproductive_status TEXT,
+  ideal_weight_kg NUMERIC(6,2),
+  healthy_band_low_kg NUMERIC(6,2),
+  healthy_band_high_kg NUMERIC(6,2),
+  weight_assessment_kg NUMERIC(6,2),
+  weight_assessment_bcs INTEGER CHECK (weight_assessment_bcs BETWEEN 1 AND 9),
+  weight_assessed_at TIMESTAMP WITH TIME ZONE,
+  weight_assessment_source TEXT,
+  weight_assessment_confidence TEXT,
+  weight_plan_status TEXT CHECK (weight_plan_status IN (
+    'growth', 'active', 'maintenance', 'verify_change',
+    'needs_reassessment', 'supervised'
+  )),
+  weight_plan_revision INTEGER NOT NULL DEFAULT 0,
+  current_weight_logged_at TIMESTAMP WITH TIME ZONE,
+  weight_journey_start_kg NUMERIC(6,2),
+  weight_journey_started_at TIMESTAMP WITH TIME ZONE,
   allergies TEXT[],
   medical_conditions TEXT[],
   diet_type TEXT[],
@@ -63,6 +81,74 @@ ALTER TABLE pets ENABLE ROW LEVEL SECURITY;
 -- Pets Policies
 CREATE POLICY "Users can manage their own pets" ON pets 
   FOR ALL USING (auth.uid() = owner_id);
+
+CREATE TABLE weight_logs (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  pet_id UUID REFERENCES pets(id) ON DELETE CASCADE NOT NULL,
+  weight_kg NUMERIC(6,2) NOT NULL CHECK (weight_kg > 0),
+  notes TEXT,
+  source TEXT,
+  measurement_source TEXT CHECK (
+    measurement_source IS NULL OR measurement_source IN (
+      'manual', 'profile', 'vet_report', 'onboarding', 'device', 'migration'
+    )
+  ),
+  source_event_id TEXT,
+  logged_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+  UNIQUE (pet_id, source_event_id)
+);
+
+ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can manage weight logs for their pets" ON weight_logs
+  FOR ALL USING (
+    EXISTS (SELECT 1 FROM pets WHERE pets.id = weight_logs.pet_id AND pets.owner_id = auth.uid())
+  );
+
+CREATE TABLE weight_plan_assessments (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  pet_id UUID REFERENCES pets(id) ON DELETE CASCADE NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  source TEXT NOT NULL CHECK (source IN (
+    'onboarding', 'owner_bcs', 'guided_check', 'milestone', 'vet_report',
+    'profile_change', 'life_stage', 'migration'
+  )),
+  assessed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  assessment_weight_kg NUMERIC(6,2) NOT NULL CHECK (assessment_weight_kg > 0),
+  bcs INTEGER NOT NULL CHECK (bcs BETWEEN 1 AND 9),
+  breed TEXT,
+  sex TEXT CHECK (sex IS NULL OR sex IN ('male', 'female')),
+  age_months INTEGER,
+  life_stage TEXT,
+  reproductive_status TEXT,
+  ideal_weight_kg NUMERIC(6,2),
+  target_weight_kg NUMERIC(6,2),
+  healthy_band_low_kg NUMERIC(6,2),
+  healthy_band_high_kg NUMERIC(6,2),
+  plan_status TEXT NOT NULL CHECK (plan_status IN (
+    'growth', 'active', 'maintenance', 'verify_change',
+    'needs_reassessment', 'supervised'
+  )),
+  confidence TEXT CHECK (confidence IS NULL OR confidence IN ('high', 'low')),
+  previous_ideal_weight_kg NUMERIC(6,2),
+  ideal_change_pct NUMERIC(8,5),
+  superseded_revision INTEGER,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  input_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+  UNIQUE (pet_id, revision)
+);
+
+ALTER TABLE weight_plan_assessments ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Owners manage their weight assessments" ON weight_plan_assessments
+  FOR ALL USING (
+    EXISTS (SELECT 1 FROM pets WHERE pets.id = weight_plan_assessments.pet_id AND pets.owner_id = auth.uid())
+  );
+CREATE INDEX idx_weight_plan_assessments_pet
+  ON weight_plan_assessments (pet_id, revision DESC);
+CREATE INDEX idx_weight_plan_assessments_active
+  ON weight_plan_assessments (pet_id, is_active)
+  WHERE is_active = true;
 
 
 -- 3. DAILY LOGS

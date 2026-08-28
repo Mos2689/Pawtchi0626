@@ -9,6 +9,7 @@ import {
   Platform,
   ScrollView,
   Image,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -312,6 +313,33 @@ export default function LoginScreen() {
               style={styles.cta}
             />
 
+            {/* ── Collection notice (APP 5 / IPP 3) ──
+                Must appear BEFORE an account exists. Until this shipped, the
+                policy was only reachable from Profile and the paywall — i.e.
+                after signup and the whole onboarding health questionnaire —
+                so there was no notice at the point of collection, and the
+                policy's "by using the App you consent" had nothing behind it. */}
+            {isSignUp && (
+              <Text style={styles.consentNotice}>
+                We collect your email and the pet details you enter to work out feeding,
+                hydration and activity targets. Read our{' '}
+                <Text
+                  style={styles.consentLink}
+                  onPress={() => router.push('/privacy' as any)}
+                >
+                  Privacy Policy
+                </Text>
+                {' '}and{' '}
+                <Text
+                  style={styles.consentLink}
+                  onPress={() => Linking.openURL('https://pawtchi.com/terms')}
+                >
+                  Terms of Service
+                </Text>
+                .
+              </Text>
+            )}
+
             {/* Toggle */}
             <View style={styles.toggleContainer}>
               <Text style={styles.toggleText}>
@@ -549,6 +577,21 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderBottomColor: color.yellow,
     paddingBottom: 1,
+  },
+
+  // ── Collection notice ──
+  consentNotice: {
+    marginTop: 14,
+    textAlign: 'center',
+    fontFamily: font.medium,
+    fontSize: 11.5,
+    lineHeight: 17,
+    color: color.slateMuted,
+  },
+  consentLink: {
+    fontFamily: font.extrabold,
+    color: color.navy,
+    textDecorationLine: 'underline',
   },
 
   // ── Forgot password ──

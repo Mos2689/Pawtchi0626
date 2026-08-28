@@ -117,4 +117,10 @@ export const RATE_LIMITS: Record<string, number> = {
   'estimate-bcs': 10,
   'send-email': 5,
   'update-streak': 60,
+  // Generous for a person, prohibitive for a scraper. A real owner opening
+  // Spots, filtering and searching wider a few times costs single digits per
+  // hour, and the shared cell cache means most of those never reach Overpass
+  // at all — so this ceiling is about stopping abuse of OUR upstream quota,
+  // not about pacing genuine use.
+  'nearby-spots': 40,
 };

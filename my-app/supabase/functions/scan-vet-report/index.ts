@@ -236,25 +236,12 @@ RESPOND in STRICT JSON format only. Use null for missing fields:
 
     if (reportErr) throw reportErr
 
-    // If weight was extracted, also log it
-    if (extractedData.weight_kg) {
-      await sb.from('weight_logs').insert({
-        pet_id: petId,
-        weight_kg: extractedData.weight_kg,
-        notes: 'Extracted from vet report',
-        source: 'vet_report',
-      })
-      await sb.from('pets').update({ current_weight_kg: extractedData.weight_kg }).eq('id', petId)
-    }
-
-    // Prepare pet profile updates
+    // Weight and BCS are returned as evidence, then applied by the app's
+    // canonical measurement/assessment pipeline. This function must not
+    // bypass plan reconciliation or silently redefine the confirmed ideal.
+    // Diagnoses and allergies remain simple additive profile fields.
     const updates: any = {};
     let shouldUpdatePet = false;
-
-    if (extractedData.body_condition_score) {
-      updates.body_condition_score = extractedData.body_condition_score;
-      shouldUpdatePet = true;
-    }
 
     // Check if we need to fetch existing arrays from DB
     if ((extractedData.diagnoses && extractedData.diagnoses.length > 0) ||

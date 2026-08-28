@@ -6,8 +6,11 @@ import {
   buildMomentShareMessage,
   buildMomentStats,
   buildOwnerPath,
+  LEGACY_PAUSE_DWELL_S,
+  MAX_CARD_LOOPS,
   momentDateLine,
   QUICK_WALK_MAX_S,
+  resolveSniffStops,
   routeEndpoints,
   routeScaleBar,
   routeToSvgPath,
@@ -206,22 +209,51 @@ describe('routeToSvgPath', () => {
   });
 });
 
+describe('resolveSniffStops', () => {
+  const pauses = [{ lat: 51.5, lng: -0.12 }];
+
+  test('prefers sniff_points and passes dwell through', () => {
+    const stops = resolveSniffStops([{ lat: 51.5, lng: -0.12, dwellS: 45 }], pauses);
+    expect(stops).toEqual([{ lat: 51.5, lng: -0.12, dwellS: 45 }]);
+  });
+
+  test('empty sniff_points is a real "no sniffs" — never falls back', () => {
+    expect(resolveSniffStops([], pauses)).toEqual([]);
+  });
+
+  test('null (pre-detector row) falls back to pauses at the legacy dwell', () => {
+    expect(resolveSniffStops(null, pauses)).toEqual([
+      { lat: 51.5, lng: -0.12, dwellS: LEGACY_PAUSE_DWELL_S },
+    ]);
+    expect(resolveSniffStops(undefined, null)).toEqual([]);
+  });
+
+  test('malformed entries are dropped, missing dwell gets the legacy weight', () => {
+    const stops = resolveSniffStops(
+      [{ lat: 'x', lng: -0.12 }, { lat: 51.5, lng: -0.12 }],
+      pauses,
+    );
+    expect(stops).toEqual([{ lat: 51.5, lng: -0.12, dwellS: LEGACY_PAUSE_DWELL_S }]);
+  });
+});
+
 describe('buildMomentHeadline', () => {
   // A comfortably long walk — clears the quick-walk threshold everywhere.
   const LONG = 30 * 60;
 
   test('a sniffy walk earns the signature line, with the right pronoun', () => {
+    // Episode-rate thresholds: 12+ is the genuinely sniffy walk.
     expect(buildMomentHeadline('Bruno', 'male', 14, LONG)).toBe("You walked straight. He didn't.");
-    expect(buildMomentHeadline('Luna', 'female', 8, LONG)).toBe("You walked straight. She didn't.");
-    expect(buildMomentHeadline('Pip', null, 9, LONG)).toBe("You walked straight. They didn't.");
+    expect(buildMomentHeadline('Luna', 'female', 12, LONG)).toBe("You walked straight. She didn't.");
+    expect(buildMomentHeadline('Pip', null, 20, LONG)).toBe("You walked straight. They didn't.");
   });
 
-  test('the modal walk (1–7 sniffs) gets the characterful middle band', () => {
+  test('the modal walk (5–11 episodes) gets the characterful middle band', () => {
     expect(buildMomentHeadline('Bruno', 'male', 5, LONG)).toBe('Bruno caught up on the news');
-    expect(buildMomentHeadline('Bruno', 'male', 4, LONG)).toBe('Bruno caught up on the news');
-    expect(buildMomentHeadline('Bruno', 'male', 7, LONG)).toBe('Bruno caught up on the news');
+    expect(buildMomentHeadline('Bruno', 'male', 8, LONG)).toBe('Bruno caught up on the news');
+    expect(buildMomentHeadline('Bruno', 'male', 11, LONG)).toBe('Bruno caught up on the news');
     expect(buildMomentHeadline('Bruno', 'male', 1, LONG)).toBe('Bruno stopped for the good ones');
-    expect(buildMomentHeadline('Bruno', 'male', 3, LONG)).toBe('Bruno stopped for the good ones');
+    expect(buildMomentHeadline('Bruno', 'male', 4, LONG)).toBe('Bruno stopped for the good ones');
   });
 
   test('zero stops: credit on a real walk, honesty on a short loop', () => {
@@ -282,17 +314,43 @@ describe('buildOwnerPath / buildCompanionPath', () => {
     expect(a.path).not.toBe(b.path);
   });
 
-  test('one loop per real pause, at a point near the route', () => {
+  test('one loop per real stop, at a point near the route', () => {
     const line = buildCompanionPath(route, pauses, 280, 380, 20, 'session-abc')!;
     expect(line.loops).toHaveLength(2);
     for (const loop of line.loops) {
-      expect(loop.r).toBeGreaterThanOrEqual(5);
-      expect(loop.r).toBeLessThanOrEqual(7);
+      // No dwell on the stop → legacy 4-minute weight → near-max radius.
+      expect(loop.r).toBeGreaterThanOrEqual(8);
+      expect(loop.r).toBeLessThanOrEqual(10);
       expect(loop.x).toBeGreaterThan(0);
       expect(loop.x).toBeLessThan(280);
       expect(loop.y).toBeGreaterThan(0);
       expect(loop.y).toBeLessThan(380);
     }
+  });
+
+  test('a longer dwell draws a bigger ring than a short one', () => {
+    const stops = [
+      { ...pauses[0], dwellS: 30 },
+      { ...pauses[1], dwellS: 240 },
+    ];
+    const line = buildCompanionPath(route, stops, 280, 380, 20, 'session-abc')!;
+    expect(line.loops[1].r).toBeGreaterThan(line.loops[0].r);
+    expect(line.loops[0].r).toBeGreaterThanOrEqual(4);
+    expect(line.loops[0].r).toBeLessThanOrEqual(5);
+  });
+
+  test('caps the drawing at MAX_CARD_LOOPS, keeping the longest dwells', () => {
+    // 14 stops along the route; dwells rise with index, so the shortest
+    // four must be the ones dropped.
+    const many = Array.from({ length: 14 }, (_, i) => ({
+      lat: route[i % route.length].lat,
+      lng: route[i % route.length].lng,
+      dwellS: 30 + i * 10,
+    }));
+    const line = buildCompanionPath(route, many, 280, 380, 20, 'session-abc')!;
+    expect(line.loops).toHaveLength(MAX_CARD_LOOPS);
+    // The count is never capped — only the drawing is.
+    expect(many).toHaveLength(14);
   });
 
   test('no pauses means no loops — the playfulness is never invented', () => {

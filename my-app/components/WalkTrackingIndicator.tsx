@@ -4,38 +4,83 @@
  *
  * Rendered once as a root overlay by the tab layout so it floats over every
  * tab. Two states, driven by useTrackingIndicator:
- *   • active — a live walk is tracking. Reassurance: breathing paw, pet name,
- *     running timer, tap to open the walk, and a Stop that finishes the walk.
+ *   • active — a live walk is tracking. A compact branded badge in the
+ *     top-right corner (yellow circle, walking glyph, a soft live pulse); tap
+ *     it to open the walk. Finish now lives on the walk screen itself — the
+ *     badge is purely a "back to your walk" affordance, no words, no timer.
  *   • leak   — the OS service is still on with no walk in flight (the bug this
- *     component guards against). A calm alert with a prominent Stop tracking
- *     that hard-kills the service immediately — no force-close required.
+ *     component guards against). This one STAYS explanatory: a calm alert with
+ *     a prominent Stop tracking that hard-kills the service immediately — a
+ *     "you're still being tracked" warning must never be a mystery icon.
  *
  * Hidden on /walk itself (that screen already shows live state).
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import Reanimated, { FadeInDown, FadeOut } from 'react-native-reanimated';
+import Reanimated, {
+  Easing,
+  FadeIn,
+  FadeInDown,
+  FadeOut,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { color, font, radius, shadow, space } from '../constants/design';
-import { BreathingPaw } from './BreathingPaw';
+import { haptic } from '../lib/haptics';
+import { RunningDogIcon } from './icons/RunningDogIcon';
 import { useTrackingIndicator } from '../hooks/useTrackingIndicator';
 
-function formatElapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const mm = String(m).padStart(2, '0');
-  const ss = String(s).padStart(2, '0');
-  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+const BADGE = 46;
+const PULSE_MS = 1800;
+
+// Compact active badge — a running-dog glyph in a navy circle with a soft pulse
+// ring that reads as "live" without a single word. Tap opens the walk.
+function ActiveBadge({ name, onOpen }: { name: string; onOpen: () => void }) {
+  const pulse = useSharedValue(0);
+
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withTiming(1, { duration: PULSE_MS, easing: Easing.out(Easing.quad) }),
+      -1,
+      false,
+    );
+    return () => cancelAnimation(pulse);
+  }, [pulse]);
+
+  const ringStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: 1 + pulse.value * 0.7 }],
+    opacity: 0.5 * (1 - pulse.value),
+  }));
+
+  return (
+    <Reanimated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(160)} style={styles.badgeWrap}>
+      <Reanimated.View style={[styles.ring, ringStyle]} pointerEvents="none" />
+      <TouchableOpacity
+        style={styles.badge}
+        activeOpacity={0.85}
+        onPress={() => {
+          haptic.tap();
+          onOpen();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`Tracking ${name}'s walk, open walk`}
+      >
+        <RunningDogIcon size={26} color={color.cream} />
+      </TouchableOpacity>
+    </Reanimated.View>
+  );
 }
 
 export function WalkTrackingIndicator() {
-  const { visible, mode, petName, elapsedMs, onStop } = useTrackingIndicator();
+  const { visible, mode, petName, onStop } = useTrackingIndicator();
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
   const router = useRouter();
@@ -43,75 +88,55 @@ export function WalkTrackingIndicator() {
   // The walk screen owns its own live UI — never double up there.
   if (!visible || pathname.endsWith('/walk')) return null;
 
-  const isLeak = mode === 'leak';
   const name = petName ?? 'your dog';
 
+  // ── Active: the branded corner badge ──
+  if (mode === 'active') {
+    return (
+      <View pointerEvents="box-none" style={[styles.wrap, styles.wrapActive, { top: insets.top + space.sm }]}>
+        <ActiveBadge name={name} onOpen={() => router.push('/walk' as any)} />
+      </View>
+    );
+  }
+
+  // ── Leak: stays a full, explanatory warning (safety-critical) ──
   const handleStop = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     onStop();
   };
 
-  const openWalk = () => {
-    if (isLeak) return; // no live walk to open
-    router.push('/walk' as any);
-  };
-
   return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.wrap, { top: insets.top + space.sm }]}
-    >
+    <View pointerEvents="box-none" style={[styles.wrap, { top: insets.top + space.sm }]}>
       <Reanimated.View
         entering={FadeInDown.duration(220)}
         exiting={FadeOut.duration(160)}
-        style={[styles.card, isLeak && styles.cardLeak]}
+        style={[styles.card, styles.cardLeak]}
       >
-        <TouchableOpacity
+        <View
           style={styles.body}
-          activeOpacity={isLeak ? 1 : 0.85}
-          onPress={openWalk}
-          accessibilityRole={isLeak ? 'text' : 'button'}
-          accessibilityLabel={
-            isLeak
-              ? 'Location tracking is still active'
-              : `Tracking ${name}'s walk, open walk`
-          }
+          accessibilityRole="text"
+          accessibilityLabel="Location tracking is still active"
         >
-          {isLeak ? (
-            <MaterialIcons name="warning-amber" size={18} color={color.alert} />
-          ) : (
-            <BreathingPaw size={16} workingColor={color.cream} />
-          )}
+          <MaterialIcons name="warning-amber" size={18} color={color.alert} />
           <View style={styles.copy}>
-            {isLeak ? (
-              <>
-                <Text style={styles.leakTitle} numberOfLines={1}>
-                  Location still active
-                </Text>
-                <Text style={styles.leakSub} numberOfLines={1}>
-                  A walk ended but tracking didn’t stop — tap to fix
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text style={styles.title} numberOfLines={1}>
-                  Tracking {name}’s walk
-                </Text>
-                <Text style={styles.timer}>{formatElapsed(elapsedMs)}</Text>
-              </>
-            )}
+            <Text style={styles.leakTitle} numberOfLines={1}>
+              Location still active
+            </Text>
+            <Text style={styles.leakSub} numberOfLines={1}>
+              A walk ended but tracking didn’t stop — tap to fix
+            </Text>
           </View>
-        </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
           style={styles.stopPill}
           activeOpacity={0.9}
           onPress={handleStop}
           accessibilityRole="button"
-          accessibilityLabel={isLeak ? 'Stop tracking' : 'Finish walk'}
+          accessibilityLabel="Stop tracking"
         >
           <MaterialIcons name="stop" size={15} color={color.navy} />
-          <Text style={styles.stopText}>{isLeak ? 'Stop' : 'Finish'}</Text>
+          <Text style={styles.stopText}>Stop</Text>
         </TouchableOpacity>
       </Reanimated.View>
     </View>
@@ -125,6 +150,34 @@ const styles = StyleSheet.create({
     right: space.lg,
     zIndex: 30,
   },
+  // Active badge hugs the top-right corner.
+  wrapActive: {
+    alignItems: 'flex-end',
+  },
+  badgeWrap: {
+    width: BADGE,
+    height: BADGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ring: {
+    position: 'absolute',
+    width: BADGE,
+    height: BADGE,
+    borderRadius: BADGE / 2,
+    borderWidth: 2,
+    borderColor: color.navy,
+  },
+  badge: {
+    width: BADGE,
+    height: BADGE,
+    borderRadius: BADGE / 2,
+    backgroundColor: color.navy,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadow.raised,
+  },
+  // ── Leak banner ──
   card: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -149,18 +202,6 @@ const styles = StyleSheet.create({
   copy: {
     flex: 1,
     gap: 1,
-  },
-  title: {
-    fontFamily: font.semibold,
-    fontSize: 12.5,
-    color: color.cream,
-  },
-  timer: {
-    fontFamily: font.bold,
-    fontSize: 14,
-    color: color.yellow,
-    fontVariant: ['tabular-nums'],
-    letterSpacing: 0.5,
   },
   leakTitle: {
     fontFamily: font.bold,

@@ -4,10 +4,18 @@ import {
   Dimensions, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
-import { color, motion, shadow } from '../constants/design';
+import Animated, {
+  useSharedValue, useAnimatedStyle, withSpring, withTiming,
+} from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { color, font, motion, radius, shadow, space } from '../constants/design';
+import { haptic } from '../lib/haptics';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// Start the sheet a screen-half below the fold — far enough that the spring has
+// real distance to settle, close enough that it never feels slow.
+const SHEET_TRAVEL = Math.round(SCREEN_HEIGHT * 0.5);
 
 interface ModalAction {
   label: string;
@@ -119,6 +127,17 @@ export function PawtchiModal({
   );
 }
 
+/**
+ * One bar of the week strip. `value` drives the bar height (relative to the
+ * tallest bar in the set); `highlight` marks today — the only yellow bar, so
+ * the eye lands on "what happens next" rather than on the whole week at once.
+ */
+export interface WeekStripDay {
+  label: string;
+  value: number;
+  highlight?: boolean;
+}
+
 interface SuccessModalProps {
   visible: boolean;
   onClose: () => void;
@@ -127,8 +146,22 @@ interface SuccessModalProps {
   primaryAction: { label: string; onPress: () => void };
   secondaryAction?: { label: string; onPress: () => void };
   icon?: { name: keyof typeof MaterialIcons.glyphMap; color: string };
+  /**
+   * Optional 7-day breakdown. When present the sheet SHOWS the plan instead of
+   * describing it — the copy above can then stay short. Omit it and the sheet
+   * degrades to a plain icon + title + lines confirmation.
+   */
+  strip?: WeekStripDay[];
 }
 
+const STRIP_MAX_H = 56;
+const STRIP_MIN_H = 18;
+
+/**
+ * Success is a bottom sheet, not a centred alert box. It rises from the same
+ * edge the thumb lives on, so confirming a plan feels like the screen handing
+ * something up rather than an OS dialog interrupting.
+ */
 export function PawtchiSuccessModal({
   visible,
   onClose,
@@ -137,101 +170,147 @@ export function PawtchiSuccessModal({
   primaryAction,
   secondaryAction,
   icon,
+  strip,
 }: SuccessModalProps) {
-  // The card springs up from a slight scale so success reads as a "pop", not a
-  // cross-fade. Re-runs each time the modal becomes visible.
-  const cardScale = useSharedValue(0.96);
+  const insets = useSafeAreaInsets();
+
+  // Sheet rises on a spring; the backdrop fades on a timing curve so the wash
+  // never lags behind the sheet it belongs to.
+  const sheetY = useSharedValue(SHEET_TRAVEL);
+  const fade = useSharedValue(0);
+
   useEffect(() => {
     if (visible) {
-      cardScale.value = 0.96;
-      cardScale.value = withSpring(1, motion.spring.bouncy);
+      sheetY.value = SHEET_TRAVEL;
+      fade.value = 0;
+      sheetY.value = withSpring(0, motion.spring.gentle);
+      fade.value = withTiming(1, { duration: motion.duration.base });
+      // ONE beat on arrival — the plan committed, so this is a completion.
+      haptic.success();
     }
-  }, [visible, cardScale]);
-  const cardAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: cardScale.value }] }));
+  }, [visible, sheetY, fade]);
+
+  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: sheetY.value }] }));
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: fade.value }));
+
+  // Bars are scaled against the busiest day, not an absolute activity count —
+  // a light week still reads as a week, not as a flat row of stubs.
+  const stripMax = strip && strip.length > 0
+    ? Math.max(...strip.map((d) => d.value), 1)
+    : 1;
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
       statusBarTranslucent
     >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.overlay}
+        style={styles.sheetOverlay}
       >
-        <TouchableOpacity
-          style={styles.backdrop}
-          activeOpacity={1}
-          onPress={onClose}
-        >
-          {/* Absorb touches inside the card so they don't bubble to the backdrop. */}
-          <TouchableWithoutFeedback onPress={() => {}}>
-          <Animated.View style={[styles.container, cardAnimatedStyle]}>
-            <View style={[styles.card, styles.successCard]}>
-              {/* Header with close button */}
-              <View style={styles.successHeader}>
-                {icon && (
-                  <View style={[styles.iconBox, styles.iconBoxSuccess, { backgroundColor: `${icon.color}20` }]}>
-                    <MaterialIcons name={icon.name} size={32} color={icon.color} />
-                  </View>
-                )}
-                <Text style={styles.successTitle}>{title}</Text>
-                <TouchableOpacity onPress={onClose} style={styles.successCloseBtn}>
-                  <MaterialIcons name="close" size={20} color="#94a3b8" />
-                </TouchableOpacity>
-              </View>
+        <Animated.View style={[StyleSheet.absoluteFill, backdropStyle]}>
+          <TouchableOpacity
+            style={styles.sheetBackdrop}
+            activeOpacity={1}
+            onPress={onClose}
+            accessibilityLabel="Dismiss"
+          />
+        </Animated.View>
 
-              {/* Lines */}
-              <View style={styles.linesContainer}>
-                {lines.map((line, idx) => {
-                  if (line.type === 'burn') {
-                    return (
-                      <View key={idx} style={styles.burnLine}>
-                        <MaterialIcons name="local-fire-department" size={16} color="#F7F602" />
-                        <Text style={styles.burnText}>{line.text}</Text>
-                      </View>
-                    );
-                  }
-                  if (line.type === 'highlight') {
-                    return (
-                      <View key={idx} style={styles.highlightBox}>
-                        <Text style={styles.highlightText}>{line.text}</Text>
-                      </View>
-                    );
-                  }
-                  if (line.type === 'sub') {
-                    return <Text key={idx} style={styles.subText}>{line.text}</Text>;
-                  }
-                  return <Text key={idx} style={styles.lineText}>{line.text}</Text>;
-                })}
-              </View>
+        {/* Absorb touches inside the sheet so they don't bubble to the backdrop. */}
+        <TouchableWithoutFeedback onPress={() => {}}>
+          <Animated.View
+            style={[styles.sheet, { paddingBottom: space.xxl + insets.bottom }, sheetStyle]}
+          >
+            <View style={styles.grabber} />
 
-              {/* Actions */}
-              <View style={styles.successActions}>
-                <TouchableOpacity
-                  style={styles.actionBtnPrimary}
-                  onPress={primaryAction.onPress}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.actionBtnPrimaryText}>{primaryAction.label}</Text>
-                </TouchableOpacity>
-
-                {secondaryAction && (
-                  <TouchableOpacity
-                    style={styles.secondaryBtn}
-                    onPress={secondaryAction.onPress}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.secondaryBtnText}>{secondaryAction.label}</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
+            <View style={styles.sheetHeader}>
+              {icon && (
+                <View style={styles.sheetIcon}>
+                  <MaterialIcons name={icon.name} size={18} color={icon.color} />
+                </View>
+              )}
+              <Text style={styles.sheetTitle}>{title}</Text>
             </View>
+
+            {strip && strip.length > 0 && (
+              <View style={styles.strip}>
+                {strip.map((day, idx) => (
+                  <View key={`${day.label}-${idx}`} style={styles.stripCol}>
+                    <View
+                      style={[
+                        styles.stripBar,
+                        {
+                          height: Math.max(
+                            STRIP_MIN_H,
+                            Math.round((day.value / stripMax) * STRIP_MAX_H),
+                          ),
+                        },
+                        day.highlight && styles.stripBarToday,
+                      ]}
+                    >
+                      <Text
+                        style={[styles.stripValue, day.highlight && styles.stripValueToday]}
+                      >
+                        {day.value}
+                      </Text>
+                    </View>
+                    <Text style={styles.stripLabel}>{day.label}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <View style={styles.linesContainer}>
+              {lines.map((line, idx) => {
+                if (line.type === 'burn') {
+                  return (
+                    <View key={idx} style={styles.burnLine}>
+                      <MaterialIcons
+                        name="local-fire-department"
+                        size={16}
+                        color={color.slateMuted}
+                      />
+                      <Text style={styles.burnText}>{line.text}</Text>
+                    </View>
+                  );
+                }
+                if (line.type === 'highlight') {
+                  return (
+                    <View key={idx} style={styles.highlightBox}>
+                      <Text style={styles.highlightText}>{line.text}</Text>
+                    </View>
+                  );
+                }
+                if (line.type === 'sub') {
+                  return <Text key={idx} style={styles.subText}>{line.text}</Text>;
+                }
+                return <Text key={idx} style={styles.lineText}>{line.text}</Text>;
+              })}
+            </View>
+
+            <TouchableOpacity
+              style={styles.sheetPrimaryBtn}
+              onPress={primaryAction.onPress}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.actionBtnPrimaryText}>{primaryAction.label}</Text>
+            </TouchableOpacity>
+
+            {secondaryAction && (
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={secondaryAction.onPress}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.secondaryBtnText}>{secondaryAction.label}</Text>
+              </TouchableOpacity>
+            )}
           </Animated.View>
-          </TouchableWithoutFeedback>
-        </TouchableOpacity>
+        </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -281,9 +360,9 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   title: {
-    fontFamily: 'Montserrat_800ExtraBold',
+    fontFamily: font.extrabold,
     fontSize: 20,
-    color: '#0f172a',
+    color: color.ink,
     flex: 1,
   },
   closeBtn: {
@@ -291,9 +370,9 @@ const styles = StyleSheet.create({
     marginLeft: 'auto',
   },
   message: {
-    fontFamily: 'Montserrat_400Regular',
+    fontFamily: font.regular,
     fontSize: 15,
-    color: '#475569',
+    color: color.slate,
     lineHeight: 22,
     marginBottom: 24,
   },
@@ -312,101 +391,168 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   actionBtnPrimaryText: {
-    fontFamily: 'Montserrat_800ExtraBold',
+    fontFamily: font.extrabold,
     fontSize: 15,
-    color: '#041015',
+    color: color.navy,
   },
   actionBtnSecondary: {
-    backgroundColor: '#f1f5f9',
+    backgroundColor: color.track,
     borderRadius: 16,
     flex: 1,
   },
   actionBtnSecondaryText: {
-    fontFamily: 'Montserrat_700Bold',
+    fontFamily: font.bold,
     fontSize: 15,
-    color: '#64748b',
+    color: color.slateMuted,
     textAlign: 'center',
     paddingVertical: 16,
   },
 
-  // Success Modal specific styles
-  successHeader: {
-    alignItems: 'center',
-    marginBottom: 20,
+  // ── Success sheet ─────────────────────────────────────────────────────────
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
   },
-  successTitle: {
-    fontFamily: 'Montserrat_800ExtraBold',
-    fontSize: 22,
-    color: '#041015',
-    marginTop: 12,
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(4, 16, 21, 0.55)',
+  },
+  sheet: {
+    backgroundColor: color.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: space.xxl,
+    paddingTop: space.md,
+    ...shadow.raised,
+  },
+  grabber: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: color.track,
+    alignSelf: 'center',
+    marginBottom: space.xl,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginBottom: space.lg,
+  },
+  // Yellow is the accent, never the whole chip — the CTA below is the one
+  // yellow surface on this sheet (design system §4.02).
+  sheetIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellowSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetTitle: {
+    fontFamily: font.extrabold,
+    fontSize: 18,
+    lineHeight: 24,
+    color: color.navy,
+    flex: 1,
+  },
+  strip: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: space.lg,
+  },
+  stripCol: {
+    flex: 1,
+    alignItems: 'stretch',
+  },
+  stripBar: {
+    backgroundColor: color.track,
+    borderRadius: radius.sm,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingBottom: 5,
+  },
+  stripBarToday: {
+    backgroundColor: color.yellow,
+  },
+  stripValue: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.slateMuted,
+  },
+  stripValueToday: {
+    color: color.navy,
+  },
+  stripLabel: {
+    fontFamily: font.medium,
+    fontSize: 11,
+    color: color.slateFaint,
     textAlign: 'center',
+    marginTop: 6,
   },
   linesContainer: {
-    marginBottom: 24,
-    gap: 6,
+    marginBottom: space.xl,
+    gap: space.sm,
   },
   lineText: {
-    fontFamily: 'Montserrat_400Regular',
-    fontSize: 15,
-    color: '#475569',
-    lineHeight: 22,
+    fontFamily: font.regular,
+    fontSize: 14,
+    color: color.slate,
+    lineHeight: 21,
   },
   subText: {
-    fontFamily: 'Montserrat_400Regular',
+    fontFamily: font.regular,
     fontSize: 13,
-    color: '#94a3b8',
+    color: color.slateFaint,
     lineHeight: 20,
-    marginTop: 4,
   },
   highlightBox: {
-    backgroundColor: '#041015',
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    marginVertical: 8,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
   },
   highlightText: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 15,
-    color: '#F7F602',
-    textAlign: 'center',
+    fontFamily: font.semibold,
+    fontSize: 14,
+    color: color.navy,
+    lineHeight: 20,
   },
+  // Supporting detail, not a second headline — a quiet row on warm paper
+  // instead of the old black slab that fought the title for attention.
   burnLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#041015',
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    marginTop: 8,
+    gap: space.sm,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
   },
   burnText: {
-    fontFamily: 'Montserrat_600SemiBold',
+    fontFamily: font.medium,
     fontSize: 13,
-    color: '#F7F602',
+    color: color.slate,
     flex: 1,
-    lineHeight: 18,
+    lineHeight: 19,
   },
-  successActions: {
-    gap: 12,
+  // Same recipe as actionBtnPrimary minus the `flex: 1` — the sheet stacks in a
+  // column, where flex would stretch the button to eat the leftover height.
+  sheetPrimaryBtn: {
+    backgroundColor: color.yellow,
+    borderRadius: radius.lg,
+    paddingVertical: space.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   secondaryBtn: {
-    paddingVertical: 14,
+    paddingVertical: space.md,
     alignItems: 'center',
+    marginTop: space.xs,
   },
   secondaryBtnText: {
-    fontFamily: 'Montserrat_700Bold',
+    fontFamily: font.semibold,
     fontSize: 15,
-    color: '#64748b',
-  },
-  successCard: {
-    paddingTop: 20,
-  },
-  successCloseBtn: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    padding: 8,
+    color: color.slateMuted,
   },
 });

@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, Image, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PawtchiButton } from './PawtchiButton';
-import { makeShadow } from '../constants/design';
+import { color, makeShadow } from '../constants/design';
 
 interface Props {
   petId: string;
@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: '#F7F602',
+    backgroundColor: color.yellow,
     borderRadius: 14,
     paddingVertical: 10,
   },

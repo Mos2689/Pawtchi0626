@@ -16,6 +16,22 @@ import {
 } from './idealWeight';
 import { BCS_STALE_DAYS } from './milestoneEngine';
 
+/**
+ * Whether a weight can support an assessment at all.
+ *
+ * An ideal weight is derived FROM a measured weight, so a profile that has
+ * never recorded one has nothing to assess. Walk-first onboarding leaves the
+ * weight at 0 as the sentinel for exactly that state — and 0 is the value
+ * `weight_plan_assessments.assessment_weight_kg > 0` rejects, so an assessment
+ * attempted on it fails in the database rather than in the app.
+ *
+ * Callers use this to take their existing "reassess this later" path instead:
+ * a profile that is not ready yet is a known state, not a failure to report.
+ */
+export function isAssessableWeightKg(weightKg: number | null | undefined): boolean {
+  return typeof weightKg === 'number' && Number.isFinite(weightKg) && weightKg > 0;
+}
+
 export type WeightPlanStatus =
   | 'growth'
   | 'active'

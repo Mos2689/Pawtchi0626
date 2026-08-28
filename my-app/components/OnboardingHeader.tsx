@@ -24,6 +24,15 @@ interface OnboardingHeaderProps {
   stepId?: OnboardingStepId;
   /** When provided, the right side shows a quiet Skip action instead of the counter. */
   onSkip?: () => void;
+  /**
+   * Hide the denominator, showing just the step number.
+   *
+   * The walk-first dog path really is two screens — the health questions come
+   * later, behind a feature they have not met yet. Printing "2 / 7" promised
+   * five more screens that never arrive, which reads as either a broken counter
+   * or an ordeal ahead. Without a total it is a position, not a contract.
+   */
+  showTotal?: boolean;
 }
 
 function PawMarker() {
@@ -37,7 +46,7 @@ function PawMarker() {
   );
 }
 
-export function OnboardingHeader({ step, total = ONBOARDING_TOTAL_STEPS, showBack = true, stepId, onSkip }: OnboardingHeaderProps) {
+export function OnboardingHeader({ step, total = ONBOARDING_TOTAL_STEPS, showBack = true, stepId, onSkip, showTotal = true }: OnboardingHeaderProps) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const target = Math.min(Math.max(step / total, 0), 1);
@@ -85,7 +94,7 @@ export function OnboardingHeader({ step, total = ONBOARDING_TOTAL_STEPS, showBac
               <Text style={styles.skip}>Skip</Text>
             </TouchableOpacity>
           ) : (
-            <Text style={styles.step}>{`${step} / ${total}`}</Text>
+            <Text style={styles.step}>{showTotal ? `${step} / ${total}` : `${step}`}</Text>
           )}
         </View>
       </View>

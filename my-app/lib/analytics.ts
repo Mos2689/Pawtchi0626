@@ -16,6 +16,43 @@ export type AnalyticsEvent =
   | 'paywall_offerings_retried'
   | 'paywall_restore_tapped'
   | 'paywall_dismissed'
+  // The conditional $6.99 win-back. Note what did NOT happen here: the events
+  // above were not renamed to `primary_*` and forked into a parallel funnel.
+  // They carry a `variant` property ('standard' | 'winback') instead, so every
+  // dashboard already built on paywall_viewed keeps working and the two
+  // presentations stay comparable inside one funnel.
+  //
+  // The number this experiment lives or dies by is NOT the conversion rate of
+  // the discounted paywall — it is revenue per *eligible* user, control against
+  // variant. At $6.99 versus $9.99 the discount arm needs a +43% relative lift
+  // just to break even, so a variant that converts better and still loses money
+  // is the expected failure mode, and only the control arm can reveal it. That
+  // is why `pro_offer_granted` fires for control users too: without it the two
+  // arms have different denominators and the primary metric cannot be computed.
+  //
+  // `pro_offer_unavailable` is the honest coverage signal, in the same spirit as
+  // spots_results_failed: it fires when StoreKit returns no offering and the
+  // user silently got the standard paywall instead. If that rate is non-trivial
+  // the experiment is quietly under-powered rather than negative.
+  | 'pro_offer_granted'
+  | 'pro_offer_paywall_viewed'
+  | 'pro_offer_paywall_dismissed'
+  | 'pro_offer_purchase_started'
+  | 'pro_offer_purchase_succeeded'
+  | 'pro_offer_purchase_failed'
+  | 'pro_offer_expired'
+  | 'pro_offer_revoked'
+  | 'pro_offer_inbox_shown'
+  | 'pro_offer_inbox_tapped'
+  | 'pro_offer_unavailable'
+  // A completed purchase whose entitlement did NOT come back verified, so the
+  // Firebase/Google Ads conversion was withheld. RevenueCat runs in
+  // INFORMATIONAL mode: access is granted either way, which is why this is
+  // invisible in the product and only shows up as revenue missing from Ads.
+  // Not in the Firebase allowlist, so it never reaches Google Ads. Meta
+  // receives the bare name with no properties, as it does for every event that
+  // has no entry in its own map.
+  | 'purchase_conversion_unverified'
   // Auth
   | 'auth_screen_viewed'
   | 'auth_mode_switched'
@@ -39,6 +76,18 @@ export type AnalyticsEvent =
   | 'onboarding_vet_scan_succeeded'
   | 'onboarding_vet_scan_failed'
   | 'onboarding_completed'
+  // Walk-first onboarding: a dog owner leaving after step two with a
+  // walk-ready profile. Deliberately NOT `onboarding_completed` — that event
+  // still means "a full health profile was built", so the existing funnel
+  // keeps its meaning and this measures the new one alongside it.
+  | 'onboarding_lightweight_completed'
+  // The contextual health gate. `shown` fires when a feature is blocked,
+  // `started` when the owner begins completing, `completed` when the profile
+  // becomes ready — together they measure whether deferring the questions
+  // actually converts better than asking up front.
+  | 'health_gate_shown'
+  | 'health_gate_started'
+  | 'health_gate_completed'
   | 'onboarding_pet_create_failed'
   // The reveal moment + post-onboarding activation
   | 'plan_reveal_viewed'
@@ -189,6 +238,14 @@ export type AnalyticsEvent =
   // when the Home avatar lights its story ring, `opened` when the viewer
   // launches, `beat_viewed` per slide, `completed` when the last slide is
   // reached, and `shared` when the closer hands off to the moment share sheet.
+  // Walk-first Home (the map canopy). `record_tapped` is the screen's one
+  // action; `canopy_map_shown` reports which surface the hero actually resolved
+  // to (the real basemap, or the SVG trace fallback on Expo Go / a routeless
+  // walk) so we can see how often anyone gets the designed experience;
+  // `walksign_chip_shown` measures how many owners have an identity to show.
+  | 'home_record_tapped'
+  | 'home_canopy_map_shown'
+  | 'home_walksign_chip_shown'
   | 'walk_story_generated'
   | 'walk_story_ring_shown'
   | 'walk_story_opened'
@@ -218,6 +275,18 @@ export type AnalyticsEvent =
   | 'notification_opened'
   | 'notification_settings_opened'
   | 'notification_settings_changed'
+  // The notification center. Every nudge and banner in the app now routes
+  // through it, so these four are the only remaining measurement of whether the
+  // things it carries are seen and acted on — the inline surfaces that used to
+  // report that are gone. `severe_obesity_vet_confirmed` and
+  // `mer_recalibration_accepted` in particular are the clinical-resolution
+  // signals that tell us whether burying those prompts behind a bell cost us
+  // anything.
+  | 'notification_center_opened'
+  | 'notification_center_item_tapped'
+  | 'notification_center_mark_all_read'
+  | 'severe_obesity_vet_confirmed'
+  | 'mer_recalibration_accepted'
   // Email. The counterpart to notification_opened, and the only click signal
   // this channel has that a machine cannot fake: Apple Mail Privacy Protection
   // pre-fetches images for a large share of recipients, so a Resend "opened"
@@ -265,7 +334,56 @@ export type AnalyticsEvent =
   | 'support_ticket_capped'
   | 'support_diagnostics_expanded'
   | 'support_thread_opened'
-  | 'support_reply_push_opened';
+  | 'support_reply_push_opened'
+  // Pawtchi Spots — nearby dog-relevant places from OpenStreetMap.
+  //
+  // Two families of question, and they are answered by different events:
+  //
+  //  1. **Does anyone want this?** tab_opened → marker_viewed → details_opened
+  //     is the funnel. The number that actually decides the feature's fate is
+  //     not in this list, though — it is walk_tracking_started following a spot
+  //     view. Spots exists to feed the walking loop; if people browse parks and
+  //     never walk to one, it is a directory, not a feature.
+  //
+  //     There is deliberately no `directions_tapped` any more. The CTA that
+  //     fired it handed the owner to Apple or Google Maps, which is the exact
+  //     behaviour the metric above says we do not want to encourage. In its
+  //     place, `spot_walk_started` measures the tap that actually matters — a
+  //     tracked walk begun with a place in mind — and is the closest thing to
+  //     a single number for whether Spots is earning its position on Home.
+  //
+  //  2. **Is the data any good, and are we being a good OSM citizen?**
+  //     `results_loaded` carries `cache_status` and `results_count`;
+  //     `empty_state_viewed` is the honest coverage signal. A high empty rate
+  //     in a target market is the trigger to supplement OSM with another
+  //     provider — not a bug to fix in the query.
+  //
+  // `cache_status` (local_hit | server_hit | stale_hit | upstream_fetch) is the
+  // operational metric that matters most: upstream_fetch per active user is our
+  // load on volunteer infrastructure, and it must stay small as usage grows.
+  //
+  // NO EVENT CARRIES A COORDINATE. Distance is bucketed via
+  // lib/spots/copy.ts#distanceBucket, and the geographic cell is never sent —
+  // a precise distance plus a timestamp is a location fix.
+  | 'spots_tab_opened'
+  | 'spots_results_loaded'
+  | 'spots_results_failed'
+  | 'spots_filter_selected'
+  | 'spots_search_area_requested'
+  | 'spots_radius_expanded'
+  | 'spots_empty_state_viewed'
+  | 'spot_marker_viewed'
+  | 'spot_details_opened'
+  | 'spot_walk_started'
+  // First-walk intro video — the silent map demo shown once on Home after a
+  // fresh dog owner completes onboarding. The funnel is viewed → (skipped |
+  // completed → cta_clicked); `failed` is the honest coverage signal for
+  // asset/player errors and only fires when the overlay dismisses itself.
+  | 'walk_intro_video_viewed'
+  | 'walk_intro_video_skipped'
+  | 'walk_intro_video_completed'
+  | 'walk_intro_video_cta_clicked'
+  | 'walk_intro_video_failed';
 
 export type AnalyticsProps = Record<string, string | number | boolean | null | undefined>;
 

@@ -59,9 +59,13 @@ export interface ShareMomentContext {
     | 'milestone'
     | 'monthly_recap'
     | 'walk_gallery'
+    | 'template_unlock'
+    | 'walk_story'
     | 'walksign';
   /** Which ground the card was shared with (map / paper / photo). */
   ground?: string;
+  /** Which earned template rendered the card (fieldbook / gallery / …). */
+  template?: string;
 }
 
 /** True when the direct story composer can be opened on this device. */
@@ -120,6 +124,7 @@ export async function shareMomentToInstagramStory(
       source: context.source,
       channel: 'instagram_stories',
       ground: context.ground ?? null,
+      template: context.template ?? 'fieldbook',
     });
     return 'shared';
   } catch (err) {
@@ -165,6 +170,7 @@ export async function shareMoment(
       source: context.source,
       channel: 'sheet',
       ground: context.ground ?? null,
+      template: context.template ?? 'fieldbook',
     });
     return 'shared';
   } catch (err) {

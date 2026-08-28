@@ -10,30 +10,23 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
 import { appError, toAppError, type AppError } from './appError';
-import { FOUNDER_DISPLAY_NAME } from './notifications/copy';
 
 /**
- * Who signs the letter. Named humans are the entire mechanism — people write to
- * people, not to a company — so this is one constant, not a string scattered
- * across three screens.
+ * The letter goes unsigned. It used to close "Regards, Pra and Mos" — the two
+ * people who make Pawtchi still read and answer every one personally, they are
+ * just not named on screen any more. `FOUNDER_ROLE` is what is left of the
+ * signature block: a caption under the hand-drawn signature rule, so "Regards,"
+ * is followed by an unlabelled squiggle and then this line, rather than a name.
  *
- * It lives in the notification copy catalogue because that file is byte-mirrored
- * to the edge runtime, which also needs the names for the "wrote back" push. One
- * source, both sides.
- *
- * Plural: anything interpolating this needs a plural verb. Prefer "we" in the
- * screens where the sentence allows it.
+ * Every sentence that used to interpolate a FOUNDER_NAMES constant now says
+ * "we" in place of it — first person plural, no name required.
  */
-export const FOUNDER_NAMES = FOUNDER_DISPLAY_NAME;
 export const FOUNDER_ROLE = 'who make Pawtchi';
 
 /**
  * The label on every door into this feature — rows, buttons, the quick action.
- *
- * Deliberately NOT built from FOUNDER_NAMES. An entry point has to say what it
- * does to someone who has never heard the names, while the names belong to the
- * moments that are actually personal: the signature, the reply, the receipt.
- * Keeping them separate means neither can drift into the other.
+ * Has to say what the feature does to someone who has never seen the letter
+ * screen, independent of whatever the signature does or doesn't say.
  */
 export const WRITE_TO_FOUNDER_LABEL = 'Write to Founder';
 

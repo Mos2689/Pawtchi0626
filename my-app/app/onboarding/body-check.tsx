@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, {
   FadeIn, FadeInDown, useAnimatedStyle, useSharedValue, withSpring,
 } from 'react-native-reanimated';
 
 import { usePetStore } from '../../store/usePetStore';
+import { forwardCompletionParams } from '../../lib/onboarding/completionMode';
 import { color, font, radius, space, motion } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
@@ -69,6 +70,7 @@ function SpectrumBar({ lo, hi }: { lo: number; hi: number }) {
  */
 export default function BodyCheckScreen() {
   const router = useRouter();
+  const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
   useOnboardingStepTracking('body_check');
 
   const petData = usePetStore();
@@ -194,7 +196,7 @@ export default function BodyCheckScreen() {
       conflict: score.conflict,
     });
     trackStepCompleted('body_check', { bcs: fused.bcs, tier: fused.tier, method: 'guided' });
-    router.push('/onboarding/goal');
+    router.push({ pathname: '/onboarding/goal', params: forwardCompletionParams(completionParams) } as never);
   };
 
   const commitFallback = () => {
@@ -203,7 +205,7 @@ export default function BodyCheckScreen() {
     petData.setBcsSource(resolveBcsSource(fallbackPick, photoSuggestion));
     petData.setBcsCheckRecord(null);
     trackStepCompleted('body_check', { bcs: fallbackPick, method: 'quick_pick' });
-    router.push('/onboarding/goal');
+    router.push({ pathname: '/onboarding/goal', params: forwardCompletionParams(completionParams) } as never);
   };
 
   const revealOption = finalResult

@@ -22,18 +22,25 @@ React Native Firebase is native code and does not run in Expo Go. Use a developm
 | Firebase event | Genuine success boundary | Firebase parameters |
 | --- | --- | --- |
 | `sign_up` | Supabase creates a new account and returns a session | `method: "password"` |
-| `pet_profile_completed` | The onboarding `pets` insert succeeds | None |
+| `pet_profile_completed` | The onboarding `pets` insert succeeds — from either the full health onboarding or the walk-first path | None |
 | `calorie_goal_created` | The same successful insert persists `target_daily_calories` | None |
 | `first_food_logged` | The user's lifetime-first food scan and daily intake save succeed | None |
+| `first_walk_completed` | The user's lifetime-first walk the validator calls `valid`, confirmed saved | None |
 | `activity_plan_created` | `generate-schedule` confirms the personalised plan was saved | None |
 | `trial_started` | RevenueCat returns an active trial entitlement with a verified response | None |
 | `purchase` | RevenueCat returns an active paid entitlement with a verified response | `transaction_id`; optional `currency`, `value`, and `items[0].item_id` product ID |
 
+`pet_profile_completed` fires from both onboarding routes. The walk-first route (a dog owner leaving after step two) additionally does **not** emit `calorie_goal_created`, because it sets no `target_daily_calories` — the health profile is deferred behind per-feature gates. Before this mapping existed the walk-first route emitted nothing at all, which since the walk-first pivot meant the moment most new owners activate was invisible to Google Ads.
+
+`first_walk_completed` is the walk-side activation counterpart to `first_food_logged`. Both sides of "first" use the validator's `valid` verdict, so an owner whose first outing was too short or GPS-junk still activates on their first real walk. It is gated on a confirmed save: a walk still sitting in the offline sync queue does not count, because a conversion reported for a row that may never land is a lie told to a bidding algorithm. The trade is that a first walk finished entirely offline is never counted.
+
 `purchase` is deduplicated by store transaction ID for the running app session. RevenueCat entitlement verification runs in informational mode so Pawtchi's existing access behavior is preserved; Firebase trial/purchase measurement requires `VERIFIED` or `VERIFIED_ON_DEVICE`.
+
+Because informational mode still grants access, an unverified entitlement is a silent conversion loss: the owner is subscribed, the app behaves normally, and only Google Ads is missing the revenue. `SubscriptionProvider` therefore emits the product-analytics event `purchase_conversion_unverified` (with the verification status and period type) on that branch. It is not in the Firebase allowlist and never reaches Google Ads — it exists so the loss is diagnosable in PostHog instead of invisible. A non-zero rate means checking RevenueCat's verification configuration.
 
 ## Privacy exclusions
 
-Firebase must never receive emails, names, pet names, pet photos, breed, weight, medical or health notes, calorie values, food names, activity details, free-form text, screen views, touch events, or arbitrary PostHog properties. The adapter rebuilds every parameter object from the table above and drops everything else.
+Firebase must never receive emails, names, pet names, pet photos, breed, weight, medical or health notes, calorie values, food names, activity details, walk routes, coordinates, place labels, walk distances or durations, free-form text, screen views, touch events, or arbitrary PostHog properties. The adapter rebuilds every parameter object from the table above and drops everything else.
 
 Firebase identity accepts only a Supabase-format internal UUID. It is set after authentication and cleared when the session ends. Email is never used as a Firebase user ID. Do not call Firebase's email/phone on-device conversion APIs; this integration uses only de-identified event-data conversion measurement. Do not add AdMob, Google Mobile Ads, ATT, IDFA, remarketing audiences, or manual screen tracking for Firebase.
 

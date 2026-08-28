@@ -62,6 +62,30 @@ describe('Firebase Analytics privacy policy', () => {
     expect(firebaseEventsForProductEvent('onboarding_step_viewed')).toEqual([]);
   });
 
+  test('walk-first onboarding reports a completed profile, but never a calorie goal', () => {
+    // The default route for dogs since the walk-first pivot. It writes the
+    // `pets` row — the documented boundary for pet_profile_completed — but sets
+    // no target_daily_calories, so claiming a calorie goal would be false.
+    expect(firebaseEventsForProductEvent('onboarding_lightweight_completed')).toEqual([
+      { event: 'pet_profile_completed', params: {} },
+    ]);
+  });
+
+  test('first_walk_completed carries no walk measurements', () => {
+    // Distance, duration, pace and anything derived from a route are location
+    // data about a household. The activation count needs none of it.
+    expect(
+      sanitizeFirebaseEvent('first_walk_completed', {
+        distance_m: 2400,
+        duration_s: 1800,
+        avg_speed_kmh: 4.8,
+        start_label: 'Elm Row',
+        lat: 51.5,
+        lng: -0.12,
+      }),
+    ).toEqual({});
+  });
+
   test('Firebase identity accepts only an internal UUID', () => {
     const uuid = '6ba7b810-9dad-41d1-80b4-00c04fd430c8';
     expect(asInternalFirebaseUserId(uuid)).toBe(uuid);

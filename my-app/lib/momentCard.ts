@@ -18,6 +18,37 @@ export interface MomentRoutePoint {
   lng: number;
 }
 
+/** A sniff stop as the cards consume it — where, and for how long. */
+export interface SniffStop extends MomentRoutePoint {
+  dwellS: number;
+}
+
+/** Dwell assigned to legacy pause_points rows (the old 4-minute floor) —
+ *  old cards draw max-weight loops, which is honest: those stops WERE long. */
+export const LEGACY_PAUSE_DWELL_S = 240;
+
+/**
+ * Resolve a walk row's stop record: sniff_points (episodes, v2 detector)
+ * when the column is non-null, else the legacy pause_points mapped to
+ * max-dwell stops. [] sniff_points is a real "no sniffs" — never falls back.
+ * Malformed entries are dropped rather than drawn wrong.
+ */
+export function resolveSniffStops(
+  sniffPoints: unknown,
+  pausePoints: MomentRoutePoint[] | null | undefined,
+): SniffStop[] {
+  if (Array.isArray(sniffPoints)) {
+    return sniffPoints.flatMap((e) => {
+      const lat = Number((e as SniffStop)?.lat);
+      const lng = Number((e as SniffStop)?.lng);
+      const dwellS = Number((e as SniffStop)?.dwellS);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+      return [{ lat, lng, dwellS: Number.isFinite(dwellS) ? dwellS : LEGACY_PAUSE_DWELL_S }];
+    });
+  }
+  return (pausePoints ?? []).map((p) => ({ ...p, dwellS: LEGACY_PAUSE_DWELL_S }));
+}
+
 export interface MomentStats {
   durationS: number;
   movingTimeS: number;
@@ -80,10 +111,12 @@ export const QUICK_WALK_MAX_S = 600;
 
 /**
  * The card's headline — deterministic from the walk's own character, never
- * random, and the loops on the drawing corroborate whatever it claims. The
- * ladder puts the most characterful copy where the volume is (1–7 sniffs is
- * the modal walk), keeps the signature line for genuinely sniffy walks, and
- * refuses to over-claim on a short zero-stop loop.
+ * random, and the loops on the drawing corroborate whatever it claims.
+ * Thresholds are calibrated to SNIFF EPISODES (30s+ micro-stops, ~5–10 on a
+ * modal walk), not the old rare 4-minute pauses: the characterful middle
+ * band sits where the volume is, the signature line marks genuinely sniffy
+ * walks, and a short zero-stop loop never over-claims. Legacy rows fall
+ * back to pause counts and simply land in the lower rungs.
  */
 export function buildMomentHeadline(
   petName: string | null | undefined,
@@ -93,10 +126,10 @@ export function buildMomentHeadline(
 ): string {
   const name = (petName ?? '').trim();
   if (!name) return 'A good walk';
-  if (sniffCount >= 8) {
+  if (sniffCount >= 12) {
     return `You walked straight. ${capitalize(subjectPronoun(gender))} didn't.`;
   }
-  if (sniffCount >= 4) {
+  if (sniffCount >= 5) {
     return `${name} caught up on the news`;
   }
   if (sniffCount >= 1) {
@@ -337,15 +370,39 @@ export interface CompanionLine {
   paw: XY;
 }
 
+/** Most loops a card will draw — beyond this the longest dwells win and the
+ *  drawing stays legible; the sniff COUNT still reports everything. */
+export const MAX_CARD_LOOPS = 10;
+
+/** Deterministic loop radius from dwell: 30s → 4px, ~4min+ → 9px. The best
+ *  smells draw the biggest rings. */
+function dwellLoopRadius(dwellS: number | undefined): number {
+  const d = dwellS ?? LEGACY_PAUSE_DWELL_S;
+  return Math.min(9, Math.max(4, 4 + 1.5 * Math.log2(Math.max(1, d / 30))));
+}
+
+/** Cap the drawn stops at MAX_CARD_LOOPS, keeping the longest dwells and
+ *  restoring walk order so placement still reads chronologically. */
+function selectCardLoops<T extends MomentRoutePoint & { dwellS?: number }>(stops: T[]): T[] {
+  if (stops.length <= MAX_CARD_LOOPS) return stops;
+  return stops
+    .map((s, i) => ({ s, i, d: s.dwellS ?? LEGACY_PAUSE_DWELL_S }))
+    .sort((a, b) => b.d - a.d || a.i - b.i)
+    .slice(0, MAX_CARD_LOOPS)
+    .sort((a, b) => a.i - b.i)
+    .map((x) => x.s);
+}
+
 /**
  * The dog's line: a seeded perpendicular weave around the owner's path.
  * Amplitude tapers in at the start (they leave the door together) and the
  * end extends a few px past the route so the paw print reads as the final
- * step. Loops are placed at the companion point nearest each pause.
+ * step. Loops are placed at the companion point nearest each sniff stop,
+ * sized by dwell and capped at MAX_CARD_LOOPS (longest dwells win).
  */
 export function buildCompanionPath(
   route: MomentRoutePoint[],
-  pausePoints: MomentRoutePoint[],
+  pausePoints: (MomentRoutePoint & { dwellS?: number })[],
   w: number,
   h: number,
   pad: number,
@@ -389,10 +446,10 @@ export function buildCompanionPath(
     y: Number((b.y + ((b.y - a.y) / tailLen) * 9).toFixed(1)),
   };
 
-  // Loops at the companion point nearest each true pause location. Pause
-  // points sit on the route by construction, so anchor each to its nearest
+  // Loops at the companion point nearest each true stop location. Stops sit
+  // on (or beside) the route by construction, so anchor each to its nearest
   // route vertex (already projected), then to the woven point nearest that.
-  const loops = pausePoints.map(pp => {
+  const loops = selectCardLoops(pausePoints).map(pp => {
     let nearestRoute = 0;
     let bestD = Infinity;
     route.forEach((rp, i) => {
@@ -415,7 +472,8 @@ export function buildCompanionPath(
     return {
       x: Number(nearestWoven.x.toFixed(1)),
       y: Number(nearestWoven.y.toFixed(1)),
-      r: Number((5 + rand() * 2).toFixed(1)),
+      // Dwell carries the size; the seeded jitter keeps it hand-drawn.
+      r: Number((dwellLoopRadius(pp.dwellS) + rand()).toFixed(1)),
     };
   });
 

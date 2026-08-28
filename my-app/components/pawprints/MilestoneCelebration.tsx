@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 
-import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import { useWalkEnabled } from '../../hooks/useWalkEnabled';
 import { usePawPrintStore } from '../../store/usePawPrintStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { MilestoneCard } from './MilestoneCard';
@@ -20,6 +20,7 @@ export function MilestoneCelebration() {
   const firstWalkMonth = usePawPrintStore((s) => s.firstWalkMonth);
   const dismiss = usePawPrintStore((s) => s.dismissMilestone);
   const activePet = useActivePetStore((s) => s.activePet);
+  const walkEnabled = useWalkEnabled(); // dogs-only feature
 
   const def = pending[0] ?? null;
 
@@ -27,7 +28,7 @@ export function MilestoneCelebration() {
     if (def) haptic.success();
   }, [def?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!WALK_TRACKING_ENABLED || !def || !activePet) return null;
+  if (!walkEnabled || !def || !activePet) return null;
 
   return (
     <PawPrintShareModal

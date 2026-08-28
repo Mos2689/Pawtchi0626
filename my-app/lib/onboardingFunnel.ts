@@ -3,8 +3,18 @@ import { track } from './analytics';
 
 // Stable step identifiers — keep these strings, the funnel charts depend on them.
 // `index` / `total` make it trivial to compute progress in any BI tool.
+//
+// ── 'species' was removed here (Aug 2026) ──
+// Pawtchi is dog-only now, so the species picker no longer exists and identity
+// is the first screen an owner sees. Dropping it from this list is what makes
+// the header read "1" rather than "2" on the very first screen.
+//
+// ANALYTICS NOTE: this shifts `step_index` down by one for every step after it,
+// and `total` from 7 to 6. The step ID STRINGS are unchanged, so any funnel
+// built on `step` keeps working across the cut; a funnel built on `step_index`
+// will show a discontinuity on the release date. The ids are the stable
+// contract — that is what the comment above has always meant.
 export type OnboardingStepId =
-  | 'species'
   | 'identity'
   | 'body_basics'
   | 'energy'
@@ -14,7 +24,6 @@ export type OnboardingStepId =
   | 'reveal';
 
 const STEP_ORDER: OnboardingStepId[] = [
-  'species',
   'identity',
   'body_basics',
   'energy',
@@ -57,7 +66,7 @@ export function trackFieldSkipped(step: OnboardingStepId, field: string) {
 
 // ── Fresh-signup routing latch ──
 // Signup is the one moment we KNOW the account has no pet yet, so the auth
-// gate can route straight to /onboarding/species without mounting the tabs
+// gate can route straight to /onboarding/identity without mounting the tabs
 // boot gate — whose only job would be to discover "no pet" over the network
 // behind a full-screen loader. Set BEFORE supabase.auth.signUp (the session
 // event can land, and the gate can navigate, before the await resumes),

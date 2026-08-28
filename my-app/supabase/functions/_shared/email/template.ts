@@ -54,8 +54,8 @@ export const EMAIL_COLOR = {
   /** Warm grey for eyebrows and captions. Passes AA on cream at 4.8:1. */
   muted: '#8A8578',
   hairline: '#EFEBE2',
-  /** The CTA pill. Softer than the app's electric #F7F602. */
-  yellow: '#FFE14D',
+  /** The CTA pill uses the exact Pawtchi brand yellow. */
+  yellow: '#F4F600',
   /** Deltas and inline links. Yellow is never ink; this is its readable cousin. */
   amber: '#A87F14',
 } as const;

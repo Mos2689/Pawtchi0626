@@ -1,3 +1,6 @@
 {
-  "walkTracking": true
+  "walkTracking": true,
+  "walkStory": true,
+  "spotsOsmMvp": true,
+  "walkCamera": true
 }

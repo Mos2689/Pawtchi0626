@@ -29,7 +29,14 @@ export interface ReportOwner {
 
 export interface ReportVitals {
   currentWeightKg: number | null;
+  /** Next staged milestone, not the final clinical destination. */
   targetWeightKg: number | null;
+  idealWeightKg?: number | null;
+  healthyBandLowKg?: number | null;
+  healthyBandHighKg?: number | null;
+  weightPlanStatus?: string | null;
+  weightAssessedAt?: string | null;
+  weightAssessmentSource?: string | null;
   /** Body condition score, 1–9. */
   bcs: number | null;
   /** Human label, e.g. "Normal", "Highly active". */

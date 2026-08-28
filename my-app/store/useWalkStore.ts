@@ -56,6 +56,49 @@ import {
   WalkPermission,
 } from '../lib/walk/walkTracker';
 import type { Pet } from './useActivePetStore';
+import { supabase } from '../lib/supabase';
+import { trackFirebaseEvent } from '../lib/firebaseAnalytics';
+
+/**
+ * Whether this would be the owner's first walk that the validator called
+ * `valid` — the acquisition activation moment, measured once per account.
+ *
+ * Asked BEFORE the walk is written, like `isFirstFoodLogForUser` on Meal, since
+ * the row this walk is about to create would otherwise answer its own question.
+ * `walkSessionId` is excluded because the recovery path finalizes an orphan
+ * whose row may already exist.
+ *
+ * Both sides of the comparison use the same 'valid' bar, so an owner whose
+ * first outing was too short or GPS-junk still activates on the first real one.
+ *
+ * Fails closed: a lookup error must never turn an ordinary walk into a false
+ * acquisition milestone.
+ */
+async function isFirstValidWalkForOwner(
+  ownerId: string,
+  walkSessionId: string,
+): Promise<boolean> {
+  if (!ownerId) return false;
+  try {
+    const { data: pets, error: petsError } = await supabase
+      .from('pets')
+      .select('id')
+      .eq('owner_id', ownerId);
+    if (petsError || !pets?.length) return false;
+
+    const { data: priorWalks, error: walksError } = await supabase
+      .from('walk_sessions')
+      .select('id')
+      .in('pet_id', pets.map(pet => pet.id))
+      .eq('validation_verdict', 'valid')
+      .neq('id', walkSessionId)
+      .limit(1);
+
+    return !walksError && priorWalks?.length === 0;
+  } catch {
+    return false;
+  }
+}
 
 export type WalkPhase = 'idle' | 'starting' | 'tracking' | 'saving' | 'summary';
 
@@ -69,6 +112,7 @@ export type ActiveWalkMarker = ActiveWalkDescriptor;
 const ONGOING_WINDOW_MS = 3 * 60_000;
 
 export interface WalkResult {
+  walkSessionId: string;
   summary: WalkSummary;
   verdict: ValidationResult;
   sync: WalkSyncResult;
@@ -279,6 +323,11 @@ export const useWalkStore = create<WalkState>((set, get) => ({
       maxExcursionM: summary.maxExcursionM,
     });
 
+    // Asked before the sync writes this walk's own row (see the helper).
+    const wasFirstValidWalk =
+      verdict.verdict === 'valid' &&
+      (await isFirstValidWalkForOwner(activeMarker.ownerId, activeMarker.id));
+
     const sync = await finalizeAndSyncWalk({
       walkSessionId: activeMarker.id,
       summary,
@@ -290,12 +339,29 @@ export const useWalkStore = create<WalkState>((set, get) => ({
       labels,
     });
 
+    /**
+     * The acquisition activation event, once per account.
+     *
+     * Gated on a confirmed save — 'queued' means the walk is still only in the
+     * offline queue, and a conversion reported for a row that may never land
+     * would be a lie told to a bidding algorithm. The cost is that a first walk
+     * finished offline is not counted; the alternative is counting walks that
+     * did not persist, which is worse.
+     */
+    if (
+      wasFirstValidWalk &&
+      (sync.outcome === 'matched' || sync.outcome === 'logged_new')
+    ) {
+      trackFirebaseEvent('first_walk_completed');
+    }
+
     set({
       phase: 'summary',
       marker: null,
       session: null,
       capReached: false,
       lastResult: {
+        walkSessionId: activeMarker.id,
         summary,
         verdict,
         sync,

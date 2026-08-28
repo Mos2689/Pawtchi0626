@@ -6,7 +6,56 @@ import { supabase } from '../lib/supabase';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { useStreakStore } from '../store/useStreakStore';
 import { usePetContextStore } from '../store/usePetContextStore';
+import { useNotificationCenterStore } from '../store/useNotificationCenterStore';
+import { useOwnerPrefsStore } from '../store/useOwnerPrefsStore';
+import { useWalkStoryStore } from '../store/useWalkStoryStore';
+import { usePawPrintStore } from '../store/usePawPrintStore';
+import { usePetStore } from '../store/usePetStore';
+import { invalidateAskCache } from '../lib/askVet';
+import { clearProOfferCache } from '../lib/proOffer/client';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
+
+/**
+ * Everything the previous account left in memory or on disk.
+ *
+ * One function, called from both the explicit sign-out and the auth listener,
+ * because the two had already drifted: the listener cleared three stores and
+ * `signOut` cleared the same three plus walk tracking, while five other stores
+ * were cleared by nobody.
+ *
+ * That gap is what let a notification about a deleted account's pet appear in
+ * the next account's inbox — `useNotificationCenterStore` holds `runtimeItems`,
+ * which unlike its derived items are pushed in by screens and never recomputed
+ * away.
+ *
+ * Every call is individually guarded: a throw here must not be able to abort a
+ * sign-out and strand someone in a half-authenticated state.
+ */
+function clearAllUserState(): void {
+  try { useActivePetStore.getState().clearPet(); } catch {}
+  try { useStreakStore.getState().clearStreak(); } catch {}
+  try { usePetContextStore.getState().clearContext(); } catch {}
+  try { useNotificationCenterStore.getState().clearCenter(); } catch {}
+  // Owner routine (feeding and walk times) — rendered for the next user until
+  // their own `fetchPrefs` resolved.
+  try { useOwnerPrefsStore.getState().clearPrefs(); } catch {}
+  // Up to five full walk-story snapshots, persisted to disk.
+  try { useWalkStoryStore.getState().clear(); } catch {}
+  // Milestone + template-unlock celebration queues, and the gallery totals.
+  // Queued celebrations are pushed in by walk sync and only leave when they are
+  // celebrated, so the next account was shown the previous owner's milestone.
+  try { usePawPrintStore.getState().clearPawPrints(); } catch {}
+  // Onboarding draft: name, breed, body-check answers. Without this it carried
+  // into the *next* account's onboarding.
+  try { usePetStore.getState().resetForm(); } catch {}
+  // Module-level 60 s cache of ask-vet monthly usage.
+  try { invalidateAskCache(); } catch {}
+  // Cached win-back grants, keyed per user on disk. Left behind, the next
+  // account on this device could be shown a discount belonging to the previous
+  // one — the runtimeItems leak above, with a price attached. Async and
+  // deliberately not awaited: sign-out must not wait on disk.
+  try { void clearProOfferCache(); } catch {}
+}
 
 type AuthContextType = {
   session: Session | null;
@@ -44,11 +93,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     // 2. Listen for auth changes (login, logout, token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event: any, authSession: Session | null) => {
-        if (!authSession) {
-          useActivePetStore.getState().clearPet();
-          useStreakStore.getState().clearStreak();
-          usePetContextStore.getState().clearContext();
-        }
+        if (!authSession) clearAllUserState();
         setSession(authSession);
         setUser(authSession?.user ?? null);
         setIsLoading(false);
@@ -75,9 +120,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       // 1. Clear in-memory stores synchronously so any render during the
       //    transition reads blank state, not stale activePet!.
-      try { useActivePetStore.getState().clearPet(); } catch {}
-      try { useStreakStore.getState().clearStreak(); } catch {}
-      try { usePetContextStore.getState().clearContext(); } catch {}
+      clearAllUserState();
       // Kill any live location tracking on the way out — the reconciler only
       // fires on phase change, and signing out mid-walk doesn't touch the walk
       // phase, so without this a service could leak past the session. Fire-and-

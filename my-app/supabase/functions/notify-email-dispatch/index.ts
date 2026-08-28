@@ -93,6 +93,31 @@ function isOwnPhoto(url: string | null): boolean {
 }
 
 /**
+ * QA testing has created accounts directly against production on a
+ * placeholder domain — `test001@email.com`, `hi1@email.com`, `pra9999@email.com`
+ * — with new ones still arriving. As of Aug 2026 that is 143 of 199 accounts,
+ * and the first live run (Aug 18) mailed dozens of them, most bouncing or
+ * suppressed. There is no `is_test` flag anywhere to gate this in SQL, so it
+ * is excluded here, once, ahead of every campaign — the same reason
+ * isOwnPhoto sits in one place rather than being re-checked per template.
+ *
+ * Deliberately narrow: only the exact placeholder domain and its handful of
+ * observed typos. A real person's mistyped `gmail.con` is still a real
+ * person and is left alone.
+ */
+const TEST_EMAIL_DOMAINS = new Set([
+  'email.com',
+  'emaiil.com',
+  'email.comt',
+  'email.come',
+  'enail.com',
+]);
+function isTestAccount(email: string): boolean {
+  const domain = email.trim().toLowerCase().split('@')[1] ?? '';
+  return TEST_EMAIL_DOMAINS.has(domain);
+}
+
+/**
  * Same fallback and the same reasoning as notify-dispatch: profiles.timezone is
  * populated at push-token registration, so for an email-only owner it is
  * usually null. Australia/Sydney is the right guess for this user base and it
@@ -325,6 +350,8 @@ serve(async (req: Request) => {
     const planned: Plan[] = [];
 
     for (const c of candidates) {
+      if (isTestAccount(c.email)) { note('test_account'); continue; }
+
       const clock = localClock(c.timezone);
 
       const ruleInput: EmailRuleInput = {
@@ -460,6 +487,8 @@ serve(async (req: Request) => {
       if (replyError) throw new Error(replyError.message);
 
       for (const r of (replyRows ?? []) as ReplyFallbackRow[]) {
+        if (isTestAccount(r.email)) { note('test_account'); continue; }
+
         const rendered = renderEmail('reply_fallback', {});
         if (!rendered) continue;
 
@@ -509,6 +538,8 @@ serve(async (req: Request) => {
       if (walkError) throw new Error(walkError.message);
 
       for (const w of (walkRows ?? []) as WalkReportRow[]) {
+        if (isTestAccount(w.email)) { note('test_account'); continue; }
+
         const clock = localClock(w.timezone);
         // Sent in the first week of the month, mid-morning local. A report on
         // a month that ended three weeks ago is history, not news.

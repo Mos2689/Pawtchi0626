@@ -1,9 +1,10 @@
 // Every user-facing string in the support flow, in one file.
 //
 // Support speaks in a different voice from the founder letter, and the
-// difference is deliberate. The letter is two named people — "Pra and Mos read
-// every letter". Support is the team: competent, unhurried, institutional. Two
-// channels, two voices, so an owner always knows which one they are in.
+// difference is deliberate. The letter is a person — first person, "we read
+// every letter", unsigned. Support is the team: competent, unhurried,
+// institutional. Two channels, two voices, so an owner always knows which one
+// they are in even though neither one prints a name.
 //
 // That is why nothing here is signed with a name, and why SUPPORT_TEAM_NAME is
 // a constant rather than an import from founderLetters.ts. If support ever

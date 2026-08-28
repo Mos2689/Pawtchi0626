@@ -2,10 +2,9 @@ import React, { useState, useCallback, useRef } from 'react';
 import { withTimeout } from '../../lib/withTimeout';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Modal, TextInput, Alert, Linking,
+  Modal, TextInput, Alert,
   KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { setStatusBarStyle } from 'expo-status-bar';
@@ -13,35 +12,46 @@ import { MaterialIcons } from '@expo/vector-icons';
 import Svg, { Path, Defs, LinearGradient as SvgLinearGradient, Stop, Circle } from 'react-native-svg';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { PawtchiModal } from '../../components/PawtchiModal';
+import { HealthTodayFeed } from '../../components/health/HealthTodayFeed';
+import { HealthProfileGate } from '../../components/health/HealthProfileGate';
+import { WeightSaveProgress } from '../../components/health/WeightSaveProgress';
+import type { WeightSaveStage } from '../../lib/weightSaveStages';
 import { WeightLoggedModal } from '../../components/WeightLoggedModal';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { PawLoader } from '../../components/loader/PawLoader';
 import * as ImagePicker from 'expo-image-picker';
 
-import { color, font, radius, shadow, space } from '../../constants/design';
+import { color, displayLine, font, radius, shadow, space } from '../../constants/design';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useStreakStore } from '../../store/useStreakStore';
-import { usePetContextStore, computeDerived } from '../../store/usePetContextStore';
+import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
 import { supabase } from '../../lib/supabase';
-import { calculateDailyKcal, deriveGoal } from '../../lib/healthMath';
-import { validateWeeklyLossRate } from '../../lib/weightLossRate';
+import { deriveGoal } from '../../lib/healthMath';
 import { getLocalYMD, localDayStartUtcISO } from '../../lib/dateUtils';
 import { waterPerSessionMl, computeWaterTargetMl } from '../../lib/hydration';
 import { prepareImageForUpload } from '../../lib/imagePrep';
-import { deriveLifeStage, getLifeStageCalorieMultiplier, getAgeMonths } from '../../lib/lifeStage';
-import { getBreedDefaults, sizeCategoryFromWeight } from '../../lib/breedData';
-import { regenerateSchedule } from '../../lib/scheduleAdjuster';
+import { getAgeMonths } from '../../lib/lifeStage';
 import { getReportFreshness } from '../../lib/vetReportFreshness';
-import { estimateIdealWeight } from '../../lib/idealWeight';
 import { evaluateMilestone, type MilestoneResult } from '../../lib/milestoneEngine';
 import { track } from '../../lib/analytics';
-import { appError, errorCopy, fromEdgeBody, isAppError, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../../lib/appError';
+import {
+  appError, errorCopy, fromEdgeBody, isAppError, reportError, toAppError,
+  type AppError, type ErrorContext, type ErrorCopy, type RecoveryActionId,
+} from '../../lib/appError';
+import { FailureModal } from '../../components/FailureModal';
+import type { FailureMeta } from '../../lib/support/handoff';
 import { haptic } from '../../lib/haptics';
 import { VetScanResultModal, type VetScanResult } from '../../components/VetScanResultModal';
 import { BcsRescoreSheet, type RescoreTrigger } from '../../components/BcsRescoreSheet';
 import WeeklyNutritionChart, { DayMacro } from '../../components/WeeklyNutritionChart';
+import {
+  recordWeightAssessment,
+  recordWeightMeasurement,
+} from '../../lib/weightPlanService';
+import { weightPlanViewModelFromRecord } from '../../lib/weightPlanRecord';
+import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
 
 // Health — one continuous canvas, not a stack of boxes.
 // A full-bleed navy canopy carries the weight story; a light sheet rises over
@@ -88,8 +98,21 @@ const sparkStyles = StyleSheet.create({
   bar: { flex: 1, borderRadius: 3 },
 });
 
+/**
+ * Every ring, target and trend on this screen is computed from weight, age and
+ * body score. Without them the whole tab renders confident zeroes, so the gate
+ * stands in front of it until the profile can support the maths.
+ */
 export default function HealthScreen() {
-  const insets = useSafeAreaInsets();
+  const gatePet = useActivePetStore(s => s.activePet);
+  return (
+    <HealthProfileGate feature="health_insights" pet={gatePet} petName={gatePet?.name}>
+      <HealthScreenContent />
+    </HealthProfileGate>
+  );
+}
+
+function HealthScreenContent() {
   const router = useRouter();
   const activePet = useActivePetStore(s => s.activePet);
   const awardCoins = useStreakStore(s => s.awardCoins);
@@ -125,6 +148,13 @@ export default function HealthScreen() {
   const [weightInput, setWeightInput] = useState('');
   const [weightNotes, setWeightNotes] = useState('');
   const [isSavingWeight, setIsSavingWeight] = useState(false);
+  /** Which part of the weigh-in pipeline is running — drives WeightSaveProgress. */
+  const [saveStage, setSaveStage] = useState<WeightSaveStage | null>(null);
+  const weightSubmissionRef = useRef<{
+    id: string;
+    weightKg: number;
+    measuredAt: string;
+  } | null>(null);
 
   // ── Milestone loop state ──
   // Earliest weight log = plan-start anchor for milestone progress.
@@ -159,12 +189,25 @@ export default function HealthScreen() {
   // Branded failure sheet for the scan / report paths. retryRef replays the
   // operation that failed; pick-again reopens the source chooser.
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  // What the failure was, for the support composer: the area chip arrives
+  // preselected and the kind rides along into diagnostics. This tab raises
+  // failures in three contexts (vet_scan / report / log), so it is tracked
+  // per failure rather than fixed on the sheet.
+  const [failureMeta, setFailureMeta] = useState<FailureMeta | null>(null);
+  const presentFailure = useCallback((
+    appErr: AppError,
+    context: ErrorContext,
+    petName?: string | null,
+  ) => {
+    setFailureMeta({ kind: appErr.kind, context });
+    setFailure(errorCopy(appErr, { context, petName }));
+  }, []);
   const retryRef = useRef<null | (() => void)>(null);
+  // Only the actions this screen owns — FailureModal handles contact support,
+  // settings and back, so none of them can go dead here.
   const handleRecovery = useCallback((action: RecoveryActionId) => {
-    setFailure(null);
     if (action === 'retry') retryRef.current?.();
     else if (action === 'pick_again') scanVetReport();
-    else if (action === 'open_settings') Linking.openSettings().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Delete-report confirm flow
@@ -432,7 +475,7 @@ export default function HealthScreen() {
       if (source === 'camera') {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
         if (!perm.granted) {
-          setFailure(errorCopy(appError('permission', 'camera permission denied'), { context: 'vet_scan' }));
+          presentFailure(appError('permission', 'camera permission denied'), 'vet_scan');
           setIsScanning(false);
           return;
         }
@@ -463,6 +506,7 @@ export default function HealthScreen() {
       }
       // Pre-check size before round-tripping to the function (5MB raw cap).
       if (base64.length * 0.75 > 5_000_000) {
+        setFailureMeta({ kind: 'validation', context: 'vet_scan' });
         setFailure({
           title: 'That photo is too large',
           message: 'Crop it or pick a lower-resolution photo, then scan again.',
@@ -479,7 +523,7 @@ export default function HealthScreen() {
       const appErr = isAppError(e) ? e : toAppError(e);
       reportError(appErr, 'vet_scan');
       console.warn('[VetScan] failed: picker stage', appErr.technical);
-      setFailure(errorCopy(appErr, { context: 'vet_scan', petName: activePet?.name }));
+      presentFailure(appErr, 'vet_scan', activePet?.name);
     } finally {
       setIsScanning(false);
     }
@@ -558,7 +602,6 @@ export default function HealthScreen() {
       // ── Snapshot prior state for the success summary + recalibration. ──
       const prevWeight = activePet.current_weight_kg ?? null;
       const prevCalories = activePet.target_daily_calories ?? 0;
-      const prevGoal = deriveGoal(prevWeight ?? 0, activePet.target_weight_kg, activePet.body_condition_score);
       const prevDiagnoses = new Set(activePet.medical_conditions || []);
       const prevAllergies = new Set(activePet.allergies || []);
 
@@ -568,79 +611,90 @@ export default function HealthScreen() {
         : null;
       let newCalories: number | null = null;
       let scheduleRegenerated = false;
-      let newGoal = prevGoal;
+      let acceptedReportWeight: number | null = null;
+      let reportWeightIsCurrent = false;
+      const reportMeasuredAt =
+        typeof ext.report_date === 'string' &&
+        /^\d{4}-\d{2}-\d{2}$/.test(ext.report_date)
+          ? ext.report_date === getLocalYMD(new Date())
+            ? new Date().toISOString()
+            : `${ext.report_date}T12:00:00.000Z`
+          : new Date().toISOString();
+      const extractedBcs =
+        typeof ext.body_condition_score === 'number'
+          ? ext.body_condition_score
+          : null;
+
       if (newWeight && activePet.species) {
-        newGoal = deriveGoal(newWeight, activePet.target_weight_kg, activePet.body_condition_score);
-        const ageYears = activePet.age_years ?? 0;
-        const ageMonths = getAgeMonths(activePet);
+        const measurement = await recordWeightMeasurement({
+          pet: activePet,
+          weightKg: newWeight,
+          source: 'vet_report',
+          notes: 'Extracted from vet report',
+          measuredAt: reportMeasuredAt,
+          sourceEventId: `vet_report:${data.report_id}:weight`,
+        });
+        if (measurement.status === 'confirmation_required') {
+          Alert.alert(
+            'Review extracted weight',
+            `${measurement.message} It remains in the report, but it has not changed the active plan.`,
+          );
+        } else {
+          acceptedReportWeight = newWeight;
+          reportWeightIsCurrent = !measurement.isBackdated;
+          newCalories = measurement.targetCalories;
+          scheduleRegenerated = measurement.scheduleRegenerated;
+          const milestone = evaluateMilestoneForWeights(
+            measurement.currentWeightKg,
+            prevWeight,
+          );
+          if (milestone) setPendingMilestone(milestone);
+        }
+      }
 
-        const breedDefs = getBreedDefaults(activePet.species, activePet.breed ?? null, newWeight);
-        const sizeCat = breedDefs?.sizeCategory ?? sizeCategoryFromWeight(activePet.species, newWeight);
-        const lifeStage = deriveLifeStage(activePet.species, Math.floor(ageYears), Math.round((ageYears % 1) * 12), sizeCat);
-        const lsMultiplier = getLifeStageCalorieMultiplier(lifeStage, activePet.species);
-        const metabMod = breedDefs?.metabolicModifier ?? 1.0;
-        newCalories = calculateDailyKcal(
-          newWeight,
-          activePet.species,
-          activePet.is_neutered,
-          activePet.activity_level,
-          newGoal,
-          ageMonths,
-          lsMultiplier,
-          activePet.target_weight_kg,
-          metabMod,
-          activePet.body_condition_score,
-        );
-        console.log(`[VetScan] recalibrate weight=${newWeight} prev=${prevWeight ?? 'null'} newKcal=${newCalories}`);
-        // Optimistic store update so Home + Health derive off new target instantly.
-        useActivePetStore.getState().updatePetWeight(newWeight, newCalories);
-        try {
-          // The edge function wrote current_weight_kg but not the recomputed target.
-          const { error: updErr } = await supabase.from('pets').update({
-            target_daily_calories: newCalories,
-          }).eq('id', activePet.id);
-          if (updErr) throw updErr;
-          console.log(`[VetScan] persisted target_daily_calories=${newCalories}`);
+      if (extractedBcs != null) {
+        const currentPet =
+          useActivePetStore.getState().activePet ?? activePet;
+        const reportDay = reportMeasuredAt.slice(0, 10);
+        const currentWeightMatchesReportDay =
+          !newWeight &&
+          currentPet.current_weight_logged_at?.slice(0, 10) ===
+            reportDay;
+        const assessmentWeight =
+          acceptedReportWeight ??
+          (currentWeightMatchesReportDay
+            ? currentPet.current_weight_kg
+            : null);
 
-          const weightDeltaKg = prevWeight !== null ? Math.abs(newWeight - prevWeight) : 0;
-          const goalFlipped = prevGoal !== newGoal;
-          if (activePet.id && (weightDeltaKg >= 0.3 || goalFlipped)) {
-            console.log(`[VetScan] schedule regenerate trigger=${goalFlipped ? 'goal' : 'delta'} weightDelta=${weightDeltaKg.toFixed(2)}`);
-            useActivePetStore.getState().setRecalibrating(true);
-            const refreshed = useActivePetStore.getState().activePet ?? activePet;
-            const ctx = usePetContextStore.getState();
-            const sched = await regenerateSchedule({
-              pet: refreshed,
-              weeklyStats: null,
-              todayCalPercent: ctx.calPercent ?? 0,
-              weightTrendDirection: ctx.weightTrend?.direction ?? null,
-            });
-            scheduleRegenerated = sched.success;
-            if (scheduleRegenerated) {
-              const newWaterPerSession = waterPerSessionMl(newWeight, activePet.diet_type);
-              const todayStr = getLocalYMD(new Date());
-              await supabase
-                .from('activities')
-                .update({ water_ml: newWaterPerSession })
-                .eq('pet_id', activePet.id)
-                .eq('activity_type', 'water')
-                .eq('scheduled_date', todayStr)
-                .eq('status', 'pending');
+        if (assessmentWeight == null) {
+          Alert.alert(
+            'Body score saved as evidence',
+            `The report's body score did not include a matching dated weight, so it has not changed ${activePet.name}'s confirmed ideal.`,
+          );
+        } else {
+          const assessment = await recordWeightAssessment({
+            pet: currentPet,
+            bcs: extractedBcs,
+            source: 'vet_report',
+            assessedAt: reportMeasuredAt,
+            assessmentWeightKg: assessmentWeight,
+          });
+          if (assessment.applied) {
+            newCalories = assessment.targetCalories;
+            scheduleRegenerated =
+              scheduleRegenerated ||
+              assessment.scheduleRegenerated;
+            if (
+              assessment.discloseIdealChange &&
+              assessment.idealWeightKg != null
+            ) {
+              Alert.alert(
+                'Plan updated',
+                `The vet evidence updated ${activePet.name}'s confirmed ideal from ${assessment.previousIdealWeightKg?.toFixed(1)} kg to ${assessment.idealWeightKg.toFixed(1)} kg.`,
+              );
             }
           }
-        } catch (recalErr) {
-          // Revert the optimistic write so the UI doesn't display a target
-          // the DB never accepted.
-          if (user?.id) {
-            await useActivePetStore.getState().fetchPet(user.id, { silent: true });
-          }
-          throw recalErr;
         }
-
-        // Milestone check on the scanned weight — promoted to the re-score
-        // sheet after the scan-result modal closes.
-        const milestone = evaluateMilestoneForWeights(newWeight, prevWeight);
-        if (milestone) setPendingMilestone(milestone);
       }
 
       // Pull post-write pet so we can diff diagnoses/allergies the edge function merged.
@@ -659,7 +713,12 @@ export default function HealthScreen() {
       // Refresh this screen's own lists (vet reports, weight) past the guard.
       fetchHealthData({ force: true });
 
-      const weightDiff = newWeight !== null && prevWeight !== null ? newWeight - prevWeight : null;
+      const weightDiff =
+        reportWeightIsCurrent &&
+        newWeight !== null &&
+        prevWeight !== null
+          ? newWeight - prevWeight
+          : null;
       const calorieDiff = newCalories !== null && prevCalories > 0 && prevCalories !== newCalories
         ? newCalories - prevCalories
         : null;
@@ -731,7 +790,7 @@ export default function HealthScreen() {
       const appErr = isAppError(e) ? e : toAppError(e);
       reportError(appErr, 'vet_scan');
       console.warn(`[VetScan] failed after ${Date.now() - startedAt}ms:`, appErr.technical);
-      setFailure(errorCopy(appErr, { context: 'vet_scan', petName: activePet.name }));
+      presentFailure(appErr, 'vet_scan', activePet.name);
     } finally {
       setIsScanning(false);
       useActivePetStore.getState().setRecalibrating(false);
@@ -752,7 +811,7 @@ export default function HealthScreen() {
       fetchHealthData({ force: true });
       const appErr = toAppError(e);
       reportError(appErr, 'report');
-      setFailure(errorCopy(appErr, { context: 'report' }));
+      presentFailure(appErr, 'report');
     }
   };
 
@@ -796,229 +855,132 @@ export default function HealthScreen() {
     }
   };
 
-  // Save weight log
-  const saveWeightLog = async () => {
-    const weight = parseFloat(weightInput);
-    if (isNaN(weight) || weight <= 0) {
-      return;
+  // Canonical measurement path. A scale entry can move or reopen the plan,
+  // but it can never recalculate the confirmed ideal.
+  const saveWeightLog = async (confirmUnusual = false) => {
+    const weight = Number.parseFloat(weightInput);
+    if (!Number.isFinite(weight) || weight <= 0 || !activePet) return;
+    if (isSavingWeight) return;
+
+    const previousWeight = activePet.current_weight_kg ?? null;
+    const previousCalories = activePet.target_daily_calories ?? 0;
+    const notes = weightNotes.trim() || null;
+    if (
+      !weightSubmissionRef.current ||
+      weightSubmissionRef.current.weightKg !== weight
+    ) {
+      const measuredAt = new Date().toISOString();
+      weightSubmissionRef.current = {
+        id: `manual:${activePet.id}:${measuredAt}:${weight.toFixed(3)}`,
+        weightKg: weight,
+        measuredAt,
+      };
     }
-    if (!activePet) return;
+    const submission = weightSubmissionRef.current;
     setIsSavingWeight(true);
+    setSaveStage(null);
 
     try {
-      // Snapshot prior state so we can detect a meaningful change after the log.
-      const prevWeight = activePet.current_weight_kg ?? null;
-      const prevGoal = deriveGoal(prevWeight ?? weight, activePet.target_weight_kg, activePet.body_condition_score);
-      const prevCalories = activePet.target_daily_calories ?? 0;
-
-      // Recalculate daily calorie target based on new weight
-      const goal = deriveGoal(weight, activePet.target_weight_kg, activePet.body_condition_score);
-
-      // A meaningful weight move (≥0.3 kg) or a flipped goal rebuilds the
-      // activity schedule. Decide this up front so the success modal and every
-      // tab can show a "recalibrating" state from the moment the log lands.
-      const weightDeltaKg = prevWeight !== null ? Math.abs(weight - prevWeight) : 0;
-      const goalFlipped = prevGoal !== goal;
-      const willRecalibrate = !!activePet.id && (weightDeltaKg >= 0.3 || goalFlipped);
-
-      const ageYears = activePet.age_years ?? 0;
-      const ageMonths = getAgeMonths(activePet);
-      const breedDefs = getBreedDefaults(activePet.species, activePet.breed ?? null, weight);
-      const sizeCat = breedDefs?.sizeCategory ?? sizeCategoryFromWeight(activePet.species, weight);
-      const lifeStage = deriveLifeStage(activePet.species, Math.floor(ageYears), Math.round((ageYears % 1) * 12), sizeCat);
-      const lsMultiplier = getLifeStageCalorieMultiplier(lifeStage, activePet.species);
-      const metabMod = breedDefs?.metabolicModifier ?? 1.0;
-      // Cat ramp: compute days since pet creation so the first 14 days of a
-      // lose plan get the gentler ramp floor (hepatic lipidosis prevention).
-      const createdAt = (activePet as { created_at?: string | null }).created_at;
-      const daysSincePlanStart = createdAt
-        ? Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24)))
-        : undefined;
-      let newCalories = calculateDailyKcal(
-        weight,
-        activePet.species,
-        activePet.is_neutered,
-        activePet.activity_level,
-        goal,
-        ageMonths,
-        lsMultiplier,
-        activePet.target_weight_kg,
-        metabMod,
-        activePet.body_condition_score,
-        daysSincePlanStart,
-      );
-
-      // ── Weight-loss rate safety check ──
-      // Fetch the most recent prior weight log to compute the actual rate of
-      // loss. A dangerous rate (dog ≥3%/wk, cat ≥2%/wk) means we ease the
-      // plan upward by 10% and warn the owner. Especially important for cats
-      // where fast loss → hepatic lipidosis risk.
-      let lossRateWarning: { species: 'dog' | 'cat'; pctPerWeek: number } | null = null;
-      try {
-        const { data: priorLogs } = await supabase
-          .from('weight_logs')
-          .select('weight_kg, created_at')
-          .eq('pet_id', activePet.id)
-          .order('created_at', { ascending: false })
-          .limit(1);
-        const prior = priorLogs?.[0];
-        if (prior && typeof prior.weight_kg === 'number' && prior.created_at) {
-          const daysBetween = (Date.now() - new Date(prior.created_at).getTime()) / (1000 * 60 * 60 * 24);
-          const rate = validateWeeklyLossRate(weight, prior.weight_kg, daysBetween, activePet.species as 'dog' | 'cat');
-          if (rate.status === 'dangerous') {
-            newCalories = Math.round(newCalories * 1.10);
-            lossRateWarning = { species: activePet.species as 'dog' | 'cat', pctPerWeek: rate.pctPerWeek };
-            try { track('weight_loss_rate_dangerous', { pct_per_week: Math.round(rate.pctPerWeek * 10) / 10, species: activePet.species }); } catch { /* analytics best-effort */ }
-          }
-        }
-      } catch {
-        // Safety net is best-effort. If the query fails, fall through to the
-        // normal flow rather than blocking the weight log itself.
-      }
-
-      // ---- HOT RELOAD: Optimistic UI update (instant, no flicker) ----
-      // Update pet store immediately so home tab and all listeners see new weight + calories
-      useActivePetStore.getState().updatePetWeight(weight, newCalories);
-
-      // Flip the shared recalibrating signal on the moment kcal is correct, so
-      // Activity/Meal show "recalibrating" instead of a wrong empty state while
-      // the schedule rebuilds below. Cleared in the finally block.
-      if (willRecalibrate) useActivePetStore.getState().setRecalibrating(true);
-
-      // Persist weight log to DB
-      await supabase.from('weight_logs').insert({
-        pet_id: activePet.id,
-        weight_kg: weight,
-        notes: weightNotes || null,
+      const result = await recordWeightMeasurement({
+        pet: activePet,
+        weightKg: weight,
         source: 'manual',
+        notes,
+        measuredAt: submission.measuredAt,
+        sourceEventId: submission.id,
+        confirmUnusual,
+        onStage: setSaveStage,
       });
 
-      if (lossRateWarning) {
-        Alert.alert(
-          'Losing weight too fast',
-          `${activePet.name} has lost about ${lossRateWarning.pctPerWeek.toFixed(1)}% of body weight per week — faster than vets recommend (≤${lossRateWarning.species === 'cat' ? '1' : '1.5'}% for ${lossRateWarning.species}s).\n\nWe've eased today's calorie target up by 10%. Please check in with your vet — fast weight loss can be especially risky for ${lossRateWarning.species === 'cat' ? 'cats (hepatic lipidosis)' : 'muscle health'}.`,
-          [{ text: 'OK' }],
-        );
+      if (result.status === 'confirmation_required') {
+        setIsSavingWeight(false);
+        setSaveStage(null);
+        Alert.alert('Confirm weight', result.message, [
+          { text: 'Check again', style: 'cancel' },
+          {
+            text: 'Save weight',
+            onPress: () => void saveWeightLog(true),
+          },
+        ]);
+        return;
       }
 
-      // Persist pet profile update to DB
-      await supabase.from('pets').update({
-        current_weight_kg: weight,
-        target_daily_calories: newCalories,
-      }).eq('id', activePet.id);
+      weightSubmissionRef.current = null;
+      const goal = deriveGoal(
+        result.currentWeightKg,
+        activePet.target_weight_kg,
+        activePet.body_condition_score,
+      );
+      const calorieDiff =
+        previousCalories > 0 && previousCalories !== result.targetCalories
+          ? result.targetCalories - previousCalories
+          : null;
+      const weightDiff =
+        previousWeight != null
+          ? result.currentWeightKg - previousWeight
+          : null;
 
       setShowWeightModal(false);
       setWeightInput('');
       setWeightNotes('');
-
-      // Build branded success data
-      const weightDiff = prevWeight !== null ? (weight - prevWeight) : null;
-      const calorieDiff = prevCalories > 0 && prevCalories !== newCalories
-        ? newCalories - prevCalories
-        : null;
-
-      // Show branded success modal
       haptic.success();
       setWeightSuccessData({
-        weight,
-        prevCalories,
-        newCalories,
+        weight: result.currentWeightKg,
+        prevCalories: previousCalories,
+        newCalories: result.targetCalories,
         calorieDiff,
         weightDiff,
-        scheduleRegenerated: false,
+        scheduleRegenerated: result.scheduleRegenerated,
         goal,
-        willRecalibrate,
+        willRecalibrate: result.scheduleRegenerated,
       });
       setShowWeightSuccess(true);
 
-      // Award coins for weight log
-      if (user?.id) {
-        awardCoins(user.id, 'weight_log');
-      }
-
-      // ---- BACKGROUND SYNC: Update weight logs UI without full refresh ----
       const newLog = {
         id: `temp-${Date.now()}`,
         pet_id: activePet.id,
-        weight_kg: weight,
-        notes: weightNotes || null,
-        logged_at: new Date().toISOString(),
+        weight_kg: result.currentWeightKg,
+        notes,
+        logged_at: submission.measuredAt,
         source: 'manual',
       };
-      setWeightLogs(prev => [newLog, ...prev]);
+      setWeightLogs((previous) => [newLog, ...previous]);
 
-      // Recalculate derived data in context store without triggering loading states
-      const ctx = usePetContextStore.getState();
-      const todayDataNow = {
-        todayCalories: ctx.todayCalories,
-        todayWater: ctx.todayWater,
-        todayWalks: ctx.todayWalks,
-        treatsConsumed: ctx.treatsConsumed,
-        treatCaloriesConsumed: ctx.treatCaloriesConsumed,
-        todayScans: ctx.todayScans,
-        nextActivity: ctx.nextActivity,
-        todayActivityMinutes: ctx.todayActivityMinutes,
-        todayActivityTargetMinutes: ctx.todayActivityTargetMinutes,
-        activityCompletionRate: ctx.activityCompletionRate,
-        todayProtein: ctx.todayProtein,
-        todayCarbs: ctx.todayCarbs,
-        todayFats: ctx.todayFats,
-      };
-      const petWithNewWeight = { ...activePet, current_weight_kg: weight, target_daily_calories: newCalories };
-      const derived = computeDerived(
-        todayDataNow,
-        petWithNewWeight,
-        ctx.weightTrend,
-        ctx.weeklyDelta,
-      );
-      usePetContextStore.setState({ ...derived });
-      // A new weigh-in changes the weight trend / derived target → force the
-      // context store to refetch today + trends on the next screen focus.
-      usePetContextStore.getState().invalidateContext();
-
-      // ---- SCHEDULE REGENERATION: When weight change is meaningful ----
-      // Either ≥0.3kg movement OR the goal direction has flipped (e.g. lose → maintain).
-      // `willRecalibrate` was decided up front (see above) so the UI could react instantly.
-      let scheduleRegenerated = false;
-      if (willRecalibrate) {
-        const refreshed = useActivePetStore.getState().activePet ?? activePet;
-        const result = await regenerateSchedule({
-          pet: refreshed,
-          weeklyStats: null,
-          todayCalPercent: derived.calPercent,
-          weightTrendDirection: ctx.weightTrend?.direction ?? null,
-        });
-        scheduleRegenerated = result.success;
-
-        if (scheduleRegenerated) {
-          const newWaterPerSession = waterPerSessionMl(weight, activePet.diet_type);
-          const todayStr = getLocalYMD(new Date());
-          await supabase
-            .from('activities')
-            .update({ water_ml: newWaterPerSession })
-            .eq('pet_id', activePet.id)
-            .eq('activity_type', 'water')
-            .eq('scheduled_date', todayStr)
-            .eq('status', 'pending');
-
-          // Update success data to reflect schedule regeneration
-          setWeightSuccessData(prev => prev ? { ...prev, scheduleRegenerated: true } : null);
-        }
+      if (result.lossRateWarning) {
+        Alert.alert(
+          'Losing weight too fast',
+          `${activePet.name} has lost about ${result.lossRateWarning.pctPerWeek.toFixed(1)}% of body weight per week. We eased the calorie target by 10%; please check in with your vet.`,
+        );
       }
-      // ---- MILESTONE LOOP: did this log cross a stage target? ----
-      // Evaluated after everything persisted; the sheet opens once the
-      // weight-success modal closes so the two never stack.
-      const milestone = evaluateMilestoneForWeights(weight, prevWeight);
+
+      const milestone = evaluateMilestoneForWeights(
+        result.currentWeightKg,
+        previousWeight,
+      );
       if (milestone) setPendingMilestone(milestone);
-    } catch (e: any) {
-      // Revert optimistic update on failure
+
       if (user?.id) {
-        await useActivePetStore.getState().fetchPet(user.id, { silent: true });
+        awardCoins(user.id, 'weight_log');
+        await useActivePetStore
+          .getState()
+          .fetchPet(user.id, { silent: true });
+      }
+      usePetContextStore.getState().invalidateContext();
+      void fetchHealthData({ force: true });
+    } catch (error) {
+      const appErr = toAppError(error);
+      reportError(appErr, 'log');
+      presentFailure(appErr, 'log', activePet.name);
+      if (user?.id) {
+        await useActivePetStore
+          .getState()
+          .fetchPet(user.id, { silent: true });
       }
     } finally {
       setIsSavingWeight(false);
-      // Rebuild finished (or failed) — clear the shared signal so tabs settle.
-      useActivePetStore.getState().setRecalibrating(false);
+      // Cleared here rather than on success, so a thrown error also takes the
+      // progress list down instead of freezing it on whichever step failed.
+      setSaveStage(null);
     }
   };
 
@@ -1072,95 +1034,55 @@ export default function HealthScreen() {
     return null;
   };
 
-  // Apply a BCS re-score (owner-picked, or drift-predicted on dismissal):
-  // fresh ideal-weight estimate at today's weight → next stage target →
-  // recalculated calories → persisted + schedule regenerated. The same loop
-  // a vet runs at a recheck appointment.
+  // Accepted assessment path. Dismissal and predicted scores deliberately do
+  // nothing: only an explicit body check may create a new ideal revision.
   const applyBcsRescore = async (pickedBcs: number | null) => {
     const prompt = milestonePrompt;
     setMilestonePrompt(null);
-    if (!activePet || !prompt) return;
-
-    const predictedUsed = pickedBcs == null;
-    const newBcs = pickedBcs ?? prompt.result.predictedBcs ?? activePet.body_condition_score ?? null;
-    if (newBcs == null) return;
-
-    const weight = activePet.current_weight_kg;
-    const prevCalories = activePet.target_daily_calories ?? 0;
+    if (!activePet || !prompt || pickedBcs == null) return;
+    const previousCalories = activePet.target_daily_calories ?? 0;
 
     try {
-      const estimate = estimateIdealWeight({
-        species: activePet.species,
-        breed: activePet.breed ?? null,
-        sex: activePet.gender ?? null,
-        ageMonths: getAgeMonths(activePet),
-        currentWeightKg: weight,
-        bcs: newBcs,
+      const assessment = await recordWeightAssessment({
+        pet: activePet,
+        bcs: pickedBcs,
+        source:
+          prompt.trigger === 'bcs_stale'
+            ? 'owner_bcs'
+            : 'milestone',
       });
-      const newTarget = estimate.mode === 'ok' && estimate.targetKg != null
-        ? estimate.targetKg
-        : activePet.target_weight_kg ?? null;
-
-      const goal = deriveGoal(weight, newTarget, newBcs);
-      const ageMonths = getAgeMonths(activePet);
-      const breedDefs = getBreedDefaults(activePet.species, activePet.breed ?? null, weight);
-      const sizeCat = breedDefs?.sizeCategory ?? sizeCategoryFromWeight(activePet.species, weight);
-      const ageYears = activePet.age_years ?? 0;
-      const lifeStage = deriveLifeStage(activePet.species, Math.floor(ageYears), Math.round((ageYears % 1) * 12), sizeCat);
-      const lsMultiplier = getLifeStageCalorieMultiplier(lifeStage, activePet.species);
-      const newCalories = calculateDailyKcal(
-        weight,
-        activePet.species,
-        activePet.is_neutered,
-        activePet.activity_level,
-        goal,
-        ageMonths,
-        lsMultiplier,
-        newTarget,
-        breedDefs?.metabolicModifier ?? 1.0,
-        newBcs,
-      );
-
-      const { error } = await supabase.from('pets').update({
-        body_condition_score: newBcs,
-        bcs_updated_at: new Date().toISOString(),
-        target_weight_kg: newTarget,
-        target_daily_calories: newCalories,
-      }).eq('id', activePet.id);
-      if (error) throw error;
-
-      // Optimistic calories + full silent refresh for the rest of the row.
-      useActivePetStore.getState().updatePetWeight(weight, newCalories);
-      if (user?.id) await useActivePetStore.getState().fetchPet(user.id, { silent: true });
-      usePetContextStore.getState().invalidateContext();
-
-      if (newCalories !== prevCalories) setKcalDeltaNote(newCalories - prevCalories);
-
-      // Stage advance usually flips or re-aims the plan — regenerate.
-      useActivePetStore.getState().setRecalibrating(true);
-      const refreshed = useActivePetStore.getState().activePet ?? activePet;
-      const ctx = usePetContextStore.getState();
-      await regenerateSchedule({
-        pet: refreshed,
-        weeklyStats: null,
-        todayCalPercent: ctx.calPercent ?? 0,
-        weightTrendDirection: ctx.weightTrend?.direction ?? null,
-      });
+      const calorieDelta =
+        assessment.targetCalories - previousCalories;
+      if (calorieDelta !== 0) setKcalDeltaNote(calorieDelta);
 
       track('bcs_rescored', {
         source: prompt.trigger,
         old_bcs: activePet.body_condition_score ?? null,
-        new_bcs: newBcs,
-        predicted_used: predictedUsed,
-        new_target_kg: newTarget,
-        calorie_delta: newCalories - prevCalories,
+        new_bcs: pickedBcs,
+        predicted_used: false,
+        new_target_kg: assessment.targetWeightKg,
+        calorie_delta: calorieDelta,
       });
       haptic.success();
-    } catch (e) {
-      console.warn('[Milestone] re-score apply failed:', e);
-      if (user?.id) await useActivePetStore.getState().fetchPet(user.id, { silent: true });
+      if (
+        assessment.discloseIdealChange &&
+        assessment.idealWeightKg != null
+      ) {
+        Alert.alert(
+          'Plan updated',
+          `The confirmed ideal changed from ${assessment.previousIdealWeightKg?.toFixed(1)} kg to ${assessment.idealWeightKg.toFixed(1)} kg after this body check.`,
+        );
+      }
+    } catch (error) {
+      const appErr = toAppError(error);
+      reportError(appErr, 'log');
+      presentFailure(appErr, 'log', activePet.name);
     } finally {
-      useActivePetStore.getState().setRecalibrating(false);
+      if (user?.id) {
+        await useActivePetStore
+          .getState()
+          .fetchPet(user.id, { silent: true });
+      }
     }
   };
 
@@ -1175,8 +1097,22 @@ export default function HealthScreen() {
     ? Math.min(Math.round((hydrationScore.avgMl / Math.max(hydrationScore.targetMl, 1)) * 100), 100)
     : 0;
 
-  // Weight goal progress
-  const hasWeightGoal = activePet?.target_weight_kg && activePet.target_weight_kg !== activePet.current_weight_kg;
+  // Every Health label is derived from the same persisted plan used by Home,
+  // Meal and Profile. Recent readings are supplied only as status evidence.
+  const weightPlanView = activePet
+    ? weightPlanViewModelFromRecord(
+        activePet,
+        weightLogs.slice(0, 3).map((log) => ({
+          weightKg: Number(log.weight_kg),
+          loggedAt: log.logged_at,
+        })),
+      )
+    : null;
+  const hasWeightGoal = Boolean(
+    weightPlanView?.showJourney &&
+      weightPlanView.targetWeightKg != null &&
+      weightPlanView.idealWeightKg != null,
+  );
 
   // Milestone view for display: progress toward the FINAL ideal (not the
   // stage target) + BCS staleness. previousWeightKg = current suppresses
@@ -1197,183 +1133,37 @@ export default function HealthScreen() {
       })
     : null;
 
-  // Stage-relative fallback when the milestone view can't compute (no logs yet).
-  const stageRelativePct = hasWeightGoal && hasWeightData
-    ? Math.min(Math.round(
-      Math.abs(1 - (Math.abs((currentWeight ?? activePet!.current_weight_kg!) - activePet!.target_weight_kg!) /
-        Math.abs((weightLogs[weightLogs.length - 1]?.weight_kg || activePet!.current_weight_kg) - activePet!.target_weight_kg!))) * 100
-    ), 100)
-    : 0;
-  const weightGoalPct = milestoneView?.progressPct ?? stageRelativePct;
-  // The final ideal, when it differs meaningfully from the stored stage —
-  // lets the goal line read "stage 42 kg · ideal 37 kg".
-  const finalIdealForDisplay = milestoneView?.finalIdealKg != null
-    && activePet?.target_weight_kg != null
-    && Math.abs(milestoneView.finalIdealKg - activePet.target_weight_kg) > 0.5
-    ? milestoneView.finalIdealKg
-    : null;
-
+  // Progress comes exclusively from the persisted journey anchor and final
+  // assessed ideal. This prevents Health from disagreeing with Home/Profile
+  // when the next staged milestone differs from the final destination.
+  const weightGoalPct = weightPlanView?.progressPct ?? 0;
   const petName = activePet?.name || 'your pet';
   const onTrack = weeklyDelta !== null && weeklyTarget !== null && Math.abs(weeklyDelta) < weeklyTarget * 0.05;
+  const weightPlanLabel = hasWeightGoal
+    ? `next ${Number(weightPlanView?.targetWeightKg).toFixed(1)} kg · ideal ${Number(weightPlanView?.idealWeightKg).toFixed(1)} kg · ${weightGoalPct}% there`
+    : weightPlanView?.showHealthyBanner &&
+        weightPlanView.idealWeightKg != null
+      ? `confirmed ideal ${weightPlanView.idealWeightKg.toFixed(1)} kg${
+          weightPlanView.healthyBand
+            ? ` · healthy ${weightPlanView.healthyBand.low.toFixed(1)}–${weightPlanView.healthyBand.high.toFixed(1)} kg`
+            : ''
+        }`
+      : `${petName}’s weight over time`;
 
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-        {/* ════ NAVY CANOPY — full bleed, behind the status bar ════ */}
-        <View style={[styles.canopy, { paddingTop: insets.top + space.lg }]}>
-          <Animated.View entering={FadeInDown.duration(420)}>
-            <View style={styles.canopyTopRow}>
-              <Text style={styles.canopyEyebrow}>HEALTH</Text>
-              {weightDelta !== null && (
-                <View style={styles.deltaChip}>
-                  <MaterialIcons
-                    name={parseFloat(weightDelta) <= 0 ? 'south-east' : 'north-east'}
-                    size={11}
-                    color={color.cream}
-                  />
-                  <Text style={styles.deltaChipText}>
-                    {parseFloat(weightDelta) > 0 ? '+' : ''}{weightDelta} kg
-                  </Text>
-                </View>
-              )}
-            </View>
+        {/* ════ TODAY — the daily health experience, relocated from Home ════ */}
+        <HealthTodayFeed onLogWeight={() => {
+          const defaultWeight = activePet?.current_weight_kg || undefined;
+          setWeightInput(defaultWeight ? String(defaultWeight) : '');
+          weightSubmissionRef.current = null;
+          setShowWeightModal(true);
+        }} />
 
-            {hasWeightData ? (
-              <Text style={styles.canopyWeight}>
-                {Number(currentWeight).toFixed(1)}
-                <Text style={styles.canopyUnit}> KG</Text>
-              </Text>
-            ) : (
-              <Text style={styles.canopyNoData}>NO WEIGHT YET</Text>
-            )}
-            <Text style={styles.canopySub}>
-              {hasWeightGoal
-                ? finalIdealForDisplay != null
-                  ? `stage ${Number(activePet?.target_weight_kg || 0).toFixed(1)} kg · ideal ${finalIdealForDisplay.toFixed(1)} kg · ${weightGoalPct}% there`
-                  : `goal ${Number(activePet?.target_weight_kg || 0).toFixed(1)} kg · ${Math.abs((activePet?.current_weight_kg || 0) - (activePet?.target_weight_kg || 0)).toFixed(1)} kg to go`
-                : `${petName}’s weight over time`}
-            </Text>
-
-            {hasWeightGoal && (
-              <View style={styles.goalTrack}>
-                <View style={[styles.goalFill, { width: `${Math.max(weightGoalPct, 4)}%` }]} />
-              </View>
-            )}
-
-            {kcalDeltaNote != null && kcalDeltaNote !== 0 && (
-              <Text style={styles.kcalDeltaNote}>
-                Daily target adjusted {kcalDeltaNote > 0 ? '+' : ''}{kcalDeltaNote} kcal
-              </Text>
-            )}
-
-            {/* Stale-BCS prompt — the plan is running on an old body-shape
-                assessment. Tapping opens the same re-score sheet. */}
-            {milestoneView?.event === 'bcs_stale' && !milestonePrompt && (
-              <TouchableOpacity
-                activeOpacity={0.8}
-                style={styles.staleBcsCard}
-                onPress={() => setMilestonePrompt({ trigger: 'bcs_stale', result: milestoneView })}
-              >
-                <MaterialIcons name="pets" size={16} color={color.navy} />
-                <Text style={styles.staleBcsText}>
-                  Quick body check — {petName}&apos;s shape hasn&apos;t been updated in a while. Tap to re-check.
-                </Text>
-              </TouchableOpacity>
-            )}
-          </Animated.View>
-
-          {/* Trend line bleeds across the canopy */}
-          <View style={styles.canopyChart}>
-            {hasWeightData ? (
-              <>{(() => {
-                const logs = [...weightLogs].reverse();
-                if (logs.length === 1) logs.push({ ...logs[0] }); // Need at least 2 points
-                const maxW = Math.max(...logs.map(l => l.weight_kg));
-                const minW = Math.min(...logs.map(l => l.weight_kg));
-                const range = maxW - minW || 1;
-                const pts = logs.map((log, i) => {
-                  const pctX = i / (logs.length - 1);
-                  const x = 20 + pctX * 260;
-                  const y = 55 - (((log.weight_kg - minW) / range) * 25);
-                  const dateObj = new Date(log.logged_at || new Date());
-                  const dateStr = `${dateObj.getDate()} ${dateObj.toLocaleString('en-US', { month: 'short' })}`;
-                  return { x, y, pctX, weight: log.weight_kg, dateStr };
-                });
-                const dLine = `M ${pts.map(p => `${p.x},${p.y}`).join(' L ')}`;
-                const dFill = `${dLine} L 280,60 L 20,60 Z`;
-                return (
-                  <>
-                    <Svg width="100%" height="80" viewBox="0 0 300 80" preserveAspectRatio="none" style={{ position: 'absolute', top: 0, left: 0 }}>
-                      <Defs>
-                        <SvgLinearGradient id="weightGrad" x1="0" y1="0" x2="0" y2="1">
-                          <Stop offset="0" stopColor={color.navy} stopOpacity="0.18" />
-                          <Stop offset="1" stopColor={color.navy} stopOpacity="0" />
-                        </SvgLinearGradient>
-                      </Defs>
-                      <Path d={dFill} fill="url(#weightGrad)" />
-                      <Path d={dLine} stroke={color.navy} strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                      {pts.map((p, i) => (
-                        <Circle
-                          key={i}
-                          cx={p.x}
-                          cy={p.y}
-                          r={i === pts.length - 1 ? 5 : 2}
-                          fill={color.navy}
-                          stroke={i === pts.length - 1 ? color.yellow : 'none'}
-                          strokeWidth={i === pts.length - 1 ? 2 : 0}
-                        />
-                      ))}
-                    </Svg>
-                    {pts.map((p, i) => (
-                      <View
-                        key={`label-${i}`}
-                        style={{
-                          position: 'absolute',
-                          left: `${(20 / 300) * 100 + p.pctX * ((260 / 300) * 100)}%`,
-                          top: 0,
-                          bottom: 0,
-                          width: 40,
-                          marginLeft: -20,
-                          alignItems: 'center'
-                        }}
-                      >
-                        <Text style={[styles.chartWeightLabel, { top: p.y - 18 }]}>
-                          {p.weight}
-                        </Text>
-                        <Text style={styles.chartDateLabel}>
-                          {p.dateStr}
-                        </Text>
-                      </View>
-                    ))}
-                  </>
-                );
-              })()}</>
-            ) : (
-              <View style={styles.canopyChartEmpty}>
-                <Text style={styles.canopyChartEmptyText}>
-                  Log {petName}&apos;s first weight to start the trend line
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        {/* ════ THE SHEET — rises over the canopy; the seam holds the action ════ */}
+        {/* ════ THE SHEET ════ */}
         <View style={styles.sheet}>
-          <TouchableOpacity
-            style={styles.seamAction}
-            activeOpacity={0.9}
-            onPress={() => {
-              const defaultWeight = activePet?.current_weight_kg || undefined;
-              setWeightInput(defaultWeight ? String(defaultWeight) : '');
-              setShowWeightModal(true);
-            }}
-          >
-            <MaterialIcons name="add" size={16} color={color.navy} />
-            <Text style={styles.seamActionText}>Log weight</Text>
-          </TouchableOpacity>
-
           {/* ─── This week — two stat moments, typography on the ground ─── */}
           <Animated.View entering={FadeInDown.duration(420).delay(60)}>
             <View style={styles.sectionHead}>
@@ -1675,6 +1465,11 @@ export default function HealthScreen() {
                 />
               </View>
 
+              {/* Named work instead of an opaque spinner. Most of the wait is
+                  the schedule rebuild, and saying so is what stops a slow save
+                  reading as a hung one. */}
+              <WeightSaveProgress stage={saveStage} />
+
               <PawtchiButton
                 title="Save weight"
                 variant="primary"
@@ -1682,9 +1477,18 @@ export default function HealthScreen() {
                 onPress={() => { Keyboard.dismiss(); saveWeightLog(); }}
               />
 
-              <TouchableOpacity onPress={() => { Keyboard.dismiss(); setShowWeightModal(false); }} style={styles.cancelBtn}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
+              {/* Cancel dismisses the sheet but cannot stop the save — the
+                  writes are already in flight. Hidden while saving rather than
+                  offering an abort this screen cannot honour. */}
+              {!isSavingWeight && (
+                <TouchableOpacity onPress={() => {
+                  Keyboard.dismiss();
+                  weightSubmissionRef.current = null;
+                  setShowWeightModal(false);
+                }} style={styles.cancelBtn}>
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </KeyboardAvoidingView>
         </TouchableWithoutFeedback>
@@ -1711,7 +1515,7 @@ export default function HealthScreen() {
           calorieDiff={weightSuccessData.calorieDiff}
           goal={weightSuccessData.goal}
           willRecalibrate={weightSuccessData.willRecalibrate}
-          progressPct={milestoneView?.progressPct ?? null}
+          progressPct={weightPlanView?.progressPct ?? null}
         />
       )}
 
@@ -1752,9 +1556,8 @@ export default function HealthScreen() {
         }}
       />
 
-      {/* Milestone / stale-BCS re-score sheet — the recheck moment. Selecting
-          a silhouette advances the plan; skipping advances on the predicted
-          score so the program never stalls at a stage target. */}
+      {/* Milestone / stale-BCS re-score sheet. Only an explicit selection
+          creates a new assessment revision; dismissal changes nothing. */}
       <BcsRescoreSheet
         visible={milestonePrompt !== null}
         petName={petName}
@@ -1762,28 +1565,17 @@ export default function HealthScreen() {
         trigger={milestonePrompt?.trigger ?? 'bcs_stale'}
         progressPct={milestonePrompt?.result.progressPct ?? null}
         onSelect={(bcs) => { applyBcsRescore(bcs); }}
-        onDismiss={() => {
-          if (milestonePrompt?.trigger === 'bcs_stale') {
-            // Stale prompt is purely optional — dismissing changes nothing.
-            setMilestonePrompt(null);
-          } else {
-            // Milestone dismissal still advances the stage (predicted BCS).
-            applyBcsRescore(null);
-          }
-        }}
+        onDismiss={() => setMilestonePrompt(null)}
       />
 
-      {/* Branded Vet Scan Error Modal */}
-      <PawtchiModal
-        visible={failure != null}
+      {/* Branded failure sheet — scan / report / log paths. FailureModal owns
+          contact support, settings and back; handleRecovery owns the flow. */}
+      <FailureModal
+        copy={failure}
         onClose={() => setFailure(null)}
-        title={failure?.title ?? ''}
+        onAction={handleRecovery}
         icon={{ name: 'error-outline', color: color.error }}
-        message={failure?.message}
-        actions={(failure?.actions ?? []).map(a => ({
-          label: a.label,
-          onPress: () => handleRecovery(a.action),
-        }))}
+        meta={{ ...failureMeta, screen: '/(tabs)/health' }}
       />
 
       {/* Delete-report confirm */}
@@ -1804,7 +1596,9 @@ export default function HealthScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: color.yellow },
+  // White, matching the daily feed that now opens the scroll — the canopy
+  // keeps its own yellow ground below it.
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   scrollContent: { flexGrow: 1 },
 
   // ════ Canopy — yellow ground, navy ink ════
@@ -1841,9 +1635,7 @@ const styles = StyleSheet.create({
     color: color.navy,
   },
   canopyWeight: {
-    fontFamily: font.display,
-    fontSize: 76,
-    lineHeight: 72,
+    ...displayLine(76),
     letterSpacing: 1,
     color: color.navy,
   },
@@ -1930,12 +1722,9 @@ const styles = StyleSheet.create({
   // ════ Sheet ════
   sheet: {
     backgroundColor: color.surfaceSubtle,
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
-    marginTop: -32, // rises over the canopy
     paddingHorizontal: space.xxl,
-    paddingTop: 44, // clears the seam action
-    paddingBottom: 130, // tab bar
+    paddingTop: space.xl,
+    paddingBottom: 130 + TAB_BAR_CLEARANCE, // floating tab bar overlaps content
   },
   // The one navy action — floats on the seam between yellow canopy and light sheet
   seamAction: {

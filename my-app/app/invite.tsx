@@ -7,6 +7,7 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import { BRAND_YELLOW } from '../constants/design';
 
 import { useActivePetStore } from '../store/useActivePetStore';
 import { resolvePetImage } from '../lib/petFallbackImage';
@@ -20,7 +21,7 @@ import {
 // ─── Brand system (Pradip's design system) ───
 // Two colours only: deep navy structure, electric yellow accent. No gradients.
 const NAVY = '#07202a';
-const YELLOW = '#F7F602';
+const YELLOW = BRAND_YELLOW;
 const CREAM = '#F4F1EC';
 const CREAM_MUTED = 'rgba(244, 241, 236, 0.55)';
 

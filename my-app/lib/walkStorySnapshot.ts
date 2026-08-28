@@ -12,8 +12,21 @@ import {
   type WalkWeather,
 } from './walkStory';
 import type { WalkLabels } from './walk/geoLabels';
+import { normalizeKeepsake, sortKeepsakes, type Keepsake } from './walk/keepsake';
 
-export const WALK_STORY_SNAPSHOT_VERSION = 1 as const;
+/** v2 added `keepsakes`. */
+export const WALK_STORY_SNAPSHOT_VERSION = 2 as const;
+
+/**
+ * Versions this build can still render.
+ *
+ * `version` is typed as a plain number rather than the literal so a cached v1
+ * object — written by a previous build, missing `keepsakes` entirely — still
+ * satisfies the type and still renders. Every field v2 added is optional or
+ * defaulted precisely so that stays true: a story from before this feature
+ * existed must never fail to open.
+ */
+export const SUPPORTED_SNAPSHOT_VERSIONS: readonly number[] = [1, 2];
 
 /**
  * Everything the native Story renderer needs, normalized and safe to cache.
@@ -21,7 +34,7 @@ export const WALK_STORY_SNAPSHOT_VERSION = 1 as const;
  * into any viewport at render time.
  */
 export interface WalkStorySnapshot {
-  version: typeof WALK_STORY_SNAPSHOT_VERSION;
+  version: number;
   walkSessionId: string;
   petId: string;
   petName: string | null;
@@ -35,6 +48,8 @@ export interface WalkStorySnapshot {
   avgSpeedKmh: number | null;
   weather: WalkWeather | null;
   totals: WalkTotals | null;
+  /** v2+. Absent on cached v1 snapshots, which simply have no keepsake beat. */
+  keepsakes?: Keepsake[];
   cachedAt: number;
 }
 
@@ -58,6 +73,8 @@ export interface WalkStorySnapshotSource {
   farthestLabel?: unknown;
   weather?: unknown;
   totals?: WalkTotals | null;
+  /** Raw `walk_media` rows; each is normalized and malformed ones dropped. */
+  keepsakes?: unknown;
   cachedAt?: number;
 }
 
@@ -77,6 +94,17 @@ export function parseWalkStoryGeoPoints(raw: unknown): MomentRoutePoint[] {
     }
     return [];
   });
+}
+
+/**
+ * Normalize the walk's keepsake rows, dropping any that are malformed.
+ *
+ * Same posture as parseWalkStoryGeoPoints above: one bad row must not cost the
+ * user the rest of their story.
+ */
+export function parseWalkStoryKeepsakes(raw: unknown): Keepsake[] {
+  if (!Array.isArray(raw)) return [];
+  return sortKeepsakes(raw.flatMap((row) => normalizeKeepsake(row) ?? []));
 }
 
 export function parseWalkStoryWeather(raw: unknown): WalkWeather | null {
@@ -159,6 +187,7 @@ export function createWalkStorySnapshot(
       source.avgSpeedKmh == null ? null : finiteNumber(source.avgSpeedKmh),
     weather: parseWalkStoryWeather(source.weather),
     totals: source.totals ?? null,
+    keepsakes: parseWalkStoryKeepsakes(source.keepsakes),
     cachedAt: source.cachedAt ?? Date.now(),
   };
 }
@@ -178,6 +207,9 @@ export function snapshotToWalkStoryInput(
     avgSpeedKmh: snapshot.avgSpeedKmh,
     weather: snapshot.weather,
     totals: snapshot.totals,
+    // `?? []` is what makes a v1 snapshot render: no keepsakes, no beat, same
+    // story it told before.
+    keepsakes: snapshot.keepsakes ?? [],
   };
 }
 

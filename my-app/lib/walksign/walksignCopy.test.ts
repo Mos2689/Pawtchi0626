@@ -82,6 +82,9 @@ describe('moment copy', () => {
     expect(buildConfirmationHeadline('Alex', null)).toBe('Written in their walks. Confirmed.');
     assertBrandVoice(buildConfirmationBody('loopkeeper', 'Ranger'));
     expect(buildConfirmationBody('loopkeeper', 'Ranger')).toContain('Loopkeeper');
+    expect(buildConfirmationBody('loopkeeper', 'Ranger', 8)).toContain(
+      '8 real walks',
+    );
   });
 
   test('transition headlines name the new sign, calmly', () => {
@@ -94,6 +97,15 @@ describe('moment copy', () => {
     const senior = buildTransitionHeadline('storywalker_arrival', 'storywalker', 'Duke');
     expect(senior).toContain('Storywalker');
     assertBrandVoice(senior);
+
+    const evolved = buildTransitionHeadline(
+      'behavioral_evolution',
+      'blockscout',
+      'Ranger',
+    );
+    expect(evolved).toContain('Ranger');
+    expect(evolved).toContain('Blockscout');
+    assertBrandVoice(evolved);
   });
 
   test('share message carries name, sign, and the invite link', () => {

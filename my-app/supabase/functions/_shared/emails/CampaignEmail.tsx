@@ -31,13 +31,13 @@ import {
  *
  * The contrast rule from the brand book is load-bearing here: yellow is never
  * ink on white. It appears only as a filled block behind navy text — the CTA
- * button and nothing else. The previous WeeklySummaryEmail used #FACC15 and
- * #f59e0b, neither of which is a Pawtchi colour.
+ * button and nothing else. Older email templates used off-brand yellow and
+ * amber values, neither of which belongs in a brand-yellow role.
  */
 
 // ── Brand tokens (mirrored from constants/design.ts) ───────────────────────
 const NAVY = "#07202A";
-const YELLOW = "#F7F602";
+const YELLOW = "#F4F600";
 const CREAM = "#F4F1EC";
 const SURFACE = "#FFFFFF";
 const SURFACE_SUBTLE = "#F8F7F4";

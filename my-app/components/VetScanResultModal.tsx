@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 
-import { color, font, radius, shadow, space } from '../constants/design';
+import { brandYellowAlpha, color, font, radius, shadow, space } from '../constants/design';
 import { PulseMark } from './PulseMark';
 import { possessivePronoun } from '../lib/referral';
 import { resolvePetImage } from '../lib/petFallbackImage';
@@ -417,10 +417,10 @@ const styles = StyleSheet.create({
   // ── Sections ──
   section: { marginTop: space.xxl },
   sectionAccent: {
-    backgroundColor: 'rgba(247, 246, 2, 0.10)',
+    backgroundColor: brandYellowAlpha(0.10),
     borderRadius: radius.xl,
     borderWidth: 1,
-    borderColor: 'rgba(247, 246, 2, 0.30)',
+    borderColor: brandYellowAlpha(0.30),
     padding: space.lg,
     marginTop: space.lg,
   },

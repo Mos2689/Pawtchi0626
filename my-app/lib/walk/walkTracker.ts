@@ -33,6 +33,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { track } from '../analytics';
 import type { RawGpsPoint } from './walkSession';
 import type { DogWalkProfile } from './dogCalibration';
+import { BRAND_YELLOW } from '../../constants/design';
 
 export const WALK_TASK = 'pawtchi-walk-location';
 const ACTIVE_KEY = 'walk:active';
@@ -215,7 +216,7 @@ async function doStart(descriptor: ActiveWalkDescriptor): Promise<void> {
     foregroundService: {
       notificationTitle: `${descriptor.petName}'s walk is being tracked`,
       notificationBody: 'Pawtchi is measuring the route. The walk ends on its own when you get home.',
-      notificationColor: '#FFFF00',
+      notificationColor: BRAND_YELLOW,
       killServiceOnDestroy: false,
     },
   });

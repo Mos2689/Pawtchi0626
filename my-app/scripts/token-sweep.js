@@ -32,7 +32,10 @@ const CONTEXTUAL = [
 const MAP = [
   ['ffffff', 'color.surface'],
   ['fff', 'color.surface'],
+  ['f4f600', 'color.yellow'],
   ['f7f602', 'color.yellow'],
+  ['ffff00', 'color.yellow'],
+  ['fffc00', 'color.yellow'],
   ['ebea00', 'color.yellow'],
   ['07202a', 'color.navy'],
   ['f4f1ec', 'color.cream'],

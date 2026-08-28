@@ -1,14 +1,72 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 import featureFlags from './constants/featureFlags.json';
 
+// Covers BOTH uses, because a permission string a reviewer can catch us
+// exceeding is worse than a slightly longer one. The second sentence exists
+// because Home centres its map on the device's location for owners who have no
+// recorded walk yet; the original copy promised location was only read "during
+// a tracked walk", which that feature would have made untrue.
 const LOCATION_PERMISSION =
-  "Pawtchi uses your location during a tracked walk to measure the route, distance and time, so the walk is logged for your pet automatically.";
+  'Pawtchi uses your location during a tracked walk to measure the route, distance and time, so the walk is logged for your pet automatically. It is also used to centre the map on your home screen until your first walk draws itself.';
 
 const WALK_ANDROID_PERMISSIONS = [
   'android.permission.ACCESS_COARSE_LOCATION',
   'android.permission.ACCESS_FINE_LOCATION',
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_LOCATION',
+] as const;
+
+// ── Camera and photo-library strings ──
+//
+// Each of these covers EVERY use of its permission, for the same reason
+// LOCATION_PERMISSION does. iOS shows one string per permission, and the
+// expo-camera / expo-media-library plugin mods overwrite whatever app.json set
+// during prebuild — so a walk-only sentence here would silently replace the
+// food-scanner's copy and start describing the wrong feature. These must stay
+// in sync with the matching keys in app.json (which apply when the camera flag
+// is off and the plugins are absent).
+//
+// They also state the architecture plainly, because the architecture is the
+// reassurance: the original never leaves the device, and what Pawtchi keeps is
+// a thumbnail and a position on the route.
+const CAMERA_PERMISSION =
+  'Pawtchi uses your camera to scan your pet’s food and analyse its nutritional content, and to capture a moment during a walk without leaving the app. Walk photos are saved to your own photo library — Pawtchi keeps only a small thumbnail and where along the walk each one was taken.';
+
+const PHOTO_LIBRARY_PERMISSION =
+  'Pawtchi uses your photo library to let you set your pet’s profile picture, and to find photos taken during a walk so it can add them to that walk. Your photos stay in your library — Pawtchi keeps only a small thumbnail and where along the walk each one was taken.';
+
+const PHOTO_LIBRARY_ADD_PERMISSION =
+  'Pawtchi may save scanned food images and the photos you capture during a walk to your own photo library, so they sit alongside the rest of your photos.';
+
+const CAMERA_ANDROID_PERMISSIONS = [
+  'android.permission.CAMERA',
+] as const;
+
+/**
+ * Permissions the camera libraries declare that Pawtchi must NEVER request,
+ * in either flag state.
+ *
+ * expo-camera ships RECORD_AUDIO in its own manifest because it supports video.
+ * Pawtchi's walk camera is stills-only by design, so autolinking would
+ * otherwise merge a microphone permission into the app for a capability that
+ * does not exist — putting "Microphone" on the store listing and inviting
+ * exactly the kind of permission question this app has been rejected over
+ * before. Setting `recordAudioAndroidPermission: false` on the plugin is not
+ * enough; the library's manifest entry has to be removed at merge time.
+ *
+ * Revisit only if video capture is ever actually built.
+ */
+const ALWAYS_BLOCKED_MEDIA_PERMISSIONS = [
+  'android.permission.RECORD_AUDIO',
+  // Photo selection is handled by expo-image-picker's Android system photo
+  // picker. The walk camera may write its own capture to MediaStore on modern
+  // Android, but it never needs permission to enumerate the user's library.
+  'android.permission.READ_MEDIA_IMAGES',
+  'android.permission.READ_MEDIA_VIDEO',
+  'android.permission.READ_MEDIA_AUDIO',
+  'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
+  'android.permission.READ_EXTERNAL_STORAGE',
+  'android.permission.WRITE_EXTERNAL_STORAGE',
 ] as const;
 
 const BLOCKED_WHEN_WALK_DISABLED = [
@@ -50,24 +108,45 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     throw new Error('app.json must define both expo.name and expo.slug');
   }
   const walkEnabled = featureFlags.walkTracking;
+  // The camera only exists inside a tracked walk, so it can never be enabled on
+  // its own — that would ask for a camera permission for a feature the build
+  // has no way to reach.
+  const cameraEnabled = walkEnabled && featureFlags.walkCamera;
   const currentPermissions = config.android?.permissions ?? [];
   const currentBlocked = config.android?.blockedPermissions ?? [];
 
-  const permissions = walkEnabled
+  const walkPermissions = walkEnabled
     ? unique([...currentPermissions, ...WALK_ANDROID_PERMISSIONS])
     : currentPermissions.filter(
         permission => !REMOVE_WHEN_WALK_DISABLED.includes(permission as never),
       );
 
+  const permissions = cameraEnabled
+    ? unique([...walkPermissions, ...CAMERA_ANDROID_PERMISSIONS])
+    : walkPermissions.filter(
+        permission => !CAMERA_ANDROID_PERMISSIONS.includes(permission as never),
+      );
+
   // ACCESS_BACKGROUND_LOCATION is intentionally blocked in both states. The
   // foreground service keeps an active, user-visible walk alive without asking
   // for the broader "always allow" permission.
-  const blockedPermissions = walkEnabled
+  const walkBlocked = walkEnabled
     ? unique([
         ...currentBlocked.filter(permission => !WALK_ANDROID_PERMISSIONS.includes(permission as never)),
         'android.permission.ACCESS_BACKGROUND_LOCATION',
       ])
     : unique([...currentBlocked, ...BLOCKED_WHEN_WALK_DISABLED]);
+
+  // With the camera off, block its permissions outright. Autolinking merges
+  // each library's own AndroidManifest into the app's, so simply not listing
+  // CAMERA is not the same as not asking for it — blocking is what actually
+  // keeps it out of the built manifest, and out of the store listing.
+  const cameraBlocked = cameraEnabled
+    ? walkBlocked.filter(permission => !CAMERA_ANDROID_PERMISSIONS.includes(permission as never))
+    : unique([...walkBlocked, ...CAMERA_ANDROID_PERMISSIONS]);
+
+  // Blocked in both states — see ALWAYS_BLOCKED_MEDIA_PERMISSIONS.
+  const blockedPermissions = unique([...cameraBlocked, ...ALWAYS_BLOCKED_MEDIA_PERMISSIONS]);
 
   let plugins = [...(config.plugins ?? [])];
   plugins = upsertPlugin(plugins, 'expo-location', {
@@ -80,6 +159,38 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     requestLocationPermission: walkEnabled,
     locationPermission: LOCATION_PERMISSION,
   });
+  // Registered ONLY when the feature is on.
+  //
+  // Passing `false` for the permission strings is not enough on its own: these
+  // plugins also inject their Android permissions, and they run after this
+  // function returns, so anything filtered out of `permissions` above would be
+  // added straight back. A disabled build must not request CAMERA at all —
+  // hence "omit the plugin" rather than "configure it quietly", with
+  // blockedPermissions below as the backstop against autolinked manifest
+  // entries from the libraries themselves.
+  if (cameraEnabled) {
+    plugins = upsertPlugin(plugins, 'expo-camera', {
+      cameraPermission: CAMERA_PERMISSION,
+      // Audio belongs to video capture, which is deliberately out of scope for
+      // v1 — so this stays off and the microphone string never appears.
+      recordAudioAndroidPermission: false,
+      microphonePermission: false,
+    });
+    plugins = upsertPlugin(plugins, 'expo-media-library', {
+      photosPermission: PHOTO_LIBRARY_PERMISSION,
+      savePhotosPermission: PHOTO_LIBRARY_ADD_PERMISSION,
+      // iOS still uses the matching privacy strings above. Android photo
+      // selection goes through the system picker, so the plugin must not add
+      // READ_MEDIA_* permissions to the merged manifest.
+      granularPermissions: [],
+      isAccessMediaLocationEnabled: false,
+    });
+  } else {
+    plugins = plugins.filter(
+      plugin => pluginName(plugin) !== 'expo-camera' && pluginName(plugin) !== 'expo-media-library',
+    );
+  }
+
   plugins = upsertPlugin(plugins, '@react-native-firebase/app', {});
   plugins = upsertPlugin(plugins, '@react-native-firebase/analytics', {
     ios: {

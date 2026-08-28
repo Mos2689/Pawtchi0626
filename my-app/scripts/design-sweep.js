@@ -31,7 +31,7 @@ const SIMPLE_REPLACEMENTS = [
   [/'PlusJakartaSans-Bold'/g, "'Montserrat_700Bold'"],
   [/'PlusJakartaSans-Medium'/g, "'Montserrat_500Medium'"],
   // One yellow
-  [/#FFFC00/gi, '#F7F602'],
+  [/#(?:F7F602|FFFF00|FFFC00)/gi, '#F4F600'],
   // Text-on-yellow ink: brand navy, not near-black
   [/#1a1a00/gi, '#07202A'],
   // Stray tailwind amber used as accent → data-viz amber

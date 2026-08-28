@@ -47,7 +47,8 @@ export interface MomentCardProps {
   petGender?: string | null;
   startedAt: number;
   route: MomentRoutePoint[];
-  pausePoints: MomentRoutePoint[];
+  /** Sniff stops (dwell optional — legacy rows carry none). */
+  sniffStops: (MomentRoutePoint & { dwellS?: number })[];
   labels: WalkLabels;
   stats: MomentStats;
   /** Seeds the companion weave — the walk session id. */
@@ -156,12 +157,37 @@ function PawMark({ x, y, onPhoto, fill = ink.yellow }: { x: number; y: number; o
   );
 }
 
+/** A nose pin for a real sniff stop. The electric-blue disc makes stops
+ *  distinct from the yellow route, while the white nose remains legible over
+ *  both the washed map and a photograph. */
+function SniffMark({
+  x,
+  y,
+  scale = 1,
+}: {
+  x: number;
+  y: number;
+  scale?: number;
+}) {
+  return (
+    <G transform={`translate(${x},${y}) scale(${scale})`}>
+      <Circle r={7.2} fill={ink.sniff} stroke="#FFFFFF" strokeWidth={1.2} />
+      <Path
+        d="M-3.8,-1.5 C-3.8,-4.1 3.8,-4.1 3.8,-1.5 C3.8,1.3 2.1,3.5 0,3.5 C-2.1,3.5 -3.8,1.3 -3.8,-1.5 Z"
+        fill="#FFFFFF"
+      />
+      <Circle cx={-1.7} cy={-1.5} r={0.72} fill={ink.sniff} />
+      <Circle cx={1.7} cy={-1.5} r={0.72} fill={ink.sniff} />
+    </G>
+  );
+}
+
 export function MomentCard({
   petName,
   petGender,
   startedAt,
   route,
-  pausePoints,
+  sniffStops,
   labels,
   stats,
   sessionId,
@@ -182,8 +208,8 @@ export function MomentCard({
     [route, zoneW, zoneH],
   );
   const companion = useMemo(
-    () => buildCompanionPath(route, pausePoints, zoneW, zoneH, ROUTE_PAD, sessionId),
-    [route, pausePoints, zoneW, zoneH, sessionId],
+    () => buildCompanionPath(route, sniffStops, zoneW, zoneH, ROUTE_PAD, sessionId),
+    [route, sniffStops, zoneW, zoneH, sessionId],
   );
 
   // Photo ground draws the walk as a single slim ribbon in an upper band, so
@@ -193,11 +219,11 @@ export function MomentCard({
   const photoRouteH = Math.round(height * 0.22);
   const photoYellow = ink.yellowOnPhoto;
   const photoCompanion = useMemo(
-    () => buildCompanionPath(route, pausePoints, zoneW, photoRouteH, ROUTE_PAD, sessionId),
-    [route, pausePoints, zoneW, photoRouteH, sessionId],
+    () => buildCompanionPath(route, sniffStops, zoneW, photoRouteH, ROUTE_PAD, sessionId),
+    [route, sniffStops, zoneW, photoRouteH, sessionId],
   );
 
-  const sniffCount = pausePoints.length;
+  const sniffCount = sniffStops.length;
   const headline = useMemo(
     () => buildMomentHeadline(petName, petGender, sniffCount, stats.durationS).toUpperCase(),
     [petName, petGender, sniffCount, stats.durationS],
@@ -253,7 +279,12 @@ export function MomentCard({
               <Path d={photoCompanion.path} fill="none" stroke="rgba(0,0,0,0.32)" strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" />
               <Path d={photoCompanion.path} fill="none" stroke={photoYellow} strokeWidth={3.4} strokeLinecap="round" strokeLinejoin="round" />
               {photoCompanion.loops.map((loop, i) => (
-                <Circle key={i} cx={loop.x} cy={loop.y} r={loop.r} fill="none" stroke={photoYellow} strokeWidth={3} />
+                <SniffMark
+                  key={i}
+                  x={loop.x}
+                  y={loop.y}
+                  scale={Math.max(0.9, Math.min(1.25, loop.r / 7))}
+                />
               ))}
               <Circle cx={photoCompanion.start.x} cy={photoCompanion.start.y} r={5} fill="#FFFFFF" stroke="rgba(0,0,0,0.28)" strokeWidth={1} />
               <PawMark x={photoCompanion.paw.x} y={photoCompanion.paw.y} onPhoto fill={photoYellow} />
@@ -345,7 +376,12 @@ export function MomentCard({
             <Path d={companion.path} fill="none" stroke={ink.yellow} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" />
             <Path d={ownerPath} fill="none" stroke={ownerStroke} strokeWidth={1.6} strokeLinecap="round" opacity={0.75} />
             {companion.loops.map((loop, i) => (
-              <Circle key={i} cx={loop.x} cy={loop.y} r={loop.r} fill="none" stroke={ink.yellow} strokeWidth={3} />
+              <SniffMark
+                key={i}
+                x={loop.x}
+                y={loop.y}
+                scale={Math.max(0.9, Math.min(1.25, loop.r / 7))}
+              />
             ))}
             <Circle cx={companion.start.x} cy={companion.start.y} r={3.2} fill={ownerStroke} />
             <PawMark x={companion.paw.x} y={companion.paw.y} onPhoto={onPhoto} />

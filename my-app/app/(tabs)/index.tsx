@@ -1,101 +1,211 @@
-import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
-import { Image } from 'expo-image';
+/**
+ * Home — map-first.
+ *
+ * The map is the screen. It runs edge to edge and is never covered: every
+ * control floats on it as its own rounded, elevated object. Browsing your walks
+ * IS moving the map — the rail snaps, and whichever card settles in view tells
+ * the camera where to look, so content and geography are one control rather
+ * than two stacked layers competing for the same space.
+ *
+ * There is deliberately no scroll and no bottom sheet. Everything Home shows
+ * fits in the rail; anything longer lives behind the gallery button, because a
+ * list that grows forever is a different screen, not a taller one.
+ *
+ * Cats keep a plain, mapless layout — walks are dogs-only, and a map with
+ * nothing on it is worse than no map.
+ */
+
+import React, { useCallback, useMemo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { MaterialCommunityIcons, MaterialIcons, Ionicons } from '@expo/vector-icons';
-import Svg from 'react-native-svg';
-import Reanimated, {
-  useSharedValue, useAnimatedStyle, withSequence, withSpring,
-} from 'react-native-reanimated';
-import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
-import { RingArc, ProgressBar, RING_SIZE, RING_CONFIG, PHOTO_RADIUS } from '../../components/HealthRings';
-import { AnimatedCounter } from '../../components/AnimatedCounter';
+import { MaterialIcons } from '@expo/vector-icons';
+import Reanimated from 'react-native-reanimated';
+
+import { color, font, space } from '../../constants/design';
 import { entrance } from '../../components/motionPresets';
-import { PawLoader } from '../../components/loader/PawLoader';
-import { ProfileCompletionCard } from '../../components/ProfileCompletionCard';
 
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { usePawPrintStore } from '../../store/usePawPrintStore';
 import { useStreakStore } from '../../store/useStreakStore';
 import { useWalkStoryStore } from '../../store/useWalkStoryStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
-import { computeWaterTargetMl } from '../../lib/hydration';
 import { resolvePetImage } from '../../lib/petFallbackImage';
 import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
-import { NudgeCard } from '../../components/NudgeCard';
-import { TrialBanner } from '../../components/TrialBanner';
-import { VetTunedNutritionBanner } from '../../components/VetTunedNutritionBanner';
-import { CatRefusingFoodCard } from '../../components/CatRefusingFoodCard';
-import { SevereObesityVetBanner } from '../../components/SevereObesityVetBanner';
-import { GrowthPhaseBanner } from '../../components/GrowthPhaseBanner';
-import { MerRecalibrationBanner } from '../../components/MerRecalibrationBanner';
-import { getAgeMonths } from '../../lib/lifeStage';
-import { deriveGoal as deriveGoalFn } from '../../lib/healthMath';
-import { PawtchiButton } from '../../components/PawtchiButton';
-import { SecondOpinionCard } from '../../components/SecondOpinionCard';
-import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
-import { WalkPostCard } from '../../components/WalkPostCard';
 import { useRecentWalks } from '../../hooks/useRecentWalks';
-import { getLocalYMD } from '../../lib/dateUtils';
-import { MilestoneJourneyCard } from '../../components/MilestoneJourneyCard';
-import { VetCheckinNudge } from '../../components/VetCheckinNudge';
-import { getMonthlyUsage, getPendingCheckin, type MonthlyUsage, type PendingCheckin } from '../../lib/askVet';
 import { track } from '../../lib/analytics';
-import { haptic } from '../../lib/haptics';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
-import { WALK_STORY_ENABLED } from '../../constants/features';
+import {
+  SPOTS_OSM_MVP_ENABLED,
+  WALK_CAMERA_ENABLED,
+  WALK_STORY_ENABLED,
+} from '../../constants/features';
+import { useKeepsakePins } from '../../hooks/useKeepsakePins';
+import { useNearbySpots } from '../../hooks/useNearbySpots';
+import { applyFilter, availableFilters, type SpotFilter } from '../../lib/spots/filters';
+import { shouldOfferAreaSearch } from '../../lib/spots/areaSearch';
+import { buildVisitIndex, type VisitIndex } from '../../lib/spots/visited';
+import { useWalkedRoutes } from '../../hooks/useWalkedRoutes';
+import type { GeoPoint } from '../../lib/walk/geo';
+import type { MapCamera } from '../../lib/walk/mapCamera';
+import { copy, displayName, distanceBucket } from '../../lib/spots/copy';
+import type { SpotsStatus } from '../../lib/spots/fetchPolicy';
+import type { PawtchiSpot } from '../../lib/spots/types';
+import { SpotFilterRail } from '../../components/spots/SpotFilterRail';
+import { SpotDetailsSheet } from '../../components/spots/SpotDetailsSheet';
+import { OsmAttribution } from '../../components/spots/OsmAttribution';
+import { CATEGORY_ICON, CATEGORY_TONE } from '../../components/spots/spotVisuals';
 import { armWalkStart } from '../../lib/walk/walkStartIntent';
-import { WalkStoryRing } from '../../components/WalkStoryRing';
-import { WalksignCrest } from '../../components/walksign/WalksignCrest';
 import { WalksignMomentModal } from '../../components/walksign/WalksignMomentModal';
-import { PawPrintTeaser } from '../../components/pawprints/PawPrintTeaser';
 import { MilestoneCelebration } from '../../components/pawprints/MilestoneCelebration';
 import { TemplateUnlockCelebration } from '../../components/moments/TemplateUnlockCelebration';
+import { HomeMapLayer } from '../../components/home/HomeMapLayer';
+import { HomeTopBar } from '../../components/home/HomeTopBar';
+import { HomeRail, type RailEntry } from '../../components/home/HomeRail';
+import { MapControls } from '../../components/home/MapControls';
+import { MapLocationPrompt } from '../../components/home/MapLocationPrompt';
+import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
+import { useHomeMapCenter } from '../../hooks/useHomeMapCenter';
+import { useCurrentWalkWeather } from '../../hooks/useCurrentWalkWeather';
+import {
+  buildSniffItems,
+  buildSniffPins,
+  buildTodayTotals,
+  buildWalkItems,
+  buildWalkPins,
+  formatDwell,
+  sniffsForWalk,
+  walkFeedLoadingCopy,
+  type RailSegment,
+} from '../../lib/home/homeRail';
 import {
   clearPendingWalksignCelebration,
   readPendingWalksignCelebration,
   type PendingWalksignCelebration,
 } from '../../lib/walksign/walksignSync';
-import type { WalksignId } from '../../lib/walksign/types';
 import { createWalkStorySnapshot } from '../../lib/walkStorySnapshot';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../lib/supabase';
 import { useNotificationPermission } from '../../hooks/useNotificationPermission';
 import { usePushNotifications } from '../../hooks/usePushNotifications';
-import { NotificationBellChip } from '../../components/NotificationBellChip';
+import { NotificationBell } from '../../components/notifications/NotificationBell';
+import {
+  selectHasUrgentUnread,
+  selectUnreadCount,
+  useNotificationCenterStore,
+} from '../../store/useNotificationCenterStore';
 import { NotificationPrimer } from '../../components/NotificationPrimer';
+import { FirstWalkIntroVideo } from '../../components/FirstWalkIntroVideo';
+import { useFirstWalkIntro } from '../../hooks/useFirstWalkIntro';
+import { useWalkStore } from '../../store/useWalkStore';
 
-/** Cooldown between value-moment asks, so a decline is never a nag. */
-const PRIMER_COOLDOWN_KEY = 'notification_primer_last_shown';
+/**
+ * Cooldown between value-moment asks, so a decline is never a nag.
+ *
+ * Keyed per user. A global key meant the next account on this device inherited
+ * the previous owner's 14-day cooldown and was never offered notifications at
+ * all — the same class of leak as the notification center's read state.
+ */
+const primerCooldownKey = (userId: string | null | undefined) =>
+  `notification_primer_last_shown:${userId ?? 'anon'}`;
 
-/** "Yesterday" / "Monday" / "Sat 20 Jul" — the day divider label above walks
- *  from a given date when the 7-day toggle is active. */
-function formatWalkDay(walkDate: Date, todayYmd: string): string {
-  const walkYmd = getLocalYMD(walkDate);
-  if (walkYmd === todayYmd) return 'Today';
-  const y = new Date();
-  y.setHours(0, 0, 0, 0);
-  y.setDate(y.getDate() - 1);
-  if (walkYmd === getLocalYMD(y)) return 'Yesterday';
-  const daysAgo = Math.round((Date.now() - walkDate.getTime()) / (24 * 60 * 60_000));
-  if (daysAgo < 7) return walkDate.toLocaleDateString([], { weekday: 'long' });
-  return walkDate.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+/**
+ * The Spots rail: either places, or one card explaining why there are none.
+ *
+ * Every non-ready state renders as a rail card rather than as an overlay, so
+ * the map is never covered to deliver bad news. An error screen that replaced
+ * the surface would also throw away the map, which is still perfectly useful
+ * for looking at where you are.
+ */
+function buildSpotEntries(input: {
+  spots: PawtchiSpot[];
+  status: SpotsStatus;
+  canExpand: boolean;
+  /** Spot id → walks that came through it. Absent means never. */
+  visits: VisitIndex;
+  onExpand: () => void;
+  onRetry: () => void;
+  onAllowLocation: () => void;
+}): RailEntry[] {
+  const { spots, status, canExpand, visits, onExpand, onRetry, onAllowLocation } = input;
+
+  if (spots.length > 0) {
+    return spots.map(spot => ({
+      kind: 'nearby' as const,
+      id: spot.id,
+      item: spot,
+      visits: visits[spot.id],
+    }));
+  }
+
+  switch (status) {
+    case 'loading':
+      // The breathing card plus two ghosts of the cards about to replace them.
+      // A single static "Finding spots nearby" read as a dead end — nothing
+      // moved, so there was no way to tell working from stuck.
+      return [
+        {
+          kind: 'loading',
+          id: 'spots-loading',
+          title: copy.loading,
+          lines: [...copy.loadingLines],
+          slowLine: copy.loadingSlow,
+          tone: 'spot',
+        },
+        { kind: 'ghost', id: 'spots-ghost-0', index: 0 },
+        { kind: 'ghost', id: 'spots-ghost-1', index: 1 },
+      ];
+    case 'needs_location':
+      return [
+        {
+          kind: 'message',
+          id: 'spots-location',
+          title: copy.locationNeeded.title,
+          body: copy.locationNeeded.body,
+          action: copy.locationNeeded.action,
+          onAction: onAllowLocation,
+        },
+      ];
+    case 'error':
+      return [
+        {
+          kind: 'message',
+          id: 'spots-error',
+          title: copy.error.title,
+          body: copy.error.body,
+          action: copy.error.action,
+          onAction: onRetry,
+        },
+      ];
+    case 'empty':
+    case 'stale':
+    case 'ready':
+      return [
+        {
+          kind: 'message',
+          id: 'spots-empty',
+          title: copy.empty.title,
+          body: copy.empty.body,
+          // Only offer to widen when there is somewhere wider to go. An action
+          // that silently does nothing is worse than no action.
+          action: canExpand ? copy.empty.action : undefined,
+          onAction: canExpand ? onExpand : undefined,
+        },
+      ];
+    default:
+      return [];
+  }
 }
 
 export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  // Fine-grained selectors: re-render only when the specific value changes, not on
-  // any unrelated store mutation (pantry, isLoading, etc.).
   const activePet = useActivePetStore(s => s.activePet);
-  const isTailoring = useActivePetStore(s => s.isTailoring);
   // Walks are dogs-only — every walk surface below hides for a cat profile.
   const walkEnabled = useWalkEnabled();
   const currentStreak = useStreakStore(s => s.currentStreak);
-  const pawCoins = useStreakStore(s => s.pawCoins);
   const fetchStreak = useStreakStore(s => s.fetchStreak);
 
   // ── Notification reach ────────────────────────────────────────────────────
@@ -109,9 +219,6 @@ export default function HomeScreen() {
   const [homePrimerVisible, setHomePrimerVisible] = React.useState(false);
   const primerConsidered = React.useRef(false);
 
-  // Re-read on focus, not just on app foreground. Returning from the settings
-  // screen after flipping the master switch is an in-app navigation, so without
-  // this the chip would still claim the owner is unreachable.
   const refreshNotifPermission = notifPermission.refresh;
   useFocusEffect(
     React.useCallback(() => {
@@ -119,66 +226,424 @@ export default function HomeScreen() {
     }, [refreshNotifPermission]),
   );
   const { user } = useAuth();
-  const { isFreemiumActive, daysSinceCreation, hasFullAccess } = useSubscription();
-  // Today's tracked walks — surfaced as shareable post cards under Second Opinion.
-  // Fetch the widest window we support (7 days) once; the range toggle
-  // slices locally so switching between Today and 7 days is instant.
-  const { walks: recentWalks } = useRecentWalks(activePet?.id, 7);
+  const {
+    isFreemiumActive,
+    daysSinceCreation,
+    hasFullAccess,
+    // Mirrored into the notification center, which cannot read a React context
+    // from a Zustand store — see setSubscriptionSnapshot below.
+    status: subStatus,
+    daysLeft: subDaysLeft,
+  } = useSubscription();
+  const { walks: recentWalks, loading: walksLoading } = useRecentWalks(activePet?.id, 7);
   const storyTotals = usePawPrintStore(s => s.totals);
   const primeWalkStory = useWalkStoryStore(s => s.prime);
-  type WalkRange = 1 | 7;
-  const [walkRange, setWalkRange] = React.useState<WalkRange>(1);
-  const todayYmd = React.useMemo(() => getLocalYMD(new Date()), []);
-  const visibleWalks = React.useMemo(
-    () =>
-      walkRange === 1
-        ? recentWalks.filter(w => getLocalYMD(new Date(w.started_at)) === todayYmd)
-        : recentWalks,
-    [recentWalks, walkRange, todayYmd],
-  );
   const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
 
-  // Coin pill pulse — a one-shot scale bump whenever the balance grows, so an
-  // earned reward registers on the persistent header (not only the transient toast).
-  const coinPulse = useSharedValue(1);
-  const prevCoins = React.useRef(pawCoins);
+  const petName = activePet?.name || 'Buddy';
+
+  // ── The rail ──────────────────────────────────────────────────────────────
+  const [segment, setSegment] = React.useState<RailSegment>('walks');
+  const walkItems = useMemo(
+    () => (walkEnabled ? buildWalkItems(recentWalks, activePet?.name) : []),
+    [walkEnabled, recentWalks, activePet?.name],
+  );
+  const sniffItems = useMemo(
+    () => (walkEnabled ? buildSniffItems(recentWalks, activePet?.name) : []),
+    [walkEnabled, recentWalks, activePet?.name],
+  );
+  const todayTotals = useMemo(() => buildTodayTotals(recentWalks), [recentWalks]);
+
+  // Resolved before Spots, because Spots reads this coordinate rather than
+  // asking for one of its own. That is the whole of Spots' relationship with
+  // location: it borrows an already-cached fix and never touches the GPS.
+  const {
+    center: mapCenter,
+    resolving: mapResolving,
+    canAskLocation,
+    needsDisclosure: locationNeedsDisclosure,
+    requestLocation,
+  } = useHomeMapCenter(activePet?.id, user?.id, walkEnabled);
+  const currentWeather = useCurrentWalkWeather(mapCenter, walkEnabled);
+
+  // ── Spots: nearby places, not walk history ───────────────────────────────
+  // Everything below is behind SPOTS_OSM_MVP_ENABLED. With the flag off the
+  // hook is disabled, the segment does not render, and Home is byte-for-byte
+  // what it was before this feature.
+  const spotsEnabled = SPOTS_OSM_MVP_ENABLED && walkEnabled;
+  const [spotFilter, setSpotFilter] = React.useState<SpotFilter>('all');
+  const [openSpot, setOpenSpot] = React.useState<PawtchiSpot | null>(null);
+
+  /**
+   * Where the map is pointing, as opposed to where the owner is.
+   *
+   * The map pans now, so these are two different facts and conflating them is
+   * how you end up measuring distances from someone's house to a park they are
+   * looking at three suburbs away. `viewCenter` is only ever used to decide
+   * whether to OFFER a new search — it never triggers one.
+   */
+  const [viewCenter, setViewCenter] = React.useState<GeoPoint | null>(null);
+
+  /**
+   * The coordinate the spots on screen were actually fetched for.
+   *
+   * Null until the owner asks about somewhere other than where they are, at
+   * which point it takes over from Home's own centre. Kept as its own piece of
+   * state rather than derived from `viewCenter` so that panning the map is
+   * free: nothing is queried until it is asked for.
+   */
+  const [searchCenter, setSearchCenter] = React.useState<GeoPoint | null>(null);
+  const spotsCenter = searchCenter ?? mapCenter;
+
+  const onViewCameraChange = useCallback((next: MapCamera) => {
+    setViewCenter(prev =>
+      prev && prev.lat === next.center.lat && prev.lng === next.center.lng
+        ? prev
+        : next.center,
+    );
+  }, []);
+
+  const {
+    spots: allSpots,
+    status: spotsStatus,
+    cacheStatus: spotsCacheStatus,
+    radiusMeters: spotsRadius,
+    canExpand: canExpandSpots,
+    refresh: refreshSpots,
+    expand: expandSpots,
+  } = useNearbySpots({
+    // Only fetches while the segment is actually being looked at. Switching
+    // away does not cancel a request in flight — it will populate the shared
+    // cache for the next person regardless — but it never starts a new one.
+    enabled: spotsEnabled && segment === 'spots',
+    center: spotsCenter,
+    canAskLocation,
+  });
+
+  const spots = useMemo(() => applyFilter(allSpots, spotFilter), [allSpots, spotFilter]);
+  const spotFilters = useMemo(() => availableFilters(allSpots), [allSpots]);
+
+  /**
+   * Which of these places this dog has actually been to.
+   *
+   * The one thing here that is not crowd-sourced. Built over ALL spots rather
+   * than the filtered set so switching a chip never recomputes it, and only
+   * while Spots is on screen — someone who never opens the segment never pays
+   * for the history query.
+   */
+  const walkedRoutes = useWalkedRoutes(activePet?.id, spotsEnabled && segment === 'spots');
+  const spotVisits = useMemo(
+    () => buildVisitIndex(allSpots, walkedRoutes),
+    [allSpots, walkedRoutes],
+  );
+
+  // Offered, not permanent: only once the view has travelled far enough that
+  // the results on screen have stopped describing it (lib/spots/areaSearch.ts).
+  const canSearchArea =
+    segment === 'spots' &&
+    shouldOfferAreaSearch({
+      viewCenter,
+      searchedCenter: spotsCenter,
+      radiusMeters: spotsRadius,
+    });
+
+  // Reported once per resolved outcome, not per render. `cache_status` is the
+  // operational number that matters: upstream_fetch per active user is our load
+  // on volunteer infrastructure, and it has to stay small as usage grows.
+  const reportedSpotsFor = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (pawCoins > prevCoins.current) {
-      coinPulse.value = withSequence(
-        withSpring(1.18, motion.spring.bouncy),
-        withSpring(1, motion.spring.gentle),
-      );
+    if (spotsStatus !== 'ready' && spotsStatus !== 'stale' && spotsStatus !== 'empty') return;
+    const signature = `${spotsStatus}:${spotsRadius}:${allSpots.length}:${spotsCacheStatus}`;
+    if (reportedSpotsFor.current === signature) return;
+    reportedSpotsFor.current = signature;
+
+    track('spots_results_loaded', {
+      results_count: allSpots.length,
+      search_radius_m: spotsRadius,
+      cache_status: spotsCacheStatus,
+    });
+    // The honest coverage signal. A high rate in a target market is the trigger
+    // to supplement OSM with another provider — not a query bug to chase.
+    if (allSpots.length === 0) {
+      track('spots_empty_state_viewed', { search_radius_m: spotsRadius });
     }
-    prevCoins.current = pawCoins;
-  }, [pawCoins, coinPulse]);
-  const coinPillStyle = useAnimatedStyle(() => ({ transform: [{ scale: coinPulse.value }] }));
+  }, [spotsStatus, allSpots.length, spotsRadius, spotsCacheStatus]);
+
+  const entries: RailEntry[] = useMemo(() => {
+    if (!walkEnabled) return [];
+    if (segment === 'spots') {
+      return buildSpotEntries({
+        spots,
+        status: spotsStatus,
+        canExpand: canExpandSpots,
+        visits: spotVisits,
+        onExpand: expandSpots,
+        onRetry: refreshSpots,
+        onAllowLocation: requestLocation,
+      });
+    }
+    // Nothing to show AND still working is not the same fact as "no walks yet",
+    // and the empty card states the second one outright. Rendering it here told
+    // owners with months of history that they had never walked their dog, for
+    // as long as the query took. The feed is cached now so this is a first-run
+    // path rather than an every-launch one — but on that first run it must
+    // still promise cards rather than deny them.
+    if (walkItems.length === 0 && walksLoading) {
+      return [
+        {
+          kind: 'loading' as const,
+          id: 'walks-loading',
+          title: walkFeedLoadingCopy.title,
+          lines: [...walkFeedLoadingCopy.lines],
+          slowLine: walkFeedLoadingCopy.slowLine,
+          tone: 'walk' as const,
+        },
+        { kind: 'ghost' as const, id: 'walks-ghost-0', index: 0 },
+        { kind: 'ghost' as const, id: 'walks-ghost-1', index: 1 },
+      ];
+    }
+
+    const walks: RailEntry[] = walkItems.map(item => ({
+      kind: 'walk' as const,
+      id: item.id,
+      item,
+    }));
+    return [
+      walkItems.length > 0
+        ? { kind: 'today' as const, id: 'today', totals: todayTotals, weather: currentWeather }
+        : { kind: 'empty' as const, id: 'empty', petName },
+      ...walks,
+      { kind: 'invite' as const, id: 'invite', petName },
+    ];
+  }, [
+    walkEnabled,
+    segment,
+    walkItems,
+    walksLoading,
+    todayTotals,
+    currentWeather,
+    petName,
+    // The Spots inputs are real dependencies: without them the rail would keep
+    // rendering the "finding spots" card after the results had already arrived.
+    spots,
+    spotsStatus,
+    canExpandSpots,
+    spotVisits,
+    expandSpots,
+    refreshSpots,
+    requestLocation,
+  ]);
+
+  // What the map is pointing at. Null means "no card in particular" — the
+  // bookend cards have no geography, so they leave the map where it was rather
+  // than yanking it somewhere arbitrary.
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  // Before anyone swipes, the newest item is what the map is showing — so it is
+  // what the map should be labelling. Without this the screen opens with a
+  // framed route and no pin on it, which reads as a bug rather than a default.
+  const activeId = useMemo(() => {
+    if (selectedId) return selectedId;
+    if (segment === 'spots') return spots[0]?.id ?? null;
+    return walkItems[0]?.id ?? null;
+  }, [selectedId, segment, walkItems, spots]);
+
+  const selectedRoute = useMemo(() => {
+    if (segment === 'spots') {
+      // A spot has no route, only a place. Framing the single point is what
+      // moves the camera to it — the same mechanism a one-fix walk uses.
+      const spot = spots.find(s => s.id === activeId);
+      return spot ? [{ lat: spot.latitude, lng: spot.longitude }] : null;
+    }
+    return walkItems.find(w => w.id === selectedId)?.route ?? walkItems[0]?.route ?? null;
+  }, [segment, selectedId, activeId, walkItems, spots]);
+
+  /**
+   * The sniff stop whose dwell is currently being shown.
+   *
+   * Separate from `selectedId` on purpose: that one drives the rail and the
+   * camera, and a sniff must not do either. Tapping a stop is a small aside —
+   * "two minutes here" — not a change of subject.
+   */
+  const [openSniffId, setOpenSniffId] = React.useState<string | null>(null);
+
+  /**
+   * The photographs belonging to the walk currently drawn.
+   *
+   * Same subject as `walkSniffs`: whatever the rail has selected. Photos from
+   * other walks would be scattered over a route they did not happen on.
+   */
+  const keepsakePins = useKeepsakePins(
+    WALK_CAMERA_ENABLED && segment === 'walks' ? activeId : null,
+  );
+
+  /**
+   * Walk facts for captioning an opened photo.
+   *
+   * The place comes from the selected walk's own title, so a moment is
+   * described by where that walk happened rather than by where the dog lives.
+   */
+  const keepsakeContext = useMemo(
+    () => ({
+      petId: activePet?.id ?? null,
+      petName: activePet?.name ?? null,
+      placeLabel: walkItems.find(w => w.id === activeId)?.title ?? null,
+      weather: null,
+    }),
+    [activePet?.id, activePet?.name, walkItems, activeId],
+  );
+
+  /** The stops belonging to the walk currently drawn. */
+  const walkSniffs = useMemo(
+    () => (segment === 'walks' ? sniffsForWalk(sniffItems, activeId) : []),
+    [segment, sniffItems, activeId],
+  );
+
+  const onRailSelect = useCallback(
+    (entry: RailEntry) => {
+      // A new walk means new stops — drop whichever dwell was open.
+      if (entry.kind === 'walk') {
+        setSelectedId(entry.id);
+        setOpenSniffId(null);
+      } else if (entry.kind === 'nearby') {
+        setSelectedId(entry.id);
+        track('spot_marker_viewed', {
+          spot_category: entry.item.category,
+          provider: entry.item.provider,
+          dog_access_status: entry.item.dogAccess,
+          distance_bucket: distanceBucket(entry.item.distanceMeters),
+          source_screen: 'rail',
+        });
+      }
+    },
+    [],
+  );
+
+  /**
+   * Tapping a pin.
+   *
+   * A spot pin selects it, which moves the rail and the camera — the same
+   * selection the rail makes, so the two controls stay one state.
+   *
+   * A sniff pin does neither. It toggles its own dwell label and nothing else:
+   * the route stays drawn, the rail stays where it is, the camera does not
+   * move. Yanking the map to a stop you can already see would be motion for
+   * its own sake, and would throw away the route the stop belongs to — which
+   * is the entire reason these are here rather than in a tab.
+   */
+  const onMarkerPress = useCallback(
+    (id: string) => {
+      if (segment === 'walks') {
+        if (walkSniffs.some(s => s.id === id)) {
+          setOpenSniffId(current => (current === id ? null : id));
+          return;
+        }
+        setOpenSniffId(null);
+      }
+      setSelectedId(id);
+    },
+    [segment, walkSniffs],
+  );
+
+  const onOpenSpot = useCallback((spot: PawtchiSpot) => {
+    setOpenSpot(spot);
+    track('spot_details_opened', {
+      spot_category: spot.category,
+      provider: spot.provider,
+      dog_access_status: spot.dogAccess,
+      distance_bucket: distanceBucket(spot.distanceMeters),
+    });
+  }, []);
+
+  /**
+   * Back to the default view.
+   *
+   * Undoes both ways the screen can have wandered: a rail selection, and a
+   * search the owner ran somewhere other than where they are. Clearing
+   * `searchCenter` hands the query back to Home's own coordinate, and the
+   * results for it are already cached, so returning costs nothing.
+   */
+  const onRecentre = useCallback(() => {
+    setSelectedId(null);
+    setSearchCenter(null);
+    setViewCenter(null);
+  }, []);
+
+  const onSearchArea = useCallback(() => {
+    if (!viewCenter) return;
+    // Moving the searched centre is what re-runs the hook's resolve pass; there
+    // is no separate "go" call, and a cell we have already asked about answers
+    // from cache rather than costing another upstream request.
+    setSearchCenter(viewCenter);
+    // The spot that was selected may not be in the new answer at all, and a
+    // selection pointing at nothing strands the rail and the label.
+    setSelectedId(null);
+    track('spots_search_area_requested', {
+      search_radius_m: spotsRadius,
+      source_screen: 'moved_map',
+    });
+  }, [viewCenter, spotsRadius]);
+
+  // Reset the pointer when the segment changes — a walk id means nothing in the
+  // sniffs list, and leaving it set would strand the map on the wrong pin.
+  const onSegmentChange = useCallback((next: RailSegment) => {
+    setSegment(next);
+    setSelectedId(null);
+    setOpenSniffId(null);
+    if (next === 'spots') track('spots_tab_opened', {});
+  }, []);
+
+  // Pins, with a name on the selected one. Only the selected marker carries a
+  // label — a map with every pin shouting its place name is a legend, not a
+  // picture, and the rail already says what the others are.
+  const markers = useMemo(() => {
+    // Spot pins are built from a different source and carry a category glyph
+    // and a category colour, so they do not go through buildMapPins at all.
+    if (segment === 'spots') {
+      return spots.map(spot => ({
+        id: spot.id,
+        lat: spot.latitude,
+        lng: spot.longitude,
+        tone: spot.id === activeId ? ('ink' as const) : CATEGORY_TONE[spot.category],
+        icon: CATEGORY_ICON[spot.category],
+        label: spot.id === activeId ? displayName(spot.name, spot.category) : null,
+      }));
+    }
+    // One pin per walk, at its start, with the selected one in ink.
+    const walkPins = buildWalkPins(walkItems, activeId).map(pin => ({
+      ...pin,
+      label:
+        pin.tone === 'ink' ? walkItems.find(w => w.id === pin.id)?.title ?? null : null,
+    }));
+
+    // …and the selected walk's stops, dropped along the route it just drew.
+    // Only the tapped one is labelled — every stop shouting "1m 40s" would
+    // bury the route under its own annotations.
+    const sniffPins = buildSniffPins(walkSniffs, openSniffId).map(pin => ({
+      ...pin,
+      label:
+        pin.id === openSniffId
+          ? `${formatDwell(walkSniffs.find(s => s.id === pin.id)?.dwellS ?? 0)} here`
+          : null,
+    }));
+
+    // Sniffs last so they draw ON the route rather than under a walk-start pin.
+    return [...walkPins, ...sniffPins];
+  }, [segment, walkItems, walkSniffs, openSniffId, spots, activeId]);
+
+  const [locationPromptDismissed, setLocationPromptDismissed] = React.useState(false);
+  const showLocationPrompt =
+    walkEnabled && canAskLocation && !mapCenter && !locationPromptDismissed;
+
+  const onMapSurface = useCallback((surface: 'map' | 'ground') => {
+    track('home_canopy_map_shown', { surface });
+  }, []);
 
   React.useEffect(() => {
     injectSubscriptionData(isFreemiumActive, daysSinceCreation);
   }, [isFreemiumActive, daysSinceCreation, injectSubscriptionData]);
 
-  // Store data
   const todayCalories = usePetContextStore(s => s.todayCalories);
-  const todayWater = usePetContextStore(s => s.todayWater);
-  const todayScans = usePetContextStore(s => s.todayScans);
-  const nextActivity = usePetContextStore(s => s.nextActivity);
-  const calPercent = usePetContextStore(s => s.calPercent);
-  const waterPercent = usePetContextStore(s => s.waterPercent);
-  const baseTargetCal = activePet?.target_daily_calories || 0;
-  const adjustedTarget = usePetContextStore(s => s.adjustedTarget);
-  const targetCal = adjustedTarget || baseTargetCal;
-  const activityCompletionRate = usePetContextStore(s => s.activityCompletionRate);
-  const todayActivityMinutes = usePetContextStore(s => s.todayActivityMinutes);
-  const todayActivityTargetMinutes = usePetContextStore(s => s.todayActivityTargetMinutes);
-  const todayProtein = usePetContextStore(s => s.todayProtein);
-  const todayCarbs = usePetContextStore(s => s.todayCarbs);
-  const todayFats = usePetContextStore(s => s.todayFats);
-  const treatBudget = usePetContextStore(s => s.treatBudget);
-  const treatCaloriesConsumed = usePetContextStore(s => s.treatCaloriesConsumed);
-  const caloriesRemaining = usePetContextStore(s => s.caloriesRemaining);
   const refreshToday = usePetContextStore(s => s.refreshToday);
-  const daysSinceLastFoodLog = usePetContextStore(s => s.daysSinceLastFoodLog);
-  const longestStreak = useStreakStore(s => s.longestStreak);
 
   useFocusEffect(useCallback(() => {
     if (activePet?.id) refreshToday(activePet.id);
@@ -188,38 +653,56 @@ export default function HomeScreen() {
     if (user?.id) fetchStreak(user.id);
   }, [user?.id, fetchStreak]));
 
-  // Ask Pawtchi monthly allowance — shown quietly on the home entry card.
-  const [askUsage, setAskUsage] = React.useState<MonthlyUsage | null>(null);
-  useFocusEffect(useCallback(() => {
-    if (user?.id) getMonthlyUsage(user.id).then(setAskUsage).catch(() => {});
-  }, [user?.id]));
+  // ── The notification center ───────────────────────────────────────────────
+  // Home owns the bell, so Home is what keeps the feed current. Rebuilt on
+  // focus rather than on an interval: everything it derives from (today's
+  // totals, the pet record, the streak) has just been refreshed by the effects
+  // above, so this is the first moment the answer can have changed.
+  const unreadCount = useNotificationCenterStore(selectUnreadCount);
+  const urgentUnread = useNotificationCenterStore(selectHasUrgentUnread);
+  const rebuildNotifications = useNotificationCenterStore(s => s.rebuild);
+  const hydrateNotifications = useNotificationCenterStore(s => s.hydrate);
+  const setSubscriptionSnapshot = useNotificationCenterStore(s => s.setSubscriptionSnapshot);
 
-  // Pending Second Opinion check-in — surfaces a gentle "how is {pet} doing" card.
-  const [pendingCheckin, setPendingCheckin] = React.useState<PendingCheckin | null>(null);
-  useFocusEffect(useCallback(() => {
-    if (activePet?.id) getPendingCheckin(activePet.id).then(setPendingCheckin).catch(() => {});
-  }, [activePet?.id]));
+  // Binds the centre's read/dismiss state to whoever is signed in. Runs before
+  // the rebuild below, so a fresh account never renders against the previous
+  // owner's storage even for one frame.
+  React.useEffect(() => {
+    void hydrateNotifications(user?.id ?? null);
+  }, [user?.id, hydrateNotifications]);
 
-  // A Walksign confirmation/transition staged by walksignSync waits for the
-  // next Home focus — the celebration lands when the user is present, not
-  // mid-walk-save.
+  React.useEffect(() => {
+    setSubscriptionSnapshot({ status: subStatus ?? null, daysLeft: subDaysLeft ?? null });
+  }, [subStatus, subDaysLeft, setSubscriptionSnapshot]);
+
+  // Two triggers, deliberately separate. Focus catches "the owner came back";
+  // the data effect catches "something changed while they were already here"
+  // (a meal logged on Meal, a pet switched). Folding the second into the first
+  // by listing its values as focus-effect deps only looks equivalent — the
+  // callback never reads them, so it is a re-subscribe pretending to be a
+  // dependency.
+  useFocusEffect(useCallback(() => {
+    void rebuildNotifications();
+  }, [rebuildNotifications]));
+
+  React.useEffect(() => {
+    void rebuildNotifications();
+  }, [rebuildNotifications, todayCalories, activePet?.id]);
+
   const [walksignMoment, setWalksignMoment] = React.useState<PendingWalksignCelebration | null>(null);
   useFocusEffect(useCallback(() => {
     if (!activePet?.id) return;
-    readPendingWalksignCelebration().then(pending => {
+    readPendingWalksignCelebration(user?.id).then(pending => {
       if (pending && pending.petId === activePet.id) setWalksignMoment(pending);
     }).catch(() => {});
-  }, [activePet?.id]));
+  }, [activePet?.id, user?.id]));
   const dismissWalksignMoment = useCallback(() => {
     setWalksignMoment(null);
-    clearPendingWalksignCelebration();
-  }, []);
+    clearPendingWalksignCelebration(user?.id);
+  }, [user?.id]);
 
-  // Walk Story ring — the Home avatar as the daily engine (dogs only, via
-  // useWalkEnabled). A walk from the last 24h keeps the ring lit with a story
-  // to replay; otherwise the ring becomes a calm "take a walk" nudge. Driven
-  // off the recent-walks feed rather than the seen-marker, so it stays lit for
-  // the full window whether or not the story has been opened.
+  // Walk Story ring on the avatar — a walk from the last 24h keeps it lit with
+  // a story to replay; otherwise it is a calm "take a walk" nudge.
   const storyRingEnabled = WALK_STORY_ENABLED && walkEnabled;
   const STORY_WINDOW_MS = 24 * 60 * 60 * 1000;
   const latestWalkAt = recentWalks[0]?.started_at;
@@ -233,137 +716,163 @@ export default function HomeScreen() {
     router.push((hasFullAccess ? '/walk' : '/paywall') as any);
   }, [hasFullAccess, router]);
 
+  /**
+   * Start a walk with a place in mind.
+   *
+   * The same gate and the same navigation as every other walk-start — the only
+   * difference is the note that rides along. Deliberately routed through
+   * `armWalkStart` rather than a route param: the arming flag is already the
+   * one thing that says a walk was genuinely asked for, and a destination that
+   * could arrive without it would be a way to start a walk nobody tapped for.
+   *
+   * The sheet closes first so the walk screen is not pushed underneath a modal.
+   */
+  const onWalkHere = useCallback(
+    (spot: PawtchiSpot) => {
+      setOpenSpot(null);
+      if (!hasFullAccess) {
+        router.push('/paywall' as any);
+        return;
+      }
+      armWalkStart({
+        id: spot.id,
+        name: displayName(spot.name, spot.category),
+        lat: spot.latitude,
+        lng: spot.longitude,
+      });
+      track('spot_walk_started', {
+        spot_category: spot.category,
+        provider: spot.provider,
+        dog_access_status: spot.dogAccess,
+        distance_bucket: distanceBucket(spot.distanceMeters),
+      });
+      router.push('/walk' as any);
+    },
+    [hasFullAccess, router],
+  );
+
+  // ── First-walk intro video ────────────────────────────────────────────────
+  // A one-time, ~9s silent demo of what a tracked Pawtchi walk looks like,
+  // shown to fresh dog owners the first time Home mounts after onboarding.
+  // Gated by useFirstWalkIntro (persisted AsyncStorage flag) and by the live
+  // walk phase — an in-progress walk must never be covered by the intro.
+  //
+  // Cats don't see it: `walkEnabled` is false for them and Home never renders
+  // this branch in the first place. Deferred until `activePet` is present so
+  // it fires strictly after onboarding provisioned a pet, not on the auth
+  // gate's optimistic /(tabs) redirect for a returning user.
+  const walkPhase = useWalkStore(s => s.phase);
+  const introEligible =
+    walkEnabled && !!activePet?.id && walkPhase === 'idle';
+  const { visible: introVisible, markSeenAndClose: closeIntro } = useFirstWalkIntro({
+    // Namespaced per Supabase user id so two accounts on the same device each
+    // see the intro once (device-scoped storage starved the second account).
+    userId: user?.id ?? null,
+    ready: introEligible,
+    interruptible: walkPhase === 'idle',
+  });
+  const handleIntroDismiss = useCallback(() => {
+    void closeIntro();
+  }, [closeIntro]);
+  const handleIntroStartWalk = useCallback(() => {
+    // closeIntro persists the seen flag in the background; navigation should
+    // not wait on AsyncStorage — the UX cost of a perceived pause outweighs
+    // the safety margin, and the flag has already been latched to false in
+    // memory (closeIntro sets visible false synchronously).
+    void closeIntro();
+    onStartWalk();
+  }, [closeIntro, onStartWalk]);
+
   const latestWalkId = recentWalks[0]?.id;
-  const openLatestWalkStory = useCallback(() => {
-    const latestWalk = recentWalks[0];
-    if (!latestWalk || !activePet) return;
+  const openWalkStory = useCallback((walkId: string) => {
+    const walk = recentWalks.find(w => w.id === walkId) ?? recentWalks[0];
+    if (!walk || !activePet) return;
     const snapshot = createWalkStorySnapshot({
-      walkSessionId: latestWalk.id,
+      walkSessionId: walk.id,
       petId: activePet.id,
       petName: activePet.name,
       petGender: activePet.gender,
       breed: activePet.breed,
       ageYears: activePet.age_years,
-      startedAt: latestWalk.started_at,
-      durationS: latestWalk.duration_s,
-      movingTimeS: latestWalk.moving_time_s,
-      distanceM: latestWalk.distance_m,
-      avgSpeedKmh: latestWalk.avg_speed_kmh,
-      route: latestWalk.route,
-      pausePoints: latestWalk.pause_points,
-      sniffPoints: latestWalk.sniff_points,
-      startLabel: latestWalk.start_label,
-      endLabel: latestWalk.end_label,
-      farthestLabel: latestWalk.farthest_label,
-      weather: latestWalk.weather,
+      startedAt: walk.started_at,
+      durationS: walk.duration_s,
+      movingTimeS: walk.moving_time_s,
+      distanceM: walk.distance_m,
+      avgSpeedKmh: walk.avg_speed_kmh,
+      route: walk.route,
+      pausePoints: walk.pause_points,
+      sniffPoints: walk.sniff_points,
+      startLabel: walk.start_label,
+      endLabel: walk.end_label,
+      farthestLabel: walk.farthest_label,
+      weather: walk.weather,
       totals: storyTotals,
     });
     if (snapshot) primeWalkStory(snapshot);
-    router.push({
-      pathname: '/walk-story',
-      params: { id: latestWalk.id, source: 'ring' },
-    });
+    router.push({ pathname: '/walk-story', params: { id: walk.id, source: 'rail' } });
   }, [activePet, primeWalkStory, recentWalks, router, storyTotals]);
+
+  const onAvatarPress = useCallback(() => {
+    if (hasFreshStory && latestWalkId) openWalkStory(latestWalkId);
+    else onStartWalk();
+  }, [hasFreshStory, latestWalkId, openWalkStory, onStartWalk]);
 
   React.useEffect(() => {
     if (hasFreshStory) track('walk_story_ring_shown', {});
   }, [hasFreshStory, latestWalkId]);
 
-  // Computed values
-  const calorieProgress = Math.min(calPercent / 100, 1);
-  // Moving goal = today's scheduled minutes, so completing the plan always
-  // closes the ring. 45 min is the generic-adult fallback when no plan exists
-  // (and completion-rate keeps the ring meaningful for plans of untimed tasks).
-  const movingTargetMin = todayActivityTargetMinutes > 0 ? todayActivityTargetMinutes : 45;
-  const activityProgress = todayActivityTargetMinutes > 0
-    ? Math.min(todayActivityMinutes / todayActivityTargetMinutes, 1)
-    : Math.min(activityCompletionRate, 1);
-  const waterProgress = Math.min(waterPercent, 1);
-
-  // A single restrained success haptic the first time all three rings close in
-  // a session — the rings already pulse visually; this is the felt "day done".
-  const allRingsDone = calorieProgress >= 1 && activityProgress >= 1 && waterProgress >= 1;
-  const celebratedDay = React.useRef(false);
-  React.useEffect(() => {
-    if (allRingsDone && !celebratedDay.current) {
-      celebratedDay.current = true;
-      haptic.success();
-    } else if (!allRingsDone) {
-      celebratedDay.current = false;
-    }
-  }, [allRingsDone]);
-
-  // Format water display
-  const waterDisplay = todayWater >= 1000
-    ? `${(todayWater / 1000).toFixed(1)}L`
-    : `${todayWater}ml`;
-  const waterTarget = computeWaterTargetMl(activePet?.current_weight_kg, activePet?.diet_type);
-  const waterTargetDisplay = waterTarget >= 1000
-    ? `${(waterTarget / 1000).toFixed(1)}L`
-    : `${waterTarget}ml`;
-
-  // Greeting helpers
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Morning';
-    if (hour < 17) return 'Afternoon';
-    return 'Evening';
-  };
-
-  const getDateString = () => {
-    const d = new Date();
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return `${days[d.getDay()]} · ${months[d.getMonth()]} ${d.getDate()}`;
-  };
-
-  const petName = activePet?.name || 'Buddy';
-
   // ── The value-moment ask ──────────────────────────────────────────────────
   // Deliberately not on first launch. iOS grants exactly one permission prompt
   // per install; spending it on someone who has not yet seen the app do
-  // anything is how opt-in ended up at 9%. The gate is: they have a pet, they
-  // have logged at least once (so the core loop has paid off), the OS will
-  // still show a prompt, and we have not asked in the last 14 days.
+  // anything is how opt-in ended up at 9%.
   React.useEffect(() => {
     if (primerConsidered.current) return;
     if (!activePet || notifPermission.status === 'loading') return;
     if (!notifPermission.canAsk || notifPermission.isGranted) return;
-    // `todayCalories > 0` or an existing streak both mean they have logged.
     const hasLogged = todayCalories > 0 || currentStreak > 0;
     if (!hasLogged) return;
 
     primerConsidered.current = true;
     void (async () => {
-      const last = await AsyncStorage.getItem(PRIMER_COOLDOWN_KEY);
+      const last = await AsyncStorage.getItem(primerCooldownKey(user?.id));
       const lastAt = last ? Number(last) : 0;
       const fourteenDays = 14 * 24 * 60 * 60 * 1000;
       if (Date.now() - lastAt < fourteenDays) return;
       setHomePrimerVisible(true);
-      await AsyncStorage.setItem(PRIMER_COOLDOWN_KEY, String(Date.now()));
+      await AsyncStorage.setItem(primerCooldownKey(user?.id), String(Date.now()));
       supabase.rpc('record_notification_permission', {
         p_status: notifPermission.status,
         p_primer_shown: true,
       }).then(() => {});
     })();
-  }, [activePet, notifPermission.status, notifPermission.canAsk, notifPermission.isGranted, todayCalories, currentStreak]);
+  }, [activePet, notifPermission.status, notifPermission.canAsk, notifPermission.isGranted, todayCalories, currentStreak, user?.id]);
+
+  const notificationsUnreachable =
+    notifPermission.status !== 'loading' && !notifPermission.isReachable;
 
   /**
-   * Routes by *why* notifications are off, because the three states need three
-   * different fixes. A blocked user cannot be re-prompted by anything the app
-   * renders — only the system settings app can help them.
+   * The bell's tap, which has to serve two jobs at once.
+   *
+   * When the app cannot reach this owner at all, being reachable is the only
+   * thing worth doing — and it routes by *why*, because the three "off" states
+   * need three different fixes. A blocked user cannot be re-prompted by
+   * anything the app renders; only system settings can help them.
+   *
+   * Otherwise it opens the center.
    */
-  const handleNotificationChipPress = () => {
-    track('ui_button_tapped', { button: 'home_notification_chip', state: notifPermission.status });
-    if (notifPermission.isBlocked) {
-      // Spent OS prompt — nothing the app renders can reopen it.
-      notifPermission.openSystemSettings();
-    } else if (!notifPermission.isGranted && notifPermission.canAsk) {
-      setHomePrimerVisible(true);
-    } else {
-      // Granted at the OS level but switched off inside Pawtchi.
-      router.push('/notifications' as any);
+  const handleNotificationBellPress = () => {
+    track('ui_button_tapped', {
+      button: 'home_notification_bell',
+      state: notifPermission.status,
+      unread: unreadCount,
+    });
+    if (notificationsUnreachable) {
+      if (notifPermission.isBlocked) notifPermission.openSystemSettings();
+      else if (notifPermission.canAsk) setHomePrimerVisible(true);
+      else router.push('/notifications' as any);
+      return;
     }
+    router.push('/inbox' as any);
   };
 
   const handleHomePrimerAccept = async () => {
@@ -376,68 +885,48 @@ export default function HomeScreen() {
     await notifPermission.refresh();
   };
 
-  // Only surface the chip once we know the real answer — `loading` would flash
-  // it on every Home mount for users who already have notifications on.
-  //
-  // Gated on `isReachable`, not `isGranted`: an owner can have granted at the
-  // OS level and still have Pawtchi's own master switch off, in which case they
-  // receive nothing and the chip is exactly what they need to see.
-  const notificationsUnreachable =
-    notifPermission.status !== 'loading' && !notifPermission.isReachable;
+  /**
+   * The top-right slot: the way into the notification center.
+   *
+   * The coin pill used to live here and no longer does. With a third segment on
+   * the control the row ran out of room and the balance was pushing the pet's
+   * own name into the tabs — and a coin count is the least urgent thing on this
+   * screen, since PawCoins are not spendable yet. It still shows on Meal and in
+   * the Shop, so the balance is not hidden, just not competing with navigation.
+   *
+   * The bell is now permanent furniture here, which the warning chip it replaced
+   * deliberately was not. That is the trade the center makes: this is the only
+   * entry point to everything the app has to say, so it cannot come and go.
+   */
+  const trailing = (
+    <NotificationBell
+      count={unreadCount}
+      urgent={urgentUnread}
+      unreachable={notificationsUnreachable}
+      isBlocked={notifPermission.isBlocked}
+      onPress={handleNotificationBellPress}
+    />
+  );
 
-  return (
-    <View style={styles.container}>
-      <TrialBanner />
-      <VetTunedNutritionBanner
-        petId={activePet?.id ?? null}
-        petName={petName}
-        medicalConditions={activePet?.medical_conditions ?? null}
-      />
-      <SevereObesityVetBanner
-        petId={activePet?.id ?? null}
-        petName={petName}
-        bcs={activePet?.body_condition_score ?? null}
-        severeObesityVetConfirmedAt={activePet?.severe_obesity_vet_confirmed_at ?? null}
-      />
-      <GrowthPhaseBanner
-        petId={activePet?.id ?? null}
-        petName={petName}
-        ageMonths={activePet ? getAgeMonths(activePet) : undefined}
-        currentWeightKg={activePet?.current_weight_kg ?? null}
-        targetWeightKg={activePet?.target_weight_kg ?? null}
-      />
-      <MerRecalibrationBanner
-        petId={activePet?.id ?? null}
-        petName={petName}
-        observedMer={usePetContextStore(s => s.observedMer)}
-      />
-      <CatRefusingFoodCard
-        species={activePet?.species}
-        goal={deriveGoalFn(
-          activePet?.current_weight_kg ?? 0,
-          activePet?.target_weight_kg,
-          activePet?.body_condition_score,
-        )}
-        todayCalories={todayCalories}
-        petName={petName}
-      />
-
-      {/* One-shot Walksign confirmation / transition moment */}
+  /**
+   * What is left on Home.
+   *
+   * Every banner that used to stack here — trial, vet-tuned nutrition, severe
+   * obesity, growth phase, MER recalibration, cat refusing food — is now derived
+   * into the notification center by lib/notificationCenter/bannerRules.ts and
+   * rendered there. Nothing below is a nudge: these are earned celebrations and
+   * the permission primer, which are moments rather than messages.
+   */
+  const overlays = (
+    <>
       <WalksignMomentModal
         celebration={walksignMoment}
         petName={activePet?.name}
         petGender={activePet?.gender}
         onClose={dismissWalksignMoment}
       />
-
-      {/* Paw Print milestone celebrations — queued by walk sync, one at a
-          time, landing here after the walk fully wraps (never mid-walk). */}
       <MilestoneCelebration />
-
-      {/* Earned share-card unlocks — waits for the milestone queue to clear,
-          then shows the qualifying walk wearing its new template. */}
       <TemplateUnlockCelebration />
-
       <NotificationPrimer
         visible={homePrimerVisible}
         petName={petName}
@@ -445,456 +934,168 @@ export default function HomeScreen() {
         onAccept={handleHomePrimerAccept}
         onDecline={() => setHomePrimerVisible(false)}
       />
+      <FirstWalkIntroVideo
+        visible={introVisible}
+        onDismiss={handleIntroDismiss}
+        onStartWalk={handleIntroStartWalk}
+      />
+    </>
+  );
 
-      {/* Header - Always visible at top */}
-      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <View style={styles.headerLeft}>
-          {storyRingEnabled ? (
-            <WalkStoryRing
-              imageUri={activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 200)}
-              // Lit with a story to replay when there's a walk from the last 24h;
-              // otherwise a nudge that starts a walk. The avatar is the engine.
-              mode={hasFreshStory ? 'story' : 'nudge'}
-              onPress={hasFreshStory ? openLatestWalkStory : onStartWalk}
-              petName={activePet?.name ?? null}
-            />
-          ) : (
-            <View style={styles.avatarMini}>
-              <Image
-                source={{ uri: activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 200) }}
-                style={styles.avatarMiniImg}
-                contentFit="cover"
-                cachePolicy="memory-disk"
-                transition={200}
-              />
-            </View>
-          )}
-          <View>
-            <Text style={styles.headerTitle}>PAWTCHI</Text>
-            <Text style={styles.headerDate}>{getDateString()}</Text>
+  // ── Cats: no map, no rail — a plain list of what applies to them ──────────
+  if (!walkEnabled) {
+    return (
+      <View style={styles.container}>
+        {overlays}
+        <ScrollView
+          contentContainerStyle={[styles.plainContent, { paddingTop: insets.top + space.md }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.plainHeader}>
+            <Text style={styles.plainName}>{petName}</Text>
+            {trailing}
           </View>
-        </View>
-        {/* The header slot is the chip while notifications are off, and the
-            coin pill once they are on. It resolves itself rather than becoming
-            permanent furniture. */}
-        {notificationsUnreachable ? (
-          <NotificationBellChip
-            visible
-            isBlocked={notifPermission.isBlocked}
-            onPress={handleNotificationChipPress}
-          />
-        ) : (
-          <Reanimated.View style={[styles.coinPill, coinPillStyle]}>
-            <View style={styles.coinIcon}>
-              <Text style={styles.coinIconText}>P</Text>
+          <TouchableOpacity
+            style={styles.inviteRow}
+            onPress={() => router.push('/invite' as any)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.inviteIcon}>
+              <MaterialIcons name="group-add" size={18} color={color.navy} />
             </View>
-            <AnimatedCounter value={pawCoins} style={styles.coinText} />
-          </Reanimated.View>
-        )}
+            <View style={{ flex: 1 }}>
+              <Text style={styles.inviteTitle}>A friend for {petName}</Text>
+              <Text style={styles.inviteSub}>Pawtchi is better shared</Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={18} color={color.slateFaint} />
+          </TouchableOpacity>
+        </ScrollView>
       </View>
+    );
+  }
 
-      <Animated.ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+  return (
+    <View style={styles.container}>
+      {overlays}
+
+      {/* Layer 1 — the map, edge to edge, never covered. */}
+      <HomeMapLayer
+        route={selectedRoute}
+        center={mapCenter}
+        markers={markers}
+        keepsakePins={keepsakePins}
+        keepsakeContext={keepsakeContext}
+        resolving={mapResolving}
+        // Only Spots clusters and only Spots is tappable. Walk and sniff pins
+        // stay decorative: the rail is how you browse those, and making them
+        // touchable would add a second way to do the same thing.
+        clustered={segment === 'spots'}
+        onMarkerPress={segment === 'spots' ? onMarkerPress : undefined}
+        onSurfaceResolved={onMapSurface}
+        // Only Spots has anywhere to put this. Tracking where the map has been
+        // dragged to costs nothing on the other segments, but there is no
+        // question to ask about it there, so we don't ask for the updates.
+        onViewCameraChange={segment === 'spots' ? onViewCameraChange : undefined}
+      />
+
+      {/* Layer 2 — the floating chrome. `box-none` throughout so every gap in
+          it falls through to the map rather than swallowing the touch. */}
+      <View
+        style={[
+          styles.chrome,
+          {
+            paddingTop: insets.top + space.sm,
+            // Clears the floating bar, which now overlaps this screen.
+            paddingBottom: TAB_BAR_CLEARANCE + insets.bottom,
+          },
+        ]}
+        pointerEvents="box-none"
       >
-        {/* Pending Second Opinion check-in — takes priority over the generic nudge */}
-        {pendingCheckin && (
-          <VetCheckinNudge
-            petName={petName}
-            reason={pendingCheckin.reason}
-            onPress={() => {
-              track('vet_checkin_opened', { source: 'home_nudge' });
-              router.push(`/ask?case=${pendingCheckin.questionId}&mode=checkin` as any);
+        <Reanimated.View entering={entrance(0)} pointerEvents="box-none">
+          <HomeTopBar
+            petName={activePet?.name}
+            walksign={activePet?.walksign}
+            avatarUri={
+              activePet?.current_avatar_url ||
+              resolvePetImage(activePet?.image_url, activePet?.species, 200)
+            }
+            storyRingEnabled={storyRingEnabled}
+            hasFreshStory={hasFreshStory}
+            onAvatarPress={onAvatarPress}
+            segment={segment}
+            onSegmentChange={onSegmentChange}
+            spotsEnabled={spotsEnabled}
+            trailing={trailing}
+          />
+        </Reanimated.View>
+
+        {/* Category chips, only in Spots. Filtering runs on the data already
+            fetched and never triggers a request — see lib/spots/filters.ts. */}
+        {segment === 'spots' && (
+          <SpotFilterRail
+            selected={spotFilter}
+            available={spotFilters}
+            onSelect={next => {
+              setSpotFilter(next);
+              setSelectedId(null);
+              track('spots_filter_selected', { spot_category: next });
             }}
           />
         )}
 
-        {/* Nudge Card */}
-        {!pendingCheckin && <NudgeCard />}
+        {/* The nudge card used to float here. It is gone: nothing the app has
+            to say covers the map any more, and the bell in the row above is the
+            single way in. */}
 
-        {/* Profile completion — quiet, dismissible, deep-links to the right editor */}
-        <ProfileCompletionCard />
-
-        {/* Greeting */}
-        <Reanimated.View entering={entrance(0)} style={styles.greetingRow}>
-          <Text style={styles.greeting}>
-            {getGreeting()}, <Text style={styles.greetingName}>{petName}</Text>
-          </Text>
-          {/* The Walksign crest rides beside the name — identity, not a widget. */}
-          {activePet?.species === 'dog' && activePet?.walksign && (
-            <View style={styles.walksignBadge}>
-              <WalksignCrest sign={activePet.walksign as WalksignId} size={26} color={color.ink} />
-            </View>
-          )}
-        </Reanimated.View>
-
-        {/* Ring Hero - Centered */}
-        <Reanimated.View entering={entrance(1)} style={styles.ringsWrapper}>
-          <View style={styles.ringsContainer}>
-            <Svg width={RING_SIZE} height={RING_SIZE}>
-              <RingArc r={RING_CONFIG[0].r} color={RING_CONFIG[0].color} strokeWidth={RING_CONFIG[0].stroke} progress={calorieProgress} />
-              <RingArc r={RING_CONFIG[1].r} color={RING_CONFIG[1].color} strokeWidth={RING_CONFIG[1].stroke} progress={activityProgress} />
-              <RingArc r={RING_CONFIG[2].r} color={RING_CONFIG[2].color} strokeWidth={RING_CONFIG[2].stroke} progress={waterProgress} />
-            </Svg>
-
-            {/* Pet Photo - Centered in rings */}
-            <View style={styles.petPhotoContainer}>
-              <View style={styles.petPhoto}>
-                <Image
-                  source={{ uri: activePet?.current_avatar_url || resolvePetImage(activePet?.image_url, activePet?.species, 1000) }}
-                  style={styles.petPhotoImg}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  transition={200}
-                />
-                <PawLoader visible={isTailoring} message="Tailoring avatar…" />
-              </View>
-              {/* Streak Badge */}
-              {currentStreak > 0 && (
-                <View style={styles.streakBadge}>
-                  <MaterialIcons
-                    name="local-fire-department"
-                    size={12}
-                    color={currentStreak >= 7 ? '#ef4444' : currentStreak >= 3 ? '#f97316' : '#9ca3af'}
-                  />
-                  <Text style={[styles.streakBadgeText, { color: currentStreak >= 7 ? '#dc2626' : currentStreak >= 3 ? '#ea580c' : '#6b7280' }]}>
-                    {currentStreak}d
-                  </Text>
-                </View>
-              )}
-            </View>
-          </View>
-        </Reanimated.View>
-
-        {/* ─── Weight journey — the milestone map, brought home ─── */}
-        <MilestoneJourneyCard />
-
-        {/* ─── Today — typography on the ground, hairline-divided ─── */}
-        <Reanimated.View entering={entrance(3)}>
-          <View style={styles.sectionHead}>
-            <Text style={styles.sectionLabel}>TODAY</Text>
-            <View style={styles.sectionRule} />
-          </View>
-          <View style={styles.statRow}>
-            <View style={styles.stat}>
-              <Text style={styles.statValue}>{todayCalories > 0 ? todayCalories : '0'}</Text>
-              <Text style={styles.statTarget}>of {targetCal || 0} kcal</Text>
-              <ProgressBar progress={calorieProgress} color={color.viz.calories} />
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.stat}>
-              <Text style={styles.statValue}>
-                {todayActivityMinutes > 0 ? todayActivityMinutes : '0'}
-                <Text style={styles.statUnit}> min</Text>
-              </Text>
-              <Text style={styles.statTarget}>of {movingTargetMin} min moving</Text>
-              <ProgressBar progress={activityProgress} color={color.viz.move} />
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.stat}>
-              <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-                {todayWater > 0 ? waterDisplay : '0'}
-              </Text>
-              <Text style={styles.statTarget} numberOfLines={1}>of {waterTargetDisplay} water</Text>
-              <ProgressBar progress={waterProgress} color={color.viz.hydrate} />
-            </View>
-          </View>
-
-          {/* One quiet ledger line for macros — treats ride on the right as
-              another stat in the same pattern. */}
-          <View style={styles.macroLine}>
-            <View style={[styles.macroDot, { backgroundColor: '#ec4899' }]} />
-            <Text style={styles.macroText}>{todayProtein}g protein</Text>
-            <View style={[styles.macroDot, { backgroundColor: color.viz.calories }]} />
-            <Text style={styles.macroText}>{todayCarbs}g carbs</Text>
-            <View style={[styles.macroDot, { backgroundColor: color.viz.hydrate }]} />
-            <Text style={styles.macroText}>{todayFats}g fats</Text>
-            {targetCal > 0 && (() => {
-              const treatLeft = Math.max(0, treatBudget - treatCaloriesConsumed);
-              const over = caloriesRemaining < 0;
-              const warn = over || treatLeft === 0;
-              return (
-                <>
-                  <View style={styles.macroSpacer} />
-                  <View style={[styles.macroDot, { backgroundColor: warn ? color.error : color.navy }]} />
-                  <Text
-                    style={[styles.macroText, styles.macroTreat, warn && styles.macroTreatWarning]}
-                    numberOfLines={1}
-                  >
-                    {over ? `${Math.abs(caloriesRemaining)} kcal over` : `${treatLeft} kcal left · treats`}
-                  </Text>
-                </>
-              );
-            })()}
-          </View>
-        </Reanimated.View>
-
-        {/* Streak Nudge */}
-        {currentStreak === 0 && longestStreak > 0 && (
-          <TouchableOpacity
-            style={styles.streakNudge}
-            onPress={() => router.push('/(tabs)/meal')}
-            activeOpacity={0.85}
-          >
-            <View style={styles.streakNudgeIcon}>
-              <MaterialIcons name="replay" size={20} color="#92400e" />
-            </View>
-            <View style={styles.streakNudgeContent}>
-              <Text style={styles.streakNudgeTitle}>You had a {longestStreak}-day streak</Text>
-              <Text style={styles.streakNudgeSubtitle}>Log something today to start a new one</Text>
-            </View>
-            <MaterialIcons name="chevron-right" size={18} color="#b45309" />
-          </TouchableOpacity>
-        )}
-
-        {/* Primary actions — equal, compact cards that share one responsive row. */}
-        <Reanimated.View entering={entrance(4)} style={styles.actionCardsRow}>
-          {walkEnabled && (
-            <TouchableOpacity
-              style={styles.walkCard}
-              onPress={() => { if (hasFullAccess) armWalkStart(); router.push((hasFullAccess ? '/walk' : '/paywall') as any); }}
-              activeOpacity={0.85}
-              hitSlop={space.xs}
-              accessibilityRole="button"
-              accessibilityLabel={`Walk ${petName}. Ready when you are`}
-              accessibilityHint="Starts walk tracking"
-            >
-              <RunningDogIcon size={76} color={color.navy} />
-
-              <View style={styles.walkContentRow}>
-                <View style={styles.walkText}>
-                  <Text style={styles.walkTitle}>Walk {petName}</Text>
-                  <Text style={styles.walkSub} numberOfLines={1}>Ready when you are</Text>
-                </View>
-                <View style={styles.walkStart}>
-                  <MaterialIcons name="play-arrow" size={24} color={color.yellow} />
-                </View>
-              </View>
-            </TouchableOpacity>
-          )}
-
-          <SecondOpinionCard
-            remaining={askUsage?.remaining ?? null}
-            resetsAt={askUsage?.resetsAt}
-            onPress={() => router.push('/ask' as any)}
+        {showLocationPrompt && (
+          <MapLocationPrompt
+            needsDisclosure={locationNeedsDisclosure}
+            onAllow={requestLocation}
+            onDismiss={() => setLocationPromptDismissed(true)}
           />
-        </Reanimated.View>
-
-        {/* ─── Up next — flat editorial row, in column with TODAY / MEALS ─── */}
-        {nextActivity && (
-          <Reanimated.View entering={entrance(4)}>
-            <View style={styles.sectionHead}>
-              <Text style={styles.sectionLabel}>UP NEXT</Text>
-              <View style={styles.sectionRule} />
-              <Text style={styles.sectionMeta}>
-                {nextActivity.scheduled_time ? nextActivity.scheduled_time.slice(0, 5) : ''}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.upNextRow}
-              onPress={() => router.push('/(tabs)/activity')}
-              activeOpacity={0.8}
-            >
-              <View style={styles.upNextIcon}>
-                <MaterialIcons
-                  name={
-                    nextActivity.activity_type === 'walk' ? 'directions-walk'
-                      : nextActivity.activity_type === 'play' ? 'sports-baseball'
-                        : nextActivity.activity_type === 'water' ? 'water-drop'
-                          : nextActivity.activity_type === 'training' ? 'school'
-                            : nextActivity.activity_type === 'grooming' ? 'content-cut'
-                              : 'star'
-                  }
-                  size={20}
-                  color={nextActivity.activity_type === 'water' ? '#60a5fa' : color.yellow}
-                />
-              </View>
-              <View style={styles.upNextText}>
-                <Text style={styles.upNextTitle}>{nextActivity.title}</Text>
-                <Text style={styles.upNextMeta}>
-                  {(() => {
-                    const parts = [
-                      nextActivity.duration_minutes ? `${nextActivity.duration_minutes} min` : null,
-                      nextActivity.intensity || null,
-                    ].filter(Boolean);
-                    if (parts.length > 0) return parts.join(' · ');
-                    if (nextActivity.notes) return nextActivity.notes;
-                    switch (nextActivity.activity_type) {
-                      case 'water': return 'Hydration break';
-                      case 'meal':
-                      case 'dinner':
-                      case 'breakfast':
-                      case 'lunch': return 'Mealtime';
-                      case 'grooming': return 'Grooming';
-                      case 'training': return 'Training session';
-                      case 'walk': return 'Time to move';
-                      case 'play': return 'Playtime';
-                      default: return 'Tap to start';
-                    }
-                  })()}
-                </Text>
-              </View>
-              {walkEnabled && nextActivity.activity_type === 'walk' ? (
-                <TouchableOpacity
-                  style={styles.upNextTrackBtn}
-                  onPress={() => { if (hasFullAccess) armWalkStart(); router.push((hasFullAccess ? '/walk' : '/paywall') as any); }}
-                  activeOpacity={0.85}
-                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-                >
-                  <MaterialIcons name="play-arrow" size={16} color={color.navy} />
-                  <Text style={styles.upNextTrackBtnText}>Track</Text>
-                </TouchableOpacity>
-              ) : (
-                <MaterialIcons name="chevron-right" size={18} color={color.creamDim} />
-              )}
-            </TouchableOpacity>
-          </Reanimated.View>
         )}
 
-        {/* ─── Tracked walks — shareable post cards, Today by default with a
-            small toggle to widen to the last 7 days. Section stays visible
-            whenever the 7-day window has walks so the toggle is reachable
-            even on days with no fresh walk yet. ─── */}
-        {walkEnabled && activePet && recentWalks.length > 0 && (
-          <Reanimated.View entering={entrance(4.5)}>
-            <View style={styles.sectionHead}>
-              <Text style={styles.sectionLabel}>
-                {walkRange === 1 ? "TODAY'S WALKS" : 'LAST 7 DAYS'}
-              </Text>
-              <View style={styles.sectionRule} />
-              <View style={styles.rangeToggle}>
-                <TouchableOpacity
-                  onPress={() => setWalkRange(1)}
-                  hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-                  style={[styles.rangePill, walkRange === 1 && styles.rangePillActive]}
-                >
-                  <Text
-                    style={[styles.rangePillText, walkRange === 1 && styles.rangePillTextActive]}
-                  >
-                    Today
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setWalkRange(7)}
-                  hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
-                  style={[styles.rangePill, walkRange === 7 && styles.rangePillActive]}
-                >
-                  <Text
-                    style={[styles.rangePillText, walkRange === 7 && styles.rangePillTextActive]}
-                  >
-                    7 days
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-            {visibleWalks.length === 0 ? (
-              // Range set to Today but the day has no walks yet — surface a
-              // gentle nudge instead of hiding the toggle.
-              <TouchableOpacity
-                style={styles.walkEmpty}
-                activeOpacity={0.85}
-                onPress={() => setWalkRange(7)}
-              >
-                <MaterialCommunityIcons name="paw-outline" size={16} color={color.slateFaint} />
-                <Text style={styles.walkEmptyText}>
-                  No walks logged today — see the last 7 days
-                </Text>
-              </TouchableOpacity>
-            ) : (
-              (() => {
-                let lastYmd: string | null = null;
-                return visibleWalks.map((walk, i) => {
-                  const walkYmd = getLocalYMD(new Date(walk.started_at));
-                  const showDivider = walkRange === 7 && walkYmd !== lastYmd;
-                  lastYmd = walkYmd;
-                  return (
-                    <React.Fragment key={walk.id}>
-                      {showDivider && (
-                        <Text style={styles.walkDayDivider}>
-                          {formatWalkDay(new Date(walk.started_at), todayYmd)}
-                        </Text>
-                      )}
-                      <WalkPostCard walk={walk} pet={activePet} index={i} />
-                    </React.Fragment>
-                  );
-                });
-              })()
-            )}
+        <View style={{ flex: 1 }} pointerEvents="none" />
+
+        {/* The cabinet: map controls sit directly above the rail, and the record
+            action lives in the tab bar rather than here — see SplitTabBar. */}
+        <View style={styles.cabinet} pointerEvents="box-none">
+          <Reanimated.View entering={entrance(1)} pointerEvents="box-none">
+            <MapControls
+              galleryEnabled={walkItems.length >= 2}
+              // A searched-elsewhere map is just as "off its default" as a
+              // swiped rail, and this is the one control that takes it back.
+              canRecentre={selectedId !== null || searchCenter !== null}
+              onRecentre={onRecentre}
+              onRefreshSpots={segment === 'spots' ? refreshSpots : undefined}
+              onExpandSpots={segment === 'spots' && canExpandSpots ? expandSpots : undefined}
+              onSearchArea={canSearchArea ? onSearchArea : undefined}
+            />
           </Reanimated.View>
-        )}
 
-        {/* ─── Paw Prints — gallery teaser (self-hiding until ≥2 walks) ─── */}
-        {walkEnabled && activePet && (
-          <Reanimated.View entering={entrance(4.7)} style={{ marginBottom: space.lg }}>
-            <PawPrintTeaser />
+          <Reanimated.View entering={entrance(2)} pointerEvents="box-none">
+            <HomeRail
+              entries={entries}
+              onSelect={onRailSelect}
+              onOpenWalk={openWalkStory}
+              onOpenSpot={onOpenSpot}
+              onInvite={() => router.push('/invite' as any)}
+            />
           </Reanimated.View>
-        )}
 
-        {/* ─── Meals — editorial list, no boxes ─── */}
-        <Reanimated.View entering={entrance(5)}>
-          <View style={styles.sectionHead}>
-            <Text style={styles.sectionLabel}>MEALS</Text>
-            <View style={styles.sectionRule} />
-            <Text style={styles.sectionMeta}>{todayScans.length} logged</Text>
-          </View>
+          {/* ODbL. The spot data is OSM-derived on both platforms, and on iOS
+              the basemap is Apple's — so without this the screen would show
+              OSM data with no OSM credit anywhere. */}
+          {segment === 'spots' && <OsmAttribution />}
+        </View>
+      </View>
 
-          {todayScans.length === 0 ? (
-            <View style={styles.emptyMeals}>
-              <MaterialIcons name="restaurant" size={26} color={'#d1d5db'} />
-              <Text style={styles.emptyMealsText}>Nothing logged yet today</Text>
-            </View>
-          ) : (
-            todayScans.slice(0, 3).map((scan, i, arr) => {
-              const time = new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              return (
-                <TouchableOpacity
-                  key={scan.id}
-                  style={[styles.mealRow, i === arr.length - 1 && styles.mealRowLast]}
-                  onPress={() => router.push(`/scan/${scan.id}`)}
-                  activeOpacity={0.8}
-                >
-                  {scan.image_url ? (
-                    <Image source={{ uri: scan.image_url }} style={styles.mealThumb} contentFit="cover" cachePolicy="memory-disk" transition={200} />
-                  ) : (
-                    <View style={[styles.mealThumb, styles.mealThumbEmpty]}>
-                      <MaterialIcons name="restaurant" size={20} color={'#9ca3af'} />
-                    </View>
-                  )}
-                  <View style={styles.mealInfo}>
-                    <View style={styles.mealTitleRow}>
-                      <Text style={styles.mealTitle} numberOfLines={1}>{scan.ai_identified_food || 'Unidentified Food'}</Text>
-                      {scan.is_treat && (
-                        <View style={styles.treatChip}>
-                          <Text style={styles.treatChipText}>TREAT</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.mealMeta}>{scan.ai_estimated_calories} kcal · {time}</Text>
-                    <Text style={styles.mealMacroLine}>P {scan.protein_g}g · F {scan.fat_g}g · C {scan.carbs_g}g</Text>
-                  </View>
-                  <MaterialIcons name="chevron-right" size={18} color={color.slateFaint} />
-                </TouchableOpacity>
-              );
-            })
-          )}
-        </Reanimated.View>
-
-        {/* Invite a friend — quiet, pet-voiced. Sits at the bottom of the feed. */}
-        <TouchableOpacity
-          style={styles.inviteRow}
-          onPress={() => router.push('/invite' as any)}
-          activeOpacity={0.8}
-        >
-          <View style={styles.inviteIcon}>
-            <MaterialIcons name="group-add" size={18} color={color.navy} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.inviteTitle}>A friend for {petName}</Text>
-            <Text style={styles.inviteSub}>Pawtchi is better shared</Text>
-          </View>
-          <MaterialIcons name="chevron-right" size={18} color={color.slateFaint} />
-        </TouchableOpacity>
-      </Animated.ScrollView>
+      <SpotDetailsSheet
+        spot={openSpot}
+        visits={openSpot ? spotVisits[openSpot.id] ?? 0 : 0}
+        onWalkHere={onWalkHere}
+        onClose={() => setOpenSpot(null)}
+      />
     </View>
   );
 }
@@ -902,321 +1103,50 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: color.surfaceSubtle,
   },
-
-  // Primary actions
-  actionCardsRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
+  chrome: {
+    ...StyleSheet.absoluteFillObject,
+    // The tab bar floats now (`position: 'absolute'` in (tabs)/_layout.tsx), so
+    // this screen runs the full height of the display and the bar sits ON it —
+    // which is the point: the map reaches the bottom edge instead of stopping
+    // at an opaque strip. The chrome has to buy that room back for itself, or
+    // the rail would sit underneath the pill.
+    //
+    // The inset is added at the call site, not here, so this stays a plain
+    // style object.
     gap: space.md,
-    width: '100%',
+  },
+  cabinet: {
+    // Tighter than the screen's general rhythm: the rail and the CTA are one
+    // object, and spacing them like unrelated sections broke that reading.
+    gap: space.sm,
   },
 
-  // Header
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    backgroundColor: '#FFFFFF',
-    zIndex: 100,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  avatarMini: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    overflow: 'hidden',
-    borderWidth: 2.5,
-    borderColor: '#F7F602',
-  },
-  avatarMiniImg: {
-    width: '100%',
-    height: '100%',
-  },
-  headerTitle: {
-    fontFamily: 'BebasNeue_400Regular',
-    fontSize: 20,
-    letterSpacing: 2.5,
-    color: '#0f172a',
-  },
-  headerDate: {
-    fontFamily: 'Montserrat_400Regular',
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 2,
-  },
-  coinPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-  },
-  coinIcon: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#F7F602',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  coinIconText: {
-    fontFamily: 'Montserrat_800ExtraBold',
-    fontSize: 11,
-    color: '#041015',
-  },
-  coinText: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 14,
-    color: '#041015',
-  },
 
-  // Scroll Content
-  // One consistent vertical rhythm for every top-level section — a single
-  // `gap` governs the spacing between blocks so no section sets its own
-  // ad-hoc marginTop/marginBottom (those only create drift). Intra-section
-  // spacing (label → content) still lives inside each block.
-  scrollContent: {
+  // ─── Cat layout ───
+  plainContent: {
     paddingHorizontal: 20,
-    paddingTop: space.md,
-    paddingBottom: 120,
+    paddingBottom: 120 + TAB_BAR_CLEARANCE,
     gap: space.xxl,
   },
-
-  // Greeting
-  greetingRow: {
+  plainHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
+    justifyContent: 'space-between',
   },
-  greeting: {
-    fontFamily: 'Montserrat_700Bold',
-    fontSize: 26,
-    color: '#475569',
-    letterSpacing: -0.5,
-  },
-  walksignBadge: {
-    marginTop: 2,
-  },
-  greetingName: {
-    fontFamily: 'Montserrat_800ExtraBold',
-    color: '#0f172a',
-  },
-
-  // Rings
-  ringsWrapper: {
-    alignItems: 'center',
-  },
-  ringsContainer: {
-    width: RING_SIZE,
-    height: RING_SIZE,
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  petPhotoContainer: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  petPhoto: {
-    width: PHOTO_RADIUS * 2,
-    height: PHOTO_RADIUS * 2,
-    borderRadius: PHOTO_RADIUS,
-    borderWidth: 4,
-    borderColor: '#FFFFFF',
-    overflow: 'hidden',
-    ...makeShadow(4, 20, 0.12, '#000'),
-  },
-  petPhotoImg: {
-    width: '100%',
-    height: '100%',
-  },
-  tailoringOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tailoringText: {
-    color: '#F7F602',
-    fontWeight: 'bold',
-    fontSize: 9,
-    letterSpacing: 1,
-    marginTop: 6,
-  },
-  streakBadge: {
-    position: 'absolute',
-    bottom: 6,
-    right: -4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: '#e5e7eb',
-    ...makeShadow(2, 4, 0.08, '#000'),
-  },
-  streakBadgeText: {
-    fontFamily: 'Montserrat_800ExtraBold',
-    fontSize: 11,
-  },
-
-  // ─── Editorial section heads: caption + hairline rule ───
-  sectionHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    marginBottom: space.lg,
-  },
-  sectionLabel: {
-    fontFamily: font.semibold,
-    fontSize: 11,
-    letterSpacing: 2.4,
-    color: color.slateFaint,
-  },
-  sectionRule: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#ece9e2',
-  },
-  sectionMeta: {
+  plainName: {
     fontFamily: font.bold,
-    fontSize: 11,
-    color: color.slateFaint,
-  },
-
-  // ─── Walk range toggle (Today / 7 days) ───
-  rangeToggle: {
-    flexDirection: 'row',
-    backgroundColor: color.track,
-    borderRadius: radius.pill,
-    padding: 2,
-  },
-  rangePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-  },
-  rangePillActive: {
-    backgroundColor: color.surface,
-  },
-  rangePillText: {
-    fontFamily: font.semibold,
-    fontSize: 10.5,
-    letterSpacing: 0.4,
-    color: color.slateMuted,
-  },
-  rangePillTextActive: {
+    fontSize: 20,
     color: color.ink,
   },
-  walkDayDivider: {
-    fontFamily: font.semibold,
-    fontSize: 11,
-    letterSpacing: 1.8,
-    color: color.slateFaint,
-    textTransform: 'uppercase',
-    marginTop: space.sm,
-    marginBottom: space.sm,
-  },
-  walkEmpty: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: space.sm,
-    paddingVertical: space.lg,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    borderStyle: 'dashed',
-    marginBottom: space.lg,
-  },
-  walkEmptyText: {
-    fontFamily: font.medium,
-    fontSize: 12.5,
-    color: color.slateMuted,
-  },
-
-  // ─── Today — stats as typography, hairline-divided ───
-  statRow: {
-    flexDirection: 'row',
-    gap: space.lg,
-    marginBottom: space.lg,
-  },
-  stat: { flex: 1 },
-  statDivider: {
-    width: 1,
-    backgroundColor: '#ece9e2',
-  },
-  statValue: {
-    fontFamily: font.display,
-    fontSize: 28,
-    lineHeight: 28,
-    color: color.ink,
-    letterSpacing: 0.5,
-  },
-  statUnit: {
-    fontSize: 13,
-    color: color.slateFaint,
-  },
-  statTarget: {
-    fontFamily: font.medium,
-    fontSize: 10.5,
-    color: color.slateMuted,
-    marginTop: 3,
-    marginBottom: 2,
-  },
-  macroLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-  macroDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  macroText: {
-    fontFamily: font.semibold,
-    fontSize: 11.5,
-    color: color.slateMuted,
-    marginRight: 7,
-  },
-  macroSpacer: {
-    flex: 1,
-    minWidth: space.sm,
-  },
-  macroTreat: {
-    marginRight: 0,
-    color: color.ink,
-    flexShrink: 1,
-  },
-  macroTreatWarning: {
-    color: color.error,
-  },
-
-  // ─── Invite — quiet end-of-feed row ───
   inviteRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
     paddingVertical: space.lg,
     borderTopWidth: 1,
-    borderTopColor: '#ece9e2',
+    borderTopColor: color.hairline,
   },
   inviteIcon: {
     width: 34,
@@ -1236,199 +1166,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: color.slateMuted,
     marginTop: 1,
-  },
-  // ─── Treats — quiet ledger strip; red only when earned ───
-  // ─── Walk button — white card, navy foreground, prominent play ───
-  walkCard: {
-    flex: 1,
-    justifyContent: 'space-between',
-    gap: space.xs,
-    backgroundColor: color.surface,
-    borderRadius: radius.lg,
-    borderWidth: 0.5,
-    borderColor: color.hairline,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    ...makeShadow(2, 8, 0.08, '#000'),
-  },
-  walkContentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-  },
-  walkText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  walkTitle: {
-    fontFamily: font.bold,
-    fontSize: 14,
-    color: color.navy,
-    letterSpacing: -0.3,
-  },
-  walkSub: {
-    fontFamily: font.medium,
-    fontSize: 11,
-    color: color.slateMuted,
-    marginTop: 1,
-  },
-  walkStart: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 36,
-    height: 36,
-    backgroundColor: color.navy,
-    borderRadius: radius.pill,
-  },
-
-  // ─── Streak nudge — soft, calm prompt ───
-  streakNudge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    backgroundColor: '#fef3c7',
-  },
-  streakNudgeIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(146, 64, 14, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  streakNudgeContent: {
-    flex: 1,
-  },
-  streakNudgeTitle: {
-    fontFamily: font.bold,
-    fontSize: 15,
-    color: '#92400e',
-    letterSpacing: -0.2,
-  },
-  streakNudgeSubtitle: {
-    fontFamily: font.medium,
-    fontSize: 12,
-    color: '#b45309',
-    marginTop: 2,
-  },
-
-  // ─── Up next — the dark navy moment ───
-  upNextRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    backgroundColor: color.navy,
-  },
-  upNextIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  upNextText: { flex: 1, minWidth: 0 },
-  upNextTitle: {
-    fontFamily: font.bold,
-    fontSize: 15,
-    color: color.cream,
-    letterSpacing: -0.2,
-  },
-  upNextMeta: {
-    fontFamily: font.medium,
-    fontSize: 12,
-    color: color.creamDim,
-    marginTop: 2,
-  },
-  // One-tap tracked walk — the yellow marks the one thing that matters here.
-  upNextTrackBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    backgroundColor: color.yellow,
-    borderRadius: 999,
-    paddingVertical: 7,
-    paddingLeft: 8,
-    paddingRight: 12,
-  },
-  upNextTrackBtnText: {
-    fontFamily: font.bold,
-    fontSize: 12.5,
-    color: color.navy,
-    letterSpacing: -0.1,
-  },
-
-  // ─── Meals — editorial rows ───
-  emptyMeals: {
-    alignItems: 'center',
-    paddingVertical: space.xxl,
-    gap: 8,
-  },
-  emptyMealsText: {
-    fontFamily: font.regular,
-    fontSize: 12.5,
-    color: color.slateFaint,
-    textAlign: 'center',
-  },
-  mealRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingVertical: space.md,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ece9e2',
-  },
-  mealRowLast: { borderBottomWidth: 0 },
-  mealThumb: {
-    width: 54,
-    height: 54,
-    borderRadius: radius.md,
-    backgroundColor: color.track,
-  },
-  mealThumbEmpty: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mealInfo: { flex: 1, minWidth: 0 },
-  mealTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  mealTitle: {
-    fontFamily: font.bold,
-    fontSize: 14,
-    color: color.ink,
-    flexShrink: 1,
-  },
-  treatChip: {
-    backgroundColor: color.yellowSoft,
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  treatChipText: {
-    fontFamily: font.bold,
-    fontSize: 8.5,
-    letterSpacing: 0.8,
-    color: color.navy,
-  },
-  mealMeta: {
-    fontFamily: font.semibold,
-    fontSize: 12,
-    color: color.slate,
-    marginTop: 2,
-  },
-  mealMacroLine: {
-    fontFamily: font.regular,
-    fontSize: 11,
-    color: color.slateFaint,
-    marginTop: 2,
   },
 });

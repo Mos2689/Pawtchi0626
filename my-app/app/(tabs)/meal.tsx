@@ -3,10 +3,11 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Pressable,
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { color, font, motion, radius, shadow, space, makeShadow } from '../../constants/design';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { HealthProfileGate } from '../../components/health/HealthProfileGate';
 import { useStreakStore } from '../../store/useStreakStore';
 import { usePetContextStore } from '../../store/usePetContextStore';
 import { useAuth } from '../../providers/AuthProvider';
@@ -21,11 +22,11 @@ import {
   fetchVerdictLLM, fetchVerdictWithFallback, estimateMealGrams,
 } from '../../lib/verdictPipeline';
 import { computePantryMacros } from '../../lib/pantryMath';
+import { resolveLoggedTotals, resolvePantrySourceId } from '../../lib/mealLogKcal';
 import { mapMedicalConditionsToAdjustmentKeys } from '../../lib/clinicalMapping';
 import { deriveGoal } from '../../lib/healthMath';
 import { useSubscription } from '../../hooks/useSubscription';
 import PantryPillSelector from '../../components/PantryPillSelector';
-import NutritionReferencePanel from '../../components/NutritionReferencePanel';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { PawLoader } from '../../components/loader/PawLoader';
 import { AnimatedPressable } from '../../components/AnimatedPressable';
@@ -41,12 +42,18 @@ import { haptic } from '../../lib/haptics';
 import { pantryItemToScanResult } from '../../lib/pantryToScanResult';
 import { prepareImageForUpload } from '../../lib/imagePrep';
 import { PawtchiModal } from '../../components/PawtchiModal';
+import { FailureModal } from '../../components/FailureModal';
+import type { FailureMeta } from '../../lib/support/handoff';
 import {
   errorCopy, extractInvokeErrorCode, fromEdgeBody, isAppError, reportError, toAppError,
   type ErrorContext, type ErrorCopy, type RecoveryActionId,
 } from '../../lib/appError';
 import type { PantryItem } from '../../store/useActivePetStore';
 import { trackFirebaseEvent } from '../../lib/firebaseAnalytics';
+import { weightPlanViewModelFromRecord } from '../../lib/weightPlanRecord';
+import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
+import { useNotificationCenterStore } from '../../store/useNotificationCenterStore';
+import { dayScope, stableId } from '../../lib/notificationCenter/stableId';
 
 async function isFirstFoodLogForUser(userId: string | undefined): Promise<boolean> {
   if (!userId) return false;
@@ -89,6 +96,10 @@ interface ScanResult {
   recommendation: string;
   confidence: number;
   is_labeled_product?: boolean;
+  /** Server-side pantry auto-match, carried onto the result for the Source row. */
+  matched_pantry_id?: string | null;
+  match_confidence?: number;
+  food_type_mismatch?: boolean;
   protein_g?: number;
   carbs_g?: number;
   fat_g?: number;
@@ -99,7 +110,28 @@ interface ScanResult {
   food_analysis?: FoodAnalysis | null;
 }
 
+/**
+ * Meal needs a real weight, age, body score, a bowl and something in the
+ * pantry — none of which a walk-first dog profile has. The gate replaces the
+ * screen's content until they exist, rather than letting every portion and
+ * calorie number on this screen render off a zero weight.
+ */
 export default function MealScreen() {
+  const activePet = useActivePetStore(s => s.activePet);
+  const pantry = useActivePetStore(s => s.foodPantry);
+  return (
+    <HealthProfileGate
+      feature="meal_logging"
+      pet={activePet}
+      petName={activePet?.name}
+      pantryCount={pantry?.length ?? 0}
+    >
+      <MealScreenContent />
+    </HealthProfileGate>
+  );
+}
+
+function MealScreenContent() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   // Fine-grained selectors: this 2 800-line screen must re-render only when the
@@ -160,17 +192,22 @@ export default function MealScreen() {
   // always via errorCopy(). OS alerts remain only for confirmations
   // (toxin block, overage, hide-food).
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
+  // What the failure was, for the support composer: the area chip arrives
+  // preselected and the kind rides along into diagnostics.
+  const [failureMeta, setFailureMeta] = useState<FailureMeta | null>(null);
   // Replays whatever operation failed — set at the entry of each top-level
   // action (scan / confirm-log / quick-log), read by "Try again".
   const retryRef = useRef<null | (() => void)>(null);
   const presentFailure = useCallback((err: unknown, context: ErrorContext) => {
     const appErr = isAppError(err) ? err : toAppError(err);
     reportError(appErr, context);
+    setFailureMeta({ kind: appErr.kind, context });
     setFailure(errorCopy(appErr, { context, petName: activePet?.name }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePet?.name]);
+  // Only the actions this screen owns — FailureModal handles contact support,
+  // settings and back, so none of them can go dead here.
   const handleRecovery = useCallback((action: RecoveryActionId) => {
-    setFailure(null);
     if (action === 'retry') retryRef.current?.();
     else if (action === 'pick_again') setSourcePopupVisible(true);
   }, []);
@@ -229,9 +266,7 @@ export default function MealScreen() {
   // suggestion and pre-default the portion to what the owner's been feeding.
   useEffect(() => {
     if (!scanResult) return;
-    const serverMatchId = (scanResult as any).matched_pantry_id as string | null | undefined;
-    const matchConf = ((scanResult as any).match_confidence as number | undefined) ?? 0;
-    const sourceId = selectedPantryId ?? (serverMatchId && matchConf >= 0.5 ? serverMatchId : null);
+    const sourceId = resolvePantrySourceId(scanResult, selectedPantryId);
     if (!sourceId) {
       setUsualSuggestion(null);
       return;
@@ -274,8 +309,26 @@ export default function MealScreen() {
       // Non-critical; leave the suggestion in place to retry.
     } finally {
       setApplyingUsual(false);
+      setUsualConfirmOpen(false);
     }
   };
+
+  /**
+   * Arriving from the notification center's portion item.
+   *
+   * The prompt no longer lives on this screen, so the confirmation has to: a
+   * deep link that silently rewrote a pantry item's calories would be a write
+   * the owner never agreed to. Opening a confirm here keeps the one-tap flow
+   * without turning a link into a mutation.
+   */
+  const [usualConfirmOpen, setUsualConfirmOpen] = useState(false);
+  const { focus: mealFocus } = useLocalSearchParams<{ focus?: string }>();
+  const mealFocusHandled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!mealFocus || mealFocusHandled.current === mealFocus) return;
+    mealFocusHandled.current = mealFocus;
+    if (mealFocus === 'usual' && usualSuggestion) setUsualConfirmOpen(true);
+  }, [mealFocus, usualSuggestion]);
 
   // Branded log success modal state — no longer used (replaced by CoinToast)
 
@@ -630,17 +683,24 @@ export default function MealScreen() {
         //     trust (the model says it's clearly this pantry item).
         //   • Otherwise → keep Gemini's macros; the Source row on the result
         //     screen will let the user accept the auto-match or pick another.
+        // resolvePantrySourceId owns that decision for every consumer on this
+        // screen (preview, chips, log) so they can't drift apart.
         const serverMatchId = (data.analysis as { matched_pantry_id?: string | null })?.matched_pantry_id ?? null;
         const matchConf = (data.analysis as { match_confidence?: number })?.match_confidence ?? 0;
         const foodTypeMismatch = (data.analysis as { food_type_mismatch?: boolean })?.food_type_mismatch === true;
-        const useExplicit = !!selectedPantryId;
-        const useAutoMatch = !useExplicit && !!serverMatchId && matchConf >= 0.7 && !foodTypeMismatch;
-        const overrideFromPantryId = useExplicit ? selectedPantryId : (useAutoMatch ? serverMatchId : null);
+        const overrideFromPantryId = resolvePantrySourceId(
+          { matched_pantry_id: serverMatchId, match_confidence: matchConf, food_type_mismatch: foodTypeMismatch },
+          selectedPantryId,
+        );
 
         if (overrideFromPantryId) {
           const pantryItem = foodPantry.find(p => p.id === overrideFromPantryId);
           if (pantryItem) {
-            const macros = computePantryMacros(pantryItem, servingCount, {
+            // Always ONE serving. The portion multiplier is applied once, at
+            // log time, by resolveLoggedTotals — baking it in here read a
+            // stale `servingCount` (setServingCount(1) hadn't committed yet)
+            // and left the preview double-counting it.
+            const macros = computePantryMacros(pantryItem, 1, {
               species: activePet?.species,
               bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
             });
@@ -837,6 +897,26 @@ export default function MealScreen() {
     capturedImage: string | null;
   };
 
+  /**
+   * The kcal/macros a log will write, for a given scan + portion.
+   *
+   * Every consumer — the overage guard, the result-screen receipt, the row we
+   * insert — goes through here, so the number the owner is warned about is
+   * always the number that lands in daily_logs.
+   */
+  const totalsFor = useCallback((
+    sr: ScanResult,
+    pantryId: string | null,
+    sc: number,
+  ) => {
+    const sourceId = resolvePantrySourceId(sr, pantryId);
+    const sourceItem = sourceId ? foodPantry.find(p => p.id === sourceId) ?? null : null;
+    return resolveLoggedTotals(sr, sourceItem, sc, {
+      species: activePet?.species as 'dog' | 'cat' | undefined,
+      bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
+    });
+  }, [foodPantry, activePet?.species, activePet?.bowl_size]);
+
   const confirmLog = async (overrides?: LogOverrides) => {
     const sr = overrides?.scanResult ?? scanResult;
     const sc = overrides?.servingCount ?? servingCount;
@@ -867,8 +947,9 @@ export default function MealScreen() {
     const today = getLocalYMD(new Date());
     const targetCal = activePet.target_daily_calories || 0;
 
-    // Apply serving multiplier to get the actual calories being logged
-    const totalCalories = Math.round(sr.calories_per_serving * sc);
+    // The exact number executeLog will write — same resolver, same inputs, so
+    // the owner is never warned about one figure and charged another.
+    const totalCalories = totalsFor(sr, overrides?.pantryId ?? selectedPantryId, sc).totalCalories;
 
     // Pre-check: fetch current day's consumed calories
     const { data: existingLog } = await supabase
@@ -914,7 +995,11 @@ export default function MealScreen() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const executeLog = async (existingLog: any, today: string, overrides?: LogOverrides) => {
     const sr = overrides?.scanResult ?? scanResult;
-    const sPantryId = overrides?.pantryId ?? selectedPantryId;
+    // Explicit owner pick, or a trusted server auto-match. This is the pantry
+    // row the log counts against — for label math, scan counts and portion
+    // learning alike. It used to be the explicit pick only, which meant an
+    // auto-matched scan silently logged off unscaled Gemini numbers.
+    const sPantryId = sr ? resolvePantrySourceId(sr, overrides?.pantryId ?? selectedPantryId) : null;
     const sCount = overrides?.servingCount ?? servingCount;
     const sImage = overrides?.capturedImage ?? capturedImage;
     if (!sr || !activePet) return;
@@ -924,47 +1009,28 @@ export default function MealScreen() {
     try {
       const shouldTrackFirstFood = await isFirstFoodLogForUser(user?.id);
 
-      // When a pantry item is selected, compute macros deterministically from
-      // its label data — same math as analyzeWithGemini used for the preview,
-      // so food_scans stores values identical to what the user confirmed.
-      // Note: when no pantry item is selected, scanResult values already
-      // include the servingCount multiplier applied in analyzeWithGemini.
-      let totalCalories = sr.calories_per_serving;
-      let totalProtein = sr.protein_g ?? 0;
-      let totalCarbs = sr.carbs_g ?? 0;
-      let totalFat = sr.fat_g ?? 0;
+      // What this log actually costs the day. When a pantry item backs the
+      // scan (explicit pick or a trusted auto-match) its label data drives the
+      // math; otherwise the scan's own per-serving values are scaled. Either
+      // way the portion multiplier is applied exactly once, in one place.
+      const totals = totalsFor(sr, sPantryId, sCount);
+      const totalCalories = totals.totalCalories;
+      const totalProtein = totals.protein_g;
+      const totalCarbs = totals.carbs_g;
+      const totalFat = totals.fat_g;
 
-      // Also capture label-accurate % values from the pantry for the verdict layer.
-      let pantry_kcal_per_100g: number | null = sr.kcal_per_100g_as_fed ?? null;
-      let pantry_moisture_pct: number | null = sr.moisture_pct ?? null;
-      let pantry_protein_pct: number | null = sr.protein_pct ?? null;
-      let pantry_fat_pct: number | null = sr.fat_pct ?? null;
-      let pantry_fiber_pct: number | null = sr.fibre_pct ?? null;
-
-      if (sPantryId) {
-        const pantryItem = foodPantry.find(p => p.id === sPantryId);
-        if (pantryItem) {
-          const macros = computePantryMacros(pantryItem, sCount, {
-            species: activePet?.species,
-            bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
-          });
-          totalCalories = macros.total_kcal;
-          totalProtein = macros.protein_g;
-          totalCarbs = macros.carbs_g;
-          totalFat = macros.fat_g;
-          pantry_kcal_per_100g = macros.kcal_per_100g;
-          pantry_moisture_pct = macros.moisture_pct;
-          pantry_protein_pct = pantryItem.protein_pct ?? null;
-          pantry_fat_pct = pantryItem.fat_pct ?? null;
-          pantry_fiber_pct = pantryItem.fibre_pct ?? null;
-        }
-      }
+      // Label-accurate % values for the verdict layer (pantry wins when present).
+      const pantry_kcal_per_100g = totals.kcal_per_100g;
+      const pantry_moisture_pct = totals.moisture_pct;
+      const pantry_protein_pct = totals.protein_pct;
+      const pantry_fat_pct = totals.fat_pct;
+      const pantry_fiber_pct = totals.fibre_pct;
 
       // Best-effort meal_grams estimate for the verdict layer.
       // Per-nutrient verdicts are intrinsic to the food (g/1000 kcal) and
       // don't depend on this; meal_grams only feeds the meal_kcal /
       // % of daily calculation, which we override with totalCalories below.
-      const proteinPct = sr.protein_pct ?? null;
+      const proteinPct = pantry_protein_pct;
       const estimatedMealGrams =
         proteinPct && proteinPct > 0 && totalProtein > 0
           ? Math.round((totalProtein / proteinPct) * 100)
@@ -1066,8 +1132,8 @@ export default function MealScreen() {
           fat_g: totalFat,
           carbs_g: totalCarbs,
           fibre_g: 0,
-          kcal_per_100g: sr.kcal_per_100g_as_fed ?? null,
-          moisture_pct: sr.moisture_pct ?? null,
+          kcal_per_100g: pantry_kcal_per_100g,
+          moisture_pct: pantry_moisture_pct,
           meal_grams: estimatedMealGrams,
         },
         foodAnalysis,
@@ -1249,7 +1315,9 @@ export default function MealScreen() {
       // Auto-complete the matching feeding activity on the day's timeline so
       // logged meals visibly close their scheduled card. Fire-and-forget;
       // failures shouldn't disrupt the meal-log flow.
-      if (activePet?.id && !scanResult?.is_treat) {
+      // `sr`, not `scanResult` — on the hero/quick-log path the screen state is
+      // null, so a logged treat used to close a scheduled feeding card.
+      if (activePet?.id && sr.is_treat !== true) {
         markNearestFeedingActivityComplete({
           petId: activePet.id,
           loggedAt: new Date(),
@@ -1281,13 +1349,96 @@ export default function MealScreen() {
     }
   };
 
+  // ─── Weight context line for the canopy (calm phrasing, no red card) ───
+  const weightContextLine = (() => {
+    if (!activePet) return null;
+    const plan = weightPlanViewModelFromRecord(activePet);
+    const currentW = plan.currentWeightKg;
+    const idealW = plan.idealWeightKg;
+    if (!idealW) {
+      return plan.showAssessmentPrompt
+        ? `Complete a body check before Pawtchi adjusts ${activePet.name}'s plan.`
+        : null;
+    }
+    const gap = currentW - idealW;
+    if (plan.showVerifyPrompt) {
+      return `Pawtchi noticed a weight change for ${activePet.name} — add another reading to confirm it.`;
+    }
+    if (plan.showAssessmentPrompt) {
+      return `${activePet.name} is ${Math.abs(gap).toFixed(1)} kg ${gap >= 0 ? 'above' : 'below'} their confirmed ${idealW.toFixed(1)} kg ideal — a body check is due.`;
+    }
+    if (plan.status === 'active' && gap > 0.5) {
+      return `${activePet.name} is ${gap.toFixed(1)} kg above their confirmed ${idealW.toFixed(1)} kg ideal — keep portions steady.`;
+    }
+    if (plan.status === 'active' && gap < -0.5) {
+      return `${activePet.name} is ${Math.abs(gap).toFixed(1)} kg below their confirmed ${idealW.toFixed(1)} kg ideal.`;
+    }
+    return null;
+
+  })();
+
+  // ── Publish this screen's two prompts to the notification center ──────────
+  const publishNotification = useNotificationCenterStore(s => s.publish);
+  const retractNotification = useNotificationCenterStore(s => s.retract);
+
+  React.useEffect(() => {
+    const id = stableId('runtime', `weight_context_${activePet?.id ?? 'none'}`, dayScope());
+    if (!weightContextLine) { retractNotification(id); return; }
+    publishNotification({
+      id,
+      source: 'runtime',
+      tone: 'info',
+      title: 'About the plan',
+      body: weightContextLine,
+      icon: 'info-outline',
+      createdAt: new Date().toISOString(),
+      route: '/(tabs)/health',
+      petId: activePet?.id ?? null,
+    });
+  }, [weightContextLine, activePet?.id, publishNotification, retractNotification]);
+
+  /**
+   * The learned-portion prompt.
+   *
+   * As a banner this sat directly above the portion picker and its "Update"
+   * applied the new usual in one tap, in context. Off the screen it routes back
+   * with `?focus=usual`, which opens the confirm above — one extra tap, but the
+   * write still happens with the owner's explicit agreement.
+   *
+   * It expires after a week: a reading of how much was fed *lately* is stale by
+   * then, and a stale one would be worse than none.
+   */
+  React.useEffect(() => {
+    const id = stableId('runtime', `usual_portion_${activePet?.id ?? 'none'}`, dayScope());
+    if (!usualSuggestion) { retractNotification(id); return; }
+    const lighter = usualSuggestion.multiplier < 1;
+    publishNotification({
+      id,
+      source: 'runtime',
+      tone: 'info',
+      title: 'Portions have shifted',
+      body: `Lately ${activePet?.name || 'they'} has been fed a little ${lighter ? 'less' : 'more'} than the saved portion. Tap to make it the usual.`,
+      icon: 'auto-awesome',
+      createdAt: new Date().toISOString(),
+      route: '/(tabs)/meal?focus=usual',
+      petId: activePet?.id ?? null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+  }, [usualSuggestion, activePet?.id, activePet?.name, publishNotification, retractNotification]);
+
   // When scan result is ready, show the full Stitch-designed result view
   if (scanResult && !isAnalyzing) {
     const healthScore = scanResult.health_score ?? 5; // deterministically set above; 5 is a safe fallback
-    const proteinG = Math.round((scanResult.protein_g ?? 0) * servingCount);
-    const carbsG = Math.round((scanResult.carbs_g ?? 0) * servingCount);
-    const fatG = Math.round((scanResult.fat_g ?? 0) * servingCount);
-    const displayCalories = Math.round(scanResult.calories_per_serving * servingCount);
+    // Preview totals come from the same resolver the log uses, so the receipt
+    // line, the budget bar and the stored row can never disagree.
+    const previewTotals = totalsFor(scanResult, selectedPantryId, servingCount);
+    // The "N × 1.25 = M kcal" receipt reads off the same resolver at 1×, so the
+    // arithmetic on screen is always true of the number being written.
+    const perServingCalories = totalsFor(scanResult, selectedPantryId, 1).totalCalories;
+    const proteinG = Math.round(previewTotals.protein_g);
+    const carbsG = Math.round(previewTotals.carbs_g);
+    const fatG = Math.round(previewTotals.fat_g);
+    const displayCalories = previewTotals.totalCalories;
     const ingredientsList = scanResult.ingredients ?? scanResult.ingredients_of_concern ?? [];
 
     // Pre-compute budget values so the JSX stays clean
@@ -1299,14 +1450,10 @@ export default function MealScreen() {
     const mealPct = budgetTarget > 0 ? Math.round((displayCalories / budgetTarget) * 100) : 0;
 
     // Resolve the pantry item this result is logging against (explicit pick or
-    // confident server match) so the portion chips can speak in "bowls" when
-    // that reads more naturally than abstract multipliers.
-    const resolvedSourceId =
-      selectedPantryId ??
-      (((scanResult as any).matched_pantry_id as string | null) &&
-      (((scanResult as any).match_confidence as number | undefined) ?? 0) >= 0.5
-        ? ((scanResult as any).matched_pantry_id as string)
-        : null);
+    // trusted server match) so the portion chips can speak in "bowls" when
+    // that reads more naturally than abstract multipliers. Same resolver the
+    // log uses — the chips must not describe a source the kcal didn't come from.
+    const resolvedSourceId = resolvePantrySourceId(scanResult, selectedPantryId);
     const resolvedSourceItem = resolvedSourceId ? foodPantry.find(p => p.id === resolvedSourceId) ?? null : null;
     const bowlMode =
       !!activePet?.bowl_size &&
@@ -1338,7 +1485,7 @@ export default function MealScreen() {
 
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={[styles.srScroll, { paddingBottom: 120 }]}
+          contentContainerStyle={[styles.srScroll, { paddingBottom: 120 + TAB_BAR_CLEARANCE }]}
           showsVerticalScrollIndicator={false}
         >
           {/* ─── Hero — full-bleed image, no decorative chrome ─── */}
@@ -1366,20 +1513,19 @@ export default function MealScreen() {
 
             {/* ─── Source — which pantry item this log will count against ─── */}
             {(() => {
-              const serverMatchId = (scanResult as any).matched_pantry_id as string | null | undefined;
-              const matchConf = ((scanResult as any).match_confidence as number | undefined) ?? 0;
-              const typeMismatch = ((scanResult as any).food_type_mismatch as boolean | undefined) === true;
-              // Resolution order: explicit user pick → server auto-match → none.
-              const resolvedId = selectedPantryId ?? (serverMatchId && matchConf >= 0.5 ? serverMatchId : null);
-              const matchedItem = resolvedId ? foodPantry.find(p => p.id === resolvedId) ?? null : null;
+              const typeMismatch = scanResult.food_type_mismatch === true;
+              // Resolution order: explicit user pick → trusted server auto-match
+              // → none. One threshold (AUTO_MATCH_TRUST_THRESHOLD) decides this
+              // row, the portion chips and the kcal, so the row can't claim a
+              // match the calories were never taken from.
               const kind: 'explicit' | 'auto' | 'new' | 'unmatched' =
                 selectedPantryId ? 'explicit'
-                : (serverMatchId && matchConf >= 0.5) ? 'auto'
+                : resolvedSourceId ? 'auto'
                 : scanResult.is_labeled_product ? 'new'
                 : 'unmatched';
               return (
                 <ScanSourceRow
-                  matchedItem={matchedItem}
+                  matchedItem={resolvedSourceItem}
                   kind={kind}
                   showTypeMismatchHint={typeMismatch}
                   onChange={() => setSourcePickerVisible(true)}
@@ -1393,23 +1539,10 @@ export default function MealScreen() {
               <Text style={styles.sectionLabel}>PORTION</Text>
               <View style={styles.sectionRule} />
             </View>
-            {/* Learned-portion nudge — "you've been feeding less, make it usual?" */}
-            {usualSuggestion && (
-              <View style={styles.usualBanner}>
-                <MaterialIcons name="auto-awesome" size={16} color={color.navy} />
-                <Text style={styles.usualBannerText} numberOfLines={2}>
-                  Lately you&apos;ve fed {usualSuggestion.multiplier < 1 ? 'a little less' : 'a little more'} — make this {activePet?.name || 'your pet'}&apos;s usual?
-                </Text>
-                <TouchableOpacity
-                  style={styles.usualBannerCta}
-                  onPress={applyNewUsual}
-                  disabled={applyingUsual}
-                  activeOpacity={0.85}
-                >
-                  <Text style={styles.usualBannerCtaText}>{applyingUsual ? '…' : 'Update'}</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            {/* The learned-portion prompt ("you've been feeding less, make it
+                usual?") used to sit here, directly above the picker it applied
+                to. It is a notification-center item now — see the publish
+                effect above, and the note there about what that costs. */}
 
             {/* Three-chip portion picker — the 95% case is one tap. Speaks in
                 bowls for cup-based foods, multipliers otherwise. */}
@@ -1459,7 +1592,7 @@ export default function MealScreen() {
                   </Text>
                 ) : null}
                 <Text style={styles.portionHint} numberOfLines={1}>
-                  {scanResult.calories_per_serving} × {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(2)} = {displayCalories} kcal
+                  {perServingCalories} × {servingCount % 1 === 0 ? servingCount : servingCount.toFixed(2)} = {displayCalories} kcal
                 </Text>
               </View>
               {showCustomPortion && (
@@ -1569,15 +1702,11 @@ export default function MealScreen() {
               </>
             )}
 
-            {/* ─── Nutrition reference (external panel) ─── */}
-            {scanResult.food_analysis && (
-              <View style={{ marginTop: space.xxl }}>
-                <NutritionReferencePanel
-                  foodAnalysis={scanResult.food_analysis}
-                  mealKcalOverride={displayCalories}
-                />
-              </View>
-            )}
+            {/* The AAFCO nutritional-reference panel (Fat/Fiber/Calcium/
+                Phosphorus vs. AAFCO minimums) used to render here. Hidden per
+                product decision — the comparison read as more clinical
+                authority than a label-derived estimate warrants for a food the
+                owner is about to log in one tap. */}
 
             {/* ─── Ingredients — quiet chip row ─── */}
             {ingredientsList.length > 0 && (
@@ -1610,8 +1739,14 @@ export default function MealScreen() {
           </Animated.View>
         </ScrollView>
 
-        {/* ─── Sticky Add to Bowl — plinth lifts off the sheet ─── */}
-        <View style={styles.srSticky}>
+        {/* ─── Sticky Add to Bowl — plinth lifts off the sheet ───
+            The floating tab bar (SplitTabBar) is rendered as an absolute
+            overlay on top of every tab screen, not in normal flow — so a
+            sticky bar pinned to this screen's own bottom:0 sits directly
+            behind it rather than above it. `TAB_BAR_CLEARANCE + insets.bottom`
+            is the same offset every other screen uses to clear that overlay
+            (see index.tsx's `chrome` padding). */}
+        <View style={[styles.srSticky, { bottom: insets.bottom + TAB_BAR_CLEARANCE }]}>
           <PawtchiButton
             title={hasLogged ? 'Added to bowl' : 'Add to bowl'}
             variant="primary"
@@ -1664,17 +1799,6 @@ export default function MealScreen() {
     );
   }
 
-  // ─── Weight context line for the canopy (calm phrasing, no red card) ───
-  const weightContextLine = (() => {
-    if (!activePet) return null;
-    const targetW = activePet.target_weight_kg || activePet.current_weight_kg || 0;
-    const currentW = activePet.current_weight_kg || 0;
-    const gap = currentW - targetW;
-    if (gap > 0.5) return `${activePet.name} is ${gap.toFixed(1)} kg above their ${targetW} kg target — keep portions steady.`;
-    if (gap < -0.5) return `${activePet.name} is ${Math.abs(gap).toFixed(1)} kg below their ${targetW} kg goal.`;
-    return null;
-  })();
-
   // Today's consumed / target for the canopy hero number
   // (consumedToday subscribed at the top — keeps hooks order stable across renders)
   const dailyTarget = activePet?.target_daily_calories ?? 0;
@@ -1722,13 +1846,9 @@ export default function MealScreen() {
         contentContainerStyle={styles.scScrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Weight context — calm inline row, only when off-target */}
-        {weightContextLine && (
-          <Animated.View entering={FadeInDown.duration(420)} style={styles.weightNote}>
-            <MaterialIcons name="info-outline" size={14} color={color.slateMuted} />
-            <Text style={styles.weightNoteText} numberOfLines={2}>{weightContextLine}</Text>
-          </Animated.View>
-        )}
+        {/* The weight-context line lived here. It is a notification-center item
+            now, which is also where it belongs: it was never about the meal
+            being logged, only about the plan around it. */}
 
         {(() => {
           const prediction = predictMeal(foodPantry, activePet?.name);
@@ -1856,17 +1976,31 @@ export default function MealScreen() {
         </View>
       )}
 
-      {/* Branded failure sheet — every failure path on this screen. */}
-      <PawtchiModal
-        visible={failure != null}
+      {/* Branded failure sheet — every failure path on this screen. FailureModal
+          owns support / settings / back; handleRecovery owns the flow. */}
+      <FailureModal
+        copy={failure}
         onClose={() => setFailure(null)}
-        title={failure?.title ?? ''}
-        message={failure?.message}
-        icon={{ name: 'wb-cloudy', color: color.alertDeep }}
-        actions={(failure?.actions ?? []).map(a => ({
-          label: a.label,
-          onPress: () => handleRecovery(a.action),
-        }))}
+        onAction={handleRecovery}
+        meta={{ ...failureMeta, screen: '/(tabs)/meal' }}
+      />
+
+      {/* Reached only from the notification center's portion item — never shown
+          on arrival at this tab by any other route. */}
+      <PawtchiModal
+        visible={usualConfirmOpen && !!usualSuggestion}
+        onClose={() => setUsualConfirmOpen(false)}
+        title="Make this the usual?"
+        message={
+          usualSuggestion
+            ? `Recent meals have been about ${Math.round(usualSuggestion.multiplier * 100)}% of the saved portion. Updating the saved size means future logs start from the right number.`
+            : ''
+        }
+        icon={{ name: 'auto-awesome', color: color.navy }}
+        actions={[
+          { label: applyingUsual ? 'Updating' : 'Update the usual', onPress: applyNewUsual },
+          { label: 'Not now', onPress: () => setUsualConfirmOpen(false) },
+        ]}
       />
 
       <PawLoader visible={isAnalyzing} />
@@ -1958,7 +2092,7 @@ function AddNewFoodRow({
 const styles = StyleSheet.create({
   // ════ Default scanner screen ════
   scRoot: { flex: 1, backgroundColor: color.surfaceSubtle },
-  scScrollContent: { flexGrow: 1, paddingBottom: 120 },
+  scScrollContent: { flexGrow: 1, paddingBottom: 120 + TAB_BAR_CLEARANCE },
 
   // ─── Status strip: slim yellow band, no longer the hero ───
   statusStrip: {
@@ -2028,28 +2162,6 @@ const styles = StyleSheet.create({
   statusFill: {
     height: 3,
     backgroundColor: color.navy,
-  },
-
-  // ─── Weight nudge — calm inline row above the scanner ───
-  weightNote: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    backgroundColor: color.surface,
-    borderWidth: 1,
-    borderColor: color.hairline,
-    borderRadius: radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginHorizontal: space.xxl,
-    marginTop: space.lg,
-  },
-  weightNoteText: {
-    flex: 1,
-    fontFamily: font.medium,
-    fontSize: 12,
-    color: color.slate,
-    lineHeight: 17,
   },
 
   // ─── Alternatives stack (sits below the MealHero) ───
@@ -2336,39 +2448,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 
-  // ─── Learned-portion nudge ───
-  usualBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    backgroundColor: color.yellowSoft,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: color.yellow,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    marginTop: space.lg,
-    marginBottom: space.sm,
-  },
-  usualBannerText: {
-    flex: 1,
-    fontFamily: font.medium,
-    fontSize: 12.5,
-    color: color.ink,
-    lineHeight: 17,
-  },
-  usualBannerCta: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radius.pill,
-    backgroundColor: color.navy,
-  },
-  usualBannerCtaText: {
-    fontFamily: font.bold,
-    fontSize: 12,
-    color: color.cream,
-    letterSpacing: 0.3,
-  },
 
   // ─── Portion ───
   portionChipsRow: {
@@ -2659,7 +2738,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 0,
+    // `bottom` is set at the call site (insets.bottom + TAB_BAR_CLEARANCE) so
+    // the bar clears the floating tab bar rather than sitting behind it.
     backgroundColor: color.surface,
     paddingHorizontal: space.xxl,
     paddingTop: space.lg,

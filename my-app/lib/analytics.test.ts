@@ -40,4 +40,29 @@ describe('analytics', () => {
     ];
     expect(events).toHaveLength(10);
   });
+
+  test('the win-back offer keeps its own namespace, not paywall_*', () => {
+    // The existing paywall_* events are shared by both presentations and carry
+    // a `variant` property instead of being forked, so the funnel above stays
+    // whole. These are the offer *lifecycle*, which the standard paywall has no
+    // equivalent of.
+    const events: AnalyticsEvent[] = [
+      'pro_offer_granted',
+      'pro_offer_paywall_viewed',
+      'pro_offer_paywall_dismissed',
+      'pro_offer_purchase_started',
+      'pro_offer_purchase_succeeded',
+      'pro_offer_purchase_failed',
+      'pro_offer_expired',
+      'pro_offer_revoked',
+      'pro_offer_inbox_shown',
+      'pro_offer_inbox_tapped',
+      'pro_offer_unavailable',
+    ];
+    expect(events).toHaveLength(11);
+    // The engagement-reactivation campaigns in lib/notifications/copy.ts are
+    // already called winback_7d / winback_30d. Colliding on that name would
+    // make "winback" mean two unrelated things in the same dashboard.
+    for (const e of events) expect(e.startsWith('pro_offer_')).toBe(true);
+  });
 });

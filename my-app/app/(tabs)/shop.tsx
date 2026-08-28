@@ -9,7 +9,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useStreakStore } from '../../store/useStreakStore';
 import { useActivePetStore } from '../../store/useActivePetStore';
 import { useAuth } from '../../providers/AuthProvider';
-import { makeShadow } from '../../constants/design';
+import { color, makeShadow } from '../../constants/design';
 import * as Haptics from 'expo-haptics';
 import Animated, { 
   useSharedValue, 
@@ -139,7 +139,7 @@ const RewardCard = ({
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
-    borderColor: isUnlocked ? '#F7F602' : '#f0f0f0',
+    borderColor: isUnlocked ? color.yellow : '#f0f0f0',
     borderWidth: isUnlocked ? 2 : 1,
   }));
 
@@ -162,7 +162,7 @@ const RewardCard = ({
             </View>
             <TouchableOpacity 
               activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleAction}
-              style={[styles.buyPill, { backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#F7F602') : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
+              style={[styles.buyPill, { backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : color.yellow) : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
             >
               {isUnlocked ? (
                 <View style={styles.costRow}>
@@ -194,7 +194,7 @@ const RewardCard = ({
             <Typography variant="body" size={12} color="on-surface-variant" style={{ marginBottom: 12 }}>{item.description}</Typography>
             <TouchableOpacity 
               activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleAction}
-              style={[styles.buyPill, { alignSelf: 'flex-start', backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#F7F602') : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
+              style={[styles.buyPill, { alignSelf: 'flex-start', backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : color.yellow) : (canAfford ? '#1A1A1A' : '#f0f0f0') }]}
             >
               {isUnlocked ? (
                 <View style={styles.costRow}>
@@ -223,7 +223,7 @@ const RewardCard = ({
         <Typography variant="headline" size={14} weight="bold" color="on-surface" numberOfLines={1}>{item.name}</Typography>
         <TouchableOpacity 
           activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleAction}
-          style={[styles.smallBuyPill, { marginTop: 8, backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : '#F7F602') : (canAfford ? '#f8f8f8' : '#f0f0f0') }]}
+          style={[styles.smallBuyPill, { marginTop: 8, backgroundColor: isUnlocked ? (isEquipped ? '#1A1A1A' : color.yellow) : (canAfford ? '#f8f8f8' : '#f0f0f0') }]}
         >
           {isUnlocked ? (
             <View style={styles.costRow}>
@@ -234,7 +234,7 @@ const RewardCard = ({
             </View>
           ) : (
             <View style={styles.costRow}>
-              <MaterialIcons name="toll" size={14} color={canAfford ? '#F7F602' : '#999'} />
+              <MaterialIcons name="toll" size={14} color={canAfford ? color.yellow : '#999'} />
               <Typography variant="label" weight="bold" color={canAfford ? 'on-surface' : 'on-surface-variant'} size={12}>{item.cost}</Typography>
             </View>
           )}
@@ -418,7 +418,7 @@ const styles = StyleSheet.create({
   fittingRoomBadge: {
     position: 'absolute',
     bottom: -12,
-    backgroundColor: '#F7F602',
+    backgroundColor: color.yellow,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
@@ -432,13 +432,13 @@ const styles = StyleSheet.create({
   // Hero Nudge
   heroSection: {
     marginHorizontal: 24,
-    backgroundColor: '#F7F602',
+    backgroundColor: color.yellow,
     borderRadius: 24,
     padding: 24,
     overflow: 'hidden',
     position: 'relative',
     marginBottom: 24,
-    ...makeShadow(8, 16, 0.2, '#F7F602'),
+    ...makeShadow(8, 16, 0.2, color.yellow),
   },
   heroContent: {
     zIndex: 10,
@@ -496,7 +496,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
   categoryPillActive: {
-    backgroundColor: '#F7F602',
+    backgroundColor: color.yellow,
   },
   categoryPillText: {
     fontFamily: 'Montserrat_700Bold',

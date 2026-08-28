@@ -29,12 +29,17 @@ import {
   Geist_600SemiBold,
 } from '@expo-google-fonts/geist';
 import { GeistMono_400Regular } from '@expo-google-fonts/geist-mono';
+import {
+  PlayfairDisplay_500Medium,
+  PlayfairDisplay_500Medium_Italic,
+} from '@expo-google-fonts/playfair-display';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppErrorBoundary } from '@/components/AppErrorBoundary';
+import { ProOfferInboxBridge } from '@/components/ProOfferInboxBridge';
 import { AuthProvider } from '@/providers/AuthProvider';
 import { WalkthroughProvider } from '@/providers/WalkthroughContext';
 import { SubscriptionProvider } from '@/providers/SubscriptionProvider';
@@ -169,6 +174,8 @@ function RootLayoutNav() {
   // so the first painted frame is already in the brand typography.
   const [fontsLoaded] = useFonts({
     BebasNeue_400Regular,
+    PlayfairDisplay_500Medium,
+    PlayfairDisplay_500Medium_Italic,
     Montserrat_400Regular,
     Montserrat_500Medium,
     Montserrat_600SemiBold,
@@ -331,9 +338,9 @@ function RootLayoutNav() {
       if (__DEV__) {
         // Debugging breadcrumb: shows in Metro which way the gate routed.
         // eslint-disable-next-line no-console
-        console.log('[authGate]', fresh ? 'fresh signup → /onboarding/species' : 'session → /(tabs)');
+        console.log('[authGate]', fresh ? 'fresh signup → /onboarding/identity' : 'session → /(tabs)');
       }
-      router.replace(fresh ? '/onboarding/species' : '/(tabs)');
+      router.replace(fresh ? '/onboarding/identity' : '/(tabs)');
     }
   }, [session, authLoading, navState?.key, segments, router]);
 
@@ -354,6 +361,12 @@ function RootLayoutNav() {
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       {session?.user?.id && <PushNotificationsBridge userId={session.user.id} />}
       {session?.user?.id && <QuickActionsBridge />}
+      {/* Publishes the win-back offer's notification-centre entry. Mounted here
+          rather than on the paywall because the entry has to exist for someone
+          who never opens the paywall during their window — that is the whole
+          point of the second surface. Renders nothing; with the offer's kill
+          switch off it does nothing at all. */}
+      {session?.user?.id && <ProOfferInboxBridge />}
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="welcome" options={{ headerShown: false, animation: 'none' }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
@@ -375,6 +388,9 @@ function RootLayoutNav() {
         <Stack.Screen name="support/new" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="support/[id]" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="notifications" options={{ presentation: 'card', headerShown: false }} />
+        {/* The center. `notifications` above is the settings screen — the two
+            are reached from each other, never confused for each other. */}
+        <Stack.Screen name="inbox" options={{ presentation: 'card', headerShown: false }} />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>

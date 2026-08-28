@@ -23,8 +23,8 @@ interface Props {
 
 /**
  * The Walksign moment — fired once when walks confirm the sign, or when a
- * life transition brings a new one (Wonderbound graduation, Storywalker
- * arrival). Celebrated with the crest, one calm line, and a share action;
+ * life transition or sustained new walking pattern brings a new one.
+ * Celebrated with the crest, one calm line, and a share action;
  * never a toast, never repeated.
  */
 export function WalksignMomentModal({ celebration, petName, petGender, onClose }: Props) {
@@ -44,7 +44,7 @@ export function WalksignMomentModal({ celebration, petName, petGender, onClose }
   const body =
     event === 'transition'
       ? WALKSIGN_COPY[sign].manifesto
-      : buildConfirmationBody(sign, petName);
+      : buildConfirmationBody(sign, petName, celebration.validWalkCount);
 
   const handleShare = () => {
     track('walksign_shared', { sign, surface: 'modal' });

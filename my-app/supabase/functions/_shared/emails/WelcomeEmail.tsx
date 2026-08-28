@@ -117,7 +117,7 @@ const header = {
 const logoText = {
   fontSize: "28px",
   fontWeight: "bold",
-  color: "#FACC15", // Pawtchi Yellow
+  color: "#F4F600", // Pawtchi Yellow
   margin: "20px 0",
 };
 

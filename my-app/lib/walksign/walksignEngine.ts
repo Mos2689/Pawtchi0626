@@ -1,23 +1,15 @@
 /**
- * Walksign engine — pure classification and the sticky state machine.
+ * Pure Walksign classifier and sticky identity state machine.
  *
- * Three layers, no I/O:
- *   1. deriveProvisionalWalksign — a first reading from onboarding facts,
- *      so the identity exists before the first tracked walk.
- *   2. aggregateWalks + deriveWalksignFromWalks — the earned reading, folded
- *      from real walk_sessions behaviour (sniff stops, loops, repeated
- *      routes, place variety, pace).
- *   3. evaluateWalksign — the state machine. Provisional → confirmed after
- *      CONFIRM_WALK_COUNT valid walks; once confirmed, the sign changes ONLY
- *      at celebrated life transitions (puppy graduation, seniority arrival).
- *      Identity needs permanence — a rainy week must never change a dog's
- *      sign, so there is no rolling reclassification.
- *
- * Dogs only: every entry point returns null/no-change for cats.
+ * Onboarding supplies an honest provisional reading. Valid tracked walks then
+ * supply real sniff, route, pace, distance and routine evidence. Confirmation
+ * waits for enough walks and a decisive score; confirmed identities only
+ * evolve on strong sustained evidence or an explicit life-stage transition.
  */
 
 import type { LifeStage } from '../lifeStage';
-import {
+import { haversineMeters, type GeoPoint } from '../walk/geo';
+import type {
   WalkAggregates,
   WalksignAssignment,
   WalksignEvaluation,
@@ -27,54 +19,178 @@ import {
   WalksignWalkRow,
 } from './types';
 
-/** Valid tracked walks needed before the provisional sign is confirmed. */
 export const CONFIRM_WALK_COUNT = 5;
+export const CONFIRM_MIN_SCORE = 0.4;
+export const CONFIRM_MIN_MARGIN = 0.1;
+export const EVOLUTION_WALK_COUNT = 12;
+export const BROAD_EVIDENCE_WALK_COUNT = 30;
+export const EVOLUTION_MIN_DAYS = 30;
+export const EVOLUTION_MIN_SCORE = 0.6;
+export const EVOLUTION_MIN_MARGIN = 0.15;
 
 const PUPPY_STAGES: readonly LifeStage[] = ['puppy', 'junior'];
 const SENIOR_STAGES: readonly LifeStage[] = ['senior', 'geriatric'];
+const ROUTE_SAMPLE_POINTS = 16;
+const SAME_ROUTE_THRESHOLD_M = 75;
 
-const isPuppy = (s: LifeStage) => PUPPY_STAGES.includes(s);
-const isSenior = (s: LifeStage) => SENIOR_STAGES.includes(s);
-
-// ── Layer 1: the first reading ──────────────────────────────────────────────
+const isPuppy = (stage: LifeStage) => PUPPY_STAGES.includes(stage);
+const isSenior = (stage: LifeStage) => SENIOR_STAGES.includes(stage);
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 /**
- * Provisional sign from onboarding facts alone. Priority order mirrors how
- * strongly each fact predicts the walking identity: life stage is destiny
- * (for now), first-dog defines the relationship, energy fills in the rest.
+ * Provisional onboarding reading. Explicit life and relationship facts outrank
+ * the broad energy fallback. Cats never receive a Walksign.
  */
 export function deriveProvisionalWalksign(
   facts: WalksignPetFacts,
 ): WalksignAssignment | null {
   if (facts.species !== 'dog') return null;
-
   if (isPuppy(facts.lifeStage)) {
-    return { sign: 'wonderbound', status: 'provisional', reason: 'life_stage_puppy' };
+    return {
+      sign: 'wonderbound',
+      status: 'provisional',
+      reason: 'life_stage_puppy',
+    };
   }
   if (isSenior(facts.lifeStage)) {
-    return { sign: 'storywalker', status: 'provisional', reason: 'life_stage_senior' };
+    return {
+      sign: 'storywalker',
+      status: 'provisional',
+      reason: 'life_stage_senior',
+    };
   }
   if (facts.firstDog === true) {
     return { sign: 'newbond', status: 'provisional', reason: 'first_dog' };
   }
   if ((facts.householdWalkers ?? 0) >= 3) {
-    return { sign: 'packheart', status: 'provisional', reason: 'household_walkers' };
+    return {
+      sign: 'packheart',
+      status: 'provisional',
+      reason: 'household_walkers',
+    };
   }
   if (facts.activityLevel === 'sedentary') {
-    return { sign: 'softstep', status: 'provisional', reason: 'energy_gentle' };
+    return {
+      sign: 'softstep',
+      status: 'provisional',
+      reason: 'energy_gentle',
+    };
   }
-  if (facts.activityLevel === 'active' || facts.activityLevel === 'highly_active') {
-    return { sign: 'blockscout', status: 'provisional', reason: 'energy_curious' };
+  if (
+    facts.activityLevel === 'active' ||
+    facts.activityLevel === 'highly_active'
+  ) {
+    return {
+      sign: 'blockscout',
+      status: 'provisional',
+      reason: 'energy_curious',
+    };
   }
-  return { sign: 'loopkeeper', status: 'provisional', reason: 'energy_steady' };
+  return {
+    sign: 'loopkeeper',
+    status: 'provisional',
+    reason: 'energy_steady',
+  };
 }
 
-// ── Layer 2: the earned reading ─────────────────────────────────────────────
+function validRoute(route: GeoPoint[]): GeoPoint[] {
+  return route.filter(
+    (point) => Number.isFinite(point.lat) && Number.isFinite(point.lng),
+  );
+}
 
-/** Fold valid walk_sessions rows into the behavioural fingerprint. */
+/** Distance-spaced samples make comparison independent of GPS sample rate. */
+function sampleRoute(
+  route: GeoPoint[],
+  count = ROUTE_SAMPLE_POINTS,
+): GeoPoint[] {
+  const points = validRoute(route);
+  if (points.length < 2) return [];
+
+  const cumulative = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    cumulative.push(
+      cumulative[index - 1] +
+        haversineMeters(points[index - 1], points[index]),
+    );
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (!Number.isFinite(total) || total < 1) return [];
+
+  return Array.from({ length: count }, (_, sampleIndex) => {
+    const target = (sampleIndex / (count - 1)) * total;
+    let segment = 1;
+    while (
+      segment < cumulative.length - 1 &&
+      cumulative[segment] < target
+    ) {
+      segment += 1;
+    }
+    const fromDistance = cumulative[segment - 1];
+    const toDistance = cumulative[segment];
+    const span = Math.max(1e-9, toDistance - fromDistance);
+    const t = Math.max(
+      0,
+      Math.min(1, (target - fromDistance) / span),
+    );
+    const from = points[segment - 1];
+    const to = points[segment];
+    return {
+      lat: from.lat + (to.lat - from.lat) * t,
+      lng: from.lng + (to.lng - from.lng) * t,
+    };
+  });
+}
+
+/** Mean sampled separation, direction-agnostic for reverse-travelled routes. */
+export function routeSimilarityMeters(
+  a: GeoPoint[],
+  b: GeoPoint[],
+): number {
+  const sampledA = sampleRoute(a);
+  const sampledB = sampleRoute(b);
+  if (sampledA.length === 0 || sampledB.length === 0) return Infinity;
+
+  const mean = (right: GeoPoint[]) =>
+    sampledA.reduce(
+      (sum, point, index) =>
+        sum + haversineMeters(point, right[index]),
+      0,
+    ) / sampledA.length;
+  return Math.min(mean(sampledB), mean([...sampledB].reverse()));
+}
+
+/**
+ * Largest geographic route cluster divided by all drawable routes. Label
+ * pairs are retained only as a legacy fallback when no route coordinates exist.
+ */
+export function geographicRouteRepetitionRatio(
+  routes: GeoPoint[][],
+): number {
+  const usable = routes
+    .map(validRoute)
+    .filter((route) => sampleRoute(route).length > 0);
+  if (usable.length === 0) return 0;
+
+  const clusters: { representative: GeoPoint[]; count: number }[] = [];
+  for (const route of usable) {
+    const match = clusters.find(
+      (cluster) =>
+        routeSimilarityMeters(cluster.representative, route) <=
+        SAME_ROUTE_THRESHOLD_M,
+    );
+    if (match) match.count += 1;
+    else clusters.push({ representative: route, count: 1 });
+  }
+  return (
+    Math.max(...clusters.map((cluster) => cluster.count)) / usable.length
+  );
+}
+
+/** Fold valid tracked walks into the behavioral fingerprint. */
 export function aggregateWalks(rows: WalksignWalkRow[]): WalkAggregates {
-  const n = rows.length;
-  if (n === 0) {
+  const walkCount = rows.length;
+  if (walkCount === 0) {
     return {
       walkCount: 0,
       sniffPerKm: 0,
@@ -94,147 +210,208 @@ export function aggregateWalks(rows: WalksignWalkRow[]): WalkAggregates {
   let totalDuration = 0;
   let totalMoving = 0;
   let speedSum = 0;
-
   const places = new Set<string>();
-  const routeCounts = new Map<string, number>();
-  let labelledWalks = 0;
+  const labelledRouteCounts = new Map<string, number>();
   const hourBuckets = new Map<number, number>();
+  const routes: GeoPoint[][] = [];
+  let labelledWalks = 0;
 
-  for (const r of rows) {
-    totalKm += r.distanceM / 1000;
-    totalSniffs += r.pauseCount;
-    totalDuration += r.durationS;
-    totalMoving += Math.min(r.movingTimeS, r.durationS);
-    speedSum += r.avgSpeedKmh;
-    if (r.endReason === 'auto_home') loops += 1;
+  for (const row of rows) {
+    totalKm += row.distanceM / 1000;
+    totalSniffs += row.sniffCount;
+    totalDuration += row.durationS;
+    totalMoving += Math.min(row.movingTimeS, row.durationS);
+    speedSum += row.avgSpeedKmh;
+    if (row.endReason === 'auto_home') loops += 1;
 
-    for (const label of [r.startLabel, r.endLabel, r.farthestLabel]) {
+    for (const label of [
+      row.startLabel,
+      row.endLabel,
+      row.farthestLabel,
+    ]) {
       if (label) places.add(label);
     }
-    // A route is a (start → turnaround-or-end) pair; only labelled walks vote.
-    const trailing = r.farthestLabel ?? r.endLabel;
-    if (r.startLabel && trailing) {
-      labelledWalks += 1;
-      const key = `${r.startLabel}→${trailing}`;
-      routeCounts.set(key, (routeCounts.get(key) ?? 0) + 1);
-    }
 
-    const started = new Date(r.startedAt);
-    if (!Number.isNaN(started.getTime())) {
-      const bucket = Math.floor(started.getHours() / 3);
+    const trailing = row.farthestLabel ?? row.endLabel;
+    if (row.startLabel && trailing) {
+      labelledWalks += 1;
+      const key = `${row.startLabel}→${trailing}`;
+      labelledRouteCounts.set(
+        key,
+        (labelledRouteCounts.get(key) ?? 0) + 1,
+      );
+    }
+    if (validRoute(row.route).length >= 2) routes.push(row.route);
+
+    const startedAt = new Date(row.startedAt);
+    if (!Number.isNaN(startedAt.getTime())) {
+      const bucket = Math.floor(startedAt.getHours() / 3);
       hourBuckets.set(bucket, (hourBuckets.get(bucket) ?? 0) + 1);
     }
   }
 
-  const modalRoute = Math.max(0, ...routeCounts.values());
-  const modalBucket = Math.max(0, ...hourBuckets.values());
+  const geographicRepetition = geographicRouteRepetitionRatio(routes);
+  const modalLabelRoute = Math.max(0, ...labelledRouteCounts.values());
+  const routeRepetitionRatio =
+    routes.length > 0
+      ? geographicRepetition
+      : labelledWalks > 0
+        ? modalLabelRoute / labelledWalks
+        : 0;
+  const modalTimeBucket = Math.max(0, ...hourBuckets.values());
 
   return {
-    walkCount: n,
+    walkCount,
     sniffPerKm: totalKm > 0 ? totalSniffs / totalKm : 0,
-    loopRatio: loops / n,
-    routeRepetitionRatio: labelledWalks > 0 ? modalRoute / labelledWalks : 0,
+    loopRatio: loops / walkCount,
+    routeRepetitionRatio,
     distinctPlaceCount: places.size,
-    avgMovingSpeedKmh: speedSum / n,
+    avgMovingSpeedKmh: speedSum / walkCount,
     pauseTimeRatio:
-      totalDuration > 0 ? Math.max(0, totalDuration - totalMoving) / totalDuration : 0,
-    avgDistanceM: (totalKm * 1000) / n,
-    timeOfDayConsistency: modalBucket / n,
+      totalDuration > 0
+        ? Math.max(0, totalDuration - totalMoving) / totalDuration
+        : 0,
+    avgDistanceM: (totalKm * 1000) / walkCount,
+    timeOfDayConsistency: modalTimeBucket / walkCount,
   };
 }
 
-/** Per-sign behavioural scores, exported for tests and future tuning. */
 export interface WalksignScores {
   softstep: number;
   loopkeeper: number;
   blockscout: number;
   newbond: number;
+  packheart: number;
 }
 
-const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-
-/**
- * Score the behavioural signs against the fingerprint. Each component is a
- * 0–1 normalisation of one honest signal; weights keep any single noisy
- * signal from deciding a dog's identity alone.
- */
 export function scoreWalksigns(
-  agg: WalkAggregates,
+  aggregates: WalkAggregates,
   facts: WalksignPetFacts,
 ): WalksignScores {
-  // Softstep: the walk moves at the dog's pace — long pauses, gentle speed,
-  // short range. Space is part of the walk.
   const softstep =
-    0.5 * clamp01(agg.pauseTimeRatio / 0.5) +
-    0.25 * clamp01((4 - agg.avgMovingSpeedKmh) / 4) +
-    0.25 * clamp01((1500 - agg.avgDistanceM) / 1500);
+    0.5 * clamp01(aggregates.pauseTimeRatio / 0.5) +
+    0.25 * clamp01((4 - aggregates.avgMovingSpeedKmh) / 4) +
+    0.25 * clamp01((1500 - aggregates.avgDistanceM) / 1500);
 
-  // Loopkeeper: the same route, kept — repetition, real loops, a fixed hour.
   const loopkeeper =
-    0.45 * clamp01(agg.routeRepetitionRatio / 0.6) +
-    0.3 * clamp01(agg.loopRatio / 0.6) +
-    0.25 * clamp01(agg.timeOfDayConsistency / 0.7);
+    0.45 * clamp01(aggregates.routeRepetitionRatio / 0.6) +
+    0.3 * clamp01(aggregates.loopRatio / 0.6) +
+    0.25 * clamp01(aggregates.timeOfDayConsistency / 0.7);
 
-  // Blockscout: many places, nose down at every one of them.
   const blockscout =
-    0.55 * clamp01(agg.distinctPlaceCount / (agg.walkCount * 1.5)) +
-    0.45 * clamp01(agg.sniffPerKm / 4);
+    0.55 *
+      clamp01(
+        aggregates.distinctPlaceCount /
+          Math.max(1, aggregates.walkCount * 1.5),
+      ) +
+    0.45 * clamp01(aggregates.sniffPerKm / 4);
 
-  // Newbond: the first-year chapter of a first dog — the relationship IS the
-  // identity while it is being built, whatever the route looks like.
   const newbond =
     facts.firstDog === true &&
     facts.ownershipMonths != null &&
     facts.ownershipMonths < 12
-      ? 0.9
+      ? 1
       : 0;
+  const packheart = (facts.householdWalkers ?? 0) >= 3 ? 1 : 0;
 
-  return { softstep, loopkeeper, blockscout, newbond };
+  return { softstep, loopkeeper, blockscout, newbond, packheart };
 }
 
-/**
- * The earned sign. Life-stage signs always win (a puppy is Wonderbound no
- * matter how it walks); otherwise the strongest behavioural score takes it,
- * with a stable tie-break so classification is deterministic.
- */
+export interface WalksignReading {
+  sign: WalksignId;
+  score: number;
+  margin: number;
+  confident: boolean;
+  basis: 'life_stage' | 'relationship' | 'behavior';
+}
+
+export function deriveWalksignReading(
+  aggregates: WalkAggregates,
+  facts: WalksignPetFacts,
+): WalksignReading | null {
+  if (facts.species !== 'dog') return null;
+  if (isPuppy(facts.lifeStage)) {
+    return {
+      sign: 'wonderbound',
+      score: 1,
+      margin: 1,
+      confident: true,
+      basis: 'life_stage',
+    };
+  }
+  if (isSenior(facts.lifeStage)) {
+    return {
+      sign: 'storywalker',
+      score: 1,
+      margin: 1,
+      confident: true,
+      basis: 'life_stage',
+    };
+  }
+  if (
+    facts.firstDog === true &&
+    facts.ownershipMonths != null &&
+    facts.ownershipMonths < 12
+  ) {
+    return {
+      sign: 'newbond',
+      score: 1,
+      margin: 1,
+      confident: true,
+      basis: 'relationship',
+    };
+  }
+  if ((facts.householdWalkers ?? 0) >= 3) {
+    return {
+      sign: 'packheart',
+      score: 1,
+      margin: 1,
+      confident: true,
+      basis: 'relationship',
+    };
+  }
+
+  const scores = scoreWalksigns(aggregates, facts);
+  const order = ['softstep', 'loopkeeper', 'blockscout'] as const;
+  const ranked = order
+    .map((sign) => ({ sign, score: scores[sign] }))
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        order.indexOf(a.sign) - order.indexOf(b.sign),
+    );
+  const winner = ranked[0];
+  const margin = winner.score - ranked[1].score;
+  return {
+    sign: winner.sign,
+    score: winner.score,
+    margin,
+    confident:
+      winner.score >= CONFIRM_MIN_SCORE &&
+      margin >= CONFIRM_MIN_MARGIN,
+    basis: 'behavior',
+  };
+}
+
+/** Backward-compatible sign-only API for renderers and existing tests. */
 export function deriveWalksignFromWalks(
-  agg: WalkAggregates,
+  aggregates: WalkAggregates,
   facts: WalksignPetFacts,
 ): WalksignId | null {
-  if (facts.species !== 'dog') return null;
-  if (isPuppy(facts.lifeStage)) return 'wonderbound';
-  if (isSenior(facts.lifeStage)) return 'storywalker';
-
-  const scores = scoreWalksigns(agg, facts);
-  const order: (keyof WalksignScores)[] = [
-    'newbond',
-    'softstep',
-    'loopkeeper',
-    'blockscout',
-  ];
-  let best: keyof WalksignScores = 'loopkeeper';
-  let bestScore = -1;
-  for (const sign of order) {
-    if (scores[sign] > bestScore) {
-      best = sign;
-      bestScore = scores[sign];
-    }
-  }
-  return best;
+  return deriveWalksignReading(aggregates, facts)?.sign ?? null;
 }
-
-// ── Layer 3: the sticky state machine ───────────────────────────────────────
 
 export interface EvaluateWalksignArgs {
   current: { sign: WalksignId; status: WalksignStatus } | null;
   facts: WalksignPetFacts;
-  /** Aggregates over valid walks; null when walk tracking has produced none. */
   aggregates: WalkAggregates | null;
   validWalkCount: number;
+  /** Recent evidence window, normally the 12 newest valid walks. */
+  recentAggregates?: WalkAggregates | null;
+  validWalksSinceAssignment?: number;
+  daysSinceAssignment?: number;
 }
 
-/** The behavioural reading, falling back to a fresh provisional when no
- *  walks exist (walk tracking off, or a transition before the fifth walk). */
 function bestAvailableSign(
   facts: WalksignPetFacts,
   aggregates: WalkAggregates | null,
@@ -245,48 +422,78 @@ function bestAvailableSign(
   return deriveProvisionalWalksign(facts)?.sign ?? null;
 }
 
-export function evaluateWalksign(args: EvaluateWalksignArgs): WalksignEvaluation {
-  const { current, facts, aggregates, validWalkCount } = args;
+function evidence(
+  reading: WalksignReading,
+  walkCount: number,
+): NonNullable<WalksignEvaluation['change']>['evidence'] {
+  return {
+    score: Math.round(reading.score * 1000) / 1000,
+    margin: Math.round(reading.margin * 1000) / 1000,
+    walkCount,
+  };
+}
+
+export function evaluateWalksign(
+  args: EvaluateWalksignArgs,
+): WalksignEvaluation {
+  const {
+    current,
+    facts,
+    aggregates,
+    validWalkCount,
+    recentAggregates,
+    validWalksSinceAssignment = 0,
+    daysSinceAssignment = 0,
+  } = args;
   if (facts.species !== 'dog') return { change: null };
 
-  // No sign yet → the first reading.
   if (!current) {
     const assignment = deriveProvisionalWalksign(facts);
-    return assignment ? { change: { assignment, event: 'assigned' } } : { change: null };
+    return assignment
+      ? { change: { assignment, event: 'assigned' } }
+      : { change: null };
   }
 
   if (current.status === 'provisional') {
-    // Enough real walks → confirm. The confirmed sign is the EARNED one,
-    // which may differ from the first reading — that correction is the
-    // moment's whole story ("their walks said otherwise").
     if (validWalkCount >= CONFIRM_WALK_COUNT && aggregates) {
-      const sign = deriveWalksignFromWalks(aggregates, facts) ?? current.sign;
-      return {
-        change: {
-          assignment: { sign, status: 'confirmed', reason: 'confirmed_by_walks' },
-          event: 'confirmed',
-        },
-      };
+      const reading = deriveWalksignReading(aggregates, facts);
+      if (reading?.confident) {
+        return {
+          change: {
+            assignment: {
+              sign: reading.sign,
+              status: 'confirmed',
+              reason: 'confirmed_by_walks',
+            },
+            event: 'confirmed',
+            evidence: evidence(reading, validWalkCount),
+          },
+        };
+      }
     }
-    // A provisional sign tracks life-stage crossings quietly (no ceremony —
-    // nothing was confirmed yet). Other provisional facts never reshuffle it.
+
     if (isSenior(facts.lifeStage) && current.sign !== 'storywalker') {
       return {
         change: {
-          assignment: { sign: 'storywalker', status: 'provisional', reason: 'life_stage_senior' },
+          assignment: {
+            sign: 'storywalker',
+            status: 'provisional',
+            reason: 'life_stage_senior',
+          },
           event: 'assigned',
         },
       };
     }
     if (!isPuppy(facts.lifeStage) && current.sign === 'wonderbound') {
-      const sign = bestAvailableSign(
-        facts,
-        aggregates,
-      );
+      const sign = bestAvailableSign(facts, aggregates);
       if (sign && sign !== 'wonderbound') {
         return {
           change: {
-            assignment: { sign, status: 'provisional', reason: 'life_stage_adult' },
+            assignment: {
+              sign,
+              status: 'provisional',
+              reason: 'life_stage_adult',
+            },
             event: 'assigned',
           },
         };
@@ -295,13 +502,17 @@ export function evaluateWalksign(args: EvaluateWalksignArgs): WalksignEvaluation
     return { change: null };
   }
 
-  // Confirmed: sticky. Only life transitions move it, and each fires once.
+  // Explicit life-stage transitions always outrank behavioral evolution.
   if (current.sign === 'wonderbound' && !isPuppy(facts.lifeStage)) {
     const sign = bestAvailableSign(facts, aggregates);
     if (sign && sign !== 'wonderbound') {
       return {
         change: {
-          assignment: { sign, status: 'confirmed', reason: 'wonderbound_graduation' },
+          assignment: {
+            sign,
+            status: 'confirmed',
+            reason: 'wonderbound_graduation',
+          },
           event: 'transition',
           transitionKind: 'wonderbound_graduation',
         },
@@ -313,11 +524,47 @@ export function evaluateWalksign(args: EvaluateWalksignArgs): WalksignEvaluation
   if (current.sign !== 'storywalker' && isSenior(facts.lifeStage)) {
     return {
       change: {
-        assignment: { sign: 'storywalker', status: 'confirmed', reason: 'storywalker_arrival' },
+        assignment: {
+          sign: 'storywalker',
+          status: 'confirmed',
+          reason: 'storywalker_arrival',
+        },
         event: 'transition',
         transitionKind: 'storywalker_arrival',
       },
     };
+  }
+
+  const evolutionEligible =
+    validWalksSinceAssignment >= EVOLUTION_WALK_COUNT &&
+    daysSinceAssignment >= EVOLUTION_MIN_DAYS &&
+    aggregates &&
+    recentAggregates;
+  if (evolutionEligible) {
+    const broad = deriveWalksignReading(aggregates, facts);
+    const recent = deriveWalksignReading(recentAggregates, facts);
+    const sustained =
+      broad &&
+      recent &&
+      broad.sign === recent.sign &&
+      broad.sign !== current.sign &&
+      broad.confident &&
+      recent.score >= EVOLUTION_MIN_SCORE &&
+      recent.margin >= EVOLUTION_MIN_MARGIN;
+    if (sustained && recent) {
+      return {
+        change: {
+          assignment: {
+            sign: recent.sign,
+            status: 'confirmed',
+            reason: 'behavioral_evolution',
+          },
+          event: 'transition',
+          transitionKind: 'behavioral_evolution',
+          evidence: evidence(recent, recentAggregates.walkCount),
+        },
+      };
+    }
   }
 
   return { change: null };

@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { color, shadow } from '../constants/design';
 import { useSubscription } from '../hooks/useSubscription';
+import { armWalkStart } from '../lib/walk/walkStartIntent';
 
 // Matches the tabBarStyle height base in app/(tabs)/_layout.tsx.
 const TAB_BAR_BASE = 60;
@@ -31,6 +32,7 @@ export function WalkTabDock() {
 
   const onPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    if (hasFullAccess) armWalkStart();
     router.push((hasFullAccess ? '/walk' : '/paywall') as any);
   }, [router, hasFullAccess]);
 

@@ -21,10 +21,12 @@ import { getLocalYMD } from './dateUtils';
 import { waterPerSessionMl } from './hydration';
 import { validateWeeklyLossRate } from './weightLossRate';
 import { validateWeight } from './weightBounds';
+import type { WeightSaveStage } from './weightSaveStages';
 import {
   createWeightAssessment,
   canAssessmentSupersede,
   evaluateWeightPlan,
+  isAssessableWeightKg,
   type WeightAssessmentSource,
   type WeightMeasurementEvidence,
   type WeightMeasurementSource,
@@ -46,6 +48,18 @@ export interface RecordWeightMeasurementInput {
   measuredAt?: string;
   sourceEventId?: string;
   confirmUnusual?: boolean;
+  /**
+   * Reports which part of the save is running, so a caller can say so.
+   *
+   * Optional and side-effect free — every existing call site keeps working
+   * untouched. It exists because most of this function's wall-clock time is
+   * spent in the schedule rebuild at the end (an AI-backed edge function), and
+   * without this the UI cannot tell that apart from writing one number.
+   *
+   * Fired when work BEGINS, not when it finishes, so the label on screen always
+   * names what is happening right now.
+   */
+  onStage?: (stage: WeightSaveStage) => void;
 }
 
 export interface RecordWeightAssessmentInput {
@@ -55,6 +69,7 @@ export interface RecordWeightAssessmentInput {
   assessedAt?: string;
   assessmentWeightKg?: number;
 }
+
 
 export type RecordWeightMeasurementResult =
   | {
@@ -283,6 +298,10 @@ export async function recordWeightMeasurement(
     };
   }
 
+  // Reported after validation, so a soft-confirmation bounce never flashes a
+  // "saving" step for work that has not started.
+  input.onStage?.('saving');
+
   const measuredAt = input.measuredAt ?? new Date().toISOString();
   const sourceEventId = eventId({ ...input, measuredAt });
   const { error: insertError } = await supabase
@@ -331,6 +350,8 @@ export async function recordWeightMeasurement(
     new Date(measuredAt).getTime() <
     new Date(latest.loggedAt).getTime();
   const planPet = asPlanPet(input.pet, latest.weightKg);
+  input.onStage?.('recalculating');
+
   const evaluation = evaluateWeightPlan(planPet, measurements);
 
   let targetCalories = calculatePlanCalories(
@@ -436,10 +457,14 @@ export async function recordWeightMeasurement(
     ) >= 0.3;
   const planChanged =
     evaluation.status !== input.pet.weight_plan_status;
-  const scheduleRegenerated =
-    meaningfulDelta || priorGoal !== nextGoal || planChanged
-      ? await regenerateAfterPlanChange(updatedPet)
-      : false;
+  // The expensive one, and the only conditional one: an AI-backed schedule
+  // regeneration that runs solely when the change is big enough to matter.
+  // Announced inside the branch so the UI never shows a step that is skipped.
+  const needsRebuild = meaningfulDelta || priorGoal !== nextGoal || planChanged;
+  if (needsRebuild) input.onStage?.('rebuilding');
+  const scheduleRegenerated = needsRebuild
+    ? await regenerateAfterPlanChange(updatedPet)
+    : false;
 
   track('weight_measurement_recorded', {
     source: input.source,
@@ -490,6 +515,18 @@ export async function recordWeightAssessment(
     input.assessmentWeightKg != null &&
     (!Number.isFinite(input.assessmentWeightKg) ||
       input.assessmentWeightKg <= 0)
+  ) {
+    throw new Error('Assessment weight must be a positive number.');
+  }
+  // The same rule, applied to the weight that will ACTUALLY be written. Only
+  // the explicit parameter was checked above, so a pet still carrying the
+  // walk-first onboarding sentinel (0) passed validation here and failed on the
+  // table's `assessment_weight_kg > 0` constraint instead — turning a profile
+  // state the app already knows how to handle into a database error.
+  if (
+    !isAssessableWeightKg(
+      input.assessmentWeightKg ?? input.pet.current_weight_kg,
+    )
   ) {
     throw new Error('Assessment weight must be a positive number.');
   }

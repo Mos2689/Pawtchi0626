@@ -46,6 +46,58 @@ const MIRROR_GROUPS = [
     edgeDir: root('supabase', 'functions', '_shared', 'email'),
     files: ['copy.ts', 'rules.ts', 'template.ts', 'compositions.ts'],
   },
+  {
+    // Spots: the OSM tag rules and the normalizer.
+    //
+    // Mirrored for the same reason as the notification engine, and against the
+    // same specific failure: the query and the classifier MUST agree about
+    // which tags matter. If they drift you fetch a category the classifier
+    // discards, or classify one you never asked for — and both fail silently,
+    // as an empty map rather than an error.
+    //
+    // Only the server-side half is listed. copy/filters/cluster/rank/directions
+    // are client-only by design: the server never knows the user's real
+    // position, so it cannot rank or measure, and it renders nothing.
+    name: 'spots',
+    appDir: root('lib', 'spots'),
+    edgeDir: root('supabase', 'functions', '_shared', 'spots'),
+    files: [
+      'types.ts',
+      'osmTags.ts',
+      'classify.ts',
+      'normalize.ts',
+      'dedupe.ts',
+      'cellKey.ts',
+      'overpassQuery.ts',
+    ],
+  },
+  {
+    // The pro-offer rule engine. Same reasoning as the notification rules, with
+    // money attached: the sweep decides who gets a permanently discounted
+    // subscription, and a forked copy of those thresholds drifting from the
+    // tested ones would be discovered as a revenue number, months later.
+    //
+    // Only the pure half is listed. `client.ts` is Supabase + AsyncStorage and
+    // `copy.ts` renders a screen — the server has neither and needs neither.
+    name: 'proOffer',
+    appDir: root('lib', 'proOffer'),
+    edgeDir: root('supabase', 'functions', '_shared', 'proOffer'),
+    files: ['types.ts', 'eligibility.ts'],
+  },
+  {
+    // Carried only because lib/spots/dedupe.ts measures with haversineMeters.
+    // Mirroring the one function rather than inlining a second copy of the
+    // maths keeps a single definition of "how far apart are these" in a
+    // codebase where that question also decides walk distance.
+    //
+    // Sibling of _shared/spots/ so dedupe's `../walk/geo` import resolves
+    // identically in both runtimes — the same arrangement the notification and
+    // email mirrors rely on.
+    name: 'walk',
+    appDir: root('lib', 'walk'),
+    edgeDir: root('supabase', 'functions', '_shared', 'walk'),
+    files: ['geo.ts'],
+  },
 ];
 
 // Retained so the existing copy.test.ts mirror assertions keep working

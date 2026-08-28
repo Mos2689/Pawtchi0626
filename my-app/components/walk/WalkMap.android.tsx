@@ -12,11 +12,12 @@
  * Expo Go we render a friendly placeholder.
  */
 
-import React, { useMemo } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Constants from 'expo-constants';
 import { color, radius, space, type as typeTokens } from '../../constants/design';
 import type { GeoPoint } from '../../lib/walk/geo';
+import { cameraBounds, cameraFromBounds } from '../../lib/walk/mapCamera';
 import { OSM_ATTRIBUTION, OSM_STYLE } from '../../lib/walk/osmStyle';
 import type { WalkMapProps } from './WalkMap';
 
@@ -48,6 +49,25 @@ if (Constants.appOwnership !== 'expo') {
   }
 }
 
+/**
+ * Whether a real basemap can be drawn at all — ground truth, not an environment
+ * guess. Callers that want to render their own surface instead of this file's
+ * "not in Expo Go" placeholder (the Home canopy, which has an SVG trace to fall
+ * back to) check this rather than re-sniffing appOwnership, which is deprecated
+ * and already known to be unreliable on its own.
+ */
+export const NATIVE_MAP_AVAILABLE = MapLibre !== null;
+
+/**
+ * MapLibre reports the region continuously while it is being dragged
+ * (`onRegionIsChanging`), not only when it settles.
+ *
+ * So an overlay drawn from `onCameraChange` tracks the map through the whole
+ * gesture here, and callers do not need to hide it mid-drag the way the iOS
+ * path does.
+ */
+export const MAP_CAMERA_STREAMS = true;
+
 function boundsOf(path: GeoPoint[]): { ne: [number, number]; sw: [number, number] } | null {
   if (path.length === 0) return null;
   let minLat = Infinity;
@@ -63,7 +83,48 @@ function boundsOf(path: GeoPoint[]): { ne: [number, number]; sw: [number, number
   return { ne: [maxLng, maxLat], sw: [minLng, minLat] };
 }
 
-export default function WalkMap({ path, currentPosition, mode, style, interactive = true }: WalkMapProps) {
+/** Framing for a place we can only point at, not trace: a block or two across. */
+const PLACE_ZOOM = 16;
+
+/**
+ * Backdrop framing — wider than a walk card's, on purpose.
+ *
+ * A summary card is about ONE walk, so it frames that walk tightly. Home's
+ * canopy is about where this dog lives, and at card zoom it filled the hero
+ * with two streets, which reads as a stretched close-up rather than a place.
+ *
+ * MapLibre frames by bounds rather than a zoom number, so the way to pull back
+ * from a route here is to inflate the padding around it — same intent as the
+ * iOS side's zoom subtraction, expressed in the units this SDK gives us.
+ */
+const BACKDROP_PLACE_ZOOM = 14;
+const BACKDROP_PADDING = 190;
+
+export default function WalkMap({
+  path,
+  currentPosition,
+  center,
+  mode,
+  style,
+  interactive = true,
+  quiet = false,
+  spots = [],
+  camera,
+  onCameraChange,
+}: WalkMapProps) {
+  /**
+   * The map's own pixel size, measured rather than assumed — the bounds handed
+   * to MapLibre and the camera read back out of it are both defined against it.
+   */
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const onLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setSize(prev =>
+      prev && Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1
+        ? prev
+        : { width, height },
+    );
+  }, []);
   const lineGeoJson = useMemo(
     () => ({
       type: 'Feature' as const,
@@ -76,15 +137,34 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
     [path],
   );
 
+  // Suppressed as a backdrop — Home draws its own flat pastel dots over the map
+  // and a second start marker underneath them is just clutter.
   const startPointGeoJson = useMemo(() => {
-    if (path.length === 0) return null;
+    if (path.length === 0 || quiet) return null;
     const start = path[0];
     return {
       type: 'Feature' as const,
       properties: {},
       geometry: { type: 'Point' as const, coordinates: [start.lng, start.lat] },
     };
-  }, [path]);
+  }, [path, quiet]);
+
+  // Spot pins. One source with the colour baked onto each feature, read back by
+  // the layer via ['get', 'color'] — a layer per tone would mean a new
+  // ShapeSource every time the palette grew. Radius is in PIXELS here (unlike
+  // the iOS circle API's metres), so pins hold their size at any zoom.
+  const spotsGeoJson = useMemo(() => {
+    if (spots.length === 0) return null;
+    return {
+      type: 'FeatureCollection' as const,
+      features: spots.map(s => ({
+        type: 'Feature' as const,
+        id: s.id,
+        properties: { color: color.marker[s.tone] },
+        geometry: { type: 'Point' as const, coordinates: [s.lng, s.lat] },
+      })),
+    };
+  }, [spots]);
 
   // Our own puck — drawn from the walk's GPS stream, no second location engine.
   const puckGeoJson = useMemo(() => {
@@ -100,29 +180,99 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
   }, [mode, currentPosition]);
 
   const cameraStop = useMemo(() => {
-    if (mode === 'summary') {
-      const b = boundsOf(path);
-      if (!b) return null;
+    // An explicit camera wins outright — the caller is drawing its own overlay
+    // against these exact numbers, so the map must not second-guess them.
+    //
+    // Framed by BOUNDS rather than by a zoom number, deliberately. "Zoom level"
+    // is not one thing: Web Mercator counts against a 256px world tile and
+    // MapLibre against a 512px one, so the same number means two different
+    // scales and picking wrong misplaces every pin by a factor of two. The
+    // corners of the viewport are unambiguous — `cameraBounds` derives exactly
+    // the rectangle `projectPoint` is about to draw against, so the map and the
+    // overlay agree without either side naming a convention.
+    if (camera && size) {
+      const { ne, sw } = cameraBounds(camera, size.width, size.height);
       return {
         bounds: {
-          ne: b.ne,
-          sw: b.sw,
-          paddingLeft: SUMMARY_PADDING,
-          paddingRight: SUMMARY_PADDING,
-          paddingTop: SUMMARY_PADDING,
-          paddingBottom: SUMMARY_PADDING,
+          ne: [ne.lng, ne.lat] as [number, number],
+          sw: [sw.lng, sw.lat] as [number, number],
+          paddingLeft: 0,
+          paddingRight: 0,
+          paddingTop: 0,
+          paddingBottom: 0,
         },
         animationDuration: 0,
       };
     }
-    const target = currentPosition ?? path[path.length - 1] ?? null;
+    // Before the first layout there is no viewport to derive corners from.
+    if (camera) {
+      return {
+        centerCoordinate: [camera.center.lng, camera.center.lat] as [number, number],
+        zoomLevel: camera.zoom,
+        animationDuration: 0,
+      };
+    }
+    if (mode === 'summary') {
+      // A traceable route frames itself; anything shorter falls back to the
+      // caller's place, so the map still shows the right streets.
+      const b = path.length >= 2 ? boundsOf(path) : null;
+      if (b) {
+        const pad = quiet ? BACKDROP_PADDING : SUMMARY_PADDING;
+        return {
+          bounds: {
+            ne: b.ne,
+            sw: b.sw,
+            paddingLeft: pad,
+            paddingRight: pad,
+            paddingTop: pad,
+            paddingBottom: pad,
+          },
+          animationDuration: 0,
+        };
+      }
+      const place = path[0] ?? center ?? null;
+      if (!place) return null;
+      return {
+        centerCoordinate: [place.lng, place.lat] as [number, number],
+        zoomLevel: quiet ? BACKDROP_PLACE_ZOOM : PLACE_ZOOM,
+        animationDuration: 0,
+      };
+    }
+    const target = currentPosition ?? path[path.length - 1] ?? center ?? null;
     if (!target) return null;
     return {
       centerCoordinate: [target.lng, target.lat] as [number, number],
       zoomLevel: LIVE_ZOOM,
       animationDuration: 600,
     };
-  }, [mode, path, currentPosition]);
+  }, [mode, path, currentPosition, center, quiet, camera, size]);
+
+  /**
+   * The region MapLibre is showing, translated back into projector units.
+   *
+   * Read from `visibleBounds` rather than from the payload's `zoomLevel` for
+   * the same reason we write bounds: the corners are a measurement, the zoom
+   * number is a convention. Longitude alone fixes the scale — it is linear in
+   * Mercator — so this needs no latitude term and no aspect-ratio assumption.
+   */
+  const handleRegion = useCallback(
+    (payload: {
+      properties?: { visibleBounds?: [number[], number[]] };
+    }) => {
+      if (!onCameraChange || !size) return;
+      const bounds = payload?.properties?.visibleBounds;
+      if (!bounds || bounds.length !== 2) return;
+      const [ne, sw] = bounds;
+      if (!Number.isFinite(ne?.[0]) || !Number.isFinite(sw?.[0])) return;
+      const next = cameraFromBounds(
+        { lat: ne[1], lng: ne[0] },
+        { lat: sw[1], lng: sw[0] },
+        size.width,
+      );
+      if (next) onCameraChange(next);
+    },
+    [onCameraChange, size],
+  );
 
   if (!MapLibre) {
     return <MapFallback style={style} />;
@@ -131,9 +281,14 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
   const { MapView, Camera, ShapeSource, LineLayer, CircleLayer } = MapLibre;
 
   return (
-    <View style={[styles.container, style]}>
+    <View style={[styles.container, style]} onLayout={onLayout}>
       <MapView
         style={StyleSheet.absoluteFill}
+        // Both, on purpose. `isChanging` is what keeps an overlay glued to the
+        // map through a drag; `didChange` is the one that fires after a
+        // programmatic move or a fling settles, which `isChanging` can miss.
+        onRegionIsChanging={onCameraChange ? handleRegion : undefined}
+        onRegionDidChange={onCameraChange ? handleRegion : undefined}
         mapStyle={OSM_STYLE as unknown as object}
         logoEnabled={false}
         attributionEnabled={false}
@@ -147,13 +302,27 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
       >
         {cameraStop && <Camera {...cameraStop} />}
 
+        {/* Two strokes on one source: a navy casing with the brand yellow on
+            top. The route is yellow everywhere in Pawtchi, but yellow does not
+            hold as ink on a light ground — on pale OSM tiles a bare yellow line
+            is close to invisible. The casing gives it an edge to read against
+            without changing what colour the route is. */}
         {path.length >= 2 && (
           <ShapeSource id="walk-line" shape={lineGeoJson as any}>
             <LineLayer
-              id="walk-line-layer"
+              id="walk-line-casing"
               style={{
                 lineColor: color.navy,
-                lineWidth: 5,
+                lineWidth: 7.5,
+                lineJoin: 'round',
+                lineCap: 'round',
+              }}
+            />
+            <LineLayer
+              id="walk-line-layer"
+              style={{
+                lineColor: color.yellow,
+                lineWidth: 4.5,
                 lineJoin: 'round',
                 lineCap: 'round',
               }}
@@ -175,6 +344,20 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
           </ShapeSource>
         )}
 
+        {spotsGeoJson && (
+          <ShapeSource id="walk-spots" shape={spotsGeoJson as any}>
+            <CircleLayer
+              id="walk-spots-layer"
+              style={{
+                circleRadius: 7,
+                circleColor: ['get', 'color'],
+                circleStrokeColor: color.surface,
+                circleStrokeWidth: 2.5,
+              }}
+            />
+          </ShapeSource>
+        )}
+
         {puckGeoJson && (
           <ShapeSource id="walk-puck" shape={puckGeoJson as any}>
             <CircleLayer
@@ -189,6 +372,12 @@ export default function WalkMap({ path, currentPosition, mode, style, interactiv
           </ShapeSource>
         )}
       </MapView>
+
+      {/* OSM tiles are raster images, so there is no POI layer to switch off the
+          way Apple Maps has. A light wash is the equivalent move: it lifts the
+          whole basemap towards paper so app chrome reads over it, without
+          hiding the streets. */}
+      {quiet && <View style={styles.quietWash} pointerEvents="none" />}
 
       <View style={styles.attributionPill} pointerEvents="none">
         <Text style={styles.attributionText}>{OSM_ATTRIBUTION}</Text>
@@ -230,6 +419,10 @@ const styles = StyleSheet.create({
     ...typeTokens.body,
     color: color.slateMuted,
     textAlign: 'center',
+  },
+  quietWash: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: color.basemapWash,
   },
   attributionPill: {
     position: 'absolute',

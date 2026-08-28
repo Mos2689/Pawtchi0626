@@ -3,6 +3,7 @@ export const FIREBASE_EVENT_NAMES = [
   'pet_profile_completed',
   'calorie_goal_created',
   'first_food_logged',
+  'first_walk_completed',
   'activity_plan_created',
   'trial_started',
   'purchase',
@@ -29,6 +30,10 @@ const PARAMETERLESS_EVENTS = new Set<FirebaseEventName>([
   'pet_profile_completed',
   'calorie_goal_created',
   'first_food_logged',
+  // Deliberately parameterless. A walk's own measurements — distance, duration,
+  // pace, and anything derived from its route — are location data about a
+  // household, and none of it is needed to count an activation.
+  'first_walk_completed',
   'activity_plan_created',
   'trial_started',
 ]);
@@ -82,7 +87,8 @@ export function sanitizeFirebaseEvent(
 
 export type ProductAnalyticsEvent =
   | 'auth_signup_succeeded'
-  | 'onboarding_completed';
+  | 'onboarding_completed'
+  | 'onboarding_lightweight_completed';
 
 export type FirebaseDispatch = {
   event: FirebaseEventName;
@@ -99,6 +105,21 @@ export function firebaseEventsForProductEvent(event: string): FirebaseDispatch[]
         { event: 'pet_profile_completed', params: {} },
         { event: 'calorie_goal_created', params: {} },
       ];
+    /**
+     * Walk-first onboarding — a dog owner leaving after step two.
+     *
+     * Emits `pet_profile_completed` because the documented boundary for that
+     * event is "the onboarding `pets` insert succeeds", and this path satisfies
+     * it: `createLightweightPet` writes the row. Since the walk-first pivot made
+     * this the default route for dogs, leaving it unmapped meant the moment most
+     * new owners actually activate reached Google Ads as nothing at all.
+     *
+     * `calorie_goal_created` is deliberately NOT emitted here. This path sets no
+     * `target_daily_calories` — the health profile is deferred behind
+     * per-feature gates — so claiming a calorie goal was created would be false.
+     */
+    case 'onboarding_lightweight_completed':
+      return [{ event: 'pet_profile_completed', params: {} }];
     default:
       return [];
   }

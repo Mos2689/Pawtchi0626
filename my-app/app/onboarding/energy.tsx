@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
 import Animated, {
@@ -9,6 +9,7 @@ import Animated, {
 
 import { color, font, radius, space, motion, makeShadow } from '../../constants/design';
 import { usePetStore, ActivityLevel } from '../../store/usePetStore';
+import { forwardCompletionParams } from '../../lib/onboarding/completionMode';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { SelectableChip } from '../../components/SelectableChip';
 import { OnboardingHeader } from '../../components/OnboardingHeader';
@@ -42,6 +43,7 @@ const ACTIVITY_OPTIONS: {
 // likely answer, and we *tell* the user we did it so the intelligence is felt.
 export default function EnergyScreen() {
   const router = useRouter();
+  const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
   useOnboardingStepTracking('energy');
 
   const { species, name, breed, activityLevel, setActivityLevel, imageUri } = usePetStore();
@@ -101,7 +103,7 @@ export default function EnergyScreen() {
 
   const handleContinue = () => {
     trackStepCompleted('energy', { level: activityLevel, prefilled: prefilledFromBreed });
-    router.push('/onboarding/allergies' as any);
+    router.push({ pathname: '/onboarding/allergies', params: forwardCompletionParams(completionParams) } as never);
   };
 
   return (

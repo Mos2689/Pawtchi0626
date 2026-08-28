@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, Alert } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import {
+  forwardCompletionParams,
+  isCompletionMode,
+} from '../../lib/onboarding/completionMode';
 import { MaterialIcons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
 import Animated, {
@@ -45,10 +49,14 @@ import { deriveProvisionalWalksign } from '../../lib/walksign/walksignEngine';
 // Step 6 of 6 — set goal. The last input screen before the plan reveal.
 export default function GoalScreen() {
   const router = useRouter();
+  const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
+  const completing = isCompletionMode(completionParams);
   useOnboardingStepTracking('goal');
 
   const { user } = useAuth();
   const petData = usePetStore();
+  // No resetForm here on purpose: `reveal` reads the plan summary this screen
+  // writes into the store, and clears it once the owner has seen it.
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
   // Severe cases (BCS 8/9 obesity OR severe underweight per the estimator)
@@ -359,12 +367,48 @@ export default function GoalScreen() {
       species: speciesVal,
       lifeStage,
       firstDog: petData.firstDog,
+      householdWalkers: petData.householdWalkers,
       ownershipMonths: 0,
       activityLevel: petData.activityLevel || 'normal',
     });
     const nowIso = new Date().toISOString();
+    const onboardingAssessmentSource =
+      petData.bcsSource === 'guided_check'
+        ? 'guided_check'
+        : petData.bcsSource === 'vet_report'
+          ? 'vet_report'
+          : 'onboarding';
+    const hasAcceptedBodyAssessment =
+      petData.bodyConditionScore != null;
+    const assessedIdeal =
+      hasAcceptedBodyAssessment && estimate?.mode === 'ok'
+        ? estimate.finalIdealKg ?? null
+        : null;
+    const initialPlanStatus =
+      estimate?.mode === 'growth'
+        ? 'growth'
+        : petData.reproductiveStatus === 'pregnant' ||
+            petData.reproductiveStatus === 'nursing'
+          ? 'supervised'
+          : assessedIdeal == null
+            ? 'needs_reassessment'
+            : Math.abs(weightVal - assessedIdeal) /
+                  Math.max(assessedIdeal, 0.001) <=
+                0.03
+              ? 'maintenance'
+              : 'active';
 
-    const { error } = await supabase.from('pets').insert({
+    // ── Create or enrich ──────────────────────────────────────────────────
+    // Dogs now get a row after step two and enter the app, so by the time they
+    // reach this screen (through the health completion flow) the pet already
+    // exists and this is an UPDATE. Cats, and any dog taken through the full
+    // flow, still arrive here with no row and this INSERTs.
+    //
+    // The column map below is identical either way — writing it once is what
+    // stops the two paths drifting into different profiles.
+    const existingPetId = useActivePetStore.getState().activePet?.id ?? null;
+
+    const petRow = {
       owner_id: user.id,
       name: petData.name || 'My Pet',
       species: speciesVal,
@@ -376,6 +420,33 @@ export default function GoalScreen() {
       is_neutered: petData.isNeutered,
       activity_level: petData.activityLevel || 'normal',
       target_daily_calories: dailyKcal,
+      ideal_weight_kg: assessedIdeal,
+      healthy_band_low_kg: hasAcceptedBodyAssessment
+        ? estimate?.band?.low ?? null
+        : null,
+      healthy_band_high_kg: hasAcceptedBodyAssessment
+        ? estimate?.band?.high ?? null
+        : null,
+      weight_assessment_kg: hasAcceptedBodyAssessment
+        ? weightVal
+        : null,
+      weight_assessment_bcs: hasAcceptedBodyAssessment
+        ? petData.bodyConditionScore
+        : null,
+      weight_assessed_at: hasAcceptedBodyAssessment
+        ? nowIso
+        : null,
+      weight_assessment_source: hasAcceptedBodyAssessment
+        ? onboardingAssessmentSource
+        : null,
+      weight_assessment_confidence: hasAcceptedBodyAssessment
+        ? estimate?.confidence ?? null
+        : null,
+      weight_plan_status: initialPlanStatus,
+      weight_plan_revision: hasAcceptedBodyAssessment ? 1 : 0,
+      current_weight_logged_at: nowIso,
+      weight_journey_start_kg: weightVal,
+      weight_journey_started_at: nowIso,
       allergies: petData.allergies.length > 0 ? petData.allergies : null,
       body_condition_score: petData.bodyConditionScore,
       // Stamp the BCS recording time so the milestone loop can detect
@@ -428,9 +499,78 @@ export default function GoalScreen() {
               { sign: walksign.sign, status: walksign.status, reason: walksign.reason, at: nowIso },
             ],
             first_dog: petData.firstDog,
+            ...(petData.householdWalkers != null
+              ? { household_walkers: petData.householdWalkers }
+              : {}),
           }
         : {}),
-    });
+    };
+
+    const { data: createdPet, error: petInsertError } = existingPetId
+      ? await supabase
+          .from('pets')
+          .update(petRow)
+          .eq('id', existingPetId)
+          .select('id')
+          .single()
+      : await supabase.from('pets').insert(petRow).select('id').single();
+
+    let error = petInsertError;
+    if (!error && createdPet?.id && petData.bodyConditionScore != null) {
+      const { error: assessmentError } = await supabase
+        .from('weight_plan_assessments')
+        .insert({
+          pet_id: createdPet.id,
+          revision: 1,
+          source: onboardingAssessmentSource,
+          assessed_at: nowIso,
+          assessment_weight_kg: weightVal,
+          bcs: petData.bodyConditionScore,
+          breed: petData.breed || null,
+          sex: petData.gender,
+          age_months: totalAgeMonths,
+          life_stage: lifeStage,
+          reproductive_status: petData.reproductiveStatus,
+          ideal_weight_kg: assessedIdeal,
+          target_weight_kg: targetWeight,
+          healthy_band_low_kg: estimate?.band?.low ?? null,
+          healthy_band_high_kg: estimate?.band?.high ?? null,
+          plan_status: initialPlanStatus,
+          confidence: estimate?.confidence ?? null,
+          previous_ideal_weight_kg: null,
+          ideal_change_pct: null,
+          superseded_revision: null,
+          is_active: true,
+          input_snapshot: {
+            current_weight_kg: weightVal,
+            body_condition_score: petData.bodyConditionScore,
+            breed: petData.breed || null,
+            gender: petData.gender,
+            age_months: totalAgeMonths,
+          },
+        });
+      error = assessmentError;
+    }
+    if (!error && createdPet?.id) {
+      const { error: logError } = await supabase
+        .from('weight_logs')
+        .upsert(
+          {
+            pet_id: createdPet.id,
+            weight_kg: weightVal,
+            notes: 'Onboarding baseline',
+            source: 'manual',
+            measurement_source: 'onboarding',
+            logged_at: nowIso,
+            source_event_id: `onboarding:${createdPet.id}:baseline`,
+          },
+          {
+            onConflict: 'pet_id,source_event_id',
+            ignoreDuplicates: true,
+          },
+        );
+      error = logError;
+    }
 
     setLoading(false);
 
@@ -466,14 +606,36 @@ export default function GoalScreen() {
         goal: deriveGoal(weightVal, targetWeight, bcs),
         bcs_source: petData.bcsSource ?? null,
       });
-      track('onboarding_completed', {
-        daily_kcal: dailyKcal,
-        target_weight_kg: targetWeight,
-      });
+      // ── Completing a profile is not completing onboarding ────────────────
+      // A dog owner arriving here from a health gate finished onboarding weeks
+      // ago. Firing `onboarding_completed` again would double-count them and
+      // quietly corrupt the signup funnel, so the two paths report separately.
+      //
+      // They still see the reveal. It is where the plan they just built is
+      // actually explained — the kcal target, the portion plate, the weight
+      // journey, the breed watch-outs. Skipping it would mean answering six
+      // screens of questions and being dropped back with nothing to show for
+      // it, which is the opposite of the trade the gate offered them.
+      if (completing) {
+        track('health_gate_completed', {
+          feature: completionParams.feature ?? 'unknown',
+          daily_kcal: dailyKcal,
+        });
+      } else {
+        track('onboarding_completed', {
+          daily_kcal: dailyKcal,
+          target_weight_kg: targetWeight,
+        });
+      }
 
       // The reveal screen owns the climax — it reads the plan summary from
-      // the store, plays the labour-illusion beat, and continues to preview-home.
-      router.replace('/onboarding/reveal' as any);
+      // the store, plays the labour-illusion beat, and continues onward
+      // (opening the paywall on the way for non-Pro users). The store must NOT
+      // be reset here: reveal reads the summary goal just wrote into it.
+      router.replace({
+        pathname: '/onboarding/reveal',
+        params: forwardCompletionParams(completionParams),
+      } as never);
     }
   };
 
@@ -685,7 +847,16 @@ export default function GoalScreen() {
               onPress={() => {
                 track('ui_button_tapped', { button_name: 'bcs_recheck', screen: 'goal' });
                 if (router.canGoBack()) router.back();
-                else router.push('/onboarding/body-check' as any);
+                // Fallback for a deep-linked arrival with nothing to go back
+                // to. Carries the mode, or the owner would re-check the body
+                // score and then be routed to Home instead of the feature they
+                // started from.
+                else {
+                  router.push({
+                    pathname: '/onboarding/body-check',
+                    params: forwardCompletionParams(completionParams),
+                  } as never);
+                }
               }}
             >
               <Text style={styles.bcsProvenanceLink}>Re-check</Text>
@@ -1070,6 +1241,8 @@ export default function GoalScreen() {
                 icon="error-outline"
                 onAction={(a) => { if (a === 'retry') { setFailure(null); handleComplete(); } }}
                 onDismiss={() => setFailure(null)}
+                errorContext="pet_save"
+                screen="/onboarding/goal"
               />
             </View>
           )}

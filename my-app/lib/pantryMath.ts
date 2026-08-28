@@ -67,6 +67,39 @@ export interface PortionPresets {
 
 const FRACTION_UNITS = new Set(['cup', 'pouch', 'can', 'sachet', 'tray', '']);
 
+/** Serving weight assumed for a gram-unit item whose label data is missing. */
+export const DEFAULT_GRAM_SERVING_GRAMS = 100;
+
+/**
+ * How many grams "1 serving" means for a gram-unit item.
+ *
+ * `serving_unit: 'gram'` does NOT mean the label quotes calories per single
+ * gram — the extractor returns `calories_per_serving` for whatever serving the
+ * label states (typically 100 g). Treating one serving as 1 g made a 50 g
+ * portion multiply the whole serving's calories by fifty: a 350 kcal meal
+ * logged as 17,500 kcal.
+ *
+ * Both the chip row and the kcal math resolve the weight through here so they
+ * can never disagree about what a multiplier of 1 means.
+ */
+export function gramUnitServingGrams(
+  kcalPerServing?: number | null,
+  kcalPer100g?: number | null,
+): number {
+  if (kcalPerServing && kcalPerServing > 0 && kcalPer100g && kcalPer100g > 0) {
+    const grams = (kcalPerServing * 100) / kcalPer100g;
+    // Round to 5 g and keep it inside a sane band — a garbage density reading
+    // must not reintroduce an order-of-magnitude error by the back door.
+    return Math.min(1000, Math.max(5, Math.round(grams / 5) * 5));
+  }
+  return DEFAULT_GRAM_SERVING_GRAMS;
+}
+
+/** True for the units that are measured by weight rather than by container. */
+function isWeightUnit(unit: string): boolean {
+  return unit === 'gram' || unit === 'g';
+}
+
 /**
  * Resolve the chip set + stepper for a given serving unit.
  *
@@ -77,6 +110,7 @@ const FRACTION_UNITS = new Set(['cup', 'pouch', 'can', 'sachet', 'tray', '']);
  *                      - labelGramsPerServing: kcal_per_serving × 100 / kcal_per_100g_as_fed when both exist
  *                      - perMealKcalTarget:    pet's daily kcal target ÷ meals/day (fallback when label is missing)
  *                      - kcalPer100g:          item kcal_per_100g_as_fed (used to convert per-meal kcal → grams)
+ *                      - kcalPerServing:       item kcal_per_serving (with kcalPer100g, defines the serving weight)
  */
 export function getPortionPresets(
   unit: string | null | undefined,
@@ -86,13 +120,14 @@ export function getPortionPresets(
     labelGramsPerServing?: number | null;
     perMealKcalTarget?: number | null;
     kcalPer100g?: number | null;
+    kcalPerServing?: number | null;
   },
 ): PortionPresets {
   const u = (unit ?? '').toLowerCase();
   const speciesTable = DEFAULT_SERVING_GRAMS_BY_SPECIES[species];
 
   // gram unit → weight mode
-  if (u === 'gram' || u === 'g') {
+  if (isWeightUnit(u)) {
     const labelBaseline = weightContext?.labelGramsPerServing && weightContext.labelGramsPerServing > 0
       ? weightContext.labelGramsPerServing
       : null;
@@ -106,9 +141,16 @@ export function getPortionPresets(
     const baseline = Math.max(5, Math.round(baselineRaw / 5) * 5);
     const half = Math.max(5, Math.round((baseline * 0.5) / 5) * 5);
     const oneAndHalf = Math.max(5, Math.round((baseline * 1.5) / 5) * 5);
+    // One serving = the label's serving weight, resolved exactly as
+    // computePantryMacros resolves it. The caller divides gramsFed by this to
+    // get the multiplier, so the two sides must agree to the gram.
+    const gramsPerUnit = gramUnitServingGrams(
+      weightContext?.kcalPerServing ?? null,
+      weightContext?.kcalPer100g ?? null,
+    );
     return {
       mode: 'weight',
-      gramsPerUnit: 1, // weight mode: the multiplier sent to onLog is grams (since species 'gram' = 1g)
+      gramsPerUnit,
       unitLabel: 'g',
       presets: [
         { label: `${half} g`,        gramsFed: half },
@@ -116,7 +158,9 @@ export function getPortionPresets(
         { label: `${oneAndHalf} g`,  gramsFed: oneAndHalf },
         { label: 'Custom',           gramsFed: baseline },
       ],
-      stepper: { min: 5, max: 500, step: 5 },
+      // Stepper bounds are chip-native (unit multipliers), as in every other
+      // mode — 5 g / 500 g expressed against this item's serving weight.
+      stepper: { min: 5 / gramsPerUnit, max: 500 / gramsPerUnit, step: 5 / gramsPerUnit },
     };
   }
 
@@ -210,6 +254,11 @@ export function computePantryMacros(
   const useBowl = !!opts?.bowl && (unit === 'cup' || unit === '');
   const gramsPerServing = useBowl
     ? BOWL_SIZE_GRAMS[opts!.bowl!.size]
+    // A gram-unit item's serving is the label's serving weight, not one gram —
+    // see gramUnitServingGrams. The species table's `gram: 1` is only a unit
+    // conversion and must never stand in as a serving size.
+    : isWeightUnit(unit)
+    ? gramUnitServingGrams(kcal_per_serving, kcal_per_100g_as_fed)
     : (speciesTable[unit] ?? 100);
   const meal_grams = Math.round(gramsPerServing * servings);
 

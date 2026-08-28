@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 
 import { color, font, radius, space } from '../../constants/design';
-import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import { useWalkEnabled } from '../../hooks/useWalkEnabled';
 import { supabase } from '../../lib/supabase';
 import { track } from '../../lib/analytics';
 import { buildMonthlyRecap, PawPrintWalk, previousMonthKey } from '../../lib/pawPrints';
@@ -34,6 +34,7 @@ const TILE_SIZE = 64;
 export function PawPrintTeaser() {
   const router = useRouter();
   const activePet = useActivePetStore((s) => s.activePet);
+  const walkEnabled = useWalkEnabled(); // dogs-only feature
   const [rows, setRows] = useState<TeaserRow[] | null>(null);
   const [recapHeadline, setRecapHeadline] = useState<string | null>(null);
 
@@ -41,7 +42,7 @@ export function PawPrintTeaser() {
   const petName = activePet?.name?.trim() || 'your dog';
 
   useEffect(() => {
-    if (!WALK_TRACKING_ENABLED || !petId) return;
+    if (!walkEnabled || !petId) return;
     let cancelled = false;
     (async () => {
       const { data, error } = await supabase
@@ -77,9 +78,9 @@ export function PawPrintTeaser() {
       }
     })();
     return () => { cancelled = true; };
-  }, [petId, petName]);
+  }, [petId, petName, walkEnabled]);
 
-  if (!WALK_TRACKING_ENABLED || !rows || rows.length < 2) return null;
+  if (!walkEnabled || !rows || rows.length < 2) return null;
 
   const openGallery = async () => {
     track('pawprint_teaser_tapped', { recap_headline: recapHeadline != null });
