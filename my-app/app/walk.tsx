@@ -59,6 +59,7 @@ import { resolveSniffStops } from '../lib/momentCard';
 import { useAuth } from '../providers/AuthProvider';
 import { estimateActivityBurn } from '../lib/activityBurn';
 import { deriveDogWalkProfile, intensityForPace } from '../lib/walk/dogCalibration';
+import { estimateDogSteps, formatStepsProse } from '../lib/walk/stepEstimate';
 import {
   disarmWalkStart,
   isWalkStartArmed,
@@ -985,6 +986,34 @@ function WalkSummaryView({
   const trailingLabel = isLoop ? labels.farthestLabel : labels.endLabel;
   const showLabels = Boolean(startLabel || trailingLabel);
 
+  /**
+   * How many steps the DOG took — modelled, not measured.
+   *
+   * Pawtchi has no pedometer; this comes from the distance and pace we did
+   * measure, converted through this dog's own build. It is deliberately the
+   * dog's number rather than the walker's: a Chihuahua does three or four times
+   * the work of a Great Dane over the same kilometre, and that is the fact worth
+   * showing on a dog's walk card.
+   *
+   * Unlike `kcal` this does not need a logged weight — breed defaults supply the
+   * size band — so it survives an incomplete profile.
+   */
+  const dogSteps = useMemo(() => {
+    if (summary.distanceM <= 0) return 0;
+    const profile = deriveDogWalkProfile({
+      species: activePet?.species ?? 'dog',
+      breed: activePet?.breed ?? null,
+      ageYears: activePet?.age_years ?? null,
+      weightKg: activePet?.current_weight_kg ?? null,
+      medicalConditions: activePet?.medical_conditions ?? null,
+    });
+    return estimateDogSteps({
+      distanceM: summary.distanceM,
+      movingTimeS: summary.movingTimeS,
+      profile,
+    }).steps;
+  }, [activePet, summary.distanceM, summary.movingTimeS]);
+
   const kcal = useMemo(() => {
     if (!activePet?.current_weight_kg) return 0;
     const profile = deriveDogWalkProfile({
@@ -1158,6 +1187,19 @@ function WalkSummaryView({
           </>
         )}
       </View>
+
+      {/* The dog's own step count, in a sentence rather than a fourth column.
+          A sentence can say WHOSE steps these are, which a bare stat cannot —
+          and the phone counted the walker's route, not Max's legs, so the
+          attribution is the honest part. "around" is the hedge: this is
+          modelled from distance and pace, never measured. */}
+      {dogSteps > 0 && (
+        <Reanimated.View style={stat3Style}>
+          <Text style={styles.stepsLine}>
+            {petName} took {formatStepsProse(dogSteps)} steps
+          </Text>
+        </Reanimated.View>
+      )}
 
       {isWalkLogged && lastEarnEvent && lastEarnEvent.coins > 0 && (
         <Reanimated.View style={[styles.coinRow, coinsStyle]}>
@@ -1667,6 +1709,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.xl,
+  },
+  stepsLine: {
+    ...type.body,
+    color: color.slateMuted,
+    textAlign: 'center',
+    marginTop: space.lg,
   },
   coinRow: {
     flexDirection: 'row',

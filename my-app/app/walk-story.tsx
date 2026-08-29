@@ -33,6 +33,8 @@ import { BreathingPaw } from '../components/BreathingPaw';
 import { WalkStoryViewer } from '../components/story/WalkStoryViewer';
 import type { StoryContext } from '../components/story/StorySlide';
 import { storyColor } from '../components/story/storyTheme';
+import { deriveDogWalkProfile } from '../lib/walk/dogCalibration';
+import { estimateDogSteps } from '../lib/walk/stepEstimate';
 
 export default function WalkStoryScreen() {
   const walkEnabled = useWalkEnabled();
@@ -192,9 +194,24 @@ function WalkStoryInner() {
       slideH: height,
       walkNumber: displaySnapshot.totals?.walkCount ?? null,
       breedLine: displaySnapshot.breedLine,
+      // Modelled here rather than inside the slide: the estimate needs the dog's
+      // size band, and StoryContext carries display data, not the pet record.
+      // Needs no logged weight — breed defaults supply the band — so an
+      // incomplete profile drops the clause rather than breaking the line.
+      dogSteps: estimateDogSteps({
+        distanceM: displaySnapshot.stats.distanceM,
+        movingTimeS: displaySnapshot.stats.movingTimeS,
+        profile: deriveDogWalkProfile({
+          species: activePet?.species ?? 'dog',
+          breed: activePet?.breed ?? null,
+          ageYears: activePet?.age_years ?? null,
+          weightKg: activePet?.current_weight_kg ?? null,
+          medicalConditions: activePet?.medical_conditions ?? null,
+        }),
+      }).steps,
     };
     return { story, ctx };
-  }, [displaySnapshot, height, width]);
+  }, [activePet, displaySnapshot, height, width]);
 
   useEffect(() => {
     if (!built || !displaySnapshot) return;

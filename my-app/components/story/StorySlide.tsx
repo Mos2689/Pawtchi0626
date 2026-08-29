@@ -28,6 +28,7 @@ import {
   WeatherArtwork,
 } from './StoryArtwork';
 import { TemplateRenderer } from '../moments/TemplateRenderer';
+import { formatSteps } from '../../lib/walk/stepEstimate';
 import {
   displaySizeFor,
   scaledStorySize,
@@ -51,6 +52,14 @@ export interface StoryContext {
   walkNumber?: number | null;
   /** Kept for public-contract compatibility with existing story callers. */
   breedLine?: string | null;
+  /**
+   * The dog's modelled step count for this walk (lib/walk/stepEstimate.ts).
+   *
+   * Passed in rather than derived here because the estimate needs the dog's
+   * size band, and StoryContext deliberately carries display data, not the pet
+   * record. Omit or pass 0 and the metrics line simply drops the clause.
+   */
+  dogSteps?: number | null;
   /** Safe-area + story chrome clearance. */
   topInset?: number;
 }
@@ -107,7 +116,12 @@ function walkMeta(ctx: StoryContext): string {
 function summaryMetrics(ctx: StoryContext, speedLabel?: string | null): string {
   const sniffLabel = ctx.sniffStops.length === 1 ? 'SNIFF' : 'SNIFFS';
   const base = `${formatMinutes(ctx.stats.durationS)} MIN  ·  ${formatKm(ctx.stats.distanceM)} KM  ·  ${ctx.sniffStops.length} ${sniffLabel}`;
-  return speedLabel ? `${base}  ·  ${speedLabel.toUpperCase()}` : base;
+  // The steps clause carries its own tilde, so the line stays honest about
+  // which of these numbers was measured and which was modelled.
+  const withSteps = ctx.dogSteps
+    ? `${base}  ·  ${formatSteps(ctx.dogSteps)} STEPS`
+    : base;
+  return speedLabel ? `${withSteps}  ·  ${speedLabel.toUpperCase()}` : withSteps;
 }
 
 function Entrance({
