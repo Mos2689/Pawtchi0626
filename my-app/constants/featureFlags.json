@@ -2,5 +2,6 @@
   "walkTracking": true,
   "walkStory": true,
   "spotsOsmMvp": true,
-  "walkCamera": true
+  "walkCamera": true,
+  "walkLiveActivity": true
 }

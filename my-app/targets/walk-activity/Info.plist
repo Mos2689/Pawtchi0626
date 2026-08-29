@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Committed rather than generated. @bacons/apple-targets writes this file
+	  only when it is absent, so this is the supported way to add keys its config
+	  schema does not cover — here, the bundled brand fonts.
+
+	  NSExtensionPointIdentifier must stay exactly what the plugin would have
+	  written for a `widget` target; changing it detaches the extension.
+	-->
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+	<!--
+	  Montserrat, so the Lock Screen card is set in the same face as the app.
+	  The whole target folder is synchronized into the Xcode target, so these
+	  .ttf files are already copied as resources; this is what registers them.
+	  PawtchiTheme falls back to a weight-matched system font if registration
+	  ever fails, so a missing font degrades rather than breaks.
+	-->
+	<key>UIAppFonts</key>
+	<array>
+		<string>Montserrat_500Medium.ttf</string>
+		<string>Montserrat_600SemiBold.ttf</string>
+		<string>Montserrat_700Bold.ttf</string>
+	</array>
+</dict>
+</plist>

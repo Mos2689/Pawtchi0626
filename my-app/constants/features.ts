@@ -32,6 +32,24 @@ export const WALK_STORY_ENABLED = FEATURE_FLAGS.walkStory;
 export const WALK_CAMERA_ENABLED = FEATURE_FLAGS.walkCamera;
 
 /**
+ * The iOS walk Live Activity — the Lock Screen / Dynamic Island card for a walk
+ * in progress.
+ *
+ * Like walkCamera this flag HAS a native footprint: it registers the
+ * `@bacons/apple-targets` plugin (which generates the widget extension)
+ * and adds `NSSupportsLiveActivities` in `app.config.ts`, so flipping it needs
+ * a prebuild and a store release, not an OTA update. Off ⇒ the build contains
+ * no widget extension at all.
+ *
+ * The card is a read-only mirror of walk state. It cannot start, stop or
+ * influence location tracking, so turning this off changes nothing about how a
+ * walk is recorded — only whether the owner can see it from the Lock Screen.
+ * Android has no equivalent surface yet and simply ignores this flag; it keeps
+ * the foreground-service notification expo-location already posts.
+ */
+export const WALK_LIVE_ACTIVITY_ENABLED = FEATURE_FLAGS.walkLiveActivity;
+
+/**
  * Pawtchi Spots — nearby dog-relevant places from OpenStreetMap.
  *
  * Unlike walkTracking this flag has NO native footprint: Spots adds no

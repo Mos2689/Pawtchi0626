@@ -66,6 +66,9 @@ import {
   type WalkDestination,
 } from '../lib/walk/walkStartIntent';
 import { haversineMeters } from '../lib/walk/geo';
+// Shared with the iOS Live Activity, which renders the same line on the Lock
+// Screen — the two surfaces must never describe the walk differently.
+import { WALK_STATUS_COPY } from '../lib/walk/liveCopy';
 import { formatDistance } from '../lib/spots/copy';
 import {
   acknowledgeLocationDisclosure,
@@ -553,10 +556,10 @@ function WalkScreenInner() {
           <BreathingPaw size={14} workingColor={color.navy} />
           <Text style={styles.statusLineText}>
             {acquiring
-              ? 'Finding GPS — hold on a moment'
+              ? WALK_STATUS_COPY.acquiring
               : paused
-                ? 'Paused with the sniffs — resumes on the next step'
-                : 'Tracking — ends on its own at home'}
+                ? WALK_STATUS_COPY.sniffing
+                : WALK_STATUS_COPY.walking}
           </Text>
         </View>
 

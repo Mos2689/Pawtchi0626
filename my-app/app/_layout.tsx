@@ -55,6 +55,7 @@ import { useQuickActionCallback } from 'expo-quick-actions/hooks';
 import { WRITE_TO_FOUNDER_LABEL } from '@/lib/founderLetters';
 import { supabase } from '@/lib/supabase';
 import { WALK_TRACKING_ENABLED } from '@/constants/features';
+import { WalkLiveActivityBridge } from '@/components/WalkLiveActivityBridge';
 import { initFirebaseAnalytics, setFirebaseUserId } from '@/lib/firebaseAnalytics';
 import { installBreadcrumbs } from '@/lib/support/breadcrumbs';
 // Side-effect import: defines the walk-tracking background task at bundle
@@ -367,6 +368,12 @@ function RootLayoutNav() {
           point of the second surface. Renders nothing; with the offer's kill
           switch off it does nothing at all. */}
       {session?.user?.id && <ProOfferInboxBridge />}
+      {/* Mirrors a live walk onto the iOS Lock Screen / Dynamic Island. Renders
+          nothing, observes the walk store only, and cannot influence tracking —
+          on Android, in Expo Go, or with the flag off it does nothing at all.
+          Not gated on a session: it only ever acts on a walk in progress, and a
+          walk cannot exist without one. */}
+      <WalkLiveActivityBridge />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="welcome" options={{ headerShown: false, animation: 'none' }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />

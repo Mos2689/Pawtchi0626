@@ -112,6 +112,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   // its own — that would ask for a camera permission for a feature the build
   // has no way to reach.
   const cameraEnabled = walkEnabled && featureFlags.walkCamera;
+  // Same reasoning: the Live Activity has nothing to show without tracked walks.
+  const liveActivityEnabled = walkEnabled && featureFlags.walkLiveActivity;
   const currentPermissions = config.android?.permissions ?? [];
   const currentBlocked = config.android?.blockedPermissions ?? [];
 
@@ -191,6 +193,18 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     );
   }
 
+  // The widget extension that draws the walk Live Activity. Registered ONLY
+  // when the feature is on, for the same reason expo-camera is: the plugin
+  // generates a whole extra Xcode target (and its own App ID), and a build that
+  // cannot reach the feature must not carry one.
+  if (liveActivityEnabled) {
+    plugins = upsertPlugin(plugins, '@bacons/apple-targets', {});
+  } else {
+    plugins = plugins.filter(
+      plugin => pluginName(plugin) !== '@bacons/apple-targets',
+    );
+  }
+
   plugins = upsertPlugin(plugins, '@react-native-firebase/app', {});
   plugins = upsertPlugin(plugins, '@react-native-firebase/analytics', {
     ios: {
@@ -209,6 +223,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ios: {
       ...config.ios,
       googleServicesFile: './GoogleService-Info.plist',
+      infoPlist: {
+        ...config.ios?.infoPlist,
+        // Both keys are removed outright when the flag is off, so a disabled
+        // build declares no Live Activity capability at all.
+        ...(liveActivityEnabled
+          ? {
+              NSSupportsLiveActivities: true,
+              // A walk updates its card whenever the dog covers ground, which
+              // is exactly the "frequent updates" case this key describes.
+              NSSupportsLiveActivitiesFrequentUpdates: true,
+            }
+          : {}),
+      },
     },
     android: {
       ...config.android,
