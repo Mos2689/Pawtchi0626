@@ -14,6 +14,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { buildLiveWalkContent } from './liveActivity';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
@@ -47,25 +48,29 @@ describe('WalkActivityAttributes.swift', () => {
     expect(source).toContain('public struct ContentState');
   });
 
-  it('keeps every field the TypeScript payload sends', () => {
-    // lib/walk/liveActivity.ts builds LiveWalkContent and the native module maps
-    // it field-for-field; a field dropped here is a field that silently stops
-    // arriving on the card.
+  it('declares every field the TypeScript payload actually sends', () => {
+    // Derived from a real payload rather than a hand-copied list, so adding a
+    // field to LiveWalkContent automatically requires adding it in Swift. A
+    // field the payload sends but the struct does not declare is dropped
+    // silently at decode time — it does not fail to compile.
+    const payload = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: Date.now(),
+      session: null,
+    });
+
     const source = fs.readFileSync(WIDGET_COPY, 'utf8');
-    for (const field of [
-      'endedAt',
-      'distanceKm',
-      'sniffCount',
-      'statusLine',
-      'state',
-      'route',
-      'head',
-      'sniffs',
-      'walkId',
-      'petName',
-      'startedAt',
-    ]) {
+    for (const field of Object.keys(payload)) {
+      // `startedAt` rides on the attributes (immutable for the walk) and
+      // `staleAfterMs` never reaches ContentState — it becomes the update's
+      // staleDate in the native module.
+      if (field === 'staleAfterMs') continue;
       expect(source).toContain(`var ${field}`);
+    }
+
+    // The attributes half: identity, fixed for the life of the walk.
+    for (const field of ['walkId', 'petName', 'startedAt']) {
+      expect(source).toContain(`public var ${field}`);
     }
   });
 });

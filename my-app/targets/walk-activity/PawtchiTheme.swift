@@ -2,59 +2,95 @@
 //
 //  The widget extension's mirror of constants/design.ts.
 //
-//  A widget extension cannot import TypeScript, so these values are the one
-//  sanctioned duplication in the whole feature — and they are kept to raw brand
-//  constants that have not changed since the brand book, rather than derived
-//  tokens. If a value here ever disagrees with constants/design.ts, that file
-//  wins. lib/brandYellow.test.ts already scans source for retired yellows and
-//  covers this file's extension.
+//  A widget extension cannot import TypeScript, so this is the one sanctioned
+//  duplication in the feature. Every value below has a named counterpart in
+//  `color.liveActivity` / `font` — if the two ever disagree, design.ts wins.
 //
-//  Source of truth: my-app/constants/design.ts
-//    BRAND_YELLOW  #F4F600   color.yellow
-//    navy          #07202A   color.navy
-//    navyRaised    #0B2A36   color.navyRaised
-//    cream         #F4F1EC   color.cream
+//  ── Colour discipline (load-bearing) ──
+//  Paper ground, ink type, ink route. `live` yellow appears on the pulse and the
+//  head of the route AND NOWHERE ELSE — that restraint is the entire reason a
+//  glance reads as "this is happening right now". `discovery` blue marks the
+//  wrap-up only. Adding a third accent anywhere here breaks the design.
 
 import SwiftUI
 // Explicit, because `UIFont` below is a UIKit type and SwiftUI does not
 // reliably re-export UIKit into an app-extension target.
 import UIKit
 
+/// Mirrors `color.liveActivity` in constants/design.ts.
 enum PawtchiColor {
-  static let yellow = Color(red: 244 / 255, green: 246 / 255, blue: 0 / 255)
-  static let navy = Color(red: 7 / 255, green: 32 / 255, blue: 42 / 255)
-  static let navyRaised = Color(red: 11 / 255, green: 42 / 255, blue: 54 / 255)
-  static let cream = Color(red: 244 / 255, green: 241 / 255, blue: 236 / 255)
+  static let paper = hex(0xF6F4EF)
+  static let well = hex(0xEAE7E0)
+  static let ink = hex(0x101014)
+  static let inkMuted = Color.black.opacity(0.55)
+  static let inkFaint = Color.black.opacity(0.42)
+  static let inkTrace = Color.black.opacity(0.28)
+  static let hairline = Color.black.opacity(0.10)
+  static let border = Color.black.opacity(0.08)
+  static let pillFill = Color.black.opacity(0.06)
+  static let live = hex(0xF4F600)
+  static let discovery = hex(0x144EFF)
+  static let cardFinished = Color.white
 
-  /// The cream opacities design.ts names: creamDim (.66) and creamFaint (.42).
-  static let creamDim = cream.opacity(0.66)
-  static let creamFaint = cream.opacity(0.42)
+  // The Dynamic Island is system-black; paper never applies inside it.
+  static let islandInk = Color.white
+  static let islandInkSoft = Color.white.opacity(0.62)
+  static let islandDivider = Color.white.opacity(0.22)
+
+  private static func hex(_ value: UInt32) -> Color {
+    Color(
+      red: Double((value >> 16) & 0xFF) / 255,
+      green: Double((value >> 8) & 0xFF) / 255,
+      blue: Double(value & 0xFF) / 255
+    )
+  }
 }
 
-/// Montserrat, resolved defensively.
+/// Mirrors the `font` tokens in constants/design.ts.
 ///
-/// The .ttf files are bundled into this target, but a font that failed to
-/// register must degrade to a weight-matched system font rather than to
-/// San Francisco Regular — an unstyled card reads as broken, not as neutral.
-/// Google ships these with PostScript names like "Montserrat-Bold"; the
-/// @expo-google-fonts filenames use "Montserrat_700Bold", so both are tried.
+/// The design handoff specifies Instrument Serif and Plus Jakarta Sans. Neither
+/// exists in this app, and shipping two families that appear on no other screen
+/// is exactly what the design-system rule forbids — so the app's own faces stand
+/// in: Playfair Display for the serif (the sanctioned editorial face, see the
+/// fence comment on `font.memoryTitle`) and Montserrat for UI, with ExtraLight
+/// carrying the large timer where the handoff asks for Jakarta 200.
+///
+/// Each face degrades to a weight-matched system font rather than to San
+/// Francisco Regular: an unstyled card reads as broken, not as neutral. Google
+/// ships PostScript names like "Montserrat-Bold" while the @expo-google-fonts
+/// filenames use "Montserrat_700Bold", so both spellings are tried.
 enum PawtchiFont {
+  /// Dog name and wrap-up title. `font.memoryTitle`.
+  static func serif(_ size: CGFloat) -> Font {
+    resolve(["PlayfairDisplay-Medium", "PlayfairDisplay_500Medium"], size, .regular, .serif)
+  }
+
+  /// The big timer. Handoff asks for a 200 weight at 54pt.
+  static func extraLight(_ size: CGFloat) -> Font {
+    resolve(["Montserrat-ExtraLight", "Montserrat_200ExtraLight"], size, .thin, .default)
+  }
+
   static func medium(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-Medium", "Montserrat_500Medium"], size, .medium)
+    resolve(["Montserrat-Medium", "Montserrat_500Medium"], size, .medium, .default)
   }
 
   static func semibold(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-SemiBold", "Montserrat_600SemiBold"], size, .semibold)
+    resolve(["Montserrat-SemiBold", "Montserrat_600SemiBold"], size, .semibold, .default)
   }
 
   static func bold(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-Bold", "Montserrat_700Bold"], size, .bold)
+    resolve(["Montserrat-Bold", "Montserrat_700Bold"], size, .bold, .default)
   }
 
-  private static func resolve(_ names: [String], _ size: CGFloat, _ weight: Font.Weight) -> Font {
+  private static func resolve(
+    _ names: [String],
+    _ size: CGFloat,
+    _ weight: Font.Weight,
+    _ design: Font.Design
+  ) -> Font {
     for name in names where UIFont(name: name, size: size) != nil {
       return .custom(name, size: size)
     }
-    return .system(size: size, weight: weight)
+    return .system(size: size, weight: weight, design: design)
   }
 }

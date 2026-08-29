@@ -115,11 +115,17 @@ export function WalkLiveActivityBridge() {
 
       // 'saving' — the walk is genuinely over but the summary is still being
       // written. Freeze the card rather than ending it, so the timer stops and
-      // the copy stops promising that tracking continues.
+      // the copy stops promising that tracking continues. `saved: false` here
+      // is simply true: nothing has reached the server yet.
       if (phase === 'saving') {
         if (frozen) return;
         frozen = true;
-        const final = finalContent(content, Date.now());
+        const final = finalContent({
+          previous: content,
+          endedAt: Date.now(),
+          saved: false,
+          walkSessionId: walkId,
+        });
         content = final;
         lastSentAt = Date.now();
         const payload = { ...final, walkId };
@@ -127,14 +133,29 @@ export function WalkLiveActivityBridge() {
         return;
       }
 
-      // Over. Prefer the finalized distance — the summary replays the whole
-      // point buffer, including fixes that landed while the JS runtime was
-      // dead, so it is the number the owner will see on the summary screen.
-      const authoritative =
-        lastResult && lastResult.walkSessionId === walkId
-          ? lastResult.summary.distanceM / 1000
-          : undefined;
-      const final = finalContent(content, Date.now(), authoritative);
+      // Over. Prefer the finalized summary — it replays the whole point buffer,
+      // including fixes that landed while the JS runtime was dead, so it is the
+      // number the owner will see on the summary screen.
+      const result = lastResult?.walkSessionId === walkId ? lastResult : null;
+
+      // "SAVED" and the "See the map" link are gated on the row actually
+      // existing. 'queued' means the walk is real but still only in the offline
+      // queue — the card says finished, and offers no link to a map that has
+      // nothing behind it yet.
+      const saved =
+        result?.sync.outcome === 'matched' || result?.sync.outcome === 'logged_new';
+
+      const final = finalContent({
+        previous: content,
+        endedAt: Date.now(),
+        distanceKm: result ? result.summary.distanceM / 1000 : undefined,
+        // `sniffPoints` is optional on WalkSummary (queued summaries predating
+        // the detector lack it) — fall back to the live count rather than to 0.
+        sniffCount: result?.summary.sniffPoints?.length,
+        durationMs: result ? result.summary.durationS * 1000 : undefined,
+        saved,
+        walkSessionId: walkId,
+      });
       const payload = { ...final, walkId };
       walkId = null;
       content = null;

@@ -166,6 +166,43 @@ export const color = {
     duskHairline: '#2A3540',
   },
 
+  /**
+   * The iOS walk Live Activity — the Lock Screen card and Dynamic Island.
+   *
+   * A paper ground with near-black ink, from the locked Walk Home direction
+   * (design handoff, Aug 2026). Deliberately NOT `moment.*`: those tokens are
+   * warm charcoal on warm paper, tuned for a keepsake someone screenshots and
+   * shares. This card is read at arm's length, in one glance, often outdoors —
+   * it needs the extra crispness of a neutral near-black.
+   *
+   * Colour discipline here is load-bearing and narrower than anywhere else in
+   * the app: the route is INK, and `yellow` appears on the live pulse and the
+   * head of the route and nowhere else. That restraint is the entire reason a
+   * glance reads as "this is happening right now". `electric` marks discovery
+   * on the finished card only.
+   *
+   * Mirrored in Swift at targets/walk-activity/PawtchiTheme.swift, which cannot
+   * import TypeScript. These values are the source of truth; that file follows.
+   */
+  liveActivity: {
+    paper: '#F6F4EF',        // the card ground
+    well: '#EAE7E0',         // the route trace's recessed panel
+    ink: '#101014',          // type and the route line itself
+    inkMuted: 'rgba(0, 0, 0, 0.55)',  // sub-copy, pill label
+    inkFaint: 'rgba(0, 0, 0, 0.42)',  // eyebrows on the quieter states
+    inkTrace: 'rgba(0, 0, 0, 0.28)',  // the route's start dot, pulse ring
+    hairline: 'rgba(0, 0, 0, 0.10)',  // the stats-shelf rule
+    border: 'rgba(0, 0, 0, 0.08)',    // state-card borders
+    pillFill: 'rgba(0, 0, 0, 0.06)',  // the "Ends at home" geofence pill
+    live: BRAND_YELLOW,      // the live pulse + route head. Nothing else.
+    discovery: '#144EFF',    // = color.electric; the finished card's eyebrow
+    cardFinished: '#FFFFFF', // the wrap-up goes white: a memory, not an alert
+    // The Dynamic Island is system-black and paper never applies inside it.
+    islandInk: '#FFFFFF',
+    islandInkSoft: 'rgba(255, 255, 255, 0.62)',
+    islandDivider: 'rgba(255, 255, 255, 0.22)',
+  },
+
 } as const;
 
 export const radius = {
@@ -236,12 +273,19 @@ export const font = {
   semibold: 'Montserrat_600SemiBold',
   bold: 'Montserrat_700Bold',
   extrabold: 'Montserrat_800ExtraBold',
-  // ── Editorial serif — the Walk Memory page only ──
-  // A fifth family, added deliberately and fenced tightly. It exists for one
-  // surface: the full-page moment viewer, where the whole point is that a
-  // photograph is being presented as a page from the dog's biography rather
-  // than previewed as a file. A serif is what makes that read as editorial;
-  // none of the four existing families can do it.
+  // ── Editorial serif — two surfaces, and no more ──
+  // A fifth family, added deliberately and fenced tightly. It exists where a
+  // walk is being presented as a page from the dog's biography rather than as
+  // app chrome. A serif is what makes that read as editorial; none of the four
+  // existing families can do it.
+  //
+  // Sanctioned surfaces:
+  //   1. The full-page moment viewer (Walk Memory).
+  //   2. The iOS walk Live Activity's dog name and wrap-up title (Aug 2026) —
+  //      the design handoff specifies Instrument Serif there; this is the
+  //      codebase's serif standing in for it, so the app ships one serif rather
+  //      than two. Same editorial intent: a Lock Screen card about a walk that
+  //      happened, not a control.
   //
   // It is NOT a general heading face. Screens, cards, buttons and every other
   // surface stay on Montserrat — reaching for this anywhere else turns a

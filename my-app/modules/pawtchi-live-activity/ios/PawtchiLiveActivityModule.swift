@@ -24,19 +24,28 @@ import ActivityKit
 import ExpoModulesCore
 
 /// The JS payload, mirroring `LiveWalkContent` in lib/walk/liveActivity.ts.
+///
+/// Every user-facing string arrives already resolved from liveCopy.ts. Nothing
+/// here formats, pluralises, or decides wording.
 struct WalkContentRecord: Record {
   @Field var walkId: String = ""
   @Field var petName: String = ""
   /// Epoch milliseconds — JS has no Date across the bridge.
   @Field var startedAt: Double = 0
   @Field var endedAt: Double? = nil
+  @Field var eyebrow: String = ""
+  @Field var title: String = ""
+  @Field var subtitle: String = ""
   @Field var distanceKm: Double = 0
   @Field var sniffCount: Int = 0
-  @Field var statusLine: String = ""
+  @Field var endsAtHomeLabel: String = ""
+  @Field var signalLostLabel: String = ""
   @Field var state: String = "walking"
   @Field var route: [Double] = []
   @Field var head: [Double]? = nil
   @Field var sniffs: [Double] = []
+  @Field var ctaLabel: String = ""
+  @Field var ctaUrl: String = ""
   @Field var staleAfterMs: Double = 300_000
 }
 
@@ -47,14 +56,20 @@ private func date(fromEpochMs milliseconds: Double) -> Date {
 @available(iOS 16.2, *)
 private func contentState(from record: WalkContentRecord) -> PawtchiWalkAttributes.ContentState {
   PawtchiWalkAttributes.ContentState(
+    eyebrow: record.eyebrow,
+    title: record.title,
+    subtitle: record.subtitle,
     endedAt: record.endedAt.map { date(fromEpochMs: $0) },
     distanceKm: record.distanceKm,
     sniffCount: record.sniffCount,
-    statusLine: record.statusLine,
+    endsAtHomeLabel: record.endsAtHomeLabel,
+    signalLostLabel: record.signalLostLabel,
     state: record.state,
     route: record.route,
     head: record.head,
-    sniffs: record.sniffs
+    sniffs: record.sniffs,
+    ctaLabel: record.ctaLabel,
+    ctaUrl: record.ctaUrl
   )
 }
 

@@ -3,11 +3,18 @@ import {
   LiveWalkContent,
   MIN_PUSH_INTERVAL_MS,
   ROUTE_POINT_BUDGET,
+  SIGNAL_LOST_MS,
   buildLiveWalkContent,
   finalContent,
   shouldPushUpdate,
 } from './liveActivity';
-import { WALK_STATUS_COPY } from './liveCopy';
+import {
+  ENDS_AT_HOME,
+  LIVE_EYEBROW,
+  SEE_THE_MAP,
+  WALK_STATUS_COPY,
+  WAITING_FOR_SIGNAL,
+} from './liveCopy';
 import { projectRouteToSvg } from './routeSvg';
 import { simplifyRoute } from './geo';
 import {
@@ -37,30 +44,45 @@ function walkedSession(fixes: number, startedAt = START): WalkSessionState {
   return session;
 }
 
-function contentFor(session: WalkSessionState | null): LiveWalkContent {
-  return buildLiveWalkContent({ petName: 'Bruno', startedAt: START, session });
+/** `now` defaults to just after the last fix, so nothing looks stale. */
+function contentFor(session: WalkSessionState | null, now?: number): LiveWalkContent {
+  const lastFix = session?.lastAccepted?.timestamp ?? START;
+  return buildLiveWalkContent({
+    petName: 'Momo',
+    startedAt: START,
+    session,
+    now: now ?? lastFix + 1000,
+  });
 }
 
 describe('buildLiveWalkContent', () => {
-  it('reports the acquiring state before any fix is accepted', () => {
+  it('shows the starting card before any fix is accepted', () => {
     const content = contentFor(createSession(START));
-    expect(content.state).toBe('acquiring');
-    expect(content.statusLine).toBe(WALK_STATUS_COPY.acquiring);
+    expect(content.state).toBe('starting');
+    expect(content.eyebrow).toBe(LIVE_EYEBROW.starting);
+    expect(content.title).toBe("Momo's walk");
+    expect(content.subtitle).toBe(WALK_STATUS_COPY.acquiring);
     expect(content.route).toEqual([]);
     expect(content.head).toBeNull();
+    // No geofence promise until there is a walk with a shape.
+    expect(content.endsAtHomeLabel).toBe('');
   });
 
   it('tolerates a null session (the walk record exists, the replay has not run)', () => {
     const content = contentFor(null);
-    expect(content.state).toBe('acquiring');
+    expect(content.state).toBe('starting');
     expect(content.distanceKm).toBe(0);
     expect(content.sniffCount).toBe(0);
   });
 
-  it('reports walking with a route and a head once fixes land', () => {
+  it('shows the dog’s name and the geofence pill once fixes land', () => {
     const content = contentFor(walkedSession(40));
     expect(content.state).toBe('walking');
-    expect(content.statusLine).toBe(WALK_STATUS_COPY.walking);
+    expect(content.eyebrow).toBe(LIVE_EYEBROW.walking);
+    expect(content.title).toBe('Momo');
+    // The timer owns that space while walking.
+    expect(content.subtitle).toBe('');
+    expect(content.endsAtHomeLabel).toBe(ENDS_AT_HOME);
     expect(content.route.length).toBeGreaterThan(0);
     expect(content.route.length % 2).toBe(0);
     expect(content.head).not.toBeNull();
@@ -105,7 +127,7 @@ describe('buildLiveWalkContent', () => {
     const session = { ...walkedSession(40), status: 'auto_paused' as const };
     const content = contentFor(session);
     expect(content.state).toBe('sniffing');
-    expect(content.statusLine).toBe(WALK_STATUS_COPY.sniffing);
+    expect(content.eyebrow).toBe(LIVE_EYEBROW.sniffing);
   });
 
   it('counts only closed sniff episodes, so the number never revises downward', () => {
@@ -118,25 +140,89 @@ describe('buildLiveWalkContent', () => {
     };
     expect(contentFor(withOpenEpisode).sniffCount).toBe(1);
   });
+
+  describe('lost signal', () => {
+    it('stays quiet while fixes are arriving', () => {
+      expect(contentFor(walkedSession(40)).signalLostLabel).toBe('');
+    });
+
+    it('admits it once the last fix is minutes old', () => {
+      const session = walkedSession(40);
+      const stale = session.lastAccepted!.timestamp + SIGNAL_LOST_MS;
+      expect(contentFor(session, stale).signalLostLabel).toBe(WAITING_FOR_SIGNAL);
+    });
+
+    it('never fires on the starting card, which has no fix to go stale', () => {
+      const content = contentFor(createSession(START), START + 10 * SIGNAL_LOST_MS);
+      expect(content.signalLostLabel).toBe('');
+    });
+  });
 });
 
 describe('finalContent', () => {
-  it('states what happened and never claims the walk was saved', () => {
-    const final = finalContent(contentFor(walkedSession(40)), START + 600_000);
+  const live = contentFor(walkedSession(40));
+
+  const wrapUp = (saved: boolean, durationMs = 18 * 60_000) =>
+    finalContent({
+      previous: live,
+      endedAt: START + durationMs,
+      distanceKm: 1.4,
+      sniffCount: 6,
+      durationMs,
+      saved,
+      walkSessionId: 'walk-123',
+    });
+
+  it('reads as a memory: minutes together, then the numbers', () => {
+    const final = wrapUp(true);
     expect(final.state).toBe('finished');
-    expect(final.statusLine).toBe(WALK_STATUS_COPY.finished);
-    expect(final.endedAt).toBe(START + 600_000);
-    expect(final.statusLine.toLowerCase()).not.toContain('saved');
+    expect(final.title).toBe('18 min together');
+    expect(final.subtitle).toBe('1.4 km · 6 sniffs');
   });
 
-  it('takes the authoritative distance from the finalized summary when given one', () => {
-    const final = finalContent(contentFor(walkedSession(40)), START + 600_000, 2.4149);
-    expect(final.distanceKm).toBe(2.4149);
+  it('claims SAVED only when the walk actually reached the server', () => {
+    expect(wrapUp(true).eyebrow).toBe('HOME · WALK SAVED');
+    expect(wrapUp(false).eyebrow).toBe('HOME · WALK FINISHED');
+  });
+
+  it('offers the map only when there is a saved walk behind it', () => {
+    expect(wrapUp(true).ctaLabel).toBe(SEE_THE_MAP);
+    expect(wrapUp(true).ctaUrl).toBe('pawtchi://walk-story?id=walk-123');
+    // A queued walk has no row to open — a CTA to an empty screen is worse
+    // than no CTA.
+    expect(wrapUp(false).ctaUrl).toBe('');
+  });
+
+  it('uses the summary’s duration, not wall-clock, so an auto-stop is not padded', () => {
+    // Stillness auto-stop rewinds past the ten-minute confirmation wait; the
+    // card must show the walk, not the wait.
+    const final = finalContent({
+      previous: live,
+      endedAt: START + 28 * 60_000,
+      durationMs: 18 * 60_000,
+      saved: true,
+      walkSessionId: 'walk-123',
+    });
+    expect(final.title).toBe('18 min together');
+  });
+
+  it('falls back to the live numbers when no summary was handed over', () => {
+    const final = finalContent({
+      previous: live,
+      endedAt: START + 60_000,
+      saved: false,
+      walkSessionId: 'walk-123',
+    });
+    expect(final.distanceKm).toBe(live.distanceKm);
+    expect(final.sniffCount).toBe(live.sniffCount);
   });
 
   it('keeps the route so the last frame still shows where the walk went', () => {
-    const live = contentFor(walkedSession(40));
-    expect(finalContent(live, START + 600_000).route).toEqual(live.route);
+    expect(wrapUp(true).route).toEqual(live.route);
+  });
+
+  it('drops the geofence pill — the walk is already home', () => {
+    expect(wrapUp(true).endsAtHomeLabel).toBe('');
   });
 });
 
@@ -152,7 +238,13 @@ describe('shouldPushUpdate', () => {
     expect(shouldPushUpdate(base, sniffing, START, START + 100)).toBe(true);
   });
 
-  it('holds back inside the interval floor', () => {
+  it('pushes a signal change immediately — it is the one thing to act on', () => {
+    const lost: LiveWalkContent = { ...base, signalLostLabel: WAITING_FOR_SIGNAL };
+    expect(shouldPushUpdate(base, lost, START, START + 100)).toBe(true);
+    expect(shouldPushUpdate(lost, base, START, START + 100)).toBe(true);
+  });
+
+  it('holds back inside the 30s floor the handoff asks for', () => {
     const moved: LiveWalkContent = { ...base, distanceKm: base.distanceKm + 0.5 };
     expect(shouldPushUpdate(base, moved, START, START + MIN_PUSH_INTERVAL_MS - 1)).toBe(false);
   });

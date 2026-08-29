@@ -24,9 +24,11 @@
 	-->
 	<key>UIAppFonts</key>
 	<array>
+		<string>Montserrat_200ExtraLight.ttf</string>
 		<string>Montserrat_500Medium.ttf</string>
 		<string>Montserrat_600SemiBold.ttf</string>
 		<string>Montserrat_700Bold.ttf</string>
+		<string>PlayfairDisplay_500Medium.ttf</string>
 	</array>
 </dict>
 </plist>
