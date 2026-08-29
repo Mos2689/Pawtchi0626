@@ -11,7 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "89",
+      "buildNumber": "90",
       "supportsTablet": true,
       "__associatedDomains_temp": [
         "applinks:pawtchi.com",

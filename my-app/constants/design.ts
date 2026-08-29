@@ -185,7 +185,11 @@ export const color = {
    * import TypeScript. These values are the source of truth; that file follows.
    */
   liveActivity: {
-    paper: '#F6F4EF',        // the card ground
+    // Pure white, and it must be painted as an OPAQUE FILL inside the card.
+    // `activityBackgroundTint` alone only tints iOS's translucent material, so
+    // the wallpaper reads through it — which looked like a bug on a dark
+    // Lock Screen photo and was one.
+    paper: '#FFFFFF',        // the card ground
     well: '#EAE7E0',         // the route trace's recessed panel
     ink: '#101014',          // type and the route line itself
     inkMuted: 'rgba(0, 0, 0, 0.55)',  // sub-copy, pill label

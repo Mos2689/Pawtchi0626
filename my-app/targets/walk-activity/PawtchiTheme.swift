@@ -19,7 +19,10 @@ import UIKit
 
 /// Mirrors `color.liveActivity` in constants/design.ts.
 enum PawtchiColor {
-  static let paper = hex(0xF6F4EF)
+  /// Painted as an opaque `.background()` fill, never via
+  /// `activityBackgroundTint` alone — that only tints iOS's translucent
+  /// material and lets the wallpaper through.
+  static let paper = Color.white
   static let well = hex(0xEAE7E0)
   static let ink = hex(0x101014)
   static let inkMuted = Color.black.opacity(0.55)

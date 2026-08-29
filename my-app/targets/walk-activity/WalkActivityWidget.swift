@@ -17,8 +17,6 @@
 
 import ActivityKit
 import SwiftUI
-// `UIImage` in the asset-availability check below is a UIKit type.
-import UIKit
 import WidgetKit
 
 @available(iOS 16.2, *)
@@ -33,32 +31,17 @@ private extension PawtchiWalkAttributes.ContentState {
   var islandDistanceText: String { String(format: "%.1f km", distanceKm) }
 }
 
-/// The Pawtchi mark. Falls back to a system glyph if the asset failed to compile
-/// into the extension, rather than rendering an empty box.
-private struct PawtchiEmblem: View {
-  var size: CGFloat = 22
-
-  var body: some View {
-    Group {
-      if UIImage(named: "RunningDog") != nil {
-        Image("RunningDog").renderable(size: size)
-      } else {
-        Image(systemName: "figure.walk").renderable(size: size)
-      }
-    }
-    .foregroundColor(PawtchiColor.ink)
-    .opacity(0.9)
-  }
-}
-
-private extension Image {
-  func renderable(size: CGFloat) -> some View {
-    self.renderingMode(.template)
-      .resizable()
-      .aspectRatio(contentMode: .fit)
-      .frame(width: size, height: size)
-  }
-}
+// The handoff's corner emblem is deliberately absent.
+//
+// It was drawn from assets/images/runningDog.svg, and that file is a raster
+// trace: it carries a white background rect and trace noise, which the RN
+// `RunningDogIcon` component strips at render time by cherry-picking five
+// paths. An Xcode asset catalog does no such stripping, so the same file
+// rendered on the Lock Screen as a solid black block.
+//
+// Rather than commit a second, cleaned copy of the art for one 22pt decoration,
+// the mark is dropped — the handoff lists it as expendable when height is
+// tight, and height IS tight here. The live pulse already brands the card.
 
 /// The self-ticking elapsed clock, or a frozen duration once the walk is over.
 @available(iOS 16.2, *)
@@ -122,8 +105,8 @@ private struct GeofencePill: View {
         .font(PawtchiFont.semibold(10.5))
         .foregroundColor(PawtchiColor.inkMuted)
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
+    .padding(.horizontal, 9)
+    .padding(.vertical, 5)
     .background(Capsule().fill(PawtchiColor.pillFill))
   }
 }
@@ -136,6 +119,14 @@ struct WalkLockScreenView: View {
 
   private var state: PawtchiWalkAttributes.ContentState { context.state }
 
+  /// ── Sizing note ──
+  ///
+  /// iOS caps the Lock Screen presentation at roughly 160pt and CLIPS anything
+  /// taller — it does not scale it down. The handoff's type ramp (26pt name,
+  /// 54pt timer, 104×88 well, 16/18/15/18 padding) measures ~195pt and lost its
+  /// whole stats shelf to that clip. Everything below is the same layout and
+  /// hierarchy re-proportioned to ~153pt. The timer is still by far the largest
+  /// element on the card, which is the part that mattered.
   var body: some View {
     Group {
       if state.isStarting {
@@ -146,68 +137,67 @@ struct WalkLockScreenView: View {
         walkingCard
       }
     }
-    .padding(.top, 16)
-    .padding(.horizontal, 18)
-    .padding(.bottom, 15)
-    .activityBackgroundTint(state.isFinished ? PawtchiColor.cardFinished : PawtchiColor.paper)
+    .padding(.vertical, 12)
+    .padding(.horizontal, 16)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    // An OPAQUE fill. `activityBackgroundTint` alone only tints iOS's
+    // translucent material, which let the Lock Screen wallpaper read straight
+    // through the card. Both are set: the fill covers the content area, the
+    // tint matches the system's own edges so they cannot disagree.
+    .background(PawtchiColor.paper)
+    .activityBackgroundTint(PawtchiColor.paper)
     .activitySystemActionForegroundColor(PawtchiColor.ink)
   }
 
   // ── Walking (and sniffing): the card this feature exists for ──
   private var walkingCard: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HStack {
-        HStack(spacing: 7) {
-          LivePulse(animated: state.hasSignal)
-          Eyebrow(text: state.eyebrow)
-        }
-        Spacer(minLength: 8)
-        PawtchiEmblem()
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 7) {
+        LivePulse(size: 16, dot: 9, animated: state.hasSignal)
+        Eyebrow(text: state.eyebrow)
+        Spacer(minLength: 0)
       }
 
-      HStack(alignment: .bottom, spacing: 14) {
+      HStack(alignment: .bottom, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
           Text(state.title)
-            .font(PawtchiFont.serif(26))
+            .font(PawtchiFont.serif(20))
             .foregroundColor(PawtchiColor.ink)
             .lineLimit(1)
             .minimumScaleFactor(0.7)
           ElapsedClock(
             startedAt: context.attributes.startedAt,
             endedAt: nil,
-            font: PawtchiFont.extraLight(54)
+            font: PawtchiFont.extraLight(40)
           )
-          .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
-        routeWell
+        // Only once there is a line to draw. An empty well is a grey box that
+        // reads as a failed image, which is exactly how it looked in the first
+        // seconds of a walk; without it the name and timer simply take the
+        // full width until the route arrives.
+        if state.hasRoute {
+          routeWell
+        }
       }
-      .padding(.top, 10)
 
       statsShelf
     }
   }
 
-  /// Before the first accepted fix there is genuinely nothing to draw, and the
-  /// starting card is shown instead — so by the time this appears there is
-  /// always a trace. The empty branch only guards a walk that lost its fixes.
   private var routeWell: some View {
-    RoundedRectangle(cornerRadius: 16, style: .continuous)
+    RoundedRectangle(cornerRadius: 14, style: .continuous)
       .fill(PawtchiColor.well)
-      .frame(width: 104, height: 88)
+      .frame(width: 96, height: 74)
       .overlay(
-        Group {
-          if state.hasRoute {
-            RouteCanvas(
-              route: state.route,
-              sniffs: state.sniffs,
-              head: state.head,
-              breathing: state.hasSignal
-            )
-            .padding(10)
-          }
-        }
+        RouteCanvas(
+          route: state.route,
+          sniffs: state.sniffs,
+          head: state.head,
+          breathing: state.hasSignal
+        )
+        .padding(9)
       )
   }
 
@@ -218,37 +208,39 @@ struct WalkLockScreenView: View {
       Rectangle()
         .fill(PawtchiColor.hairline)
         .frame(height: 1)
-        .padding(.top, 14)
 
       Group {
         if state.hasSignal {
-          HStack(spacing: 8) {
+          HStack(spacing: 7) {
             Text(state.distanceText)
-              .font(PawtchiFont.bold(13))
+              .font(PawtchiFont.bold(12.5))
               .monospacedDigit()
               .foregroundColor(PawtchiColor.ink)
             Circle()
               .fill(PawtchiColor.inkTrace)
               .frame(width: 3, height: 3)
             Text(state.sniffText)
-              .font(PawtchiFont.bold(13))
+              .font(PawtchiFont.bold(12.5))
               .foregroundColor(PawtchiColor.ink)
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
             if !state.endsAtHomeLabel.isEmpty {
               GeofencePill(label: state.endsAtHomeLabel)
             }
           }
+          .lineLimit(1)
         } else {
           HStack {
             Text(state.signalLostLabel)
               .font(PawtchiFont.medium(12))
               .foregroundColor(PawtchiColor.inkFaint)
+              .lineLimit(1)
             Spacer(minLength: 0)
           }
         }
       }
-      .padding(.top, 13)
+      .padding(.top, 9)
     }
+    .padding(.top, 2)
   }
 
   // ── Starting: a walk that exists but has no shape yet ──
