@@ -154,7 +154,11 @@ public class PawtchiLiveActivityModule: Module {
   @available(iOS 16.2, *)
   private static func endAll(dismiss policy: ActivityUIDismissalPolicy) async {
     for activity in Activity<PawtchiWalkAttributes>.activities {
-      await activity.end(nil, dismissalPolicy: policy)
+      // Spelled out rather than a bare `nil`: `end(_:dismissalPolicy:)` is
+      // generic over ContentState, and a bare nil there gives the unhelpful
+      // "'nil' requires a contextual type".
+      let noFinalContent: ActivityContent<PawtchiWalkAttributes.ContentState>? = nil
+      await activity.end(noFinalContent, dismissalPolicy: policy)
     }
   }
 }

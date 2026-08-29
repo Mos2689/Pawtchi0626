@@ -16,6 +16,9 @@
 //    cream         #F4F1EC   color.cream
 
 import SwiftUI
+// Explicit, because `UIFont` below is a UIKit type and SwiftUI does not
+// reliably re-export UIKit into an app-extension target.
+import UIKit
 
 enum PawtchiColor {
   static let yellow = Color(red: 244 / 255, green: 246 / 255, blue: 0 / 255)

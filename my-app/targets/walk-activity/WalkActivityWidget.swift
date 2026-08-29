@@ -15,6 +15,8 @@
 
 import ActivityKit
 import SwiftUI
+// `UIImage` in the asset-availability check below is a UIKit type.
+import UIKit
 import WidgetKit
 
 @available(iOS 16.2, *)
@@ -229,14 +231,16 @@ struct WalkActivityWidget: Widget {
   }
 }
 
-/// The extension's deployment target is 16.2 (see expo-target.config.js), so
-/// no availability branch is needed here — the whole bundle is 16.2+ by
-/// construction. The `@available` annotations above are belt-and-braces in case
-/// that target is ever lowered.
-@available(iOS 16.2, *)
+/// The `if #available` is Apple's documented pattern and is kept even though
+/// expo-target.config.js sets this target's deployment target to 16.2. Marking
+/// the `@main` type itself `@available` is the fragile version: if that
+/// deployment target ever fails to apply, it becomes "'main' is only available
+/// in iOS 16.2 or newer" — a confusing failure a long way from its cause.
 @main
 struct WalkActivityBundle: WidgetBundle {
   var body: some Widget {
-    WalkActivityWidget()
+    if #available(iOS 16.2, *) {
+      WalkActivityWidget()
+    }
   }
 }

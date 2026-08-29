@@ -16,9 +16,10 @@ Pod::Spec.new do |s|
     'SWIFT_COMPILATION_MODE' => 'wholemodule'
   }
 
-  # The ActivityAttributes struct is DELIBERATELY not copied here. ActivityKit
-  # encodes ContentState in this target and decodes it in the widget extension;
-  # two definitions that drift by one field name produce a card that silently
-  # stops updating instead of a build error. One file, compiled into both.
-  s.source_files = '**/*.{h,m,mm,swift,hpp,cpp}', '../../../targets/walk-activity/WalkActivityAttributes.swift'
+  # WalkActivityAttributes.swift is a byte-identical copy of the widget target's
+  # file. Reaching out to the original with '../../../targets/...' does NOT work:
+  # CocoaPods silently drops source_files that resolve outside the podspec's own
+  # directory, and the build fails with "cannot find type 'PawtchiWalkAttributes'".
+  # lib/walk/liveActivityAttributes.test.ts is what keeps the two copies honest.
+  s.source_files = '**/*.{h,m,mm,swift,hpp,cpp}'
 end

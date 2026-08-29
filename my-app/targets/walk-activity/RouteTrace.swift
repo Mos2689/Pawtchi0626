@@ -76,11 +76,15 @@ struct RouteCanvas: View {
         // The dog stopping to investigate is the thing Pawtchi notices that a
         // step counter does not — it earns a mark, not a highlight.
         if !compact {
-          ForEach(Array(unitPoints(sniffs, in: rect).enumerated()), id: \.offset) { _, point in
+          // Indexed rather than tuple-destructured: a ViewBuilder closure over
+          // `enumerated()` is a single tuple parameter, and spelling it
+          // `{ _, point in }` does not reliably type-check.
+          let stops = unitPoints(sniffs, in: rect)
+          ForEach(stops.indices, id: \.self) { index in
             Circle()
               .stroke(PawtchiColor.yellow.opacity(0.6), lineWidth: 1.4)
               .frame(width: 8, height: 8)
-              .position(point)
+              .position(stops[index])
           }
         }
 
