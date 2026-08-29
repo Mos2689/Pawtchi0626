@@ -11,8 +11,18 @@
 import { requireOptionalNativeModule } from 'expo';
 import type { LiveWalkContent } from '../../lib/walk/liveActivity';
 
-/** The payload the module actually receives — content plus the walk's identity. */
-export type LiveActivityPayload = LiveWalkContent & { walkId: string };
+/**
+ * The payload the module actually receives — content plus the walk's identity.
+ *
+ * `walkId` and `petName` are not part of LiveWalkContent because they cannot
+ * change during a walk: they land in the Live Activity's *attributes*, which
+ * ActivityKit fixes at request time, while LiveWalkContent becomes the
+ * ContentState that gets re-encoded on every update.
+ */
+export type LiveActivityPayload = LiveWalkContent & {
+  walkId: string;
+  petName: string;
+};
 
 interface PawtchiLiveActivityNativeModule {
   isSupported(): boolean;

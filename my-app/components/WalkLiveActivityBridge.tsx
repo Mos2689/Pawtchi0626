@@ -64,7 +64,10 @@ export function WalkLiveActivityBridge() {
     if (!isLiveActivitySupported()) return;
 
     // The card we currently believe is on screen, and what it last showed.
+    // `petName` is held alongside `walkId` because the end paths run after the
+    // marker is gone, and both belong to the activity's immutable attributes.
     let walkId: string | null = null;
+    let petName = '';
     let content: LiveWalkContent | null = null;
     let lastSentAt = 0;
     let frozen = false;
@@ -94,10 +97,11 @@ export function WalkLiveActivityBridge() {
 
         if (walkId !== marker.id) {
           walkId = marker.id;
+          petName = marker.petName;
           content = next;
           frozen = false;
           lastSentAt = Date.now();
-          const payload = { ...next, walkId: marker.id };
+          const payload = { ...next, walkId: marker.id, petName: marker.petName };
           serialize(() => startLiveActivity(payload));
           return;
         }
@@ -106,7 +110,7 @@ export function WalkLiveActivityBridge() {
         if (!shouldPushUpdate(content, next, lastSentAt, now)) return;
         content = next;
         lastSentAt = now;
-        const payload = { ...next, walkId: marker.id };
+        const payload = { ...next, walkId: marker.id, petName: marker.petName };
         serialize(() => updateLiveActivity(payload));
         return;
       }
@@ -128,7 +132,7 @@ export function WalkLiveActivityBridge() {
         });
         content = final;
         lastSentAt = Date.now();
-        const payload = { ...final, walkId };
+        const payload = { ...final, walkId, petName };
         serialize(() => updateLiveActivity(payload));
         return;
       }
@@ -156,7 +160,7 @@ export function WalkLiveActivityBridge() {
         saved,
         walkSessionId: walkId,
       });
-      const payload = { ...final, walkId };
+      const payload = { ...final, walkId, petName };
       walkId = null;
       content = null;
       frozen = false;
