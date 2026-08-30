@@ -917,31 +917,56 @@ function MealScreenContent() {
     });
   }, [foodPantry, activePet?.species, activePet?.bowl_size]);
 
-  const confirmLog = async (overrides?: LogOverrides) => {
+  const confirmLog = async (overrides?: LogOverrides, toxinAcknowledged = false) => {
     const sr = overrides?.scanResult ?? scanResult;
     const sc = overrides?.servingCount ?? servingCount;
     if (!sr || !activePet) return;
-    retryRef.current = () => confirmLog(overrides);
+    retryRef.current = () => confirmLog(overrides, toxinAcknowledged);
 
     // Prevent double-taps during async checks
     setIsPendingConfirm(true);
 
-    // ── Acute toxin guard. Hard-block before any other check. ──
+    // ── Acute toxin warning ──
+    //
     // findToxicIngredients is deterministic and runs against the food name and
-    // ingredient list. A xylitol / chocolate / grape match means the meal must
-    // not be logged regardless of overage / approaching-limit logic.
-    const toxinHits = findToxicIngredients(activePet.species as 'dog' | 'cat', [
-      sr.food_name,
-      ...(sr.key_ingredients ?? []),
-    ]);
-    if (toxinHits.length > 0) {
-      const toxinList = toxinHits.map((h) => `• ${h.toxin}: ${h.reason}`).join('\n');
-      Alert.alert(
-        `Unsafe for ${activePet.name}`,
-        `This food contains ingredients that are toxic to ${activePet.species === 'cat' ? 'cats' : 'dogs'}:\n\n${toxinList}\n\nDo not feed. If ${activePet.name} has already eaten any of this, contact your vet or an animal poison control hotline immediately.`,
-        [{ text: 'OK', onPress: () => setIsPendingConfirm(false) }],
-      );
-      return;
+    // ingredient list. A xylitol / chocolate / grape / allium match is the most
+    // serious thing this screen can tell an owner, so it is said first and in
+    // full, before any calorie arithmetic.
+    //
+    // It is a WARNING, not a gate, and the reason is what logging means: a log
+    // records what was EATEN, not what someone plans to serve. Refusing the
+    // write did not stop a poisoning — it stopped the record of one, on the
+    // screen an owner is most likely to have open in the minutes afterwards.
+    // The alert itself said "if they have already eaten any of this, call your
+    // vet" while making that exact situation impossible to write down.
+    //
+    // So Pawtchi says everything it observed, plainly, and the decision stays
+    // with the person who can see the bowl. Choosing to log re-enters this
+    // function rather than jumping to executeLog, so the calorie checks below
+    // still run: one disclosure does not buy silence on the others.
+    if (!toxinAcknowledged) {
+      const toxinHits = findToxicIngredients(activePet.species as 'dog' | 'cat', [
+        sr.food_name,
+        ...(sr.key_ingredients ?? []),
+      ]);
+      if (toxinHits.length > 0) {
+        const toxinList = toxinHits.map((h) => `• ${h.toxin}: ${h.reason}`).join('\n');
+        Alert.alert(
+          `Unsafe for ${activePet.name}`,
+          `This food contains ingredients that are toxic to ${activePet.species === 'cat' ? 'cats' : 'dogs'}:\n\n${toxinList}\n\nDo not feed this. If ${activePet.name} has already eaten some, contact your vet or an animal poison control hotline now.\n\nLogging keeps the record accurate. It does not make the food safe.`,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => setIsPendingConfirm(false) },
+            {
+              text: 'Log anyway',
+              style: 'destructive',
+              onPress: () => {
+                void confirmLog(overrides, true);
+              },
+            },
+          ],
+        );
+        return;
+      }
     }
 
     const today = getLocalYMD(new Date());
