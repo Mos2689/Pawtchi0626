@@ -109,6 +109,8 @@ export default function WalkMap({
   interactive = true,
   quiet = false,
   spots = [],
+  suggestedRoute = null,
+  liveBottomInset = 0,
   camera,
   onCameraChange,
 }: WalkMapProps) {
@@ -136,6 +138,20 @@ export default function WalkMap({
     }),
     [path],
   );
+
+  // Null rather than an empty Feature when there is nothing to suggest, so the
+  // layer is unmounted entirely instead of drawing a zero-length line.
+  const suggestedRouteGeoJson = useMemo(() => {
+    if (!suggestedRoute || suggestedRoute.length < 2) return null;
+    return {
+      type: 'Feature' as const,
+      properties: {},
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: suggestedRoute.map(p => [p.lng, p.lat]),
+      },
+    };
+  }, [suggestedRoute]);
 
   // Suppressed as a backdrop — Home draws its own flat pastel dots over the map
   // and a second start marker underneath them is just clutter.
@@ -238,14 +254,43 @@ export default function WalkMap({
         animationDuration: 0,
       };
     }
+    // Match the familiar directions overview: frame the complete suggested
+    // path instead of following only the current puck at a close zoom.
+    const suggestedBounds = suggestedRoute && suggestedRoute.length >= 2
+      ? boundsOf(suggestedRoute)
+      : null;
+    if (suggestedBounds) {
+      return {
+        bounds: {
+          ne: suggestedBounds.ne,
+          sw: suggestedBounds.sw,
+          paddingLeft: SUMMARY_PADDING,
+          paddingRight: SUMMARY_PADDING,
+          paddingTop: SUMMARY_PADDING,
+          paddingBottom: SUMMARY_PADDING + liveBottomInset,
+        },
+        animationDuration: 600,
+      };
+    }
     const target = currentPosition ?? path[path.length - 1] ?? center ?? null;
     if (!target) return null;
     return {
       centerCoordinate: [target.lng, target.lat] as [number, number],
       zoomLevel: LIVE_ZOOM,
+      padding: liveBottomInset > 0 ? { paddingBottom: liveBottomInset } : undefined,
       animationDuration: 600,
     };
-  }, [mode, path, currentPosition, center, quiet, camera, size]);
+  }, [
+    mode,
+    path,
+    currentPosition,
+    center,
+    quiet,
+    camera,
+    size,
+    suggestedRoute,
+    liveBottomInset,
+  ]);
 
   /**
    * The region MapLibre is showing, translated back into projector units.
@@ -301,6 +346,37 @@ export default function WalkMap({
         zoomEnabled={interactive}
       >
         {cameraStop && <Camera {...cameraStop} />}
+
+        {/* The suggested way, drawn BEFORE the walk so it sits underneath.
+            Dashed electric blue so it cannot be mistaken for the yellow trace:
+            that trace is the record of where the dog actually went, and a
+            suggestion that looked like it would quietly corrupt the one thing
+            this map is for. */}
+        {suggestedRouteGeoJson && (
+          <ShapeSource id="suggested-route" shape={suggestedRouteGeoJson as any}>
+            <LineLayer
+              id="suggested-route-casing"
+              style={{
+                lineColor: color.cream,
+                lineWidth: 7,
+                lineOpacity: 0.95,
+                lineJoin: 'round',
+                lineCap: 'round',
+              }}
+            />
+            <LineLayer
+              id="suggested-route-layer"
+              style={{
+                lineColor: color.electric,
+                lineWidth: 4,
+                lineOpacity: 1,
+                lineDasharray: [2, 2],
+                lineJoin: 'round',
+                lineCap: 'round',
+              }}
+            />
+          </ShapeSource>
+        )}
 
         {/* Two strokes on one source: a navy casing with the brand yellow on
             top. The route is yellow everywhere in Pawtchi, but yellow does not

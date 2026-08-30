@@ -33,6 +33,7 @@ function keepsake(overrides: Partial<Keepsake> = {}): Keepsake {
     elapsedS: 120,
     mediaType: 'photo',
     source: 'camera',
+    localPath: null,
     localAssetId: 'ph://ABC',
     width: 4032,
     height: 3024,
@@ -60,12 +61,21 @@ describe('canAnchor', () => {
     expect(canAnchor(keepsake({ localAssetId: null }))).toBe(true);
   });
 
-  it('accepts a keepsake still resolvable on this device', () => {
-    expect(canAnchor(keepsake({ thumbPath: null }))).toBe(true);
-  });
-
   it('refuses a metadata-only keepsake — a then/now needs an image', () => {
     expect(canAnchor(keepsake({ thumbPath: null, localAssetId: null }))).toBe(false);
+  });
+
+  // The anchor is a photo from another walk, rendered from a signed thumbnail
+  // URL. Neither local copy can serve it, and accepting one lets an anchor that
+  // resolves to nothing suppress the usable one behind it.
+  it('refuses a camera-roll id with no thumbnail — that phone may be long gone', () => {
+    expect(canAnchor(keepsake({ thumbPath: null }))).toBe(false);
+  });
+
+  it('refuses an owned file with no thumbnail — a reinstall takes it', () => {
+    expect(
+      canAnchor(keepsake({ thumbPath: null, localAssetId: null, localPath: '1700-a.jpg' })),
+    ).toBe(false);
   });
 });
 

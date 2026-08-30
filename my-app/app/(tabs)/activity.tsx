@@ -774,7 +774,12 @@ function ActivityScreenContent() {
   }, [petId, petWeightKg, dateStr, user]);
 
   const handleCheckTap = useCallback((item: any) => {
-    if (!hasFullAccess) { router.push('/paywall' as any); return; }
+    // Manually completing a walk is part of the always-free walk feature. The
+    // subscription check remains for the other activity-plan items only.
+    if (!hasFullAccess && item.activity_type !== 'walk') {
+      router.push('/paywall' as any);
+      return;
+    }
 
     // Safety check: block marking future items as done
     if (item.scheduled_date > getLocalYMD(new Date())) {
@@ -805,9 +810,9 @@ function ActivityScreenContent() {
 
   // One-tap tracked walk — GPS measures it and completes the slot on its own.
   const handleTrackWalk = useCallback(() => {
-    if (hasFullAccess) armWalkStart();
-    router.push((hasFullAccess ? '/walk' : '/paywall') as any);
-  }, [router, hasFullAccess]);
+    armWalkStart();
+    router.push('/walk' as any);
+  }, [router]);
 
   // First-time + edit-from-empty flow: open routine sheet, save prefs, then
   // call generateSchedule in the same tap. When prefs already exist the

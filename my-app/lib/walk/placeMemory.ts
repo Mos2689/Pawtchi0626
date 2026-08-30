@@ -23,7 +23,7 @@
 
 import { haversineMeters, type GeoPoint } from './geo';
 import { PLACE_MATCH_RADIUS_M } from './placeKey';
-import { hasImage, type Keepsake } from './keepsake';
+import { type Keepsake } from './keepsake';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -96,9 +96,20 @@ export interface PlaceMemoryInput {
  * remember a walk, but it cannot carry a side-by-side: "compare this with the
  * photo from March" followed by an empty frame is a promise broken at the exact
  * moment the user leaned in.
+ *
+ * ── Why the thumbnail specifically, and not hasImage ──
+ * An anchor comes from a DIFFERENT walk, often years back, and the offer is
+ * rendered from a signed thumbnail URL — see useWalkKeepsakes. The local rungs
+ * cannot serve it: a camera-roll id may be from a phone the user no longer
+ * owns, and an owned file is gone after a reinstall. Accepting either would let
+ * `evaluatePlaceMemory` pick an anchor that then resolves to nothing, and
+ * because it returns only the single oldest match, one unusable anchor
+ * suppresses the usable one behind it. The prompt would simply not appear, on a
+ * feature that fires about once a fortnight — the kind of silence nobody
+ * reports and nobody notices.
  */
 export function canAnchor(keepsake: Keepsake): boolean {
-  return hasImage(keepsake);
+  return Boolean(keepsake.thumbPath);
 }
 
 /** Whole days between two instants, floored. */

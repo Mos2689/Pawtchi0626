@@ -58,6 +58,11 @@ import { SpotDetailsSheet } from '../../components/spots/SpotDetailsSheet';
 import { OsmAttribution } from '../../components/spots/OsmAttribution';
 import { CATEGORY_ICON, CATEGORY_TONE } from '../../components/spots/spotVisuals';
 import { armWalkStart } from '../../lib/walk/walkStartIntent';
+import { prefetchWalkingRoute } from '../../lib/walk/routeClient';
+import { isWalkToSpot } from '../../lib/spots/spotAction';
+import { useSpotRoutePreview } from '../../hooks/useSpotRoutePreview';
+import { deriveDogWalkProfile } from '../../lib/walk/dogCalibration';
+import { describeWay, dogPaceKmh } from '../../lib/walk/wayfinding';
 import { WalksignMomentModal } from '../../components/walksign/WalksignMomentModal';
 import { MilestoneCelebration } from '../../components/pawprints/MilestoneCelebration';
 import { TemplateUnlockCelebration } from '../../components/moments/TemplateUnlockCelebration';
@@ -229,7 +234,6 @@ export default function HomeScreen() {
   const {
     isFreemiumActive,
     daysSinceCreation,
-    hasFullAccess,
     // Mirrored into the notification center, which cannot read a React context
     // from a Zustand store — see setSubscriptionSnapshot below.
     status: subStatus,
@@ -319,6 +323,78 @@ export default function HomeScreen() {
     center: spotsCenter,
     canAskLocation,
   });
+
+  /**
+   * Which way the open spot is, and roughly how long at this dog's pace.
+   *
+   * Measured from `mapCenter` — the OWNER's position — and only when
+   * `searchCenter` is null. Once someone searches another area, `distanceMeters`
+   * on each spot is measured from there instead, and a heading from the owner
+   * paired with a distance from a suburb three away would be two answers to one
+   * question. In that case the sheet gets nothing and shows nothing.
+   */
+  /**
+   * The way to the open spot, drawn before anything starts.
+   *
+   * Only for places you walk a dog TO — a vet or a pet shop hands off to a maps
+   * app instead, so previewing one would spend a request on donated
+   * infrastructure for a route nobody is going to walk. See lib/spots/spotAction.ts.
+   */
+  const previewDestination = useMemo(
+    () =>
+      openSpot && isWalkToSpot(openSpot.category)
+        ? { lat: openSpot.latitude, lng: openSpot.longitude }
+        : null,
+    [openSpot],
+  );
+  const spotPreview = useSpotRoutePreview({
+    origin: mapCenter,
+    destination: previewDestination,
+  });
+
+  /**
+   * How much of the screen the preview sheet covers, as measured by the sheet.
+   *
+   * The camera frames the route above this. Reported rather than assumed: the
+   * sheet's height depends on how much the place knows about itself, and a
+   * constant here would be right for a beach and wrong for a vet with hours,
+   * an address and a phone number.
+   */
+  const [previewSheetHeight, setPreviewSheetHeight] = React.useState(0);
+  const previewSheetInset = previewDestination ? previewSheetHeight : 0;
+
+  /**
+   * The floating chrome the route must stay clear of at the top.
+   *
+   * The pet header and the Spots filter chips sit ON the map, so the usable
+   * canvas starts below them. A constant rather than a measurement because
+   * unlike the sheet — whose height depends on how much a place knows about
+   * itself — this stack is the same on every spot: one header row, one chip
+   * row, and the gap between them.
+   */
+  const SPOTS_TOP_CHROME = 104;
+  const previewTopInset = previewDestination ? insets.top + SPOTS_TOP_CHROME : 0;
+
+  const openSpotWay = useMemo(() => {
+    if (!openSpot || searchCenter) return null;
+    const profile = deriveDogWalkProfile({
+      species: activePet?.species ?? 'dog',
+      breed: activePet?.breed ?? null,
+      ageYears: activePet?.age_years ?? null,
+      weightKg: activePet?.current_weight_kg ?? null,
+      medicalConditions: activePet?.medical_conditions ?? null,
+    });
+    return describeWay(
+      mapCenter,
+      { lat: openSpot.latitude, lng: openSpot.longitude },
+      // The routed distance once it lands, the straight line until then. This
+      // is the ETA's whole accuracy story: walkEtaMinutes only ever divided
+      // distance by pace, so handing it the real walking distance turns a
+      // known-optimistic guess into an estimate worth planning around.
+      spotPreview.distanceM ?? openSpot.distanceMeters,
+      dogPaceKmh(profile.paceBandKmh),
+    );
+  }, [activePet, mapCenter, openSpot, searchCenter, spotPreview.distanceM]);
 
   const spots = useMemo(() => applyFilter(allSpots, spotFilter), [allSpots, spotFilter]);
   const spotFilters = useMemo(() => availableFilters(allSpots), [allSpots]);
@@ -413,7 +489,6 @@ export default function HomeScreen() {
         ? { kind: 'today' as const, id: 'today', totals: todayTotals, weather: currentWeather }
         : { kind: 'empty' as const, id: 'empty', petName },
       ...walks,
-      { kind: 'invite' as const, id: 'invite', petName },
     ];
   }, [
     walkEnabled,
@@ -449,13 +524,17 @@ export default function HomeScreen() {
 
   const selectedRoute = useMemo(() => {
     if (segment === 'spots') {
+      // With a place open and its way resolved, the drawn route IS the framing:
+      // one line from the owner to the pin, which the camera then fits. This is
+      // the preview the owner is deciding on, so it outranks the bare point.
+      if (spotPreview.route && spotPreview.route.length > 1) return spotPreview.route;
       // A spot has no route, only a place. Framing the single point is what
       // moves the camera to it — the same mechanism a one-fix walk uses.
       const spot = spots.find(s => s.id === activeId);
       return spot ? [{ lat: spot.latitude, lng: spot.longitude }] : null;
     }
     return walkItems.find(w => w.id === selectedId)?.route ?? walkItems[0]?.route ?? null;
-  }, [segment, selectedId, activeId, walkItems, spots]);
+  }, [segment, selectedId, activeId, walkItems, spots, spotPreview.route]);
 
   /**
    * The sniff stop whose dwell is currently being shown.
@@ -546,6 +625,15 @@ export default function HomeScreen() {
 
   const onOpenSpot = useCallback((spot: PawtchiSpot) => {
     setOpenSpot(spot);
+    // Selection follows the tap, not just the scroll.
+    //
+    // The rail selects on momentum-end, so a card tapped while it sits off
+    // centre opens a place the map has not highlighted. That was survivable
+    // when opening a spot only raised a sheet; now it draws a route, and a line
+    // leading to a pale pin while a different one is inked reads as a bug. The
+    // rail is uncontrolled, so this moves nothing on screen — it only makes the
+    // pin agree with the sheet.
+    setSelectedId(spot.id);
     track('spot_details_opened', {
       spot_category: spot.category,
       provider: spot.provider,
@@ -599,14 +687,42 @@ export default function HomeScreen() {
     // Spot pins are built from a different source and carry a category glyph
     // and a category colour, so they do not go through buildMapPins at all.
     if (segment === 'spots') {
-      return spots.map(spot => ({
+      const spotPins = spots.map(spot => ({
         id: spot.id,
         lat: spot.latitude,
         lng: spot.longitude,
+        origin: mapCenter ?? undefined,
         tone: spot.id === activeId ? ('ink' as const) : CATEGORY_TONE[spot.category],
         icon: CATEGORY_ICON[spot.category],
         label: spot.id === activeId ? displayName(spot.name, spot.category) : null,
       }));
+
+      /**
+       * Where the line starts.
+       *
+       * The destination end has always been marked — it is a spot, and spots
+       * get pins. The other end simply stopped in the street, so a drawn route
+       * read as a line that came from nowhere. This is the "you are here" the
+       * route needs to be a journey rather than a shape.
+       *
+       * Taken from the route's own first point rather than from `mapCenter`:
+       * OSRM snaps the origin to the nearest footpath, sometimes a house away,
+       * and a dot floating off the end of its own line is worse than no dot.
+       */
+      const start = spotPreview.route?.[0];
+      return start
+        ? [
+            ...spotPins,
+            {
+              id: 'route-origin',
+              lat: start.lat,
+              lng: start.lng,
+              tone: 'ink' as const,
+              icon: 'circle-slice-8' as const,
+              label: null,
+            },
+          ]
+        : spotPins;
     }
     // One pin per walk, at its start, with the selected one in ink.
     const walkPins = buildWalkPins(walkItems, activeId).map(pin => ({
@@ -628,7 +744,7 @@ export default function HomeScreen() {
 
     // Sniffs last so they draw ON the route rather than under a walk-start pin.
     return [...walkPins, ...sniffPins];
-  }, [segment, walkItems, walkSniffs, openSniffId, spots, activeId]);
+  }, [segment, walkItems, walkSniffs, openSniffId, spots, activeId, mapCenter, spotPreview.route]);
 
   const [locationPromptDismissed, setLocationPromptDismissed] = React.useState(false);
   const showLocationPrompt =
@@ -712,15 +828,15 @@ export default function HomeScreen() {
     Date.now() - new Date(latestWalkAt).getTime() < STORY_WINDOW_MS;
 
   const onStartWalk = useCallback(() => {
-    if (hasFullAccess) armWalkStart();
-    router.push((hasFullAccess ? '/walk' : '/paywall') as any);
-  }, [hasFullAccess, router]);
+    armWalkStart();
+    router.push('/walk' as any);
+  }, [router]);
 
   /**
    * Start a walk with a place in mind.
    *
-   * The same gate and the same navigation as every other walk-start — the only
-   * difference is the note that rides along. Deliberately routed through
+   * The same free start path as every other walk entry point, with the selected
+   * place riding alongside it. Deliberately routed through
    * `armWalkStart` rather than a route param: the arming flag is already the
    * one thing that says a walk was genuinely asked for, and a destination that
    * could arrive without it would be a way to start a walk nobody tapped for.
@@ -730,15 +846,32 @@ export default function HomeScreen() {
   const onWalkHere = useCallback(
     (spot: PawtchiSpot) => {
       setOpenSpot(null);
-      if (!hasFullAccess) {
-        router.push('/paywall' as any);
-        return;
+      // Start routing before navigation, so the line is waiting in the route
+      // client's short in-memory cache by the time the walk screen has mounted
+      // and location disclosure has settled.
+      if (mapCenter) {
+        prefetchWalkingRoute(mapCenter, { lat: spot.latitude, lng: spot.longitude });
       }
       armWalkStart({
         id: spot.id,
         name: displayName(spot.name, spot.category),
         lat: spot.latitude,
         lng: spot.longitude,
+        // Load-bearing, and in two ways that both look optional.
+        //
+        // useWalkRoute reads this as `initialPosition`, and without it the
+        // hook's first evaluation has no position at all — GPS has not
+        // delivered a fix that early — so it returns before requesting
+        // anything and the next attempt is a full EVALUATE_INTERVAL_MS away.
+        // That was the ten-second wait between the timer starting and the line
+        // appearing.
+        //
+        // It also makes the prefetch above actually land. routeClient keys its
+        // cache on `from>to`, so a request from live GPS could never match one
+        // prefetched from mapCenter: every prefetch was a guaranteed miss and a
+        // wasted call on FOSSGIS's donated routing server. Passing the same
+        // origin the prefetch used is what makes the two agree.
+        origin: mapCenter ?? undefined,
       });
       track('spot_walk_started', {
         spot_category: spot.category,
@@ -748,7 +881,7 @@ export default function HomeScreen() {
       });
       router.push('/walk' as any);
     },
-    [hasFullAccess, router],
+    [mapCenter, router],
   );
 
   // ── First-walk intro video ────────────────────────────────────────────────
@@ -981,6 +1114,8 @@ export default function HomeScreen() {
       {/* Layer 1 — the map, edge to edge, never covered. */}
       <HomeMapLayer
         route={selectedRoute}
+        frameBottomInset={previewSheetInset}
+        frameTopInset={previewTopInset}
         center={mapCenter}
         markers={markers}
         keepsakePins={keepsakePins}
@@ -1063,6 +1198,7 @@ export default function HomeScreen() {
           <Reanimated.View entering={entrance(1)} pointerEvents="box-none">
             <MapControls
               galleryEnabled={walkItems.length >= 2}
+              onFindFriend={() => router.push('/invite' as any)}
               // A searched-elsewhere map is just as "off its default" as a
               // swiped rail, and this is the one control that takes it back.
               canRecentre={selectedId !== null || searchCenter !== null}
@@ -1079,21 +1215,57 @@ export default function HomeScreen() {
               onSelect={onRailSelect}
               onOpenWalk={openWalkStory}
               onOpenSpot={onOpenSpot}
-              onInvite={() => router.push('/invite' as any)}
             />
           </Reanimated.View>
 
-          {/* ODbL. The spot data is OSM-derived on both platforms, and on iOS
-              the basemap is Apple's — so without this the screen would show
-              OSM data with no OSM credit anywhere. */}
-          {segment === 'spots' && <OsmAttribution />}
+          {/* The OSM credit is NOT here.
+              It floats, anchored to the screen, below this whole subtree — see
+              the note at the end of this component. Putting it in this column
+              is what pushed the rail and the map controls up out from behind
+              an open sheet: the cabinet is bottom-anchored, so a margin on its
+              last child moves every sibling above it. */}
         </View>
       </View>
+
+      {/* ── ODbL, floating ──
+          The spot data is OSM-derived on both platforms, and on iOS the
+          basemap is Apple's, so without this the screen shows OSM data with no
+          OSM credit anywhere.
+
+          Absolutely positioned against the SCREEN rather than placed in the
+          chrome column, for one reason: it has to move when a details sheet
+          opens, and anything that moves inside a bottom-anchored flex column
+          drags its siblings with it. Out of the flow, it can be lifted over the
+          sheet without the rail or the map controls noticing.
+
+          Above the sheet's measured top edge when one is open, above the tab
+          bar otherwise. The sheet is a Modal in its own layer, so this never
+          overlaps it — it sits in the map area that remains. */}
+      {segment === 'spots' && (
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.attribution,
+            {
+              bottom: previewSheetInset
+                ? previewSheetInset + space.sm
+                : TAB_BAR_CLEARANCE + insets.bottom,
+            },
+          ]}
+        >
+          <OsmAttribution />
+        </View>
+      )}
 
       <SpotDetailsSheet
         spot={openSpot}
         visits={openSpot ? spotVisits[openSpot.id] ?? 0 : 0}
         onWalkHere={onWalkHere}
+        way={openSpotWay}
+        petName={activePet?.name ?? null}
+        routeDistanceM={spotPreview.distanceM}
+        routeStatus={spotPreview.status}
+        onHeightChange={setPreviewSheetHeight}
         onClose={() => setOpenSpot(null)}
       />
     </View>
@@ -1121,6 +1293,11 @@ const styles = StyleSheet.create({
     // Tighter than the screen's general rhythm: the rail and the CTA are one
     // object, and spacing them like unrelated sections broke that reading.
     gap: space.sm,
+  },
+  /** `bottom` is supplied at the call site — it depends on the open sheet. */
+  attribution: {
+    position: 'absolute',
+    left: 0,
   },
 
 

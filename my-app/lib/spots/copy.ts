@@ -110,6 +110,37 @@ export const copy = {
     body: 'These are from your last search.',
   },
 
+  /**
+   * The route preview at the top of a walkable place's sheet.
+   *
+   * Every string here has to survive the route never arriving. The owner is
+   * standing outside deciding whether to set off, and a preview that fails must
+   * leave them with something to act on rather than an error — which is why
+   * `unavailable` describes what remains true (a direction and a pin) instead of
+   * what broke.
+   */
+  preview: {
+    /**
+     * The origin row.
+     *
+     * "Your location" rather than Apple's "My Location": everything else
+     * Pawtchi says to an owner is in the second person, and one stray first
+     * person on the busiest screen in the app is the kind of seam people feel
+     * without being able to name.
+     */
+    fromHere: 'Your location',
+    finding: 'Finding the way there',
+    /**
+     * No line, but the sheet is not empty: the compass heading above it still
+     * points the right way and the map still shows the pin. Says what the owner
+     * still has, not what Pawtchi could not do.
+     */
+    unavailable: 'No route found — the pin and heading still hold',
+    /** Suffix under the time. `petName` is omitted when there is no pet name. */
+    atPace: (petName: string | null) =>
+      petName ? `at ${petName}’s pace` : 'at a walking pace',
+  },
+
   locationNeeded: {
     title: 'Spots needs your location',
     // Says exactly what it is for, and does NOT ask for background location —
@@ -128,6 +159,31 @@ export const copy = {
      * The verb is the product.
      */
     walkHere: 'Walk here',
+    /**
+     * What "Walk here" became once the way there is drawn before you commit.
+     *
+     * "Walk here" had to carry two meanings at once — show me this place, and
+     * begin recording now — because there was only ever one tap. With the route
+     * on the map and the distance in front of you, the tap means one thing, and
+     * the word is the plainest one for it. Nothing starts until you say Start.
+     */
+    startWalk: 'Start',
+    /**
+     * The escape hatch, and deliberately worded as an exit rather than an offer.
+     *
+     * "Open in Maps" describes what happens; "Get directions" would sell it, and
+     * selling it is what turned this sheet into a directory the first time.
+     *
+     * Its weight now depends on the place. For a park it stays a quiet text link
+     * under the yellow CTA. For a vet or a pet shop it IS the action — see
+     * spotAction.ts — because Pawtchi has no traffic, no opening hours and no
+     * turn-by-turn, and an errand deserves the app that does.
+     */
+    openInMaps: 'Open in Maps',
+    /** The primary button on a place you are not walking the dog to. */
+    getDirections: 'Get directions',
+    /** Screen-reader label for the sheet's dismiss control. */
+    close: 'Close',
     refresh: 'Refresh',
     searchWider: 'Search wider',
     /**
@@ -141,7 +197,6 @@ export const copy = {
   },
 
   details: {
-    hoursUnavailable: 'Opening hours unavailable',
     /**
      * The one line on this sheet that comes from the dog rather than from a
      * stranger's map edit.
@@ -169,7 +224,9 @@ export const copy = {
      * that closed last month can absolutely still be here.
      */
     accuracyNote: 'Information may have changed — check local signage.',
-    source: 'Data from OpenStreetMap contributors',
+    // The OSM credit that lived here has moved to OsmAttribution, the tappable
+    // chip on the map — one credit, as a working link to the licence, rather
+    // than two of which the nearer one went nowhere. See ODbL.
   },
 
   /** Only shown when a fountain is explicitly confirmed dog-usable. */

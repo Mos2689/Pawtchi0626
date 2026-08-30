@@ -33,15 +33,15 @@ export const KEEPSAKE_THUMB_BUCKET = 'walk-media-thumbs';
 
 const SELECT_COLUMNS =
   'id, walk_session_id, pet_id, captured_at, lat, lng, route_index, elapsed_s, ' +
-  'media_type, source, local_asset_id, width, height, thumb_path, thumb_blurhash, ' +
-  'place_key, caption';
+  'media_type, source, local_path, local_asset_id, width, height, thumb_path, ' +
+  'thumb_blurhash, place_key, caption';
 
 /**
  * Write one keepsake. Returns the stored row, or null if the write failed.
  *
  * Callers treat null as "try again later", never as an error to surface: the
- * photo is already safe in the user's own library, which is the point of the
- * architecture.
+ * photo is already safe in Pawtchi's own container (and usually in the user's
+ * library too), which is the point of the architecture.
  */
 export async function insertKeepsake(
   input: KeepsakeInsertInput,
@@ -160,7 +160,19 @@ export async function attachThumbnail(
   }
 }
 
-/** Keepsakes still waiting for their thumbnail — the lazy-upload work queue. */
+/**
+ * Keepsakes still waiting for their thumbnail — the lazy-upload work queue.
+ *
+ * Also the protected list for the storage sweep: a row in here has no durable
+ * copy anywhere, so its owned file is the only one in existence and must not be
+ * evicted. See keepsakeBudget.ts.
+ *
+ * The qualifier is "an image exists SOMEWHERE local", which since local_path
+ * arrived means either column. Testing only `local_asset_id` — as this did
+ * originally, when that was the only local copy there was — would silently skip
+ * every capture whose owner declined the camera-roll save, leaving exactly the
+ * photos with no backup as the ones that never became durable.
+ */
 export async function fetchPendingThumbnails(petId: string, limit = 20): Promise<Keepsake[]> {
   try {
     const { data, error } = await supabase
@@ -168,7 +180,7 @@ export async function fetchPendingThumbnails(petId: string, limit = 20): Promise
       .select(SELECT_COLUMNS)
       .eq('pet_id', petId)
       .is('thumb_path', null)
-      .not('local_asset_id', 'is', null)
+      .or('local_path.not.is.null,local_asset_id.not.is.null')
       .order('captured_at', { ascending: false })
       .limit(limit);
     if (error || !data) return [];

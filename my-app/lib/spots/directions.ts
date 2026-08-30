@@ -1,13 +1,21 @@
 /**
  * directions — hand the destination to the device's own map app.
  *
- * ⚠️ PARKED, NOT DEAD. Nothing imports this today. The "Get directions" CTA was
- * pulled from SpotDetailsSheet because ejecting an owner into Apple or Google
- * Maps is the opposite of what Spots is for — we want them to *walk the dog*
- * there, which is what "Walk here" will do instead. The module stays because it
- * is pure, tested and costs nothing unimported (Metro never bundles it), and
- * because "for now" was the word used: if a place ever turns out to need real
- * navigation, this is ready rather than rewritten from memory.
+ * ⚠️ UNPARKED (Aug 2026), on the terms it was parked under.
+ *
+ * The "Get directions" CTA was pulled from SpotDetailsSheet because ejecting an
+ * owner into Apple or Google Maps is the opposite of what Spots is for — we want
+ * them to *walk the dog* there, which is what "Walk here" does. That reasoning
+ * still stands and this does not undo it.
+ *
+ * What changed is narrower: "Walk here" and the compass line tell an owner a
+ * place exists, how far off it is and which way — none of which helps the person
+ * genuinely lost on an unfamiliar street with a dog on a lead. Leaving that
+ * person with nothing is not integrity, it is stubbornness.
+ *
+ * So the hierarchy carries the decision rather than the feature list: "Walk
+ * here" stays the only filled CTA and this renders as a quiet text link beneath
+ * it. A link is an exit for someone who needs one; a button is a recommendation.
  *
  * Pawtchi does not navigate. Turn-by-turn is a whole product with a whole
  * liability surface, and the phone already has one that is better than anything
@@ -60,7 +68,11 @@ export function directionsUrl(spot: PawtchiSpot, platform: DirectionsPlatform): 
   const label = labelFor(spot);
 
   if (platform === 'ios') {
-    return `maps://?daddr=${lat},${lng}&q=${encodeURIComponent(label)}`;
+    // `dirflg=w` asks Apple Maps for walking directions. A driving route to a
+    // park four streets away would be a strange thing for a dog-walking app to
+    // hand someone. Android's `geo:` intent has no equivalent flag — the chosen
+    // map app picks its own default mode.
+    return `maps://?daddr=${lat},${lng}&dirflg=w&q=${encodeURIComponent(label)}`;
   }
   if (platform === 'android') {
     return `geo:${lat},${lng}?q=${lat},${lng}(${encodeURIComponent(label)})`;

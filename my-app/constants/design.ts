@@ -357,6 +357,13 @@ export const motion = {
     minVisibleDelay: 400,
     resolve: 420,
   },
+  // Destination wayfinding — an indeterminate journey signal while a real
+  // walking route is calculated, followed by one quick, conclusive settle.
+  route: {
+    travelCycle: 1350,
+    resolve: 240,
+    readyHold: 2200,
+  },
   // The Success Ribbon — signature walk-finish transition. A flowing brand
   // ribbon is painted across the screen in a left→right→left wag; the walk
   // screen crossfades to the success screen underneath it (no flat cover); the

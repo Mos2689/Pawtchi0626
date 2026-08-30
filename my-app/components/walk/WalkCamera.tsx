@@ -13,9 +13,23 @@
  * waiting to be sorted.
  *
  * ── Where the photo goes ──
- * Straight into the user's own photo library, where their existing backup
- * already protects it. Pawtchi keeps the metadata and, later, a ~20 KB
- * thumbnail. The original never reaches a Pawtchi server.
+ * Two places, and the order matters.
+ *
+ * First into Pawtchi's own app container — a downscaled copy we own and can
+ * read back without any permission, on either platform, forever. That copy is
+ * what every surface renders from. See lib/walk/keepsakeFile.ts for why the
+ * previous arrangement (give the photo away, keep a `ph://` receipt, read the
+ * library back to display it) put an unrequested system permission sheet over
+ * the Home screen at launch.
+ *
+ * Then, as a courtesy, a full-resolution copy into the user's own photo
+ * library, so a walk photo sits with the rest of their pictures. That save is
+ * WRITE-ONLY: on iOS an add-only authorisation has no "limited" state, so it
+ * cannot produce the "Select More Photos" sheet, and refusing it now costs the
+ * user nothing at all.
+ *
+ * The original never reaches a Pawtchi server. What syncs is still the
+ * metadata and a ~20 KB thumbnail.
  */
 
 import React, { useCallback, useRef, useState } from 'react';
@@ -26,6 +40,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { color, font, radius, space } from '../../constants/design';
 import { haptic } from '../../lib/haptics';
+import { persistCapture } from '../../lib/walk/keepsakeFile';
 
 /** What the walk knows, stamped onto the frame. */
 export interface WalkCameraContext {
@@ -38,12 +53,22 @@ export interface WalkCameraContext {
 }
 
 export interface WalkCaptureResult {
-  /** Local uri of the captured frame — for the thumbnail, not for upload. */
+  /**
+   * Uri to render RIGHT NOW — the owned copy where one was written, otherwise
+   * the camera's cache file. Good for this session only; never persisted, as
+   * the container path it points into does not survive an app update.
+   */
   uri: string;
+  /**
+   * Filename of Pawtchi's own copy, for walk_media.local_path. Null when the
+   * capture could not be persisted, which degrades this keepsake to exactly
+   * what every keepsake used to be.
+   */
+  localPath: string | null;
   width: number;
   height: number;
   capturedAt: number;
-  /** Photo-library asset id. Null when the save was refused or failed. */
+  /** Photo-library asset id. Null when the courtesy save was refused or failed. */
   localAssetId: string | null;
 }
 
@@ -59,10 +84,12 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [libraryPermission, requestLibraryPermission] = MediaLibrary.usePermissions({
-    // Android 13+ lets an app add its own capture to MediaStore without broad
-    // photo-library access. iOS retains its normal photo-library prompt.
-    writeOnly: Platform.OS === 'android',
-    granularPermissions: Platform.OS === 'android' ? [] : ['photo'],
+    // Write-only on BOTH platforms now. Pawtchi renders from its own copy, so
+    // it never needs to read the library back — and add-only authorisation is
+    // what keeps iOS from ever showing its limited-access sheet, because
+    // add-only has no limited state to nag about.
+    writeOnly: true,
+    granularPermissions: [],
   });
   const [capturing, setCapturing] = useState(false);
 
@@ -79,14 +106,30 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
 
       const capturedAt = Date.now();
 
-      // Save to the user's library first. If this is refused the capture is
-      // still worth keeping — Pawtchi can hold the metadata and a thumbnail —
-      // so a null asset id is a degraded success, never a failure.
+      // ── Our copy first ──
+      //
+      // Before anything that can prompt, because this is the copy the app
+      // actually renders from and it needs no permission to write or to read.
+      // A capture that gets this far is safe even if every other step below
+      // fails or is refused.
+      const persisted = await persistCapture({
+        uri: photo.uri,
+        capturedAt,
+        width: photo.width,
+        height: photo.height,
+      });
+
+      // ── Then the camera roll, as a courtesy ──
+      //
+      // Full-resolution, unlike ours, because someone who goes looking for the
+      // original in Photos should find the original. Refusal is a normal
+      // outcome and costs nothing now: a null asset id used to mean the photo
+      // existed nowhere we could reach, and today it means only that we did not
+      // put a second copy in the user's library.
       let localAssetId: string | null = null;
       try {
-        const granted = Platform.OS === 'android'
-          ? true
-          : libraryPermission?.granted || (await requestLibraryPermission())?.granted;
+        const granted =
+          libraryPermission?.granted || (await requestLibraryPermission())?.granted;
         if (granted) {
           const asset = await MediaLibrary.createAssetAsync(photo.uri);
           localAssetId = asset?.id ?? null;
@@ -96,7 +139,11 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
       }
 
       onCaptured({
-        uri: photo.uri,
+        // Prefer our own file: the camera's cache uri is on borrowed time, and
+        // the walk summary may still be showing this frame long after iOS has
+        // decided it needed the space back.
+        uri: persisted?.uri ?? photo.uri,
+        localPath: persisted?.fileName ?? null,
         width: photo.width,
         height: photo.height,
         capturedAt,

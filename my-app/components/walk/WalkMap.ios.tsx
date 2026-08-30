@@ -20,7 +20,7 @@ import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Constants from 'expo-constants';
 import { color, radius, space, type as typeTokens } from '../../constants/design';
 import type { GeoPoint } from '../../lib/walk/geo';
-import { fromViewportZoom, toRegionZoom } from '../../lib/walk/mapCamera';
+import { fitCamera, fromViewportZoom, toRegionZoom } from '../../lib/walk/mapCamera';
 import type { WalkMapProps } from './WalkMap';
 
 const LIVE_ZOOM = 17;
@@ -125,6 +125,8 @@ export default function WalkMap({
   interactive = true,
   quiet = false,
   spots = [],
+  suggestedRoute = null,
+  liveBottomInset = 0,
   camera,
   onCameraChange,
 }: WalkMapProps) {
@@ -152,14 +154,37 @@ export default function WalkMap({
   // pale map tiles is close to invisible. The casing is the standard
   // cartographic answer: it gives the yellow an edge to read against without
   // changing what colour the route is.
+  // The suggested route rides the same array, FIRST so MapKit draws it beneath
+  // the walk. Apple's polyline API exposes no dash pattern, so the two are told
+  // apart by colour and weight: electric blue is Pawtchi's discovery/wayfinding
+  // colour, while the cased yellow remains exclusively "where we went".
   const polylines = useMemo(() => {
-    if (path.length < 2) return [];
-    const coordinates = path.map(p => ({ latitude: p.lat, longitude: p.lng }));
-    return [
-      { coordinates, color: color.navy, width: 7.5 },
-      { coordinates, color: color.yellow, width: 4.5 },
-    ];
-  }, [path]);
+    const lines: {
+      coordinates: { latitude: number; longitude: number }[];
+      color: string;
+      width: number;
+    }[] = [];
+
+    if (suggestedRoute && suggestedRoute.length >= 2) {
+      const coordinates = suggestedRoute.map(p => ({ latitude: p.lat, longitude: p.lng }));
+      // MapKit exposes no dash pattern. A pale casing keeps the blue route
+      // unmistakable over roads, parks and satellite-tinted tiles.
+      lines.push(
+        { coordinates, color: color.cream, width: 7 },
+        { coordinates, color: color.electric, width: 4 },
+      );
+    }
+
+    if (path.length >= 2) {
+      const coordinates = path.map(p => ({ latitude: p.lat, longitude: p.lng }));
+      lines.push(
+        { coordinates, color: color.navy, width: 7.5 },
+        { coordinates, color: color.yellow, width: 4.5 },
+      );
+    }
+
+    return lines;
+  }, [path, suggestedRoute]);
 
   // Yellow start dot — reads as the "you began here" spark against the navy
   // trace — plus any spots the caller dropped.
@@ -251,13 +276,79 @@ export default function WalkMap({
         zoom: quiet ? BACKDROP_PLACE_ZOOM : PLACE_ZOOM,
       };
     }
+    // A destination walk opens in route-overview mode: current position,
+    // every turn, and the destination must all be visible together. Following
+    // only the current puck at LIVE_ZOOM hid a 1–2 km route outside the
+    // viewport and made a successfully fetched route look absent.
+    if (suggestedRoute && suggestedRoute.length >= 2) {
+      const mid = midpoint(suggestedRoute);
+      if (mid) {
+        if (liveBottomInset > 0 && size) {
+          const fitted = fitCamera(suggestedRoute, {
+            width: size.width,
+            height: size.height,
+            padding: {
+              top: 60,
+              right: 60,
+              bottom: 60 + liveBottomInset,
+              left: 60,
+            },
+            minZoom: SUMMARY_MIN_ZOOM,
+            maxZoom: LIVE_ZOOM,
+          });
+          if (fitted) {
+            return {
+              coordinates: {
+                latitude: fitted.center.lat,
+                longitude: fitted.center.lng,
+              },
+              zoom: toRegionZoom(fitted, size.width, size.height),
+            };
+          }
+        }
+        return {
+          coordinates: { latitude: mid.lat, longitude: mid.lng },
+          zoom: summaryZoom(suggestedRoute),
+        };
+      }
+    }
     const target = currentPosition ?? path[path.length - 1] ?? center ?? null;
     if (!target) return undefined;
+    if (liveBottomInset > 0 && size) {
+      const webZoom = fromViewportZoom(LIVE_ZOOM, size.width);
+      const fitted = fitCamera([target], {
+        width: size.width,
+        height: size.height,
+        padding: { bottom: liveBottomInset },
+        minZoom: webZoom,
+        maxZoom: webZoom,
+        pointZoom: webZoom,
+      });
+      if (fitted) {
+        return {
+          coordinates: {
+            latitude: fitted.center.lat,
+            longitude: fitted.center.lng,
+          },
+          zoom: LIVE_ZOOM,
+        };
+      }
+    }
     return {
       coordinates: { latitude: target.lat, longitude: target.lng },
       zoom: LIVE_ZOOM,
     };
-  }, [mode, path, currentPosition, center, quiet, camera, size]);
+  }, [
+    mode,
+    path,
+    currentPosition,
+    center,
+    quiet,
+    camera,
+    size,
+    suggestedRoute,
+    liveBottomInset,
+  ]);
 
   /**
    * MapKit's settled camera, translated back into the projector's units.

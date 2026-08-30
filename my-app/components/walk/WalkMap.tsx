@@ -59,6 +59,24 @@ export type WalkMapProps = {
    */
   spots?: WalkMapSpot[];
   /**
+   * A suggested walking line to the destination, from `useWalkRoute`.
+   *
+   * Drawn UNDER the walk and deliberately unlike it: the yellow trace is the
+   * record of where the dog actually went, and a suggestion that looked similar
+   * would quietly corrupt the one thing this map is for. Muted ink, thinner,
+   * and dashed where the platform allows it.
+   *
+   * Never counted, never persisted, never part of the summary — it is a hint on
+   * glass, and the walk underneath it is the truth.
+   */
+  suggestedRoute?: GeoPoint[] | null;
+  /**
+   * Temporary lower-map chrome, in screen points. Live camera framing uses it
+   * to keep the current position and destination visible above that chrome.
+   * It changes presentation only; it never enters the tracking engine.
+   */
+  liveBottomInset?: number;
+  /**
    * Take the camera over instead of letting the map frame itself.
    *
    * Home does this because it draws its own markers as views over the basemap,

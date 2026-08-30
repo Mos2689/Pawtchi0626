@@ -13,6 +13,12 @@ function sentenceCount(text: string): number {
 
 function assertBrandVoice(text: string) {
   expect(text).not.toContain('!');
+  // Sentence case, as the file header promises and every sibling copy catalogue
+  // does (notifications/copy.ts, nudgeEngine.ts, kcalReceipt.ts). This whole
+  // catalogue shipped lowercase-first for a while and it read as a typo on the
+  // plan screen, so it is asserted rather than trusted.
+  expect(text[0]).toBe(text[0].toUpperCase());
+  expect(text.trim()).toMatch(/[.]$/);
   expect(text.toLowerCase()).not.toContain('your pet');
   expect(text.toLowerCase()).not.toContain('your dog');
   expect(text.toLowerCase()).not.toContain('your cat');
