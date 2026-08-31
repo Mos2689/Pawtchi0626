@@ -66,12 +66,13 @@ const BEATS: Record<string, StoryBeat> = {
 };
 
 export default function DevStorySpectrum() {
+  const { beat } = useLocalSearchParams<{ beat?: string }>();
+  const { width, height } = useWindowDimensions();
+
   // See dev-tailwhip: routes under app/ ship in release builds, so gate the
   // playground out of production rather than leaving it deep-linkable.
   if (!__DEV__) return null;
 
-  const { beat } = useLocalSearchParams<{ beat?: string }>();
-  const { width, height } = useWindowDimensions();
   const key = typeof beat === 'string' && BEATS[beat] ? beat : 'opener';
   const ctx: StoryContext = {
     petName: 'Bruno',
@@ -103,4 +104,3 @@ export default function DevStorySpectrum() {
     </View>
   );
 }
-

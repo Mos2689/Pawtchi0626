@@ -630,7 +630,7 @@ export function StandardPaywall() {
 
                 {/* Subhead */}
                 <Text style={styles.subcopy}>
-                    Pawtchi catches the slow changes in {petPossessive} weight, food and energy — while they're still small.
+                    Pawtchi catches the slow changes in {petPossessive}{" weight, food and energy — while they're still small."}
                 </Text>
 
                 {/* Testimonial + rating */}
@@ -640,7 +640,7 @@ export function StandardPaywall() {
                             <Text style={styles.testimonialInitial}>M</Text>
                         </View>
                         <Text style={styles.testimonialQuote}>
-                            "Caught it weeks before our vet did." <Text style={styles.testimonialAuthor}>— Mos</Text>
+                            {'"Caught it weeks before our vet did." '}<Text style={styles.testimonialAuthor}>— Mos</Text>
                         </Text>
                     </View>
                     <View style={styles.ratingWrap}>
@@ -652,7 +652,7 @@ export function StandardPaywall() {
                 {/* CTA */}
                 {loadState === 'error' ? (
                     <View style={styles.errorWrap}>
-                        <Text style={styles.errorText}>Couldn't load plans right now.</Text>
+                        <Text style={styles.errorText}>{"Couldn't load plans right now."}</Text>
                         <TouchableOpacity style={styles.retryBtn} onPress={handleRetry} activeOpacity={0.85}>
                             <MaterialIcons name="refresh" size={16} color={NAVY} />
                             <Text style={styles.retryText}>Retry</Text>
