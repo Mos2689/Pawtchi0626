@@ -8,8 +8,16 @@
  * access. None of those are errors and none of them may produce a broken image
  * icon in a dog's biography.
  *
- *   1. `original`  — the local asset resolved. Full quality.
- *   2. `thumbnail` — original unavailable here, but the durable ~20 KB copy
+ *   1. `original`  — a full-quality local file resolved. Two copies can answer
+ *                    this rung, and which one did matters:
+ *                      • `owned`   — Pawtchi's file in the app container. No
+ *                                    permission, either platform, ever. This is
+ *                                    the copy we control and the one to prefer.
+ *                      • `library` — the user's camera roll, via localAssetId.
+ *                                    Only for keepsakes captured before we kept
+ *                                    our own, and only where the caller has
+ *                                    decided a photo-library read is warranted.
+ *   2. `thumbnail` — no original reachable here, but the durable ~20 KB copy
  *                    survives. The memory outlives the file.
  *   3. `context`   — no image at all. The pin, the time into the walk and the
  *                    place still describe a real moment, so a lost photo leaves
@@ -32,7 +40,13 @@ import type { Keepsake } from './keepsake';
 export type PhotoAccess = 'granted' | 'limited' | 'denied';
 
 export type KeepsakeRender =
-  | { rung: 'original'; localAssetId: string }
+  | {
+      rung: 'original';
+      /** Which copy answered. See the ladder in the module header. */
+      source: 'owned' | 'library';
+      /** The camera-roll id, present only when `source` is 'library'. */
+      localAssetId: string | null;
+    }
   | {
       rung: 'thumbnail';
       thumbPath: string;
@@ -45,6 +59,16 @@ export type KeepsakeRender =
 export interface ResolveInput {
   keepsake: Keepsake;
   /**
+   * Is Pawtchi's own file present in the app container? Same rule as
+   * `localAvailable`: the caller must have actually looked, because a
+   * `localPath` on the row proves only that we once wrote it — reinstalling
+   * the app removes the container and leaves every one of these dangling.
+   *
+   * Optional so pre-existing callers keep compiling; absent means "no owned
+   * copy", which is the truth for every keepsake captured before we kept one.
+   */
+  ownedFileAvailable?: boolean;
+  /**
    * Did the photo library actually return this asset? The caller checks; a
    * non-null `localAssetId` alone proves nothing — it is a cache hint, and a
    * stale one is the normal state of affairs after a device migration.
@@ -56,16 +80,22 @@ export interface ResolveInput {
 /**
  * Pick the highest rung this keepsake can honestly reach.
  *
- * Note the ordering: permission is checked before availability, because with
- * access denied we have not looked and must not imply the original is gone —
- * the user can restore it by changing their mind, and the copy differs.
+ * Note the ordering. Our own file is checked first and unconditionally: it
+ * needs no permission, so there is no state of the world in which the library
+ * copy is preferable to it. Then permission is checked before availability,
+ * because with access denied we have not looked and must not imply the original
+ * is gone — the user can restore it by changing their mind, and the copy differs.
  */
 export function resolveKeepsake(input: ResolveInput): KeepsakeRender {
-  const { keepsake, localAvailable, access } = input;
+  const { keepsake, ownedFileAvailable = false, localAvailable, access } = input;
+
+  if (ownedFileAvailable && keepsake.localPath) {
+    return { rung: 'original', source: 'owned', localAssetId: keepsake.localAssetId };
+  }
 
   const canReadLibrary = access !== 'denied';
   if (canReadLibrary && localAvailable && keepsake.localAssetId) {
-    return { rung: 'original', localAssetId: keepsake.localAssetId };
+    return { rung: 'original', source: 'library', localAssetId: keepsake.localAssetId };
   }
 
   if (keepsake.thumbPath) {

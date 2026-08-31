@@ -51,7 +51,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export default function InboxScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { status, daysLeft, hasFullAccess } = useSubscription();
+  const { status, daysLeft } = useSubscription();
   const { user } = useAuth();
 
   const entries = useInboxEntries();
@@ -176,18 +176,17 @@ export default function InboxScreen() {
         return;
       }
 
-      // The walk shortcut carries the same gate every other walk entry point
-      // uses: arm the one-shot intent, or divert to the paywall. A bare push to
-      // /walk must never be able to start a walk on its own.
+      // Walk tracking is free on every plan. The one-shot intent still matters:
+      // a bare remount of /walk must never start a new walk on its own.
       if (entry.route === '/walk') {
-        if (hasFullAccess) armWalkStart();
-        router.push((hasFullAccess ? '/walk' : '/paywall') as never);
+        armWalkStart();
+        router.push('/walk' as never);
         return;
       }
 
       if (entry.route) router.push(entry.route as never);
     },
-    [confirmVetConsult, hasFullAccess, markRead, router],
+    [confirmVetConsult, markRead, router],
   );
 
   return (

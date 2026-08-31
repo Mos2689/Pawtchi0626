@@ -54,6 +54,8 @@ import { weightPlanViewModelFromRecord } from '../../lib/weightPlanRecord';
 import { TextField } from '../../components/ui/TextField';
 import { isAssessableWeightKg } from '../../lib/weightPlan';
 import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
+import { ProfileMembershipCard } from '../../components/ProfileMembershipCard';
+import { buildProfileMembershipPresentation } from '../../lib/profileMembership';
 
 // Profile — the pet's identity card. A navy hero carries who they are; the
 // light sections below are quiet, single-recipe rows. One yellow per surface:
@@ -107,6 +109,19 @@ export default function ProfileScreen() {
   const togglePantryFavorite = useActivePetStore(s => s.togglePantryFavorite);
   const setPantryExpiry = useActivePetStore(s => s.setPantryExpiry);
   const { status: subStatus, daysLeft: subDaysLeft, isPro, hasFullAccess } = useSubscription();
+  const membershipImpressionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (subStatus === 'loading') return;
+    const plan = isPro ? 'plus' : 'free';
+    const signature = `${plan}:${subStatus}:${hasFullAccess}`;
+    if (membershipImpressionRef.current === signature) return;
+    membershipImpressionRef.current = signature;
+    track('profile_membership_viewed', {
+      plan,
+      subscription_status: subStatus,
+      has_full_access: hasFullAccess,
+    });
+  }, [hasFullAccess, isPro, subStatus]);
   // Subscribers manage their plan in the store; everyone else sees the purchase paywall.
   //
   // For subscribers this now stops once to offer the founder letter. Leaving is
@@ -115,8 +130,13 @@ export default function ProfileScreen() {
   // primary action, so nothing about cancelling is obstructed.
   const [showLeavingSheet, setShowLeavingSheet] = useState(false);
   const openBilling = () => {
+    track('profile_membership_tapped', {
+      plan: isPro ? 'plus' : 'free',
+      subscription_status: subStatus,
+      action: isPro ? 'manage' : 'explore',
+    });
     if (!isPro) {
-      router.push('/paywall' as any);
+      router.push({ pathname: '/paywall', params: { source: 'profile_membership' } } as never);
       return;
     }
     setShowLeavingSheet(true);
@@ -952,6 +972,12 @@ export default function ProfileScreen() {
   }, [focus, activePet?.id]);
 
   const petName = activePet?.name || 'My Pet';
+  const membership = buildProfileMembershipPresentation({
+    status: subStatus,
+    daysLeft: subDaysLeft,
+    isPro,
+    hasFullAccess,
+  });
   const weightPlan = activePet
     ? weightPlanViewModelFromRecord(activePet)
     : null;
@@ -1117,6 +1143,8 @@ export default function ProfileScreen() {
             </View>
           )}
         </View>
+
+        <ProfileMembershipCard presentation={membership} onPress={openBilling} />
 
         {/* ─── Vitals — 2×2, every tile edits ─── */}
         <View style={styles.vitalsGrid}>
@@ -1360,12 +1388,6 @@ export default function ProfileScreen() {
             icon="notifications-none"
             label="Notifications"
             onPress={() => router.push('/notifications' as any)}
-          />
-          <Row
-            icon="credit-card"
-            label={isPro ? 'Manage subscription' : 'Billing & subscription'}
-            sub={subStatus === 'active' ? 'Pawtchi Plus — active' : subStatus === 'trial' ? `Trial — ${subDaysLeft} days left` : 'Upgrade to Pawtchi Plus'}
-            onPress={openBilling}
           />
           <Row icon="group-add" label="Invite a friend" onPress={() => router.push('/invite' as any)} />
           {/* The two human doors sit together, functional first: support is for

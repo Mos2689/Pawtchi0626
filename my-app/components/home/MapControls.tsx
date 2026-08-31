@@ -25,6 +25,8 @@ import { copy } from '../../lib/spots/copy';
 interface MapControlsProps {
   /** Hidden until the archive is worth opening. */
   galleryEnabled: boolean;
+  /** The compact replacement for the former final card in the Home rail. */
+  onFindFriend: () => void;
   /** Shown only once the rail has been moved off its default. */
   canRecentre: boolean;
   onRecentre: () => void;
@@ -52,6 +54,7 @@ interface MapControlsProps {
 
 export function MapControls({
   galleryEnabled,
+  onFindFriend,
   canRecentre,
   onRecentre,
   onRefreshSpots,
@@ -59,10 +62,6 @@ export function MapControls({
   onSearchArea,
 }: MapControlsProps) {
   const router = useRouter();
-
-  if (!galleryEnabled && !canRecentre && !onRefreshSpots && !onExpandSpots && !onSearchArea) {
-    return null;
-  }
 
   return (
     <View style={styles.stack} pointerEvents="box-none">
@@ -129,6 +128,20 @@ export function MapControls({
           <MaterialIcons name="grid-view" size={19} color={color.ink} />
         </TouchableOpacity>
       )}
+
+      <TouchableOpacity
+        style={styles.control}
+        activeOpacity={0.85}
+        onPress={() => {
+          haptic.tap();
+          onFindFriend();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Find a friend"
+        accessibilityHint="Opens the friend invitation screen"
+      >
+        <MaterialIcons name="group-add" size={20} color={color.ink} />
+      </TouchableOpacity>
 
       {canRecentre && (
         <TouchableOpacity

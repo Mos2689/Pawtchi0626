@@ -16,6 +16,8 @@ export type AnalyticsEvent =
   | 'paywall_offerings_retried'
   | 'paywall_restore_tapped'
   | 'paywall_dismissed'
+  | 'profile_membership_viewed'
+  | 'profile_membership_tapped'
   // The conditional $6.99 win-back. Note what did NOT happen here: the events
   // above were not renamed to `primary_*` and forked into a parallel funnel.
   // They carry a `variant` property ('standard' | 'winback') instead, so every

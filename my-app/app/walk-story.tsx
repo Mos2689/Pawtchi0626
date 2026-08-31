@@ -33,7 +33,6 @@ import { BreathingPaw } from '../components/BreathingPaw';
 import { WalkStoryViewer } from '../components/story/WalkStoryViewer';
 import type { StoryContext } from '../components/story/StorySlide';
 import { storyColor } from '../components/story/storyTheme';
-import { deriveDogWalkProfile } from '../lib/walk/dogCalibration';
 import { estimateDogSteps } from '../lib/walk/stepEstimate';
 
 export default function WalkStoryScreen() {
@@ -200,14 +199,11 @@ function WalkStoryInner() {
       // incomplete profile drops the clause rather than breaking the line.
       dogSteps: estimateDogSteps({
         distanceM: displaySnapshot.stats.distanceM,
-        movingTimeS: displaySnapshot.stats.movingTimeS,
-        profile: deriveDogWalkProfile({
-          species: activePet?.species ?? 'dog',
-          breed: activePet?.breed ?? null,
-          ageYears: activePet?.age_years ?? null,
-          weightKg: activePet?.current_weight_kg ?? null,
-          medicalConditions: activePet?.medical_conditions ?? null,
-        }),
+        species: activePet?.species ?? 'dog',
+        breed: activePet?.breed ?? null,
+        sex: activePet?.gender ?? null,
+        ageYears: activePet?.age_years ?? null,
+        weightKg: activePet?.current_weight_kg ?? null,
       }).steps,
     };
     return { story, ctx };

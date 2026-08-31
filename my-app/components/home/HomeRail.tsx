@@ -35,7 +35,7 @@ import Reanimated, {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Circle, Polyline } from 'react-native-svg';
 
 import { color, displayLine, font, makeShadow, radius, space } from '../../constants/design';
@@ -53,7 +53,6 @@ import { formatKm } from '../../lib/pawPrints';
 import { BreathingPaw } from '../BreathingPaw';
 import {
   CATEGORY_SHORT,
-  copy,
   DOG_ACCESS_LABEL,
   displayName,
   formatDistance,
@@ -74,9 +73,8 @@ const THUMB_W = CARD_W - CARD_PAD * 2;
 const THUMB_H = 62;
 
 /**
- * What the rail actually renders. The today card and the invite card are
- * bookends around the real content: the first says where the day stands, the
- * last is the quiet ask, and neither moves the map (they have no geography).
+ * What the rail actually renders. The today card introduces the real content;
+ * nearby places and walks then move the map because they have geography.
  */
 export type RailEntry =
   | { kind: 'today'; id: string; totals: TodayTotals; weather: WalkWeather | null }
@@ -101,7 +99,6 @@ export type RailEntry =
        */
       visits?: number;
     }
-  | { kind: 'invite'; id: string; petName: string }
   | { kind: 'empty'; id: string; petName: string }
   /** A resolved state that is not a card — empty, error, prompt. */
   | { kind: 'message'; id: string; title: string; body: string; action?: string; onAction?: () => void }
@@ -141,10 +138,9 @@ interface HomeRailProps {
   onSelect: (entry: RailEntry) => void;
   onOpenWalk: (walkId: string) => void;
   onOpenSpot?: (spot: PawtchiSpot) => void;
-  onInvite: () => void;
 }
 
-export function HomeRail({ entries, onSelect, onOpenWalk, onOpenSpot, onInvite }: HomeRailProps) {
+export function HomeRail({ entries, onSelect, onOpenWalk, onOpenSpot }: HomeRailProps) {
   const lastIndex = useRef(0);
   const reducedMotion = useReducedMotion();
 
@@ -184,8 +180,6 @@ export function HomeRail({ entries, onSelect, onOpenWalk, onOpenSpot, onInvite }
                 onPress={() => onOpenSpot?.(item.item)}
               />
             );
-          case 'invite':
-            return <InviteCard petName={item.petName} onPress={onInvite} />;
           case 'empty':
             return <EmptyCard petName={item.petName} />;
           case 'message':
@@ -216,7 +210,7 @@ export function HomeRail({ entries, onSelect, onOpenWalk, onOpenSpot, onInvite }
         </FocusSlot>
       );
     },
-    [onOpenWalk, onOpenSpot, onInvite, scrollX, reducedMotion],
+    [onOpenWalk, onOpenSpot, scrollX, reducedMotion],
   );
 
   const keyExtractor = useCallback((e: RailEntry) => e.id, []);
@@ -601,20 +595,6 @@ function GhostCard({ index }: { index: number }) {
   );
 }
 
-function InviteCard({ petName, onPress }: { petName: string; onPress: () => void }) {
-  return (
-    <Card onPress={onPress} label={`Invite a friend for ${petName}`}>
-      <View style={[styles.thumb, styles.thumbInvite]}>
-        <MaterialIcons name="group-add" size={22} color={color.navy} />
-      </View>
-      <Text style={styles.title} numberOfLines={1}>
-        A friend for {petName}
-      </Text>
-      <MetaRow items={[{ text: 'Pawtchi is better shared' }]} />
-    </Card>
-  );
-}
-
 function EmptyCard({ petName }: { petName: string }) {
   return (
     <Card>
@@ -871,9 +851,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: color.hairline,
     marginTop: 2,
-  },
-  thumbInvite: {
-    backgroundColor: color.yellowSoft,
   },
   /**
    * The dog-access line on a nearby-spot card.

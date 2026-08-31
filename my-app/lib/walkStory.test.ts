@@ -90,6 +90,7 @@ function keepsake(id: string, minutesIn: number, overrides: Partial<Keepsake> = 
     elapsedS: minutesIn * 60,
     mediaType: 'photo',
     source: 'camera',
+    localPath: null,
     localAssetId: `ph://${id}`,
     width: 4032,
     height: 3024,

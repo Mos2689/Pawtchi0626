@@ -103,6 +103,25 @@ export interface HomeMapMarker extends MapPin {
 interface HomeMapLayerProps {
   /** The selected walk's route — framed, and drawn as a line by the map. */
   route: GeoPoint[] | null;
+  /**
+   * Extra bottom padding for the camera's framing, in pixels.
+   *
+   * For a sheet that covers the lower screen while the route above it is the
+   * thing being looked at. Without it `fitCamera` centres the line in the whole
+   * viewport and the sheet then covers half of what it framed — the map is
+   * technically correct and practically useless.
+   */
+  frameBottomInset?: number;
+  /**
+   * Extra top padding for the camera's framing, in pixels.
+   *
+   * Home's chrome floats ON the map: the pet header, the segment toggle and the
+   * Spots filter chips all sit over live tiles. `fitCamera` knows nothing about
+   * them, so a route framed to the full viewport puts its far end underneath
+   * the filter rail — which is exactly where the destination is, because the
+   * camera centres the line and the line ends at the place you are going.
+   */
+  frameTopInset?: number;
   /** Where to point when the route is too short to frame. */
   center: GeoPoint | null;
   markers: HomeMapMarker[];
@@ -153,6 +172,8 @@ const EMPTY_KEEPSAKE_PINS: KeepsakeMapPin[] = [];
 
 export function HomeMapLayer({
   route,
+  frameBottomInset = 0,
+  frameTopInset = 0,
   center,
   markers,
   keepsakePins = EMPTY_KEEPSAKE_PINS,
@@ -180,13 +201,21 @@ export function HomeMapLayer({
     return fitCamera(framed, {
       width,
       height,
-      padding: FRAME_PADDING,
+      padding:
+        frameBottomInset || frameTopInset
+          ? {
+              top: FRAME_PADDING + frameTopInset,
+              bottom: FRAME_PADDING + frameBottomInset,
+              left: FRAME_PADDING,
+              right: FRAME_PADDING,
+            }
+          : FRAME_PADDING,
       // Pulled back from a walk card's framing: this is a backdrop about where
       // a dog lives, not a close-up of one outing.
       maxZoom: 15.5,
       pointZoom: 14,
     });
-  }, [route, markers, center, width, height]);
+  }, [route, markers, center, width, height, frameBottomInset, frameTopInset]);
 
   /**
    * The framing, held stable by VALUE rather than by identity.

@@ -29,7 +29,7 @@ export function haversineMeters(a: GeoPoint, b: GeoPoint): number {
  * Perpendicular distance (meters) from `p` to the segment a→b, using a local
  * equirectangular projection — plenty accurate at walk scale.
  */
-function perpendicularDistanceM(p: GeoPoint, a: GeoPoint, b: GeoPoint): number {
+export function perpendicularDistanceM(p: GeoPoint, a: GeoPoint, b: GeoPoint): number {
   const cosLat = Math.cos((a.lat * Math.PI) / 180);
   const toXY = (g: GeoPoint) => ({
     x: g.lng * cosLat * 111320,
@@ -45,6 +45,26 @@ function perpendicularDistanceM(p: GeoPoint, a: GeoPoint, b: GeoPoint): number {
   let t = ((P.x - A.x) * dx + (P.y - A.y) * dy) / lenSq;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(P.x - (A.x + t * dx), P.y - (A.y + t * dy));
+}
+
+/**
+ * How far a point is from the nearest part of a path, in meters.
+ *
+ * The measure of "have I wandered off the suggested route" — perpendicular to
+ * the nearest segment, not to the nearest vertex, so a long straight stretch
+ * between two far-apart points does not read as a drift. Returns Infinity for a
+ * path too short to be a line, which callers treat as "no route to be off".
+ */
+export function distanceToPathM(point: GeoPoint, path: readonly GeoPoint[]): number {
+  if (path.length === 0) return Infinity;
+  if (path.length === 1) return haversineMeters(point, path[0]);
+
+  let nearest = Infinity;
+  for (let i = 1; i < path.length; i++) {
+    const d = perpendicularDistanceM(point, path[i - 1], path[i]);
+    if (d < nearest) nearest = d;
+  }
+  return nearest;
 }
 
 /** Classic recursive Douglas–Peucker with a meter epsilon. */

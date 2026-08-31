@@ -32,7 +32,6 @@ import { haptic } from '../../lib/haptics';
 import { track as trackEvent } from '../../lib/analytics';
 import { armWalkStart } from '../../lib/walk/walkStartIntent';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
-import { useSubscription } from '../../hooks/useSubscription';
 import {
   selectHasUrgentUnread,
   selectUnreadCount,
@@ -83,7 +82,6 @@ export function SplitTabBar({ state, descriptors, navigation }: BottomTabBarProp
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const walkEnabled = useWalkEnabled();
-  const { hasFullAccess } = useSubscription();
   // The bell itself lives on Home. This dot is how it stays discoverable from
   // the other four tabs now that nudges no longer appear on them — without it,
   // an owner on Health has no way to know anything is waiting.
@@ -92,12 +90,12 @@ export function SplitTabBar({ state, descriptors, navigation }: BottomTabBarProp
 
   const onRecord = useCallback(() => {
     haptic.medium();
-    trackEvent('home_record_tapped', { has_access: hasFullAccess });
-    // The same one-shot gate every walk entry point uses: a bare remount of
-    // /walk must never be able to start a walk on its own.
-    if (hasFullAccess) armWalkStart();
-    router.push((hasFullAccess ? '/walk' : '/paywall') as never);
-  }, [hasFullAccess, router]);
+    trackEvent('home_record_tapped', { has_access: true, access_tier: 'free' });
+    // The one-shot intent is a safety guard against accidental remounts, not a
+    // subscription gate. Walk tracking is available on every plan.
+    armWalkStart();
+    router.push('/walk' as never);
+  }, [router]);
 
   const navigateTo = useCallback(
     (name: string) => {
