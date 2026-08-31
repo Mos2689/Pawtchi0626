@@ -7,8 +7,14 @@ import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import type { PantryItem } from '../store/useActivePetStore';
 import { AnimatedPressable } from './AnimatedPressable';
 import { color, font, motion, radius, shadow, space } from '../constants/design';
-import { getPortionPresets, type PortionPresets } from '../lib/pantryMath';
-import { getSuggestion } from '../lib/portionLearning';
+import {
+  getPortionBounds,
+  getPortionPresets,
+  MEALS_PER_DAY,
+  type PortionPresets,
+} from '../lib/pantryMath';
+import { getSuggestion, type LearnedPortion } from '../lib/portionLearning';
+import { boundsInGrams, resolveInitialPortion } from '../lib/resolveInitialPortion';
 
 const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
   kibble: 'pets',
@@ -18,8 +24,6 @@ const FOOD_TYPE_ICONS: Record<string, keyof typeof MaterialIcons.glyphMap> = {
   supplement: 'medication',
   human_food: 'restaurant',
 };
-
-const MEALS_PER_DAY = 2;
 
 type Phase = 'idle' | 'logging' | 'success';
 
@@ -33,6 +37,9 @@ interface Props {
   /**
    * Returns a promise that resolves once the log has committed. The hero
    * shows a spinner while it's pending and a "Logged" pulse on success.
+   *
+   * The log path re-derives the typed portion from this item's presets before
+   * recording it, so only the multiplier crosses this boundary.
    */
   onLog: (multiplier: number) => Promise<void> | void;
   /** Externally-driven disable (e.g. parent is mid-flight from another path). */
@@ -71,36 +78,46 @@ export function MealHero({ eyebrow, item, bowlSize, species = 'dog', dailyKcalTa
 
   const { mode, gramsPerUnit, presets: chips, stepper } = presets;
   const stepperGramsDelta = stepper.step * gramsPerUnit;
-  const stepperMinGrams = Math.max(1, Math.round(stepper.min * gramsPerUnit));
-  const stepperMaxGrams = Math.round(stepper.max * gramsPerUnit);
+  // Bounds come from getPortionBounds so the stepper, portion learning and the
+  // opening portion cannot disagree about what's allowed.
+  const { min: stepperMinGrams, max: stepperMaxGrams } = boundsInGrams(
+    getPortionBounds(presets),
+  );
 
   // The "Custom" chip belongs in the row only when mode is count/weight.
   // In fraction mode all 4 chips are real presets and Custom is a text-link below.
   const customChipIndex = mode === 'fraction' ? -1 : chips.findIndex(c => c.label === 'Custom');
 
-  const [gramsFed, setGramsFed] = useState<number>(chips.find(c => c.label !== 'Custom')?.gramsFed ?? gramsPerUnit);
+  const [gramsFed, setGramsFed] = useState<number>(
+    () => resolveInitialPortion(null, presets).gramsFed,
+  );
   const [isCustom, setIsCustom] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Pre-fill the learned portion when this item changes. portionLearning stores
-  // a multiplier (per-unit); convert to grams via the current presets and
-  // match against any of the preset gram values.
+  // Pre-fill the learned portion when this item changes.
+  //
+  // Both the lookup and the application go through shared, bounded helpers:
+  // getSuggestion refuses to return a portion outside the stepper's range, and
+  // resolveInitialPortion clamps whatever it is handed. This used to be inline
+  // arithmetic that bypassed both, which is how a stale learned value could
+  // open the card at 20,000 g on a build where the underlying bug was fixed.
   useEffect(() => {
     let cancelled = false;
-    getSuggestion(item.id).then((learnedMult) => {
+    const bounds = getPortionBounds(presets);
+    getSuggestion(item.id, bounds).then((learned) => {
       if (cancelled) return;
-      const learned = learnedMult ?? 1;
-      const learnedGrams = Math.max(1, Math.round(learned * gramsPerUnit));
-      setGramsFed(learnedGrams);
-      const presetGrams = chips
-        .filter(c => c.label !== 'Custom')
-        .map(c => c.gramsFed);
-      setIsCustom(!presetGrams.some(g => Math.abs(g - learnedGrams) < 1));
+      // The owner's declared usual outranks anything we inferred.
+      const initial = resolveInitialPortion(
+        learned,
+        presets,
+        (item.usual_portion as LearnedPortion | null | undefined) ?? null,
+      );
+      setGramsFed(initial.gramsFed);
+      setIsCustom(initial.isCustom);
     });
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.id, gramsPerUnit]);
+  }, [item.id, item.usual_portion, presets]);
 
   // Clean up any pending success-state timer on unmount.
   useEffect(() => () => {

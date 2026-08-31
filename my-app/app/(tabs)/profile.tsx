@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { withTimeout } from '../../lib/withTimeout';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { PawLoader } from '../../components/loader/PawLoader';
@@ -13,7 +13,8 @@ import { color, font, radius, shadow, space, motion } from '../../constants/desi
 import { supabase } from '../../lib/supabase';
 import { resolvePetImage } from '../../lib/petFallbackImage';
 import { useAuth } from '../../providers/AuthProvider';
-import { useActivePetStore } from '../../store/useActivePetStore';
+import { useActivePetStore, type PantryItem } from '../../store/useActivePetStore';
+import { PantryLabelEditor, type PantryLabelPatch } from '../../components/PantryLabelEditor';
 import { BOWL_SIZES } from '../../constants/brandData';
 import { useSubscription } from '../../hooks/useSubscription';
 import { openManageSubscription } from '../../lib/manageSubscription';
@@ -192,6 +193,28 @@ export default function ProfileScreen() {
   const [mealTime, setMealTime] = useState<Date>(new Date(new Date().setHours(18, 0, 0, 0))); // 6 PM
   const [walkTime, setWalkTime] = useState<Date>(new Date(new Date().setHours(7, 0, 0, 0))); // 7 AM
   const [showPickerFor, setShowPickerFor] = useState<'meal' | 'walk' | null>(null);
+
+  // The label-correction sheet. A scan reads the packet through a camera; the
+  // owner reads it directly, so their figure wins — and confirming one is what
+  // marks it observed, which is what a meal needs before it can be verified.
+  const [editingPantryItem, setEditingPantryItem] = useState<PantryItem | null>(null);
+
+  const savePantryLabel = useCallback(async (patch: PantryLabelPatch) => {
+    if (!editingPantryItem) return false;
+    // `nutrition_revision` and `label_consistency` are deliberately absent:
+    // a database trigger owns both, and the client is REVOKEd from writing
+    // them. A revision the client could set would prove nothing.
+    const { error } = await supabase
+      .from('food_pantry')
+      .update(patch)
+      .eq('id', editingPantryItem.id);
+    if (error) {
+      Alert.alert('Could not save', 'That change did not stick. Please try again.');
+      return false;
+    }
+    if (activePet?.id) await fetchPantry(activePet.id);
+    return true;
+  }, [editingPantryItem, activePet?.id, fetchPantry]);
 
   // Pantry scan state
   const [isScanningLabel, setIsScanningLabel] = useState(false);
@@ -1216,6 +1239,12 @@ export default function ProfileScreen() {
                         color={expiringSoon || expired ? color.error : color.slateFaint}
                       />
                     </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => setEditingPantryItem(item)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <MaterialIcons name="edit-note" size={22} color={color.slateFaint} />
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => handleDeletePantryItem(item.id, item.brand)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                       <MaterialIcons name="delete-outline" size={20} color={color.slateFaint} />
                     </TouchableOpacity>
@@ -1805,6 +1834,13 @@ export default function ProfileScreen() {
           />
         )
       )}
+
+      <PantryLabelEditor
+        visible={!!editingPantryItem}
+        item={editingPantryItem}
+        onClose={() => setEditingPantryItem(null)}
+        onSave={savePantryLabel}
+      />
     </View>
   );
 }

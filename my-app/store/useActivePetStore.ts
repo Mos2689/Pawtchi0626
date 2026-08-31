@@ -29,7 +29,41 @@ export interface PantryItem {
     is_archived?: boolean;
     expiry_date?: string | null;
     is_favorite?: boolean;
+
+    // ── Provenance (migration 20260831000001) ──
+    /**
+     * The manufacturer's serving weight, for ANY unit — a pouch, can or cup
+     * prints one just as a gram-measured food does. Authoritative when present,
+     * and never clamped: a 4.6 g supplement dose is a real serving.
+     */
+    serving_grams?: number | null;
+    /** Verbatim label text ("1 cup / 240g"), kept so a bad parse is auditable. */
+    serving_size_raw?: string | null;
+    /**
+     * Per-field evidence source. Only `label` and `owner_corrected` count as
+     * independently observed; anything else (or a missing entry) means a
+     * consistency check on that field would be circular.
+     */
+    nutrition_provenance?: Partial<Record<NutritionField, Provenance>> | null;
+    /** Trigger-maintained. Never write this from the client. */
+    label_consistency?: 'consistent' | 'inconsistent' | 'unverifiable' | null;
+    /** Trigger-maintained. Snapshotted onto a meal so it stays auditable. */
+    nutrition_revision?: number | null;
+    /** How much of this the owner usually serves. NOT a label fact. */
+    usual_portion?: { mode: string; quantity: number; gramsFed?: number } | null;
 }
+
+/** Where a nutrition figure came from. */
+export type Provenance = 'label' | 'owner_corrected' | 'derived' | 'estimated' | 'default';
+
+export type NutritionField =
+    | 'kcal_per_serving'
+    | 'kcal_per_100g_as_fed'
+    | 'serving_grams'
+    | 'protein_pct'
+    | 'fat_pct'
+    | 'fibre_pct'
+    | 'moisture_pct';
 
 export interface Pet {
     id: string;

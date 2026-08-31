@@ -7,8 +7,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import type { FoodAnalysis } from '../../lib/foodVerdict';
 import { usePetContextStore } from '../../store/usePetContextStore';
-import { getLocalYMD } from '../../lib/dateUtils';
 import { haptic } from '../../lib/haptics';
+import { randomUUID } from '../../lib/uuid';
 import { PawLoader } from '../../components/loader/PawLoader';
 import { color, makeShadow } from '../../constants/design';
 
@@ -27,6 +27,10 @@ interface FoodScanDetails {
     created_at: string;
     image_url?: string;
     food_analysis?: (FoodAnalysis & { verdict?: string; verdict_category?: string }) | null;
+    // Provenance (migration 20260831000001). Absent on pre-provenance rows,
+    // which is why both are optional and every read of them is defensive.
+    portion_quantity?: number | null;
+    revision?: number | null;
 }
 
 export default function ScanDetailScreen() {
@@ -73,34 +77,34 @@ export default function ScanDetailScreen() {
 
     const logDate = new Date(scan.created_at);
     const timeStr = logDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    // The daily_logs row this scan rolled into. It was written with the LOCAL
-    // calendar date (getLocalYMD in the meal screen), so it has to be read back
-    // the same way — toISOString() gives the UTC date, which for owners east of
-    // UTC is yesterday for every meal logged before ~10am. Adjusting or
-    // deleting one of those was decrementing the wrong day's calorie total.
-    const scanLogDate = getLocalYMD(logDate);
 
-    // Apply a calorie delta to the scan's daily_logs row, then refresh context.
-    const adjustDailyTotal = async (deltaKcal: number, treatDelta: number) => {
-        const { data: dl } = await supabase
-            .from('daily_logs')
-            .select('id, calories_consumed, treats_consumed')
-            .eq('pet_id', scan.pet_id)
-            .eq('log_date', scanLogDate)
-            .maybeSingle();
-        if (dl) {
-            await supabase.from('daily_logs').update({
-                calories_consumed: Math.max(0, (dl.calories_consumed || 0) + deltaKcal),
-                treats_consumed: Math.max(0, (dl.treats_consumed || 0) + treatDelta),
-                updated_at: new Date().toISOString(),
-            }).eq('id', dl.id);
-        }
-        // Force Home/Health/Meal to recompute on next focus.
-        usePetContextStore.getState().invalidateContext();
-    };
+    // The read-modify-write helper that used to live here is gone.
+    //
+    // It selected the day's row, added a delta and wrote it back — three
+    // round trips with no transaction, so an interleaving write lost an update
+    // and a failure midway left the scan and the day disagreeing. It also
+    // clamped the result with Math.max(0, …), which quietly concealed exactly
+    // the drift we were trying to find.
+    //
+    // adjust_meal and delete_meal now do the whole thing in one statement, and
+    // an underflow is recorded as an anomaly instead of being clamped away.
 
+    /**
+     * Adjust a logged portion.
+     *
+     * Both the scan row and the daily aggregate move inside one transaction.
+     * This used to be two writes — update food_scans, then read-modify-write
+     * daily_logs — with nothing tying them together, so a failure between them
+     * left the day disagreeing with its own meals.
+     *
+     * It also recomputed calories by scaling the STORED total, which meant it
+     * never touched `food_analysis`: adjusting a portion left the verdict's
+     * `meal_kcal` describing the old one. The RPC recomputes both from the
+     * scan's frozen nutrition snapshot.
+     */
     const handleAdjustPortion = () => {
         const cur = scan.ai_estimated_calories || 0;
+        const baseServings = Number(scan.portion_quantity) > 0 ? Number(scan.portion_quantity) : 1;
         const opts: { label: string; mult: number }[] = [
             { label: 'Half (½×)', mult: 0.5 },
             { label: '1.5×', mult: 1.5 },
@@ -113,23 +117,32 @@ export default function ScanDetailScreen() {
                 ...opts.map((o) => ({
                     text: o.label,
                     onPress: async () => {
-                        const newCal = Math.max(1, Math.round(cur * o.mult));
-                        const delta = newCal - cur;
-                        await supabase.from('food_scans').update({
-                            ai_estimated_calories: newCal,
-                            protein_g: Math.round((scan.protein_g || 0) * o.mult),
-                            carbs_g: Math.round((scan.carbs_g || 0) * o.mult),
-                            fat_g: Math.round((scan.fat_g || 0) * o.mult),
-                        }).eq('id', scan.id);
-                        await adjustDailyTotal(delta, 0);
-                        haptic.success();
-                        setScan({
-                            ...scan,
-                            ai_estimated_calories: newCal,
-                            protein_g: Math.round((scan.protein_g || 0) * o.mult),
-                            carbs_g: Math.round((scan.carbs_g || 0) * o.mult),
-                            fat_g: Math.round((scan.fat_g || 0) * o.mult),
+                        const { data, error } = await supabase.rpc('adjust_meal', {
+                            p_idempotency_key: randomUUID(),
+                            p_scan_id: scan.id,
+                            p_new_servings: baseServings * o.mult,
+                            // Optimistic concurrency: if a background write
+                            // landed since this screen loaded, we refetch rather
+                            // than overwrite it.
+                            p_expected_revision: scan.revision ?? null,
                         });
+                        const env = data as { ok?: boolean; code?: string; kcal?: number } | null;
+                        if (error?.code === '42883') {
+                            Alert.alert('Update needed', 'Please update the app to adjust portions.');
+                            return;
+                        }
+                        if (error || !env?.ok) {
+                            Alert.alert(
+                                'Could not adjust',
+                                env?.code === 'stale_revision'
+                                    ? 'This log changed while you were looking at it. Reopen it and try again.'
+                                    : 'That change did not stick. Please try again.',
+                            );
+                            return;
+                        }
+                        haptic.success();
+                        usePetContextStore.getState().invalidateContext();
+                        setScan({ ...scan, ai_estimated_calories: env.kcal ?? cur });
                     },
                 })),
                 { text: 'Cancel', style: 'cancel' as const },
@@ -147,9 +160,24 @@ export default function ScanDetailScreen() {
                     text: 'Delete',
                     style: 'destructive',
                     onPress: async () => {
-                        await supabase.from('food_scans').delete().eq('id', scan.id);
-                        await adjustDailyTotal(-(scan.ai_estimated_calories || 0), scan.is_treat ? -1 : 0);
+                        // Delete and decrement together, or neither. The old
+                        // pair could remove the meal and leave its calories on
+                        // the day.
+                        const { data, error } = await supabase.rpc('delete_meal', {
+                            p_idempotency_key: randomUUID(),
+                            p_scan_id: scan.id,
+                        });
+                        const env = data as { ok?: boolean; code?: string } | null;
+                        if (error?.code === '42883') {
+                            Alert.alert('Update needed', 'Please update the app to delete logs.');
+                            return;
+                        }
+                        if (error || !env?.ok) {
+                            Alert.alert('Could not delete', 'That change did not stick. Please try again.');
+                            return;
+                        }
                         haptic.success();
+                        usePetContextStore.getState().invalidateContext();
                         router.back();
                     },
                 },

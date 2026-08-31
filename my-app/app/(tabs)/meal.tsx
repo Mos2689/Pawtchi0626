@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Pressable,
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { color, font, motion, radius, shadow, space, makeShadow } from '../../constants/design';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -21,12 +21,25 @@ import {
   buildVerdictBundle, deriveVerdictCategory, deterministicVerdict,
   fetchVerdictLLM, fetchVerdictWithFallback, estimateMealGrams,
 } from '../../lib/verdictPipeline';
-import { computePantryMacros } from '../../lib/pantryMath';
-import { resolveLoggedTotals, resolvePantrySourceId } from '../../lib/mealLogKcal';
+import {
+  BOWL_SIZE_GRAMS,
+  computePantryMacros,
+  getPortionBounds,
+  getPortionPresets,
+  MEALS_PER_DAY,
+  type BowlSize,
+} from '../../lib/pantryMath';
+import {
+  resolveCanonicalMeal,
+  resolveLoggedTotals,
+  resolvePantrySourceId,
+  resolveScanKcal,
+} from '../../lib/mealLogKcal';
 import { mapMedicalConditionsToAdjustmentKeys } from '../../lib/clinicalMapping';
 import { deriveGoal } from '../../lib/healthMath';
 import { useSubscription } from '../../hooks/useSubscription';
 import PantryPillSelector from '../../components/PantryPillSelector';
+import { PantryLabelEditor, type PantryLabelPatch } from '../../components/PantryLabelEditor';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { PawLoader } from '../../components/loader/PawLoader';
 import { AnimatedPressable } from '../../components/AnimatedPressable';
@@ -34,14 +47,18 @@ import { ScanSourceRow } from '../../components/ScanSourceRow';
 import { MealHero } from '../../components/MealHero';
 import { BreathingPaw } from '../../components/BreathingPaw';
 import { Image as ExpoImage } from 'expo-image';
-import { BOWL_SIZE_GRAMS } from '../../lib/pantryMath';
 import { predictMeal, currentSlot } from '../../lib/mealPrediction';
-import { recordServing, getSuggestion, clearHistory } from '../../lib/portionLearning';
+import { recordServing, getSuggestion } from '../../lib/portionLearning';
+import {
+  boundsInGrams,
+  learnedPortionToMultiplier,
+  multiplierToLearnedPortion,
+} from '../../lib/resolveInitialPortion';
 import { markNearestFeedingActivityComplete } from '../../lib/feedingActivityLink';
 import { haptic } from '../../lib/haptics';
+import { randomUUID } from '../../lib/uuid';
 import { pantryItemToScanResult } from '../../lib/pantryToScanResult';
 import { prepareImageForUpload } from '../../lib/imagePrep';
-import { PawtchiModal } from '../../components/PawtchiModal';
 import { FailureModal } from '../../components/FailureModal';
 import type { FailureMeta } from '../../lib/support/handoff';
 import {
@@ -82,6 +99,12 @@ interface ScanResult {
   food_type?: 'kibble' | 'wet_food' | 'treat' | 'raw' | 'supplement' | 'human_food';
   calories_per_serving: number;
   serving_size: string;
+  /**
+   * The weight the packet states for one serving. Read by the extractor and,
+   * until now, dropped on the floor here — which is why a label that prints
+   * "475 kcal/100 g" and "120 g tray" could not be priced.
+   */
+  serving_grams?: number | null;
   serving_unit?: string | null;
   protein_pct?: number | null;
   fat_pct?: number | null;
@@ -100,6 +123,8 @@ interface ScanResult {
   matched_pantry_id?: string | null;
   match_confidence?: number;
   food_type_mismatch?: boolean;
+  needs_owner_review?: boolean;
+  extraction_flags?: string[];
   protein_g?: number;
   carbs_g?: number;
   fat_g?: number;
@@ -143,6 +168,7 @@ function MealScreenContent() {
   const incrementPantryScan = useActivePetStore(s => s.incrementPantryScan);
   const archivePantryItem = useActivePetStore(s => s.archivePantryItem);
   const addPantryItem = useActivePetStore(s => s.addPantryItem);
+  const fetchPantry = useActivePetStore(s => s.fetchPantry);
   const recalibrating = useActivePetStore(s => s.recalibrating);
   const pawCoins = useStreakStore(s => s.pawCoins);
   const awardCoins = useStreakStore(s => s.awardCoins);
@@ -159,6 +185,16 @@ function MealScreenContent() {
     }
     return true;
   };
+
+  /**
+   * Idempotency key for the meal currently being logged.
+   *
+   * Generated once per user ACTION, not per attempt: `retryRef` re-runs
+   * confirmLog on failure, and a fresh key each time would turn one tap plus a
+   * flaky network into two meals. Cleared once the log commits, and whenever
+   * the result screen resets, so the next meal gets its own key.
+   */
+  const logKeyRef = useRef<string | null>(null);
 
   // Pantry awareness state
   const [selectedPantryId, setSelectedPantryId] = useState<string | null>(null);
@@ -187,6 +223,16 @@ function MealScreenContent() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("Ai analysing...");
+
+  // ── The label-gap handoff ───────────────────────────────────────────────────
+  //
+  // A scan that read the packet fine but found no calorie figure on it pauses
+  // here instead of failing: the pantry row it created opens in the label
+  // editor, and the scan waits in the ref for the owner to supply the number.
+  // Held in a ref rather than state because nothing renders from it — it is a
+  // continuation, and re-rendering the screen for it would be noise.
+  const [labelGapItem, setLabelGapItem] = useState<PantryItem | null>(null);
+  const pendingScanRef = useRef<ScanResult | null>(null);
 
   // Branded failure sheet — ALL failure paths on this screen land here,
   // always via errorCopy(). OS alerts remain only for confirmations
@@ -217,10 +263,10 @@ function MealScreenContent() {
   // Show the precise +/- stepper only when the user taps Custom. The three
   // Less/Usual/More chips cover ~95% of real intent.
   const [showCustomPortion, setShowCustomPortion] = useState(false);
-  // Learned-portion suggestion for the current pantry source: when the user has
-  // repeatedly fed off-1×, offer "make this the new usual?". `{ id, multiplier }`.
-  const [usualSuggestion, setUsualSuggestion] = useState<{ id: string; multiplier: number } | null>(null);
-  const [applyingUsual, setApplyingUsual] = useState(false);
+  // Learned-portion pre-fill for the current pantry source. This only ever
+  // pre-selects a portion — it no longer offers to rewrite the pantry item's
+  // calories, because a portion is not a label fact (see the note on the
+  // learned-portion effect below).
 
   // Rotate spinner words during analysis
   useEffect(() => {
@@ -257,78 +303,223 @@ function MealScreenContent() {
     if (scanResult) {
       setHasLogged(false);
       setIsPendingConfirm(false);
-    } else {
-      setUsualSuggestion(null);
     }
   }, [scanResult]);
 
-  // When a result opens for a pantry-sourced food, load any learned-portion
-  // suggestion and pre-default the portion to what the owner's been feeding.
+  /**
+   * The portion vocabulary for a pantry item — the same call MealHero makes.
+   *
+   * Both places that read or write a learned portion resolve it through this,
+   * so the bounds applied at record time and at replay time are identical. Two
+   * copies of this call drifting apart is precisely how a portion that one
+   * screen considers impossible becomes another screen's opening value.
+   */
+  const petSpecies = (activePet?.species as 'dog' | 'cat') ?? 'dog';
+  const petBowlSize = (activePet?.bowl_size as BowlSize | undefined) ?? null;
+  const petDailyKcal = activePet?.target_daily_calories ?? 0;
+  const presetsForItem = useCallback((item: PantryItem) => {
+    const kcalPer100g = item.kcal_per_100g_as_fed && item.kcal_per_100g_as_fed > 0
+      ? item.kcal_per_100g_as_fed
+      : null;
+    const labelGramsPerServing = item.kcal_per_serving && kcalPer100g
+      ? (item.kcal_per_serving * 100) / kcalPer100g
+      : null;
+    const perMealKcalTarget = petDailyKcal > 0 ? petDailyKcal / MEALS_PER_DAY : null;
+    return getPortionPresets(item.serving_unit, petSpecies, petBowlSize, {
+      labelGramsPerServing,
+      perMealKcalTarget,
+      kcalPer100g,
+      kcalPerServing: item.kcal_per_serving ?? null,
+    });
+  }, [petSpecies, petBowlSize, petDailyKcal]);
+
+  /**
+   * Re-derive everything a scan result shows from a given pantry source.
+   *
+   * Nutrition, label percentages, health score and the verdict panel all come
+   * from the source, so all of them have to be recomputed together when the
+   * source changes. Previously only the calories were reactive: picking a
+   * different food on the result screen updated the kcal while the verdict,
+   * the health score and the guaranteed-analysis figures carried on describing
+   * the food you had just deselected.
+   *
+   * Used by the scan path AND by the source picker, so the two cannot drift.
+   * Pure with respect to state — returns a new scan result, mutates nothing.
+   */
+  const deriveScanFromSource = useCallback((scan: ScanResult, item: PantryItem | null): ScanResult => {
+    if (!activePet) return scan;
+    const next: ScanResult = { ...scan };
+    const opts = {
+      species: activePet.species as 'dog' | 'cat',
+      bowl: activePet.bowl_size ? { size: activePet.bowl_size as BowlSize } : undefined,
+    };
+
+    if (item) {
+      // Always ONE serving. The portion multiplier is applied once, at log
+      // time, by the canonical resolver — baking it in here read a stale
+      // servingCount and left the preview double-counting it.
+      const macros = computePantryMacros(item, 1, opts);
+      next.calories_per_serving = macros.total_kcal;
+      next.protein_g = macros.protein_g;
+      next.fat_g = macros.fat_g;
+      next.carbs_g = macros.carbs_g;
+      next.kcal_per_100g_as_fed = macros.kcal_per_100g;
+      next.moisture_pct = macros.moisture_pct;
+      // Label percentages too, so the preview verdict reads the same data
+      // executeLog will — otherwise preview and stored verdict disagree.
+      next.protein_pct = item.protein_pct ?? null;
+      next.fat_pct = item.fat_pct ?? null;
+      next.fibre_pct = item.fibre_pct ?? null;
+    }
+
+    try {
+      const { score, reasons } = computeHealthScore({
+        food: {
+          food_type: next.food_type,
+          is_treat: next.is_treat === true,
+          is_allergy_trigger: next.is_allergy_trigger === true,
+          allergy_warnings: next.allergy_warnings ?? [],
+          ingredients_of_concern: next.ingredients_of_concern ?? [],
+          calories_per_serving: next.calories_per_serving,
+          protein_pct: next.protein_pct ?? null,
+          fat_pct: next.fat_pct ?? null,
+          fibre_pct: next.fibre_pct ?? null,
+          moisture_pct: next.moisture_pct ?? null,
+          kcal_per_100g_as_fed: next.kcal_per_100g_as_fed ?? null,
+          confidence: next.confidence,
+          name_and_ingredients: [next.food_name, ...(next.key_ingredients ?? [])],
+        },
+        pet: {
+          species: activePet.species as 'dog' | 'cat',
+          age_months: getAgeMonths(activePet) ?? null,
+          daily_kcal_target: activePet.target_daily_calories ?? null,
+          allergies: activePet.allergies ?? null,
+          medical_conditions: activePet.medical_conditions ?? null,
+          weight_kg: activePet.current_weight_kg ?? null,
+          target_weight_kg: activePet.target_weight_kg ?? null,
+        },
+      });
+      next.health_score = score;
+      (next as any)._healthScoreReasons = reasons;
+    } catch {
+      // Keep whatever the extractor gave us if scoring fails.
+    }
+
+    try {
+      // Meal weight comes from the canonical resolver when a pantry item backs
+      // the scan. The protein-derived estimate survives only for an unmatched
+      // scan, where there genuinely is no serving weight to know.
+      const canonical = resolveCanonicalMeal(next, item, 1, opts);
+      const proteinPct = next.protein_pct ?? null;
+      const proteinG = next.protein_g ?? 0;
+      const mealGrams =
+        canonical.mealGrams ??
+        (proteinPct && proteinPct > 0 && proteinG > 0
+          ? Math.round((proteinG / proteinPct) * 100)
+          : Math.max(1, Math.round(next.calories_per_serving / 3.5)));
+
+      next.food_analysis = analyzeFood({
+        food: {
+          product_name: next.food_name,
+          food_type: next.food_type ?? 'kibble',
+          kcal_per_100g_as_fed: next.kcal_per_100g_as_fed ?? null,
+          moisture_pct: next.moisture_pct ?? null,
+          protein_pct: next.protein_pct ?? null,
+          fat_pct: next.fat_pct ?? null,
+          fiber_pct: next.fibre_pct ?? null,
+          calcium_pct: null,
+          phosphorus_pct: null,
+        },
+        pet: {
+          name: activePet.name,
+          species: activePet.species,
+          weight_kg: activePet.current_weight_kg,
+          target_weight_kg: activePet.target_weight_kg ?? null,
+          age_months: getAgeMonths(activePet) ?? null,
+          activity_level: activePet.activity_level,
+          is_neutered: activePet.is_neutered,
+          goal: deriveGoal(
+            activePet.current_weight_kg ?? 0,
+            activePet.target_weight_kg ?? null,
+            activePet.body_condition_score,
+          ),
+          confirmed_condition_keys: mapMedicalConditionsToAdjustmentKeys(activePet.medical_conditions),
+          breed: activePet.breed ?? null,
+          age_years: activePet.age_years ?? null,
+          body_condition_score: activePet.body_condition_score ?? null,
+        },
+        meal_grams: mealGrams,
+      });
+    } catch {
+      // Panel simply won't render if verdict computation fails.
+    }
+
+    return next;
+  }, [activePet]);
+
+  /**
+   * Changing the source re-resolves the whole result, not just the calories.
+   *
+   * `selectedPantryId` is the owner saying "this is actually a different food".
+   * Everything the old food contributed has to go with it.
+   */
+  const sourceReresolvedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!scanResult || isAnalyzing) return;
+    const key = `${selectedPantryId ?? 'none'}`;
+    if (sourceReresolvedFor.current === null) {
+      // First render for this scan — the scan path already derived it.
+      sourceReresolvedFor.current = key;
+      return;
+    }
+    if (sourceReresolvedFor.current === key) return;
+    sourceReresolvedFor.current = key;
+    const item = selectedPantryId ? foodPantry.find(p => p.id === selectedPantryId) ?? null : null;
+    setScanResult(prev => (prev ? deriveScanFromSource(prev, item) : prev));
+  }, [selectedPantryId, scanResult, isAnalyzing, foodPantry, deriveScanFromSource]);
+
+  // Clear the re-resolution marker when the result screen closes, so the next
+  // scan starts from its own derivation rather than inheriting this one's.
+  useEffect(() => {
+    if (!scanResult) {
+      sourceReresolvedFor.current = null;
+      // A new scan is a new meal, so it must not inherit the previous one's
+      // idempotency key — that would make the second log look like a retry of
+      // the first and silently drop it.
+      logKeyRef.current = null;
+    }
+  }, [scanResult]);
+
+  // When a result opens for a pantry-sourced food, pre-default the portion to
+  // what the owner has been feeding.
+  //
+  // This is the second of the two places a learned portion is applied (the
+  // other is MealHero). It reads through the same bounded helpers for the same
+  // reason: the stored portion is typed, validated against this item's current
+  // stepper range, and discarded outright if its mode no longer matches — a
+  // saved "3 pieces" means nothing once the food is measured in grams.
   useEffect(() => {
     if (!scanResult) return;
     const sourceId = resolvePantrySourceId(scanResult, selectedPantryId);
-    if (!sourceId) {
-      setUsualSuggestion(null);
-      return;
-    }
+    if (!sourceId) return;
+    const sourceItem = foodPantry.find(p => p.id === sourceId);
+    if (!sourceItem) return;
+
+    const presets = presetsForItem(sourceItem);
+    const bounds = getPortionBounds(presets);
     let cancelled = false;
-    getSuggestion(sourceId).then((mult) => {
-      if (cancelled || mult == null) return;
-      setUsualSuggestion({ id: sourceId, multiplier: mult });
+    getSuggestion(sourceId, bounds).then((learned) => {
+      if (cancelled || !learned) return;
+      const mult = learnedPortionToMultiplier(learned, presets);
+      if (!Number.isFinite(mult) || mult <= 0) return;
       setServingCount(mult);
-      const sourceItem = foodPantry.find(p => p.id === sourceId);
-      const isBowl = !!activePet?.bowl_size && !!sourceItem &&
+      const isBowl = !!activePet?.bowl_size &&
         (sourceItem.serving_unit === 'cup' || !sourceItem.serving_unit);
-      const presets = isBowl ? [0.25, 0.5, 1] : [0.75, 1, 1.25];
-      setShowCustomPortion(!presets.some(p => Math.abs(mult - p) < 0.01));
+      const chipValues = isBowl ? [0.25, 0.5, 1] : [0.75, 1, 1.25];
+      setShowCustomPortion(!chipValues.some(p => Math.abs(mult - p) < 0.01));
     });
     return () => { cancelled = true; };
-  }, [scanResult, selectedPantryId]);
-
-  // Accept the learned portion → bump the pantry item's per-serving kcal to
-  // match what's actually being fed, then clear the history.
-  const applyNewUsual = async () => {
-    if (!usualSuggestion || applyingUsual) return;
-    const item = foodPantry.find(p => p.id === usualSuggestion.id);
-    if (!item) { setUsualSuggestion(null); return; }
-    setApplyingUsual(true);
-    try {
-      const base = item.kcal_per_serving ?? 350;
-      const newKcal = Math.max(1, Math.round(base * usualSuggestion.multiplier));
-      await supabase.from('food_pantry').update({ kcal_per_serving: newKcal }).eq('id', item.id);
-      // Reflect in the store so subsequent logs use the new value immediately.
-      useActivePetStore.setState((s) => ({
-        foodPantry: s.foodPantry.map(p => p.id === item.id ? { ...p, kcal_per_serving: newKcal } : p),
-      }));
-      await clearHistory(item.id);
-      haptic.success();
-      // Reset to 1× now that "usual" means the new value.
-      setServingCount(1);
-      setUsualSuggestion(null);
-    } catch {
-      // Non-critical; leave the suggestion in place to retry.
-    } finally {
-      setApplyingUsual(false);
-      setUsualConfirmOpen(false);
-    }
-  };
-
-  /**
-   * Arriving from the notification center's portion item.
-   *
-   * The prompt no longer lives on this screen, so the confirmation has to: a
-   * deep link that silently rewrote a pantry item's calories would be a write
-   * the owner never agreed to. Opening a confirm here keeps the one-tap flow
-   * without turning a link into a mutation.
-   */
-  const [usualConfirmOpen, setUsualConfirmOpen] = useState(false);
-  const { focus: mealFocus } = useLocalSearchParams<{ focus?: string }>();
-  const mealFocusHandled = useRef<string | null>(null);
-  useEffect(() => {
-    if (!mealFocus || mealFocusHandled.current === mealFocus) return;
-    mealFocusHandled.current = mealFocus;
-    if (mealFocus === 'usual' && usualSuggestion) setUsualConfirmOpen(true);
-  }, [mealFocus, usualSuggestion]);
+  }, [scanResult, selectedPantryId, foodPantry, presetsForItem, activePet?.bowl_size]);
 
   // Branded log success modal state — no longer used (replaced by CoinToast)
 
@@ -573,9 +764,257 @@ function MealScreenContent() {
     return () => sub.remove();
   }, [sourcePopupVisible]);
 
+  /**
+   * The pantry row this scan belongs to, creating it if this product is new.
+   *
+   * Called from two places for the same reason: a scanned label describes a
+   * food that outlives this meal. The log path uses it so the product shows up
+   * on the Quick Log rail; the missing-calories path uses it because a figure
+   * the owner types has to be stored *somewhere*, and the pantry row is the
+   * thing that already carries label facts and their provenance.
+   *
+   * Deduped by (brand, product_name) against the in-memory rail, so a re-scan
+   * in the same session reuses the row rather than stacking duplicates.
+   */
+  const ensurePantryRowForScan = useCallback(async (
+    sr: ScanResult,
+    imageUri: string | null,
+  ): Promise<PantryItem | null> => {
+    if (!activePet) return null;
+    const isLabeledProduct = sr.is_labeled_product === true || (!!sr.brand && !!sr.product_name);
+    if (!isLabeledProduct) return null;
+
+    const targetBrand = (sr.brand || sr.food_name || '').trim().toLowerCase();
+    const targetProduct = (sr.product_name || sr.food_name || '').trim().toLowerCase();
+    const existing = foodPantry.find(p =>
+      p.brand.trim().toLowerCase() === targetBrand &&
+      (p.product_name || '').trim().toLowerCase() === targetProduct
+    );
+    if (existing) return existing;
+
+    const foodType = sr.food_type || (sr.is_treat ? 'treat' : 'kibble');
+    const sameTypeCount = foodPantry.filter(p => p.food_type === foodType).length;
+    const petAllergiesLower = (activePet.allergies || []).map(a => a.toLowerCase());
+    const ingredients = sr.key_ingredients || [];
+    const allergyFlags = ingredients.filter(ing =>
+      petAllergiesLower.some(a => ing.toLowerCase().includes(a))
+    );
+    try {
+      return await addPantryItem({
+        pet_id: activePet.id,
+        brand: sr.brand || sr.food_name || 'Unknown',
+        product_name: sr.product_name || sr.food_name || '',
+        food_type: foodType,
+        kcal_per_serving: sr.calories_per_serving || null,
+        kcal_per_100g_as_fed: sr.kcal_per_100g_as_fed ?? null,
+        // The label's own serving weight. Dropping it here was what forced
+        // every downstream consumer to re-derive a weight it had been told.
+        serving_grams: sr.serving_grams ?? null,
+        serving_size_raw: sr.serving_size ?? null,
+        moisture_pct: sr.moisture_pct ?? null,
+        serving_unit: sr.serving_unit ?? null,
+        protein_pct: sr.protein_pct ?? null,
+        fat_pct: sr.fat_pct ?? null,
+        fibre_pct: sr.fibre_pct ?? null,
+        key_ingredients: sr.key_ingredients ?? null,
+        allergy_flags: allergyFlags.length > 0 ? allergyFlags : null,
+        is_primary: sameTypeCount === 0,
+        image_url: imageUri || undefined,
+        expiry_date: null,
+        is_favorite: false,
+      });
+    } catch {
+      // Silent failure — the scan still logs against food_scans even if the
+      // pantry insert fails; the user just won't see it on the rail. The
+      // missing-calories path checks for null and falls back to a failure sheet.
+      return null;
+    }
+  }, [activePet, foodPantry, addPantryItem]);
+
+  /**
+   * Everything after "we have a figure we can stand behind": resolve the
+   * source, derive the numbers from it, narrate a verdict, show the result.
+   *
+   * Split out of analyzeWithGemini so the owner-supplied-calories path can
+   * re-enter it with the same scan once the missing number exists. Re-running
+   * the whole analysis instead would spend a second Gemini call to re-read a
+   * photo we already read correctly.
+   */
+  const finalizeScan = useCallback(async (
+    scan: ScanResult,
+    explicitPantryId: string | null,
+  ) => {
+    const normalized: ScanResult = { ...scan };
+
+    // Decide whether to trust the pantry's label values over Gemini's read.
+    //   • Explicit user selection → always trust (the user told us).
+    //   • Server auto-match with high confidence AND no food_type mismatch →
+    //     trust (the model says it's clearly this pantry item).
+    //   • Otherwise → keep Gemini's macros; the Source row on the result
+    //     screen will let the user accept the auto-match or pick another.
+    // resolvePantrySourceId owns that decision for every consumer on this
+    // screen (preview, chips, log) so they can't drift apart.
+    const serverMatchId = normalized.matched_pantry_id ?? null;
+    const matchConf = normalized.match_confidence ?? 0;
+    const foodTypeMismatch = normalized.food_type_mismatch === true;
+    const overrideFromPantryId = resolvePantrySourceId(
+      { matched_pantry_id: serverMatchId, match_confidence: matchConf, food_type_mismatch: foodTypeMismatch },
+      explicitPantryId,
+    );
+
+    // Carry the match metadata forward onto the scan result so the result
+    // screen's Source row can show 'Auto-matched · tap to confirm' and the
+    // "different food?" banner when food_type_mismatch was raised.
+    normalized.matched_pantry_id = serverMatchId;
+    normalized.match_confidence = matchConf;
+    normalized.food_type_mismatch = foodTypeMismatch;
+
+    // Nutrition, label percentages, health score and the verdict panel all
+    // derive from the resolved source — through the SAME helper the source
+    // picker uses, so a scan and a later source change can never produce
+    // different answers for the same food.
+    Object.assign(
+      normalized,
+      deriveScanFromSource(
+        normalized,
+        overrideFromPantryId
+          ? foodPantry.find(p => p.id === overrideFromPantryId) ?? null
+          : null,
+      ),
+    );
+
+    // Build a plain-English verdict via Gemini using macro scan details + pet profile.
+    // Architecture: compute ALL analysis BEFORE the LLM call, then pass the
+    // completed decision as context. The LLM narrates — it doesn't judge.
+    // Context assembly + LLM/fallback order live in lib/verdictPipeline.ts.
+    if (normalized.food_analysis && activePet) {
+      // Fetch today's running calorie total
+      const today = getLocalYMD(new Date());
+      const { data: todayLog } = await supabase
+        .from('daily_logs')
+        .select('calories_consumed')
+        .eq('pet_id', activePet.id)
+        .eq('log_date', today)
+        .maybeSingle();
+      const caloriesConsumedToday = (todayLog?.calories_consumed as number) || 0;
+
+      const preComputedScore = normalized.health_score ?? 5;
+      normalized.verdict_category = deriveVerdictCategory(
+        normalized.is_allergy_trigger === true,
+        normalized.is_treat === true,
+        preComputedScore,
+      );
+
+      const bundle = buildVerdictBundle({
+        pet: activePet,
+        scan: {
+          food_name: normalized.food_name,
+          food_type: normalized.food_type ?? null,
+          is_treat: normalized.is_treat === true,
+          is_allergy_trigger: normalized.is_allergy_trigger === true,
+          allergy_warnings: normalized.allergy_warnings ?? [],
+          ingredients_of_concern: normalized.ingredients_of_concern ?? [],
+          key_ingredients: normalized.key_ingredients ?? null,
+          calories_per_serving: normalized.calories_per_serving,
+          recommendation: normalized.recommendation,
+          confidence: normalized.confidence,
+        },
+        macros: {
+          total_kcal: normalized.calories_per_serving,
+          protein_g: normalized.protein_g ?? 0,
+          fat_g: normalized.fat_g ?? 0,
+          carbs_g: normalized.carbs_g ?? 0,
+          fibre_g: 0,
+          kcal_per_100g: normalized.kcal_per_100g_as_fed ?? null,
+          moisture_pct: normalized.moisture_pct ?? null,
+          meal_grams: estimateMealGrams(normalized.protein_pct, normalized.protein_g ?? 0, normalized.calories_per_serving),
+        },
+        foodAnalysis: normalized.food_analysis,
+        healthScore: preComputedScore,
+        healthScoreReasons: (normalized as any)._healthScoreReasons ?? [],
+        caloriesConsumedToday,
+        weightTrendDirection: usePetContextStore.getState().weightTrend?.direction ?? null,
+      });
+
+      const verdictResult = await fetchVerdictWithFallback(bundle);
+      if (verdictResult) {
+        normalized.verdict = verdictResult.verdict;
+        normalized.verdict_category = verdictResult.verdict_category;
+      }
+      // else: completely silent — verdict remains undefined
+    }
+
+    setScanResult(normalized);
+  }, [activePet, foodPantry, deriveScanFromSource]);
+
+  /**
+   * The owner has filled in what the packet did not print. Store it, then let
+   * the paused scan finish against the row they just corrected.
+   */
+  const saveLabelGap = useCallback(async (patch: PantryLabelPatch) => {
+    const item = labelGapItem;
+    const pending = pendingScanRef.current;
+    if (!item || !activePet) return false;
+
+    // `nutrition_revision` and `label_consistency` are deliberately absent: a
+    // database trigger owns both, and the client is REVOKEd from writing them.
+    const { error } = await supabase.from('food_pantry').update(patch).eq('id', item.id);
+    if (error) {
+      presentFailure(error, 'log');
+      return false;
+    }
+    await fetchPantry(activePet.id);
+
+    // Read the saved row back from the store rather than trusting the patch:
+    // the trigger may have adjusted what actually landed, and the meal must be
+    // priced off the stored row, not off the draft.
+    const updated = useActivePetStore.getState().foodPantry.find(p => p.id === item.id) ?? null;
+    setLabelGapItem(null);
+    pendingScanRef.current = null;
+    if (!pending) return true;
+
+    const savedKcal = resolveScanKcal(updated ? {
+      calories_per_serving: updated.kcal_per_serving ?? null,
+      kcal_per_100g_as_fed: updated.kcal_per_100g_as_fed ?? null,
+      serving_grams: updated.serving_grams ?? null,
+    } : null);
+    const stillUnpriced = savedKcal.kcalPerServing === null;
+    if (stillUnpriced) {
+      // They saved without a calorie figure. Nothing has changed about what we
+      // can honestly say the meal costs, so the scan stops here rather than
+      // logging a zero that would look exactly like a real meal.
+      setCapturedImage(null);
+      setFailure({
+        title: 'Still nothing to count',
+        message: `This meal still needs either calories per serving, or both calories per 100 g and a serving weight. Add those printed figures in the pantry whenever you have the packet to hand.`,
+        actions: [{ label: 'OK', action: 'dismiss' }],
+      });
+      return true;
+    }
+
+    // The corrected row is now the source of truth for this meal, which is
+    // exactly what an explicit pick means — so say so, and let the normal
+    // pantry-sourced path do the arithmetic.
+    setSelectedPantryId(updated!.id);
+    setIsAnalyzing(true);
+    try {
+      await finalizeScan(pending, updated!.id);
+    } finally {
+      setIsAnalyzing(false);
+    }
+    return true;
+  }, [labelGapItem, activePet, fetchPantry, finalizeScan, presentFailure]);
+
+  /** Dismissed without filling anything in — abandon the scan, keep the row. */
+  const cancelLabelGap = useCallback(() => {
+    setLabelGapItem(null);
+    pendingScanRef.current = null;
+    setCapturedImage(null);
+  }, []);
+
   const pickImage = async (useCamera: boolean) => {
     if (!checkAccess()) return;
-    
+
     // Reset previous results
     setScanResult(null);
 
@@ -619,12 +1058,12 @@ function MealScreenContent() {
 
       setCapturedImage(asset.uri);
       setServingCount(1); // Reset serving count for new scan
-      analyzeWithGemini(asset.base64!, asset.mimeType);
+      analyzeWithGemini(asset.base64!, asset.mimeType, asset.uri);
     }
   };
 
-  const analyzeWithGemini = async (base64: string, mimeType: string) => {
-    retryRef.current = () => analyzeWithGemini(base64, mimeType);
+  const analyzeWithGemini = async (base64: string, mimeType: string, imageUri?: string | null) => {
+    retryRef.current = () => analyzeWithGemini(base64, mimeType, imageUri);
     setIsAnalyzing(true);
 
     try {
@@ -677,206 +1116,72 @@ function MealScreenContent() {
           carbs_g: data.analysis.carbs_g ?? 0,
         };
 
-        // Decide whether to trust the pantry's label values over Gemini's read.
-        //   • Explicit user selection → always trust (the user told us).
-        //   • Server auto-match with high confidence AND no food_type mismatch →
-        //     trust (the model says it's clearly this pantry item).
-        //   • Otherwise → keep Gemini's macros; the Source row on the result
-        //     screen will let the user accept the auto-match or pick another.
-        // resolvePantrySourceId owns that decision for every consumer on this
-        // screen (preview, chips, log) so they can't drift apart.
-        const serverMatchId = (data.analysis as { matched_pantry_id?: string | null })?.matched_pantry_id ?? null;
-        const matchConf = (data.analysis as { match_confidence?: number })?.match_confidence ?? 0;
-        const foodTypeMismatch = (data.analysis as { food_type_mismatch?: boolean })?.food_type_mismatch === true;
-        const overrideFromPantryId = resolvePantrySourceId(
-          { matched_pantry_id: serverMatchId, match_confidence: matchConf, food_type_mismatch: foodTypeMismatch },
+        // The extractor returns null rather than inventing a calorie figure when
+        // the label does not state one, so this branch is reachable where it
+        // previously was not: a scan used to arrive carrying a confident 350.
+        //
+        // Two different situations arrive here and they must not share an
+        // outcome:
+        //
+        //   • The packet prices by mass — "3650 kcal/kg", "Typical ME: 475
+        //     kcal/100g" — and states a serving weight. Nothing is missing; the
+        //     per-serving figure is the product of two printed numbers, and
+        //     resolveScanKcal does that multiplication. This is the common case,
+        //     because most pet food is labelled this way.
+        //   • The figure genuinely is not on the packet (a bag whose back panel
+        //     is a feeding table in cups per day). Then the owner is asked —
+        //     they are holding the bag and we are not.
+        //
+        // What neither situation is, is an unreadable photo. Saying so sent
+        // people back to retake a picture that was already perfectly legible,
+        // and no number of retries could ever have fixed it.
+        const resolvedKcal = resolveScanKcal({
+          calories_per_serving: (data.analysis as any)?.calories_per_serving ?? null,
+          kcal_per_100g_as_fed: (data.analysis as any)?.kcal_per_100g_as_fed ?? null,
+          serving_grams: (data.analysis as any)?.serving_grams ?? null,
+        });
+        if (resolvedKcal.kcalPerServing !== null) {
+          normalized.calories_per_serving = resolvedKcal.kcalPerServing;
+        }
+        const hasTrustedSource = !!resolvePantrySourceId(
+          {
+            matched_pantry_id: (data.analysis as any)?.matched_pantry_id ?? null,
+            match_confidence: (data.analysis as any)?.match_confidence ?? 0,
+            food_type_mismatch: (data.analysis as any)?.food_type_mismatch === true,
+          },
           selectedPantryId,
         );
-
-        if (overrideFromPantryId) {
-          const pantryItem = foodPantry.find(p => p.id === overrideFromPantryId);
-          if (pantryItem) {
-            // Always ONE serving. The portion multiplier is applied once, at
-            // log time, by resolveLoggedTotals — baking it in here read a
-            // stale `servingCount` (setServingCount(1) hadn't committed yet)
-            // and left the preview double-counting it.
-            const macros = computePantryMacros(pantryItem, 1, {
-              species: activePet?.species,
-              bowl: activePet?.bowl_size ? { size: activePet.bowl_size as any } : undefined,
-            });
-            normalized.calories_per_serving = macros.total_kcal;
-            normalized.protein_g = macros.protein_g;
-            normalized.fat_g = macros.fat_g;
-            normalized.carbs_g = macros.carbs_g;
-            normalized.kcal_per_100g_as_fed = macros.kcal_per_100g;
-            normalized.moisture_pct = macros.moisture_pct;
-            // Also carry label percentages so the preview verdict uses the same
-            // data as executeLog — prevents preview vs. stored verdict mismatch.
-            normalized.protein_pct = pantryItem.protein_pct ?? null;
-            normalized.fat_pct = pantryItem.fat_pct ?? null;
-            normalized.fibre_pct = pantryItem.fibre_pct ?? null;
+        const hasConflictingLabelFigures = normalized.extraction_flags?.includes('label_figures_conflict') === true;
+        if (!hasTrustedSource && (resolvedKcal.kcalPerServing === null || hasConflictingLabelFigures)) {
+          // Keep everything the scan DID read — brand, ingredients, guaranteed
+          // analysis — as a pantry row, and ask for the one number that is
+          // missing. Losing a good read because one field wasn't printed is how
+          // an owner ends up entering the whole label by hand.
+          const row = await ensurePantryRowForScan(normalized, imageUri ?? capturedImage);
+          if (row) {
+            pendingScanRef.current = normalized;
+            setLabelGapItem(row);
+            return;
           }
-        }
-
-        // Carry the match metadata forward onto the scan result so the result
-        // screen's Source row can show "Auto-matched · tap to confirm" and the
-        // "different food?" banner when food_type_mismatch was raised.
-        (normalized as any).matched_pantry_id = serverMatchId;
-        (normalized as any).match_confidence = matchConf;
-        (normalized as any).food_type_mismatch = foodTypeMismatch;
-
-        // Compute health score deterministically right now so the preview
-        // shows the same score that will be stored when the user logs.
-        if (activePet) {
-          try {
-            const { score, reasons: healthReasons } = computeHealthScore({
-              food: {
-                food_type: normalized.food_type,
-                is_treat: normalized.is_treat === true,
-                is_allergy_trigger: normalized.is_allergy_trigger === true,
-                allergy_warnings: normalized.allergy_warnings ?? [],
-                ingredients_of_concern: normalized.ingredients_of_concern ?? [],
-                calories_per_serving: normalized.calories_per_serving,
-                protein_pct: normalized.protein_pct ?? null,
-                fat_pct: normalized.fat_pct ?? null,
-                fibre_pct: normalized.fibre_pct ?? null,
-                moisture_pct: normalized.moisture_pct ?? null,
-                kcal_per_100g_as_fed: normalized.kcal_per_100g_as_fed ?? null,
-                confidence: normalized.confidence,
-                name_and_ingredients: [normalized.food_name, ...(normalized.key_ingredients ?? [])],
-              },
-              pet: {
-                species: activePet.species as 'dog' | 'cat',
-                age_months: getAgeMonths(activePet) ?? null,
-                daily_kcal_target: activePet.target_daily_calories ?? null,
-                allergies: activePet.allergies ?? null,
-                medical_conditions: activePet.medical_conditions ?? null,
-                weight_kg: activePet.current_weight_kg ?? null,
-                target_weight_kg: activePet.target_weight_kg ?? null,
-              },
-            });
-            normalized.health_score = score;
-            // Store reasons for the verdict context builder (passed to LLM prompt)
-            (normalized as any)._healthScoreReasons = healthReasons;
-          } catch {
-            // keep Gemini fallback if scoring fails
-          }
-
-          // Compute the same FoodAnalysis verdict that confirmLog will store,
-          // so the preview's Nutrition Reference panel matches the historical
-          // Scan Details view exactly. meal_grams is best-effort estimated
-          // for the verdict's per-nutrient g/1000 kcal calculations.
-          try {
-            const proteinPct = normalized.protein_pct ?? null;
-            const proteinG = normalized.protein_g ?? 0;
-            const previewKcal = normalized.calories_per_serving;
-            const estimatedMealGrams =
-              proteinPct && proteinPct > 0 && proteinG > 0
-                ? Math.round((proteinG / proteinPct) * 100)
-                : Math.max(1, Math.round(previewKcal / 3.5));
-            const previewGoal = deriveGoal(
-              activePet.current_weight_kg ?? 0,
-              activePet.target_weight_kg ?? null,
-              activePet.body_condition_score,
+          const isIdentifiableLabel = normalized.is_labeled_product === true
+            || (!!normalized.brand && !!normalized.product_name);
+          if (isIdentifiableLabel) {
+            // The image was readable, but persisting its editable pantry row
+            // failed. Classify that as an app/server failure, not as a bad
+            // photo; retaking the same photo cannot repair a database write.
+            presentFailure(new Error('Could not create pantry row for label review'), 'food_scan');
+          } else {
+            // Nothing identifiable was read either — a bowl, a blurred packet.
+            // Now "we couldn't make it out" is the honest answer.
+            presentFailure(
+              toAppError(new Error('scan calories unreadable'), { errorCode: 'unreadable_image' }),
+              'food_scan',
             );
-            const previewConditionKeys = mapMedicalConditionsToAdjustmentKeys(
-              activePet.medical_conditions,
-            );
-            normalized.food_analysis = analyzeFood({
-              food: {
-                product_name: normalized.food_name,
-                food_type: normalized.food_type ?? 'kibble',
-                kcal_per_100g_as_fed: normalized.kcal_per_100g_as_fed ?? null,
-                moisture_pct: normalized.moisture_pct ?? null,
-                protein_pct: normalized.protein_pct ?? null,
-                fat_pct: normalized.fat_pct ?? null,
-                fiber_pct: normalized.fibre_pct ?? null,
-                calcium_pct: null,
-                phosphorus_pct: null,
-              },
-              pet: {
-                name: activePet.name,
-                species: activePet.species,
-                weight_kg: activePet.current_weight_kg,
-                target_weight_kg: activePet.target_weight_kg ?? null,
-                age_months: getAgeMonths(activePet) ?? null,
-                activity_level: activePet.activity_level,
-                is_neutered: activePet.is_neutered,
-                goal: previewGoal,
-                confirmed_condition_keys: previewConditionKeys,
-                breed: activePet.breed ?? null,
-                age_years: activePet.age_years ?? null,
-                body_condition_score: activePet.body_condition_score ?? null,
-              },
-              meal_grams: estimatedMealGrams,
-            });
-          } catch {
-            // panel will simply not render if verdict computation fails
           }
+          return;
         }
 
-        // Build a plain-English verdict via Gemini using macro scan details + pet profile.
-        // Architecture: compute ALL analysis BEFORE the LLM call, then pass the
-        // completed decision as context. The LLM narrates — it doesn't judge.
-        // Context assembly + LLM/fallback order live in lib/verdictPipeline.ts.
-        if (normalized.food_analysis && activePet) {
-          // Fetch today's running calorie total
-          const today = getLocalYMD(new Date());
-          const { data: todayLog } = await supabase
-            .from('daily_logs')
-            .select('calories_consumed')
-            .eq('pet_id', activePet.id)
-            .eq('log_date', today)
-            .maybeSingle();
-          const caloriesConsumedToday = (todayLog?.calories_consumed as number) || 0;
-
-          const preComputedScore = normalized.health_score ?? 5;
-          normalized.verdict_category = deriveVerdictCategory(
-            normalized.is_allergy_trigger === true,
-            normalized.is_treat === true,
-            preComputedScore,
-          );
-
-          const bundle = buildVerdictBundle({
-            pet: activePet,
-            scan: {
-              food_name: normalized.food_name,
-              food_type: normalized.food_type ?? null,
-              is_treat: normalized.is_treat === true,
-              is_allergy_trigger: normalized.is_allergy_trigger === true,
-              allergy_warnings: normalized.allergy_warnings ?? [],
-              ingredients_of_concern: normalized.ingredients_of_concern ?? [],
-              key_ingredients: normalized.key_ingredients ?? null,
-              calories_per_serving: normalized.calories_per_serving,
-              recommendation: normalized.recommendation,
-              confidence: normalized.confidence,
-            },
-            macros: {
-              total_kcal: normalized.calories_per_serving,
-              protein_g: normalized.protein_g ?? 0,
-              fat_g: normalized.fat_g ?? 0,
-              carbs_g: normalized.carbs_g ?? 0,
-              fibre_g: 0,
-              kcal_per_100g: normalized.kcal_per_100g_as_fed ?? null,
-              moisture_pct: normalized.moisture_pct ?? null,
-              meal_grams: estimateMealGrams(normalized.protein_pct, normalized.protein_g ?? 0, normalized.calories_per_serving),
-            },
-            foodAnalysis: normalized.food_analysis,
-            healthScore: preComputedScore,
-            healthScoreReasons: (normalized as any)._healthScoreReasons ?? [],
-            caloriesConsumedToday,
-            weightTrendDirection: usePetContextStore.getState().weightTrend?.direction ?? null,
-          });
-
-          const verdictResult = await fetchVerdictWithFallback(bundle);
-          if (verdictResult) {
-            normalized.verdict = verdictResult.verdict;
-            normalized.verdict_category = verdictResult.verdict_category;
-          }
-          // else: completely silent — verdict remains undefined
-        }
-
-        setScanResult(normalized);
+        await finalizeScan(normalized, selectedPantryId);
       } else {
         presentFailure(fromEdgeBody(data) ?? new Error('scan returned no analysis'), 'food_scan');
       }
@@ -1000,6 +1305,7 @@ function MealScreenContent() {
     // learning alike. It used to be the explicit pick only, which meant an
     // auto-matched scan silently logged off unscaled Gemini numbers.
     const sPantryId = sr ? resolvePantrySourceId(sr, overrides?.pantryId ?? selectedPantryId) : null;
+    const sourcePantryItem = sPantryId ? foodPantry.find(p => p.id === sPantryId) ?? null : null;
     const sCount = overrides?.servingCount ?? servingCount;
     const sImage = overrides?.capturedImage ?? capturedImage;
     if (!sr || !activePet) return;
@@ -1009,32 +1315,41 @@ function MealScreenContent() {
     try {
       const shouldTrackFirstFood = await isFirstFoodLogForUser(user?.id);
 
-      // What this log actually costs the day. When a pantry item backs the
-      // scan (explicit pick or a trusted auto-match) its label data drives the
-      // math; otherwise the scan's own per-serving values are scaled. Either
-      // way the portion multiplier is applied exactly once, in one place.
-      const totals = totalsFor(sr, sPantryId, sCount);
-      const totalCalories = totals.totalCalories;
-      const totalProtein = totals.protein_g;
-      const totalCarbs = totals.carbs_g;
-      const totalFat = totals.fat_g;
+      // THE canonical meal. One object, resolved once, driving the stored row,
+      // the verdict, the daily aggregate and the receipt on screen. Nothing
+      // below recomputes any part of it.
+      //
+      // What this replaces matters: meal weight used to be estimated back out
+      // of protein grams (or kcal / 3.5) purely to feed the verdict layer. That
+      // second, independent guess is why Jasper's row stored `meal_kcal: 240`
+      // beside `ai_estimated_calories: 24000` — the app computed the right
+      // answer and the wrong answer on the same row and shipped both.
+      const canonical = resolveCanonicalMeal(sr, sourcePantryItem, sCount, {
+        species: activePet.species as 'dog' | 'cat',
+        bowl: activePet.bowl_size ? { size: activePet.bowl_size as BowlSize } : undefined,
+      });
+      const totalCalories = canonical.kcal;
+      const totalProtein = canonical.protein_g;
+      const totalCarbs = canonical.carbs_g;
+      const totalFat = canonical.fat_g;
 
       // Label-accurate % values for the verdict layer (pantry wins when present).
-      const pantry_kcal_per_100g = totals.kcal_per_100g;
-      const pantry_moisture_pct = totals.moisture_pct;
-      const pantry_protein_pct = totals.protein_pct;
-      const pantry_fat_pct = totals.fat_pct;
-      const pantry_fiber_pct = totals.fibre_pct;
+      const pantry_kcal_per_100g = canonical.kcal_per_100g;
+      const pantry_moisture_pct = canonical.moisture_pct;
+      const pantry_protein_pct = canonical.protein_pct;
+      const pantry_fat_pct = canonical.fat_pct;
+      const pantry_fiber_pct = canonical.fibre_pct;
 
-      // Best-effort meal_grams estimate for the verdict layer.
-      // Per-nutrient verdicts are intrinsic to the food (g/1000 kcal) and
-      // don't depend on this; meal_grams only feeds the meal_kcal /
-      // % of daily calculation, which we override with totalCalories below.
-      const proteinPct = pantry_protein_pct;
-      const estimatedMealGrams =
-        proteinPct && proteinPct > 0 && totalProtein > 0
-          ? Math.round((totalProtein / proteinPct) * 100)
-          : Math.max(1, Math.round(totalCalories / 3.5));
+      // An unmatched scan has no pantry row and therefore no real meal weight.
+      // The old estimate survives only for that case, and only to feed the
+      // verdict's "% of daily" line — it is never persisted as meal_grams,
+      // because a guess stored next to a measurement is indistinguishable from
+      // one later on.
+      const verdictMealGrams =
+        canonical.mealGrams ??
+        (pantry_protein_pct && pantry_protein_pct > 0 && totalProtein > 0
+          ? Math.round((totalProtein / pantry_protein_pct) * 100)
+          : Math.max(1, Math.round(totalCalories / 3.5)));
 
       // Build the FoodAnalysis verdict — stored on food_scans.food_analysis.
       const goal = deriveGoal(
@@ -1071,7 +1386,7 @@ function MealScreenContent() {
           age_years: activePet.age_years ?? null,
           body_condition_score: activePet.body_condition_score ?? null,
         },
-        meal_grams: estimatedMealGrams,
+        meal_grams: verdictMealGrams,
       });
 
       // Compute the health score deterministically from the extraction +
@@ -1103,12 +1418,20 @@ function MealScreenContent() {
         },
       });
 
-      // --- Compute verdict_category BEFORE LLM call ---
+      // The deterministic verdict category, applied to the stored analysis
+      // unconditionally.
+      //
+      // It used to be written only inside the background LLM upgrade, so a scan
+      // whose narration call failed kept whatever category `analyzeFood`
+      // happened to produce — the category depended on whether a network
+      // request succeeded. Now the LLM writes narration and nothing else, and
+      // this is settled before the row is inserted.
       const storedCategory = deriveVerdictCategory(
         sr.is_allergy_trigger,
         sr.is_treat === true,
         derivedHealthScore,
       );
+      const storedAnalysis = { ...foodAnalysis, verdict_category: storedCategory };
       const execConsumedToday = existingLog?.calories_consumed ?? 0;
 
       // Assemble the shared verdict contexts (lib/verdictPipeline.ts).
@@ -1134,7 +1457,7 @@ function MealScreenContent() {
           fibre_g: 0,
           kcal_per_100g: pantry_kcal_per_100g,
           moisture_pct: pantry_moisture_pct,
-          meal_grams: estimatedMealGrams,
+          meal_grams: verdictMealGrams,
         },
         foodAnalysis,
         healthScore: derivedHealthScore,
@@ -1160,109 +1483,122 @@ function MealScreenContent() {
       // 0. Silent pantry auto-save — when a fresh scan lands without a pantry
       // match, persist it as a pantry row so future scans of the same product
       // surface on the Quick Log rail. No UI feedback: pantry is plumbing.
-      // Dedupe against the in-memory rail by (brand, product_name) so a re-scan
-      // within the same session reuses the existing row.
       let effectivePantryId: string | null = sPantryId;
-      const isLabeledProduct = sr.is_labeled_product === true || (!!sr.brand && !!sr.product_name);
-      if (!effectivePantryId && isLabeledProduct) {
-        const targetBrand = (sr.brand || sr.food_name || '').trim().toLowerCase();
-        const targetProduct = (sr.product_name || sr.food_name || '').trim().toLowerCase();
-        const existing = foodPantry.find(p =>
-          p.brand.trim().toLowerCase() === targetBrand &&
-          (p.product_name || '').trim().toLowerCase() === targetProduct
-        );
-        if (existing) {
-          effectivePantryId = existing.id;
-        } else {
-          const foodType = sr.food_type || (sr.is_treat ? 'treat' : 'kibble');
-          const sameTypeCount = foodPantry.filter(p => p.food_type === foodType).length;
-          const petAllergiesLower = (activePet.allergies || []).map(a => a.toLowerCase());
-          const ingredients = sr.key_ingredients || [];
-          const allergyFlags = ingredients.filter(ing =>
-            petAllergiesLower.some(a => ing.toLowerCase().includes(a))
-          );
-          try {
-            const created = await addPantryItem({
-              pet_id: activePet.id,
-              brand: sr.brand || sr.food_name || 'Unknown',
-              product_name: sr.product_name || sr.food_name || '',
-              food_type: foodType,
-              kcal_per_serving: sr.calories_per_serving || null,
-              kcal_per_100g_as_fed: sr.kcal_per_100g_as_fed ?? null,
-              moisture_pct: sr.moisture_pct ?? null,
-              serving_unit: sr.serving_unit ?? null,
-              protein_pct: sr.protein_pct ?? null,
-              fat_pct: sr.fat_pct ?? null,
-              fibre_pct: sr.fibre_pct ?? null,
-              key_ingredients: sr.key_ingredients ?? null,
-              allergy_flags: allergyFlags.length > 0 ? allergyFlags : null,
-              is_primary: sameTypeCount === 0,
-              image_url: sImage || undefined,
-              expiry_date: null,
-              is_favorite: false,
-            });
-            if (created?.id) {
-              effectivePantryId = created.id;
-            }
-          } catch {
-            // Silent failure — the scan still logs against food_scans even if
-            // the pantry insert fails; the user just won't see it on the rail.
-          }
-        }
+      if (!effectivePantryId) {
+        const row = await ensurePantryRowForScan(sr, sImage);
+        if (row) effectivePantryId = row.id;
       }
 
-      // 1. Insert into food_scans
-      const { data: insertedScan, error: scanInsertError } = await supabase.from('food_scans').insert({
-        pet_id: activePet.id,
+      // ── 1. Persist the meal ────────────────────────────────────────────────
+      //
+      // One transaction: the scan row, the daily aggregate, and the day's
+      // quality rollup. This used to be two requests — INSERT food_scans, then
+      // bump daily_logs — with a window between them where the process could
+      // die and leave a scan with no aggregate. Production has days that look
+      // exactly like that: 0 kcal recorded against three logged meals.
+      //
+      // The key is generated once per user action and reused across retries, so
+      // a flaky network cannot produce two meals from one tap. `created` tells
+      // us whether this call actually made the row: a retry returns the
+      // existing one, and the side effects below must not run twice for it.
+      const isTreat = sr.is_treat === true;
+      const tzOffsetMinutes = -new Date().getTimezoneOffset();
+      const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+
+      if (!logKeyRef.current) logKeyRef.current = randomUUID();
+      const idempotencyKey = logKeyRef.current;
+
+      let insertedScanId: string | null = null;
+      let didCreate = true;
+
+      const { data: txResult, error: txError } = await supabase.rpc('log_meal', {
+        p_idempotency_key: idempotencyKey,
+        p_pet_id: activePet.id,
+        p_log_date: today,
+        p_payload: {
+          pantry_item_id: effectivePantryId,
+          servings: sCount,
+          is_treat: isTreat,
+          // The server recomputes and its number is what persists. Ours travels
+          // only so a disagreement can be recorded — a rounding difference must
+          // never stop someone logging what their animal ate.
+          client_kcal: totalCalories,
+          scan_kcal: sr.calories_per_serving,
+          image_url: sImage || '',
+          food_name: sr.food_name,
+          confidence: Math.round(sr.confidence * 100),
+          health_score: derivedHealthScore,
+          ingredients: sr.key_ingredients || sr.ingredients || [],
+          food_analysis: storedAnalysis,
+          tz_offset_minutes: tzOffsetMinutes,
+          tz_name: tzName,
+        },
+      });
+
+      const txMissing = txError?.code === '42883'; // undefined_function
+      if (txError && !txMissing) throw txError;
+
+      if (!txMissing) {
+        const env = txResult as { ok?: boolean; code?: string; scan_id?: string; created?: boolean } | null;
+        if (!env?.ok) {
+          // An expected integrity condition, returned as data rather than
+          // raised — see the note in the migration about why RAISE would
+          // destroy the record of what went wrong.
+          throw new Error(env?.code ?? 'log_meal_failed');
+        }
+        insertedScanId = env.scan_id ?? null;
+        didCreate = env.created !== false;
+      } else {
+        await legacyInsertMeal(activePet, sr);
+      }
+
+      /**
+       * The pre-transaction write path.
+       *
+       * Retained ONLY for the window where the app has shipped but the
+       * migration has not, and narrowed to `42883` on purpose: falling back on
+       * a transient error would silently reintroduce the two-request defect for
+       * anyone with a flaky connection, which is the precise failure mode this
+       * whole change exists to remove.
+       */
+      async function legacyInsertMeal(pet: NonNullable<typeof activePet>, scan: NonNullable<typeof sr>) {
+        const { data: insertedScan, error: scanInsertError } = await supabase.from('food_scans').insert({
+        pet_id: pet.id,
         image_url: sImage || '',
-        ai_identified_food: sr.food_name,
+        ai_identified_food: scan.food_name,
         ai_estimated_calories: totalCalories,
-        ai_confidence_score: Math.round(sr.confidence * 100),
+        ai_confidence_score: Math.round(scan.confidence * 100),
         is_user_confirmed: true,
-        is_treat: sr.is_treat === true,
+        is_treat: scan.is_treat === true,
         protein_g: totalProtein,
         carbs_g: totalCarbs,
         fat_g: totalFat,
         health_score: derivedHealthScore,
-        ingredients: sr.key_ingredients || sr.ingredients || [],
-        food_analysis: foodAnalysis,
+        ingredients: scan.key_ingredients || scan.ingredients || [],
+        food_analysis: storedAnalysis,
+
+        // ── Provenance ──
+        pantry_item_id: effectivePantryId,
+        log_date: today,
+        // Captured at log time, not reconstructed later. 73% of historical
+        // scans belong to owners with no timezone on file, which is exactly
+        // why "which day was this?" is unanswerable for them.
+        tz_offset_minutes: -new Date().getTimezoneOffset(),
+        tz_name: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+        portion_mode: canonical.portion.mode,
+        portion_quantity: canonical.portion.quantity,
+        unit_basis: canonical.portion.unitBasis,
+        meal_grams: canonical.mealGrams,
+        nutrition_snapshot: canonical.nutritionSnapshot,
+        kcal_basis: canonical.kcalBasis,
+        quality: canonical.quality,
+        anomaly_flags: canonical.anomalies.length ? canonical.anomalies : null,
       }).select('id').single();
       if (scanInsertError) throw scanInsertError;
+      insertedScanId = insertedScan?.id ?? null;
 
-      // 1a. Background verdict upgrade — fetch the Gemini narration without
-      // holding the log open, then swap it into the stored row. Fire-and-forget:
-      // on any failure the deterministic verdict already stored stands (same
-      // outcome as the old fallback path).
-      const insertedScanId: string | null = insertedScan?.id ?? null;
-      if (insertedScanId) {
-        fetchVerdictLLM(verdictBundle)
-          .then(async (llmVerdict) => {
-            if (!llmVerdict) return;
-            const upgraded = {
-              ...foodAnalysis,
-              verdict: llmVerdict,
-              verdict_category: storedCategory,
-            };
-            await supabase
-              .from('food_scans')
-              .update({ food_analysis: upgraded })
-              .eq('id', insertedScanId);
-          })
-          .catch(() => {});
-      }
-
-      // 1b. Bump scan count for the pantry source (explicit pick or silent save).
-      if (effectivePantryId) {
-        incrementPantryScan(effectivePantryId);
-      }
-
-      // 2. Upsert today's daily_log (with treat tracking) — atomic increment
-      // via the log_intake RPC so two quick logs can't interleave and lose
-      // calories. Falls back to the original read-modify-write when the
-      // function isn't deployed yet.
-      const isTreat = sr.is_treat === true;
       const { error: intakeErr } = await supabase.rpc('log_intake', {
-        p_pet_id: activePet.id,
+        p_pet_id: pet.id,
         p_log_date: today,
         p_kcal_delta: totalCalories,
         p_treat_delta: isTreat ? 1 : 0,
@@ -1283,7 +1619,7 @@ function MealScreenContent() {
           fallbackError = error;
         } else {
           const { error } = await supabase.from('daily_logs').insert({
-            pet_id: activePet.id,
+            pet_id: pet.id,
             log_date: today,
             calories_consumed: totalCalories,
             treats_consumed: isTreat ? 1 : 0,
@@ -1292,8 +1628,38 @@ function MealScreenContent() {
         }
         if (fallbackError) throw fallbackError;
       }
+      } // end legacyInsertMeal
 
-      if (shouldTrackFirstFood) trackFirebaseEvent('first_food_logged');
+      // ── 1a. Background verdict narration ───────────────────────────────────
+      //
+      // Fire-and-forget, into its OWN column. It used to write the whole
+      // `food_analysis` object rebuilt from a closure captured before the
+      // insert, so an adjustment landing while the model was still thinking got
+      // silently reverted by a write that had no idea it had happened. Keeping
+      // the LLM out of canonical fields entirely is the stronger fix.
+      if (insertedScanId && didCreate) {
+        const narrateId = insertedScanId;
+        fetchVerdictLLM(verdictBundle)
+          .then(async (llmVerdict) => {
+            if (!llmVerdict) return;
+            await supabase
+              .from('food_scans')
+              .update({ verdict_narration: llmVerdict })
+              .eq('id', narrateId);
+          })
+          .catch(() => {});
+      }
+
+      // ── 1b. Side effects, gated on actually having created the meal ────────
+      //
+      // A retry that returns the existing row must not award coins again, bump
+      // the pantry count again, or re-close the scheduled feeding card. This
+      // gate is the reason log_meal reports `created` at all.
+      if (didCreate && effectivePantryId) {
+        incrementPantryScan(effectivePantryId);
+      }
+
+      if (shouldTrackFirstFood && didCreate) trackFirebaseEvent('first_food_logged');
 
       // Update context store with new calorie total. updateCalories keeps the
       // headline number instant; invalidateContext forces the next Home focus to
@@ -1307,9 +1673,14 @@ function MealScreenContent() {
       // "it's done" beat.
       haptic.success();
 
-      // Award coins for food log (before clearing state)
-      if (user?.id) {
-        awardCoins(user.id, 'food_log');
+      // Award coins for the food log.
+      //
+      // Keyed on the scan id so a retry cannot pay twice: the award used to
+      // pass no reference at all, which meant an uncertain response followed by
+      // a retry was indistinguishable from two meals. Walks have been keyed on
+      // their session id for exactly this reason.
+      if (user?.id && didCreate) {
+        awardCoins(user.id, 'food_log', insertedScanId ?? undefined);
       }
 
       // Auto-complete the matching feeding activity on the day's timeline so
@@ -1317,7 +1688,7 @@ function MealScreenContent() {
       // failures shouldn't disrupt the meal-log flow.
       // `sr`, not `scanResult` — on the hero/quick-log path the screen state is
       // null, so a logged treat used to close a scheduled feeding card.
-      if (activePet?.id && sr.is_treat !== true) {
+      if (didCreate && activePet?.id && sr.is_treat !== true) {
         markNearestFeedingActivityComplete({
           petId: activePet.id,
           loggedAt: new Date(),
@@ -1325,13 +1696,25 @@ function MealScreenContent() {
         }).catch(() => {});
       }
 
-      // Record the serving multiplier against the pantry source for the
-      // learning loop (so repeated off-1× feeding can become the new usual).
+      // Record what was fed against the pantry source, WITH its unit. Storing a
+      // bare multiplier is what let a 200× gram-unit bug survive its own fix —
+      // see lib/portionLearning. The portion is typed from this item's current
+      // presets and validated against the same bounds the stepper enforces, so
+      // an out-of-range portion is dropped rather than stored for replay.
       if (effectivePantryId) {
-        recordServing(effectivePantryId, sCount);
+        const sourceItem = foodPantry.find(p => p.id === effectivePantryId);
+        if (sourceItem) {
+          const presets = presetsForItem(sourceItem);
+          recordServing(
+            effectivePantryId,
+            multiplierToLearnedPortion(sCount, presets),
+            getPortionBounds(presets),
+          );
+        }
       }
 
-      setUsualSuggestion(null);
+      // The meal committed, so the next one starts a new idempotency scope.
+      logKeyRef.current = null;
 
       // Immediately kill the scan result screen and return to scanner
       // User can scan next food or select from pantry
@@ -1398,33 +1781,25 @@ function MealScreenContent() {
   }, [weightContextLine, activePet?.id, publishNotification, retractNotification]);
 
   /**
-   * The learned-portion prompt.
+   * The learned-portion prompt has been withdrawn.
    *
-   * As a banner this sat directly above the portion picker and its "Update"
-   * applied the new usual in one tap, in context. Off the screen it routes back
-   * with `?focus=usual`, which opens the confirm above — one extra tap, but the
-   * write still happens with the owner's explicit agreement.
+   * It offered "make this the usual", and accepting it wrote
+   * `kcal_per_serving = kcal_per_serving × multiplier` onto the pantry row —
+   * storing a PORTION inside a LABEL FACT. A pantry item's calories are what
+   * the manufacturer printed; how much of it this owner serves is a different
+   * fact and belongs in its own field.
    *
-   * It expires after a week: a reading of how much was fed *lately* is stale by
-   * then, and a stale one would be worse than none.
+   * Any lingering notification is retracted here so the tray doesn't keep
+   * offering an action that no longer exists. The suggestion itself still
+   * works — it pre-fills the portion picker, which was always the useful half.
+   *
+   * Reinstated in stage 5 against `food_pantry.usual_portion`.
    */
   React.useEffect(() => {
-    const id = stableId('runtime', `usual_portion_${activePet?.id ?? 'none'}`, dayScope());
-    if (!usualSuggestion) { retractNotification(id); return; }
-    const lighter = usualSuggestion.multiplier < 1;
-    publishNotification({
-      id,
-      source: 'runtime',
-      tone: 'info',
-      title: 'Portions have shifted',
-      body: `Lately ${activePet?.name || 'they'} has been fed a little ${lighter ? 'less' : 'more'} than the saved portion. Tap to make it the usual.`,
-      icon: 'auto-awesome',
-      createdAt: new Date().toISOString(),
-      route: '/(tabs)/meal?focus=usual',
-      petId: activePet?.id ?? null,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-    });
-  }, [usualSuggestion, activePet?.id, activePet?.name, publishNotification, retractNotification]);
+    retractNotification(
+      stableId('runtime', `usual_portion_${activePet?.id ?? 'none'}`, dayScope()),
+    );
+  }, [activePet?.id, retractNotification]);
 
   // When scan result is ready, show the full Stitch-designed result view
   if (scanResult && !isAnalyzing) {
@@ -1459,6 +1834,25 @@ function MealScreenContent() {
       !!activePet?.bowl_size &&
       !!resolvedSourceItem &&
       (resolvedSourceItem.serving_unit === 'cup' || !resolvedSourceItem.serving_unit);
+    // The range this screen's +/- stepper may move through, as a multiplier.
+    //
+    // It used to have a floor of 0.25 and NO ceiling — `servingCount + 0.25`
+    // forever. Combined with a learned portion that could arrive at any
+    // magnitude, there was nothing between the owner and a 200× meal. When the
+    // log is backed by a pantry item the bounds come from that item's own
+    // presets; otherwise a conservative fixed range applies, because an
+    // unmatched scan has no serving weight to reason about.
+    // `servingCount` is a multiplier (gramsFed / gramsPerUnit), so the gram
+    // ceiling converts to a multiplier ceiling the same way for every mode.
+    const servingCountMax = (() => {
+      if (!resolvedSourceItem) return 20;
+      const bounds = getPortionBounds(presetsForItem(resolvedSourceItem));
+      if (!(bounds.gramsPerUnit > 0)) return 20;
+      const maxMultiplier = boundsInGrams(bounds).max / bounds.gramsPerUnit;
+      return Number.isFinite(maxMultiplier) && maxMultiplier >= 1 ? maxMultiplier : 20;
+    })();
+    const servingCountMin = 0.25;
+
     // Adaptive chip set: bowl fractions read better than 0.75/1/1.25 for kibble.
     const portionOptions = bowlMode
       ? [
@@ -1598,16 +1992,17 @@ function MealScreenContent() {
               {showCustomPortion && (
                 <View style={styles.stepper}>
                   <TouchableOpacity
-                    style={[styles.stepperBtn, servingCount <= 0.25 && { opacity: 0.3 }]}
-                    onPress={() => setServingCount(Math.max(0.25, +(servingCount - 0.25).toFixed(2)))}
-                    disabled={servingCount <= 0.25}
+                    style={[styles.stepperBtn, servingCount <= servingCountMin && { opacity: 0.3 }]}
+                    onPress={() => setServingCount(Math.max(servingCountMin, +(servingCount - 0.25).toFixed(2)))}
+                    disabled={servingCount <= servingCountMin}
                     activeOpacity={0.7}
                   >
                     <MaterialIcons name="remove" size={18} color={color.navy} />
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.stepperBtn}
-                    onPress={() => setServingCount(+(servingCount + 0.25).toFixed(2))}
+                    style={[styles.stepperBtn, servingCount >= servingCountMax && { opacity: 0.3 }]}
+                    onPress={() => setServingCount(Math.min(servingCountMax, +(servingCount + 0.25).toFixed(2)))}
+                    disabled={servingCount >= servingCountMax}
                     activeOpacity={0.7}
                   >
                     <MaterialIcons name="add" size={18} color={color.navy} />
@@ -1976,6 +2371,16 @@ function MealScreenContent() {
         </View>
       )}
 
+      <PantryLabelEditor
+        visible={!!labelGapItem}
+        item={labelGapItem}
+        onClose={cancelLabelGap}
+        onSave={saveLabelGap}
+        closeOnSave={false}
+        title="Add calorie details"
+        intro="The label was readable, but it did not give Pawtchi one dependable calorie total. Enter the printed kcal figure below; if it lists kcal/kg, divide by 10 and use Calories per 100 g."
+      />
+
       {/* Branded failure sheet — every failure path on this screen. FailureModal
           owns support / settings / back; handleRecovery owns the flow. */}
       <FailureModal
@@ -1983,24 +2388,6 @@ function MealScreenContent() {
         onClose={() => setFailure(null)}
         onAction={handleRecovery}
         meta={{ ...failureMeta, screen: '/(tabs)/meal' }}
-      />
-
-      {/* Reached only from the notification center's portion item — never shown
-          on arrival at this tab by any other route. */}
-      <PawtchiModal
-        visible={usualConfirmOpen && !!usualSuggestion}
-        onClose={() => setUsualConfirmOpen(false)}
-        title="Make this the usual?"
-        message={
-          usualSuggestion
-            ? `Recent meals have been about ${Math.round(usualSuggestion.multiplier * 100)}% of the saved portion. Updating the saved size means future logs start from the right number.`
-            : ''
-        }
-        icon={{ name: 'auto-awesome', color: color.navy }}
-        actions={[
-          { label: applyingUsual ? 'Updating' : 'Update the usual', onPress: applyNewUsual },
-          { label: 'Not now', onPress: () => setUsualConfirmOpen(false) },
-        ]}
       />
 
       <PawLoader visible={isAnalyzing} />
@@ -2749,4 +3136,3 @@ const styles = StyleSheet.create({
     ...makeShadow(-6, 14, 0.06),
   },
 });
-
