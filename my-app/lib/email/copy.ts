@@ -121,20 +121,16 @@ export const EMAIL_CAMPAIGN_WEB_PATH: Record<EmailCampaignKey, string> = {
   reply_fallback: 'letters',
 };
 
-/** Inverse of EMAIL_CAMPAIGN_WEB_PATH, for the app's universal-link handler. */
-export const WEB_PATH_TO_ROUTE: Record<string, string> = {
-  health: '/(tabs)/health',
-  meal: '/(tabs)/meal',
-  home: '/(tabs)',
-  walks: '/walk-gallery',
-  letters: '/letter',
-  // The support thread. Reached only by the reply fallback, which always
-  // carries a ticket id — landing on the hub would make somebody hunt for the
-  // answer they were just told had arrived.
-  support: '/support',
-  activity: '/(tabs)/activity',
-  profile: '/(tabs)/profile',
-};
+/**
+ * Inverse of EMAIL_CAMPAIGN_WEB_PATH, for the app's link handler.
+ *
+ * Defined in `links.ts` and re-exported here, where it has always been read
+ * from. It moved because the public engagement-click function needs the route
+ * table and nothing else in this file: importing it from here would drag the
+ * whole copy catalogue and the notification copy module into the cold start of
+ * an endpoint that sits on the critical path of a tap.
+ */
+export { WEB_PATH_TO_ROUTE } from './links';
 
 export interface EmailCopyContext {
   petName?: string | null;

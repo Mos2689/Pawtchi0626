@@ -1,5 +1,6 @@
 import {
   renderEmailHtml,
+  renderEmailText,
   type EmailBlock,
   type PhotoIntent,
   type TemplateInput,
@@ -314,5 +315,63 @@ describe('formatting', () => {
     ] }]);
     expect(html).toContain('width="100%"');
     expect(html).toContain('width="2%"');
+  });
+});
+
+// ── The emailed CTA ─────────────────────────────────────────────────────────
+//
+// The bug: every CTA pointed at https://pawtchi.com/app/<slug>, a path the
+// website does not serve, so the tap opened a browser on a blank page. These
+// pin both halves of the fix — the link in the message is https and goes to the
+// click endpoint, and the custom scheme never appears in the markup, because
+// Gmail and Outlook strip it.
+describe('CTA links', () => {
+  const click = {
+    functionsBase: 'https://mbvpjbwukhypvmgeuyyw.supabase.co/functions/v1',
+    sendId: '3f1c2b6e-9a4d-4c1f-8b2a-7e5d0c9a1b34',
+  };
+
+  const blocks = healthInsightBlocks({
+    petName: 'Bella',
+    headline: 'A steady week.',
+    rows: [{ label: 'Walks', value: '4', pct: 60 }],
+    tip: null,
+  });
+
+  test('point at the click endpoint with a destination key', () => {
+    const html = render(blocks, { click });
+    expect(html).toContain(
+      `href="${click.functionsBase}/engagement-click?s=${click.sendId}&amp;t=health"`,
+    );
+  });
+
+  test('never contain the custom scheme', () => {
+    const html = render(blocks, { click });
+    expect(html).not.toContain('pawtchi://');
+  });
+
+  test('the plain-text part carries the same URL', () => {
+    const text = renderEmailText({
+      preheader: 'p', kicker: 'K', unsubscribeUrl: null, unsubscribeLabel: '',
+      baseUrl: 'https://pawtchi.com', blocks, photos, click,
+    });
+    expect(text).toContain(`${click.functionsBase}/engagement-click?s=${click.sendId}&t=health`);
+    expect(text).not.toContain('pawtchi.com/app/');
+    expect(text).not.toContain('pawtchi://');
+  });
+
+  test('carry the resource id when the destination needs one', () => {
+    const html = render(
+      replyFallbackBlocks({ kind: 'support', body: 'x', entityId: 'tick-9' }),
+      { click },
+    );
+    expect(html).toContain('t=support&amp;r=tick-9');
+  });
+
+  // Without a ledger row to attribute to — the preview server, these tests —
+  // the CTA stays an ordinary website link rather than a click URL naming a
+  // send that does not exist.
+  test('fall back to the website when no send is being attributed', () => {
+    expect(render(blocks)).toContain('href="https://pawtchi.com/app/health"');
   });
 });

@@ -2,7 +2,11 @@ import { useEffect, useRef } from 'react';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { track } from '@/lib/analytics';
-import { routeForUrl } from '@/lib/notifications/deepLink';
+import {
+  engagementSendFromUrl,
+  isAppSchemeLink,
+  routeForUrl,
+} from '@/lib/notifications/deepLink';
 
 /**
  * Routes an emailed universal link to the right screen.
@@ -49,6 +53,11 @@ export function useEmailDeepLinks() {
       handled.current = url;
 
       const route = routeForUrl(url);
+      // `pawtchi:///(tabs)/health` — what engagement-click redirects to. Expo
+      // Router resolves it natively through the same getStateFromPath that
+      // router.push() uses, so pushing it again here would put the same screen
+      // on the stack twice and leave a back gesture that goes nowhere.
+      const routedByExpoRouter = isAppSchemeLink(url);
 
       track('email_link_opened', {
         routed: Boolean(route),
@@ -57,9 +66,13 @@ export function useEmailDeepLinks() {
         // future query parameters are per-owner secrets and must not reach
         // an analytics sink.
         path: safePath(url),
+        // A ledger row id, so a session can be joined back to the email that
+        // started it. Not a secret and not an identifier for the person.
+        engagementSend: engagementSendFromUrl(url),
+        source: routedByExpoRouter ? 'app_scheme' : 'universal_link',
       });
 
-      if (route) router.push(route as never);
+      if (route && !routedByExpoRouter) router.push(route as never);
     };
 
     void Linking.getInitialURL().then(handle);

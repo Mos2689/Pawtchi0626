@@ -36,6 +36,8 @@
  * compile it and the byte mirror holds.
  */
 
+import { type ClickConfig, clickUrl, ctaTargetForPath } from './links';
+
 // ── Brand tokens ────────────────────────────────────────────────────────────
 // Duplicated from constants/design.ts rather than imported: that module pulls
 // in react-native's Platform and cannot be compiled by Deno. The warm palette
@@ -170,6 +172,16 @@ export interface TemplateInput {
    * relying on every composition to remember.
    */
   baseUrl?: string;
+  /**
+   * Turns every `/app/<slug>` CTA into a click URL that redirects into the app.
+   *
+   * Omit it and the CTAs stay plain website links — which is what the preview
+   * server and the template tests want, and what a caller that has no ledger
+   * row to attribute to should get. Present, and this is the ONE place the
+   * substitution happens, so the HTML and the plain-text part can never carry
+   * different destinations.
+   */
+  click?: ClickConfig;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -206,9 +218,26 @@ function icon(name: IconName | undefined, input: TemplateInput): string {
   return `<img src="${esc(input.iconBase)}/${esc(name)}.png" width="24" height="24" alt="" style="display:block;width:24px;height:24px;border:0;" />`;
 }
 
-/** Resolves a composition's relative path against the configured origin. */
+/**
+ * Resolves a composition's relative path to the URL that goes in the email.
+ *
+ * Always https. A `pawtchi://` link in a message body is stripped or disabled
+ * by Gmail and Outlook, so the app hand-off happens at the redirect and never
+ * in the markup — see lib/email/links.ts.
+ */
 function href(url: string, input: TemplateInput): string {
   if (/^https?:\/\//i.test(url) || url.startsWith('mailto:')) return url;
+
+  // A recognised `/app/<slug>` destination becomes a click URL. Anything else
+  // — and any caller without a ledger row — falls through to the website, so an
+  // unrecognised CTA degrades to a plain link rather than to a wrong one.
+  if (input.click) {
+    const destination = ctaTargetForPath(url);
+    if (destination) {
+      return clickUrl(input.click, destination.target, destination.resourceId);
+    }
+  }
+
   const base = (input.baseUrl ?? '').replace(/\/+$/, '');
   return `${base}${url.startsWith('/') ? '' : '/'}${url}`;
 }

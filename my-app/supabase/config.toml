@@ -1,0 +1,63 @@
+# Supabase CLI configuration.
+#
+# This file exists for one reason: the CLI defaults `verify_jwt` to true, and a
+# function deployed with that default silently starts answering 401. Several of
+# this project's functions are called by things that have no Supabase session —
+# a cron job with a shared secret, a Resend webhook, a mail client — and they
+# have been deployed with verification off from the dashboard. Without this file
+# the first `supabase functions deploy` from a workstation would turn every one
+# of them off at once, and the symptom would be a silent channel rather than an
+# error anybody sees.
+#
+# Every entry below is a function that authenticates by some other means, or
+# that carries no user authority at all. The reason is stated per function
+# because "verify_jwt = false" is not self-justifying.
+
+project_id = "mbvpjbwukhypvmgeuyyw"
+
+# The emailed CTA endpoint. Public because a mail client has no JWT, and safe
+# because it holds no user authority: the destination comes from an allowlist of
+# eight keys, both identifiers are shape-checked as uuids, it returns no data
+# (the response is byte-identical for a real send id and an invented one), and
+# its only write is a one-shot `clicked_at` guarded by IS NULL. There is no
+# parameter that can name a URL, so it cannot be used as an open redirect.
+[functions.engagement-click]
+verify_jwt = false
+
+# Cron-driven dispatchers. Authenticate on a shared secret header, not a user.
+[functions.notify-dispatch]
+verify_jwt = false
+
+[functions.notify-email-dispatch]
+verify_jwt = false
+
+[functions.notify-weekly-digest]
+verify_jwt = false
+
+[functions.notify-monitor]
+verify_jwt = false
+
+[functions.notify-receipts]
+verify_jwt = false
+
+[functions.pro-offer-sweep]
+verify_jwt = false
+
+# Called function-to-function by the dispatchers with the same shared secret.
+[functions.send-email]
+verify_jwt = false
+
+# Resend webhook. The provider signs the payload; it cannot hold a Supabase JWT.
+[functions.email-events]
+verify_jwt = false
+
+# RFC 8058 one-click unsubscribe. Gmail POSTs to this directly from the header,
+# so it authenticates on the per-recipient token in the URL.
+[functions.email-unsubscribe]
+verify_jwt = false
+
+[functions.gemini-proxy]
+verify_jwt = false
+
+[functions.generate-wearable-avatar]
+verify_jwt = false

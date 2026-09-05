@@ -5,11 +5,14 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   Image,
   Linking,
+  useWindowDimensions,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -17,7 +20,7 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, { useSharedValue, useAnimatedStyle, withSequence, withTiming } from 'react-native-reanimated';
 import { supabase } from '../../lib/supabase';
-import { color, font, radius, space, motion } from '../../constants/design';
+import { color, font, space, motion } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { CountUpText } from '../../components/CountUpText';
 import { track } from '../../lib/analytics';
@@ -26,8 +29,19 @@ import { errorCopy, reportError, toAppError } from '../../lib/appError';
 import { haptic } from '../../lib/haptics';
 import Svg, { Rect, Path, Circle, Ellipse } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
+import { AUTH_HERO_MAX, authHeroHeight, authHeroOverlay } from '../../lib/ui/authHeroHeight';
 
 const HERO_IMAGE = require('../../assets/images/auth-hero.png');
+
+/**
+ * Every layout difference on this screen is Android-only and gated on this.
+ *
+ * iOS renders exactly what it rendered before — same hero height, same
+ * paddings, same keyboard behaviour, same element tree. The screen was correct
+ * there; only Android needed fixing, and a shared "improvement" would have put
+ * a working design at risk to fix a broken one.
+ */
+const IS_ANDROID = Platform.OS === 'android';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -43,8 +57,68 @@ export default function LoginScreen() {
 
   // Track screen view with mode
   React.useEffect(() => {
-    track('auth_screen_viewed', { mode: isSignUp ? 'signup' : 'signin' });
+    track('auth_screen_viewed', { mode: mode === 'signup' ? 'signup' : 'signin' });
+  }, [mode]);
+
+  // ── Android fit ───────────────────────────────────────────────────────────
+  //
+  // The hero absorbs whatever the content block does not need, so the screen
+  // lands unscrolled on a viewport the fixed 380pt design overflowed. Measured
+  // rather than tabulated because the content height moves with the mode
+  // toggle, the font scale and the copy. See lib/ui/authHeroHeight.ts.
+  const { height: windowHeight } = useWindowDimensions();
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+
+  // Android only. `windowSoftInputMode` is already `adjustResize`, so the
+  // system is handling the window; all this does is tell the hero to get out
+  // of the way, which is what lifts the password field clear of the keyboard.
+  React.useEffect(() => {
+    if (!IS_ANDROID) return;
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardOpen(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardOpen(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
   }, []);
+
+  // The measurement covers the content's children plus its own bottom padding,
+  // which is where the navigation-bar inset lives.
+  const androidContentPaddingBottom = 24 + insets.bottom;
+  const heroHeight = IS_ANDROID
+    ? authHeroHeight({
+        windowHeight,
+        contentHeight:
+          contentHeight === null ? null : contentHeight + androidContentPaddingBottom,
+        keyboardOpen,
+      })
+    : AUTH_HERO_MAX;
+
+  // The stat stack is absolutely positioned at a hard-coded `top: 125` and
+  // runs ~204pt tall, which only fits the 380pt hero. Once the hero can be
+  // shorter the stack has to come with it, or the WALK row falls off the
+  // bottom edge. `scale` is exactly 1 at the design height, so this changes
+  // nothing until the hero has actually given something up.
+  const overlay = IS_ANDROID
+    ? authHeroOverlay({ heroHeight, topInset: insets.top })
+    : null;
+  const statScale = overlay?.scale ?? 1;
+  const statIconWidth = Math.round(22 * statScale);
+  const statIconHeight = Math.round(24 * statScale);
+  // The numeral carries the display face, so its line height scales with it
+  // rather than being left at 40 — otherwise the rows keep their full spacing
+  // and the stack does not actually get any shorter.
+  const statValueScaled = {
+    fontSize: Math.round(34 * statScale),
+    lineHeight: Math.round(40 * statScale),
+  };
+
+  // A Fragment on iOS, so the element tree there is byte-for-byte what it was.
+  const ContentMeasure = IS_ANDROID ? View : React.Fragment;
+  const contentMeasureProps = IS_ANDROID
+    ? { onLayout: (e: LayoutChangeEvent) => setContentHeight(e.nativeEvent.layout.height) }
+    : {};
 
   // Error shake — a short horizontal jolt on the input block.
   const shakeX = useSharedValue(0);
@@ -142,8 +216,16 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
+      {/*
+        Android gets no behaviour at all, which makes this a passthrough View.
+        The manifest already sets `android:windowSoftInputMode="adjustResize"`,
+        so the system resizes the window on its own; `behavior="height"` then
+        shrank a window Android had already shrunk, and under edge-to-edge the
+        two cancelled out and left the password field under the keyboard.
+        iOS keeps `padding`, unchanged.
+      */}
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
         <ScrollView
@@ -151,9 +233,12 @@ export default function LoginScreen() {
           contentContainerStyle={{ flexGrow: 1 }}
           bounces={false}
           keyboardShouldPersistTaps="handled"
+          // The screen is sized to fit, so the bar would only ever flash on
+          // the devices small enough to still scroll. Android only.
+          showsVerticalScrollIndicator={!IS_ANDROID}
         >
           {/* ── HERO IMAGE ── */}
-          <View style={styles.hero}>
+          <View style={[styles.hero, IS_ANDROID && { height: heroHeight }]}>
             <Image source={HERO_IMAGE} style={styles.heroImage} />
 
             {/* Top darkening gradient for status bar legibility */}
@@ -175,32 +260,37 @@ export default function LoginScreen() {
 
             {/* Decorative stat stack — counts up on mount so the product
                 preview reads as alive, not printed */}
-            <View style={styles.statStack}>
+            <View
+              style={[
+                styles.statStack,
+                overlay && { top: overlay.top, gap: Math.round(18 * statScale) },
+              ]}
+            >
               {/* Kcal */}
               <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Kcal</Text>
+                <Text style={[styles.statLabel, overlay && { marginBottom: Math.round(6 * statScale) }]}>Kcal</Text>
                 <View style={styles.statRow}>
-                  <Svg width={22} height={24} viewBox="0 0 24 26" fill="none">
+                  <Svg width={statIconWidth} height={statIconHeight} viewBox="0 0 24 26" fill="none">
                     <Path d="M12 1.5c.6 3.4-1.6 4.7-3.3 7-1.4 1.9-2.5 4-2.5 6.6 0 4.4 3.5 8 7.8 8s7.8-3.6 7.8-8c0-3.8-2-7-4.5-9-.7 1.4-1.8 2-2.7 1.6 0-2.5-1.2-4.8-2.6-6.2z" stroke="#ffffff" strokeWidth={1.5} strokeLinejoin="round" />
                     <Path d="M9.5 17.5c0-1.8 1-3.2 2.5-4 1.6.8 2.5 2.2 2.5 4 0 1.4-1.1 2.5-2.5 2.5s-2.5-1.1-2.5-2.5z" fill={color.yellow} stroke="#ffffff" strokeWidth={1.2} />
                   </Svg>
-                  <CountUpText value={487} style={styles.statValue} duration={motion.duration.ring} />
+                  <CountUpText value={487} style={[styles.statValue, overlay && statValueScaled]} duration={motion.duration.ring} />
                   <Text style={styles.statUnit}>today</Text>
                 </View>
               </View>
 
               {/* Hydration */}
               <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Hydration</Text>
+                <Text style={[styles.statLabel, overlay && { marginBottom: Math.round(6 * statScale) }]}>Hydration</Text>
                 <View style={styles.statRow}>
-                  <Svg width={22} height={24} viewBox="0 0 24 26" fill="none">
+                  <Svg width={statIconWidth} height={statIconHeight} viewBox="0 0 24 26" fill="none">
                     <Path d="M12 2.5c0 0-7.5 8-7.5 13.2A7.5 7.5 0 0012 23a7.5 7.5 0 007.5-7.3C19.5 10.5 12 2.5 12 2.5z" stroke="#ffffff" strokeWidth={1.5} strokeLinejoin="round" />
                     <Path d="M8 15.5a4 4 0 003.5 3.7" stroke="#ffffff" strokeWidth={1.3} strokeLinecap="round" opacity={0.85} />
                     <Circle cx={12} cy={16} r={2.4} fill={color.yellow} />
                   </Svg>
                   <CountUpText
                     value={320}
-                    style={styles.statValue}
+                    style={[styles.statValue, overlay && statValueScaled]}
                     duration={motion.duration.ring}
                     delay={motion.duration.instant}
                   />
@@ -210,9 +300,9 @@ export default function LoginScreen() {
 
               {/* Walk */}
               <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Walk</Text>
+                <Text style={[styles.statLabel, overlay && { marginBottom: Math.round(6 * statScale) }]}>Walk</Text>
                 <View style={styles.statRow}>
-                  <Svg width={22} height={24} viewBox="0 0 26 28" fill="none">
+                  <Svg width={statIconWidth} height={statIconHeight} viewBox="0 0 26 28" fill="none">
                     <Path d="M13 15.5c-3.2 0-6 2.4-6 5.2 0 1.7 1.4 3.1 3.2 3.1.9 0 1.8-.4 2.8-.4s1.9.4 2.8.4c1.8 0 3.2-1.4 3.2-3.1 0-2.8-2.8-5.2-6-5.2z" fill={color.yellow} stroke="#ffffff" strokeWidth={1.4} strokeLinejoin="round" />
                     <Ellipse cx={6.5} cy={12} rx={1.8} ry={2.4} fill="#ffffff" rotation={-20} origin="6.5, 12" />
                     <Ellipse cx={10.5} cy={8} rx={1.7} ry={2.3} fill="#ffffff" rotation={-8} origin="10.5, 8" />
@@ -222,7 +312,7 @@ export default function LoginScreen() {
                   <CountUpText
                     value={3.2}
                     decimals={1}
-                    style={styles.statValue}
+                    style={[styles.statValue, overlay && statValueScaled]}
                     duration={motion.duration.ring}
                     delay={motion.duration.instant * 2}
                   />
@@ -233,7 +323,16 @@ export default function LoginScreen() {
           </View>
 
           {/* ── CONTENT ── */}
-          <View style={styles.content}>
+          <View
+            style={[
+              styles.content,
+              // Without this the Android navigation bar draws straight over the
+              // collection notice, because the app is edge-to-edge. iOS keeps
+              // the flat 24 it has always had.
+              IS_ANDROID && { paddingBottom: androidContentPaddingBottom },
+            ]}
+          >
+            <ContentMeasure {...contentMeasureProps}>
             {/* Headline */}
             <Text style={styles.headline}>
               {isSignUp ? 'START ' : 'WELCOME '}
@@ -369,6 +468,7 @@ export default function LoginScreen() {
 
             {/* Footer */}
             <Text style={styles.footer}>Notice everything</Text>
+            </ContentMeasure>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

@@ -21,6 +21,7 @@ import type { CampaignKey } from './copy';
 // sender, the website and here. deepLink.ts is not mirrored to the edge
 // runtime, so this import costs nothing there.
 import { WEB_PATH_TO_ROUTE } from '../email/copy';
+import { APP_SCHEME } from '../email/links';
 
 export interface NotificationPayload {
   /** Canonical key set by notify-dispatch. */
@@ -158,6 +159,32 @@ export function routeForUrl(url: string | null | undefined): string | null {
     return null;
   }
 
+  // ── The custom scheme is already a route ──────────────────────────────────
+  //
+  // `pawtchi:///(tabs)/health` is what the engagement-click function redirects
+  // to, and its path is an Expo Router path rather than a web slug — so there
+  // is nothing to invert. It is returned verbatim, minus the tracking
+  // parameter, and the same validation the `?r=` escape hatch gets applies: a
+  // relative in-app path only, never a scheme or a protocol-relative `//host`.
+  //
+  // Expo Router resolves this URL natively too, through the same
+  // `getStateFromPath` that `router.push()` uses. That is deliberate: it means
+  // the redirect lands on the right screen in builds that shipped before this
+  // function learned the scheme. `isAppSchemeUrl` exists so the caller can tell
+  // the two apart and not navigate twice.
+  if (isAppSchemeUrl(parsed)) {
+    // Some URL normalisers rewrite `scheme:///path` to `scheme://path/` — curl
+    // does exactly this to `pawtchi:///walk-gallery`, hoisting the first
+    // segment into the hostname. Expo Router is unbothered (it strips the
+    // scheme and takes the remainder), and neither is this: the host, when
+    // there is one, is simply the first path segment.
+    const route = parsed.hostname
+      ? `/${parsed.hostname}${parsed.pathname === '/' ? '' : parsed.pathname}`
+      : parsed.pathname;
+    if (!route.startsWith('/') || route.startsWith('//') || route.includes(':')) return null;
+    return route;
+  }
+
   const host = parsed.hostname.replace(/^www\./, '');
   if (host !== 'pawtchi.com') return null;
 
@@ -192,6 +219,43 @@ export function routeForUrl(url: string | null | undefined): string | null {
   // notification that sent them here.
   const entityId = segments[2];
   return entityId ? `${route}/${entityId}` : route;
+}
+
+/**
+ * True for a `pawtchi://` URL — the shape the emailed click endpoint redirects
+ * to, and the one Expo Router already routes on its own.
+ *
+ * `exp+pawtchi://` (Expo Go / dev client) is deliberately excluded: those URLs
+ * carry an `--/` prefix and a tunnel host that this module does not model.
+ */
+function isAppSchemeUrl(parsed: URL): boolean {
+  return parsed.protocol === `${APP_SCHEME}:`;
+}
+
+/** Same test, from a raw string. Null-safe, and never throws on rubbish. */
+export function isAppSchemeLink(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    return isAppSchemeUrl(new URL(url));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The `notification_history` row an emailed link is attributed to, or null.
+ *
+ * Read for analytics only. It is a ledger id, it grants nothing, and the click
+ * has already been recorded server-side by the time the app sees it — this is
+ * what lets a session be joined back to the email that started it.
+ */
+export function engagementSendFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).searchParams.get('engagement_send');
+  } catch {
+    return null;
+  }
 }
 
 /** Campaign key for analytics, falling back to the legacy payload keys. */

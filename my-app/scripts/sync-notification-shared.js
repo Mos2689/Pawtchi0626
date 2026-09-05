@@ -44,7 +44,11 @@ const MIRROR_GROUPS = [
     name: 'email',
     appDir: root('lib', 'email'),
     edgeDir: root('supabase', 'functions', '_shared', 'email'),
-    files: ['copy.ts', 'rules.ts', 'template.ts', 'compositions.ts'],
+    // links.ts is mirrored for the sharpest reason in the list: the sender
+    // builds the click URL from it and the engagement-click function resolves
+    // that URL back to a deep link from the same file. A fork would produce a
+    // 302 to a route the app does not have.
+    files: ['copy.ts', 'rules.ts', 'links.ts', 'template.ts', 'compositions.ts'],
   },
   {
     // Spots: the OSM tag rules and the normalizer.
