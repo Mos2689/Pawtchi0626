@@ -49,7 +49,11 @@ my-app/expo-introspect-check.json
 **/google-service-account-key.json*
 **/*.tsbuildinfo
 **/app-example
-**/ios/
-**/android/
+# Anchored to the app, NOT `**/ios/`. A recursive pattern here also matches
+# my-app/modules/pawtchi-live-activity/ios — the walk Live Activity's native
+# module — which is exactly how it went missing from the 5 Sep 2026 builds while
+# they still came out green. See my-app/.easignore for the full account.
+my-app/ios/
+my-app/android/
 **/email-preview.html
 **/.tmp-assets/

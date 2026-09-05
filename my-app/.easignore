@@ -51,10 +51,25 @@ google-service-account-key.json*
 
 app-example
 
-# generated native folders
+# Generated native folders — ANCHORED TO THE PROJECT ROOT, AND THEY MUST STAY
+# ANCHORED.
+#
+# .easignore follows gitignore matching: a pattern with no leading slash matches
+# a directory of that name at ANY depth. Adding a bare `ios/` here on 5 Sep 2026
+# therefore excluded modules/pawtchi-live-activity/ios as well — the local Expo
+# module's whole native implementation (podspec + Swift) — while leaving its
+# expo-module.config.json and index.ts in place.
+#
+# Nothing failed. The module simply did not autolink, requireOptionalNativeModule
+# returned null, and the walk Live Activity stopped appearing on the Lock Screen
+# in every build made after that commit. A native feature disappearing from a
+# GREEN build is the expensive kind of mistake, which is why the leading slash
+# below is load-bearing rather than cosmetic.
+#
+# `/ios` and `/android` are the prebuild output at the project root, regenerated
+# on the EAS worker. Any native source that lives OUTSIDE them has to be
+# uploaded. See lib/build/easignore.test.ts.
 /ios
 /android
-ios/
-android/
 email-preview.html
 .tmp-assets/
