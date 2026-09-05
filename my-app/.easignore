@@ -1,13 +1,24 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
 # dependencies
 node_modules/
 
-# Expo
+# Expo & Web
 .expo/
 dist/
 web-build/
 expo-env.d.ts
+
+# Scratch & test directories and files
+scratch_test/
+graphify-out/
+stitch_html/
+*.html
+*.txt
+*.log
+test-*.js
+update_safe_area.js
+payload.json
+gemini-real-out.json
+expo-introspect-check.json
 
 # Native
 .kotlin/
@@ -18,26 +29,24 @@ expo-env.d.ts
 *.key
 *.mobileprovision
 
-# Metro
+# Metro & debug
 .metro-health-check*
-
-# debug
 npm-debug.*
 yarn-debug.*
 yarn-error.*
 
-# macOS
+# OS
 .DS_Store
 *.pem
 
-# local env files
+# Local env files
 .env
 .env*.local
 
 # Google Play service account key
-google-service-account-key.json
+google-service-account-key.json*
 
-# typescript
+# Typescript
 *.tsbuildinfo
 
 app-example
@@ -45,6 +54,8 @@ app-example
 # generated native folders
 /ios
 /android
+ios/
+android/
 email-preview.html
 .tmp-assets/
 
