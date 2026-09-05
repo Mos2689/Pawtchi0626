@@ -8,8 +8,7 @@
  * rather than a floating FAB.
  *
  * Only shown on the Activity tab — walks live there, and the bump aligns to
- * the centre (Activity) tab column. Tap starts a tracked walk, gated by the
- * same paywall check the in-list "Track walk" buttons use.
+ * the centre (Activity) tab column. Tap starts a tracked walk on every plan.
  */
 
 import React, { useCallback } from 'react';
@@ -18,7 +17,6 @@ import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { color, shadow } from '../constants/design';
-import { useSubscription } from '../hooks/useSubscription';
 import { armWalkStart } from '../lib/walk/walkStartIntent';
 
 // Matches the tabBarStyle height base in app/(tabs)/_layout.tsx.
@@ -28,13 +26,12 @@ export function WalkTabDock() {
   const pathname = usePathname();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { hasFullAccess } = useSubscription();
 
   const onPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    if (hasFullAccess) armWalkStart();
-    router.push((hasFullAccess ? '/walk' : '/paywall') as any);
-  }, [router, hasFullAccess]);
+    armWalkStart();
+    router.push('/walk' as any);
+  }, [router]);
 
   // Only surfaces on the Activity tab.
   if (!pathname.endsWith('/activity')) return null;

@@ -30,11 +30,20 @@ const WALK_ANDROID_PERMISSIONS = [
 // reassurance: the original never leaves the device, and what Pawtchi keeps is
 // a thumbnail and a position on the route.
 const CAMERA_PERMISSION =
-  'Pawtchi uses your camera to scan your pet’s food and analyse its nutritional content, and to capture a moment during a walk without leaving the app. Walk photos are saved to your own photo library — Pawtchi keeps only a small thumbnail and where along the walk each one was taken.';
+  'Pawtchi uses your camera to scan your pet’s food and analyse its nutritional content, and to capture a moment during a walk without leaving the app. Walk photos stay on this device, and a copy is saved to your own photo library. Only a small thumbnail and where along the walk each one was taken is ever uploaded.';
 
+// Read access. Deliberately NOT what the walk camera or the profile picture
+// use: captures are read back from Pawtchi's own storage, and the picture
+// picker runs out-of-process and needs no permission at all. What is left is
+// walk photos taken before the app kept its own copy, whose only original is
+// in the library. Once those have aged out this string — and the permission —
+// can go, and iOS will have no photo-library sheet left to show.
 const PHOTO_LIBRARY_PERMISSION =
-  'Pawtchi uses your photo library to let you set your pet’s profile picture, and to find photos taken during a walk so it can add them to that walk. Your photos stay in your library — Pawtchi keeps only a small thumbnail and where along the walk each one was taken.';
+  'Pawtchi asks for your photo library only to open walk photos you took before an earlier version of the app, whose originals live there. Nothing else is read, and no photo is uploaded.';
 
+// Write access — now the primary photo permission, and the only one an ordinary
+// new user will ever see. Add-only authorisation has no "limited" state, so it
+// cannot produce the "Select More Photos" sheet.
 const PHOTO_LIBRARY_ADD_PERMISSION =
   'Pawtchi may save scanned food images and the photos you capture during a walk to your own photo library, so they sit alongside the rest of your photos.';
 
@@ -205,6 +214,22 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     );
   }
 
+  // expo-image-picker owns NSPhotoLibraryUsageDescription in the built app.
+  //
+  // Not expo-media-library, despite that plugin running later in the list and
+  // despite it accepting a `photosPermission` — verified with
+  // `expo config --type introspect`, which is the only way to see what the mods
+  // actually write. Registering the string here rather than in app.json keeps
+  // it on the same constant as the other two, so the set cannot drift again.
+  //
+  // Only when the camera is on. In a build without it there are no walk photos
+  // to re-open, and app.json's profile-picture string is the accurate one.
+  if (cameraEnabled) {
+    plugins = upsertPlugin(plugins, 'expo-image-picker', {
+      photosPermission: PHOTO_LIBRARY_PERMISSION,
+    });
+  }
+
   plugins = upsertPlugin(plugins, '@react-native-firebase/app', {});
   plugins = upsertPlugin(plugins, '@react-native-firebase/analytics', {
     ios: {
@@ -225,6 +250,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       googleServicesFile: './GoogleService-Info.plist',
       infoPlist: {
         ...config.ios?.infoPlist,
+        // Suppress iOS's own "Select More Photos… / Keep Current Selection"
+        // sheet, which the system throws up unprompted the first time a
+        // limited-access user's library is read in an app launch.
+        //
+        // Unconditional, not gated on the camera flag: the profile picture,
+        // onboarding and support attachments all reach the library through
+        // expo-image-picker in every build, so the alert has somewhere to fire
+        // from regardless. Pawtchi opens the picker itself when a photo is
+        // actually wanted, which is the arrangement this key assumes — the app
+        // asks at the moment of asking, and never at launch.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true,
         // Both keys are removed outright when the flag is off, so a disabled
         // build declares no Live Activity capability at all.
         ...(liveActivityEnabled

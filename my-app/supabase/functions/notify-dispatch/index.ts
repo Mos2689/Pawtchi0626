@@ -176,6 +176,14 @@ interface Candidate {
   cat_milestones: boolean;
   cat_digest: boolean;
   cat_lifecycle: boolean;
+  /**
+   * Optional: the candidate query does not select it, because walk_insight is
+   * delivered by its own event-driven pass which filters on cat_walk in SQL.
+   * Declared so the exhaustive switch in categoryEnabled() can name it — that
+   * switch falling through returns undefined, which reads as "category off"
+   * and would drop a message while looking like a deliberate opt-out.
+   */
+  cat_walk?: boolean;
   total_logs: number;
   days_since_last_log: number | null;
   days_since_last_session: number | null;
@@ -653,6 +661,7 @@ serve(async (req: Request) => {
     const cronSecret = req.headers.get(CRON_SECRET_HEADER);
     await notifySupportInbox(admin, cronSecret, note);
     await notifyLetterInbox(admin, cronSecret, note);
+    await notifyCalorieIntegrity(admin, cronSecret, note);
 
     if (planned.length === 0) {
       return json({ ok: true, candidates: rows.length, planned: 0, sent: 0, skipped });
@@ -1021,5 +1030,134 @@ async function notifyLetterInbox(
     }
   } catch (e) {
     console.error('[notify-dispatch] letter digest:', e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** One row of get_calorie_integrity_digest(). */
+interface CalorieIntegrityFinding {
+  check_name: string;
+  entity_key: string;
+  severity: string;
+  pet_name: string | null;
+  summary: string;
+  details: Record<string, unknown> | null;
+  is_new: boolean;
+}
+
+const INTEGRITY_CHECK_LABEL: Record<string, string> = {
+  aggregate_drift: 'Daily total disagrees with its meals',
+  implausible_day: 'Impossible daily total',
+  implausible_meal: 'Impossible single meal',
+  label_inconsistent: 'Label figures contradict each other',
+};
+
+/**
+ * Tell the team when the calorie pipeline produces something impossible.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * A gram-unit bug logged a 200 g meal as 24,000 kcal. It sat in production for
+ * four days across three separate logs, and we found out because the owner
+ * wrote in. Nothing watched. Every one of the checks behind
+ * `audit_calorie_integrity()` would have caught it the same day.
+ *
+ * ── Why it reports and does not fix ─────────────────────────────────────────
+ *
+ * This is stage 2 of the integrity plan and it is deliberately inert. The
+ * enforcement thresholds it will eventually feed have to be chosen from
+ * observed false-positive rates, and you cannot observe those while also
+ * blocking on them. So: measure first, enforce later, and never the reverse.
+ *
+ * Findings are deduped by a cooldown rather than a one-shot watermark, because
+ * a problem that is still true a week later deserves one reminder — but not one
+ * every run, which is how a digest becomes something people filter away.
+ *
+ * Fails soft in every direction, exactly like the support and letter passes: a
+ * missing recipient, a missing secret or a rejected send each return quietly
+ * and leave the findings unstamped for the next run. Monitoring must never be
+ * able to take a dispatch run down with it.
+ */
+async function notifyCalorieIntegrity(
+  admin: RpcClient,
+  cronSecret: string | null,
+  note: (reason: string) => void,
+): Promise<void> {
+  if (!SUPPORT_INBOX || !cronSecret) return;
+
+  try {
+    const { data, error } = await admin.rpc('get_calorie_integrity_digest');
+    if (error) {
+      // Expected until the migration is deployed — this pass is additive and
+      // must not make an otherwise healthy run look broken.
+      console.error('[notify-dispatch] get_calorie_integrity_digest:', error.message);
+      return;
+    }
+
+    const findings = (data ?? []) as CalorieIntegrityFinding[];
+    if (findings.length === 0) return;
+
+    const critical = findings.filter((f) => f.severity === 'critical').length;
+    const fresh = findings.filter((f) => f.is_new).length;
+    const subject =
+      critical > 0
+        ? `Pawtchi calories: ${findings.length} integrity finding${findings.length === 1 ? '' : 's'} (${critical} critical)`
+        : `Pawtchi calories: ${findings.length} integrity finding${findings.length === 1 ? '' : 's'}`;
+
+    const rows = findings
+      .map((f) => {
+        const label = INTEGRITY_CHECK_LABEL[f.check_name] ?? f.check_name;
+        const badge =
+          f.severity === 'critical'
+            ? '<span style="background:#FEE2E2;color:#991B1B;font:700 11px system-ui;padding:2px 6px;border-radius:4px;">CRITICAL</span> '
+            : f.is_new
+            ? '<span style="background:#FEF3C7;color:#92400E;font:700 11px system-ui;padding:2px 6px;border-radius:4px;">NEW</span> '
+            : '';
+        return `
+          <tr>
+            <td style="padding:12px 0;border-bottom:1px solid #E8EAF2;">
+              <div style="font:600 13px system-ui;color:#1447f1;">
+                ${badge}${esc(label)}
+              </div>
+              <div style="font:400 15px/1.5 system-ui;color:#0f172a;margin:4px 0;">
+                ${esc(f.summary)}
+              </div>
+              <div style="font:400 12px system-ui;color:#64748b;">
+                ${esc(f.check_name)} · ${esc(f.entity_key)}
+              </div>
+            </td>
+          </tr>`;
+      })
+      .join('');
+
+    const html = `
+      <div style="max-width:560px;margin:0 auto;padding:24px;">
+        <h1 style="font:700 20px system-ui;color:#07202A;margin:0 0 4px;">${esc(subject)}</h1>
+        <p style="font:400 14px/1.5 system-ui;color:#64748b;margin:0 0 16px;">
+          Report only — nothing was blocked or changed. ${fresh} of these are new since
+          the last digest. Small "daily total disagrees" deltas can be a timezone
+          artefact until scans carry their own log date; large ones cannot.
+        </p>
+        <table style="width:100%;border-collapse:collapse;">${rows}</table>
+      </div>`;
+
+    if (!(await sendTeamDigest(subject, html, cronSecret))) {
+      note('calorie_integrity_digest_failed');
+      return;
+    }
+
+    const { error: stampError } = await admin.rpc('mark_calorie_integrity_reported', {
+      p_check_names: findings.map((f) => f.check_name),
+      p_entity_keys: findings.map((f) => f.entity_key),
+    });
+    if (stampError) {
+      // Worst case the next run repeats these. Preferable to stamping first and
+      // losing a finding nobody ever hears about.
+      console.error('[notify-dispatch] mark_calorie_integrity_reported:', stampError.message);
+    }
+  } catch (e) {
+    console.error(
+      '[notify-dispatch] calorie integrity digest:',
+      e instanceof Error ? e.message : String(e),
+    );
   }
 }

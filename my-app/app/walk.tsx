@@ -49,6 +49,10 @@ import { MomentShareModal } from '../components/MomentShareModal';
 import { haptic } from '../lib/haptics';
 import { easeOutQuart } from '../lib/tailWhipTimeline';
 import WalkMap from '../components/walk/WalkMap';
+import {
+  ROUTE_PROGRESS_MAP_INSET,
+  RouteProgressCard,
+} from '../components/walk/RouteProgressCard';
 import { useWalkStore } from '../store/useWalkStore';
 import { useActivePetStore } from '../store/useActivePetStore';
 import { usePawPrintStore } from '../store/usePawPrintStore';
@@ -60,6 +64,8 @@ import { useAuth } from '../providers/AuthProvider';
 import { estimateActivityBurn } from '../lib/activityBurn';
 import { deriveDogWalkProfile, intensityForPace } from '../lib/walk/dogCalibration';
 import { estimateDogSteps, formatStepsProse } from '../lib/walk/stepEstimate';
+import { dogPaceKmh, formatEta, walkEtaMinutes } from '../lib/walk/wayfinding';
+import { useWalkRoute } from '../hooks/useWalkRoute';
 import {
   disarmWalkStart,
   isWalkStartArmed,
@@ -67,6 +73,11 @@ import {
   type WalkDestination,
 } from '../lib/walk/walkStartIntent';
 import { haversineMeters } from '../lib/walk/geo';
+import {
+  clearActiveDestination,
+  readActiveDestination,
+  rememberActiveDestination,
+} from '../lib/walk/activeDestination';
 // Shared with the iOS Live Activity, which renders the same line on the Lock
 // Screen — the two surfaces must never describe the walk differently.
 import { WALK_STATUS_COPY } from '../lib/walk/liveCopy';
@@ -140,7 +151,9 @@ function WalkScreenInner() {
    * remaining distance, and it changes nothing about how the walk is measured,
    * validated or saved. A walk that never reaches it is still a walk.
    */
-  const [destination, setDestination] = useState<WalkDestination | null>(null);
+  const [destination, setDestination] = useState<WalkDestination | null>(() =>
+    readActiveDestination(marker?.id),
+  );
 
   /**
    * Moments captured on this walk.
@@ -327,6 +340,114 @@ function WalkScreenInner() {
     router.back();
   };
 
+  // While the tail is wiping, the store has already moved on (endWalk nulls
+  // marker/session) — render the frozen live screen from the snapshot instead.
+  // This entire route-presentation block deliberately lives before every
+  // disclosure/error return so its hooks keep one stable order on every render.
+  const fz = whip === 'running' ? frozenRef.current : null;
+  const liveMarker = fz?.marker ?? marker;
+  const liveSession = fz?.session ?? session;
+  const liveNow = fz?.now ?? now;
+
+  // ── Live display values (also the frozen anticipation beat) ──
+  const acquiring = phase === 'starting' || !liveSession || liveSession.acceptedCount === 0;
+  const paused = liveSession?.status === 'auto_paused';
+  const elapsed = liveMarker ? liveNow - liveMarker.startedAt : 0;
+  const km = (liveSession?.distanceM ?? 0) / 1000;
+
+  // Live kcal — same dog-calibrated math the summary and Home card use, so
+  // the number never jumps when the walk ends. Based on MOVING time: standing
+  // still, sniff breaks, and speed-gated car segments must not tick the burn.
+  const movingMin = Math.round((liveSession?.movingTimeMs ?? 0) / 60_000);
+  const movingH = (liveSession?.movingTimeMs ?? 0) / 3_600_000;
+  const avgSpeed = movingH > 0 ? km / movingH : 0;
+  const liveKcal =
+    liveMarker && activePet?.current_weight_kg
+      ? Math.round(
+          estimateActivityBurn(
+            'walk',
+            intensityForPace(avgSpeed, liveMarker.profile),
+            movingMin,
+            activePet.current_weight_kg,
+          ),
+        )
+      : 0;
+
+  const currentPosition = liveSession?.lastAccepted
+    ? { lat: liveSession.lastAccepted.lat, lng: liveSession.lastAccepted.lng }
+    : null;
+
+  // A spot coordinate often marks a park's middle rather than its gate.
+  const ARRIVED_M = 120;
+  const toDestination =
+    destination && currentPosition
+      ? haversineMeters(currentPosition, { lat: destination.lat, lng: destination.lng })
+      : null;
+  const arrived = toDestination !== null && toDestination <= ARRIVED_M;
+  const toDestinationLabel = formatDistance(toDestination);
+
+  /**
+   * The suggested way there, from OSM's routing service. Presentation only:
+   * never counted, persisted, or exposed to the walk engine.
+   */
+  const { route: suggestedRoute, status: routeStatus } = useWalkRoute({
+    walkId: liveMarker?.id ?? null,
+    destination: destination ? { lat: destination.lat, lng: destination.lng } : null,
+    currentPosition,
+    initialPosition: destination?.origin ?? null,
+    enabled: phase === 'tracking' && !arrived,
+  });
+
+  // Navigation to Home unmounts this screen while the walk itself continues.
+  // Keep only the destination handoff in module memory, keyed to this exact
+  // walk. This is UI continuity—not persistence and never tracking authority.
+  useEffect(() => {
+    if (liveMarker?.id && destination && phase === 'tracking') {
+      rememberActiveDestination(liveMarker.id, destination);
+    }
+  }, [destination, liveMarker?.id, phase]);
+
+  useEffect(() => {
+    if (phase !== 'starting' && phase !== 'tracking') {
+      clearActiveDestination(liveMarker?.id ?? marker?.id);
+    }
+  }, [liveMarker?.id, marker?.id, phase]);
+
+  // One quiet acknowledgement when the async enhancement becomes tangible.
+  const previousRouteStatus = useRef(routeStatus);
+  const [routeJustReady, setRouteJustReady] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (routeStatus === 'ready' && previousRouteStatus.current !== 'ready') {
+      haptic.soft();
+      setRouteJustReady(true);
+      timer = setTimeout(() => setRouteJustReady(false), motion.route.readyHold);
+    } else if (routeStatus === 'loading') {
+      setRouteJustReady(false);
+    }
+    previousRouteStatus.current = routeStatus;
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [routeStatus]);
+
+  const toDestinationEta =
+    !arrived && liveMarker && toDestination !== null
+      ? formatEta(walkEtaMinutes(toDestination, dogPaceKmh(liveMarker.profile.paceBandKmh)))
+      : '';
+
+  const showRouteProgress =
+    !!destination && !arrived && (routeStatus === 'loading' || routeJustReady);
+  /** The strips below the header stack only move when the compact chip exists. */
+  const destOffset = destination && !showRouteProgress ? 38 : 0;
+  const [bottomCardHeight, setBottomCardHeight] = useState<number | null>(null);
+  const onBottomCardLayout = useCallback((event: LayoutChangeEvent) => {
+    const next = event.nativeEvent.layout.height;
+    setBottomCardHeight(previous =>
+      previous !== null && Math.abs(previous - next) < 1 ? previous : next,
+    );
+  }, []);
+
   // ── Prominent location disclosure (Google Play Location Permissions policy) ──
   // Must render BEFORE the OS prompt. Says what is collected, that it continues
   // in the background, and what it is used for — in plain words, not the OS
@@ -393,63 +514,6 @@ function WalkScreenInner() {
     );
   }
 
-  // While the tail is wiping, the store has already moved on (endWalk nulls
-  // marker/session) — render the frozen live screen from the snapshot instead.
-  const fz = whip === 'running' ? frozenRef.current : null;
-  const liveMarker = fz?.marker ?? marker;
-  const liveSession = fz?.session ?? session;
-  const liveNow = fz?.now ?? now;
-
-  // ── Live display values (also the frozen anticipation beat) ──
-  const acquiring = phase === 'starting' || !liveSession || liveSession.acceptedCount === 0;
-  const paused = liveSession?.status === 'auto_paused';
-  const elapsed = liveMarker ? liveNow - liveMarker.startedAt : 0;
-  const km = (liveSession?.distanceM ?? 0) / 1000;
-
-  // Live kcal — same dog-calibrated math the summary and Home card use, so
-  // the number never jumps when the walk ends. Based on MOVING time: standing
-  // still, sniff breaks, and speed-gated car segments must not tick the
-  // burn — the number only grows while the dog is actually covering ground.
-  const movingMin = Math.round((liveSession?.movingTimeMs ?? 0) / 60_000);
-  const movingH = (liveSession?.movingTimeMs ?? 0) / 3_600_000;
-  const avgSpeed = movingH > 0 ? km / movingH : 0;
-  const liveKcal =
-    liveMarker && activePet?.current_weight_kg
-      ? Math.round(
-          estimateActivityBurn(
-            'walk',
-            intensityForPace(avgSpeed, liveMarker.profile),
-            movingMin,
-            activePet.current_weight_kg,
-          ),
-        )
-      : 0;
-
-  const currentPosition = liveSession?.lastAccepted
-    ? { lat: liveSession.lastAccepted.lat, lng: liveSession.lastAccepted.lng }
-    : null;
-
-  /**
-   * How far off the destination still is, and whether we can say "made it".
-   *
-   * `ARRIVED_M` is deliberately loose. A spot's coordinate is the middle of a
-   * park, not its gate, so standing at the entrance is genuinely arriving —
-   * and the alternative failure, an owner standing in the park being told they
-   * have not got there yet, is the worse one by far.
-   */
-  const ARRIVED_M = 120;
-  const toDestination =
-    destination && currentPosition
-      ? haversineMeters(currentPosition, { lat: destination.lat, lng: destination.lng })
-      : null;
-  const arrived = toDestination !== null && toDestination <= ARRIVED_M;
-  // Null whenever the distance isn't presentable, so the chip falls back to the
-  // plain "Heading to" line rather than rendering the word "null".
-  const toDestinationLabel = formatDistance(toDestination);
-
-  /** The strips below the header stack; the destination chip claims the first slot. */
-  const destOffset = destination ? 38 : 0;
-
   // ── The live tracking screen ──
   // Also the frozen `over` the tail wipes away: during the whip liveMarker /
   // liveSession come from the snapshot (frozenRef), so this renders unchanged
@@ -463,6 +527,8 @@ function WalkScreenInner() {
         currentPosition={currentPosition}
         paused={!!paused}
         spots={destinationPins}
+        suggestedRoute={suggestedRoute}
+        liveBottomInset={showRouteProgress ? ROUTE_PROGRESS_MAP_INSET : 0}
         style={StyleSheet.absoluteFillObject as any}
       />
 
@@ -479,21 +545,40 @@ function WalkScreenInner() {
           it is the reason this particular walk started. It never nags: once
           you are there it congratulates and then just stays put — there is no
           "continue to" and nothing is scored on reaching it. */}
-      {destination && (
+      {destination && !showRouteProgress && (
         <View style={[styles.destinationChip, { top: insets.top + space.sm + 64 }]}>
           <MaterialIcons
             name={arrived ? 'check-circle' : 'flag'}
             size={14}
             color={color.navy}
           />
-          <Text style={styles.destinationChipText} numberOfLines={1}>
+          <Reanimated.Text
+            key={arrived ? 'arrived' : 'steady'}
+            entering={FadeInDown.duration(motion.duration.instant)}
+            style={styles.destinationChipText}
+            numberOfLines={1}
+          >
             {arrived
               ? `You made it to ${destination.name}`
+              : routeStatus === 'unavailable'
+                  ? `${destination.name} · route unavailable · destination pinned`
               : toDestinationLabel
-                ? `${destination.name} · ${toDestinationLabel} away`
+                ? `${destination.name} · ${toDestinationLabel}${
+                    toDestinationEta ? ` · ${toDestinationEta}` : ' away'
+                  }`
                 : `Heading to ${destination.name}`}
-          </Text>
+          </Reanimated.Text>
         </View>
+      )}
+
+      {showRouteProgress && bottomCardHeight !== null && destination && (
+        <RouteProgressCard
+          destinationName={destination.name}
+          distanceLabel={toDestinationLabel}
+          etaLabel={toDestinationEta}
+          ready={routeJustReady}
+          bottom={bottomCardHeight + space.md}
+        />
       )}
 
       {/* Sniff-break strip — glanceable pause state */}
@@ -552,7 +637,13 @@ function WalkScreenInner() {
       )}
 
       {/* Bottom stats + Finish card */}
-      <View style={[styles.bottomCard, { paddingBottom: insets.bottom + space.lg }]}>
+      <View
+        // `space.sm`, not `lg`: the minimize button below already carries its
+        // own vertical padding, so the larger inset was paying for the same
+        // gap twice and leaving a band of white under the last tappable thing.
+        style={[styles.bottomCard, { paddingBottom: insets.bottom + space.sm }]}
+        onLayout={onBottomCardLayout}
+      >
         <View style={styles.statusLine}>
           <BreathingPaw size={14} workingColor={color.navy} />
           <Text style={styles.statusLineText}>
@@ -564,18 +655,33 @@ function WalkScreenInner() {
           </Text>
         </View>
 
+        {/* No "TIME" caption under this. `00:14` has never needed one — the
+            format is the label, and the line under a 68pt numeral is the most
+            expensive place in the card to say something obvious. */}
         <Text style={styles.timer}>{formatElapsed(elapsed)}</Text>
-        <Text style={styles.timerLabel}>TIME</Text>
 
-        <View style={styles.statRow}>
-          <View style={styles.stat}>
-            <Text style={styles.statValue}>{km.toFixed(2)}</Text>
-            <Text style={styles.statLabel}>DISTANCE (KM)</Text>
+        {/* The supporting pair, in one grouped card rather than two floating
+            columns of value-over-caption.
+
+            Units live in the value now: "0.00 km" is read in one movement where
+            "0.00" above "DISTANCE (KM)" is read in two, and the second of them
+            was set in shouting caps for a number nobody has trouble
+            identifying. The group also matches SpotDetailsSheet, so the walk
+            you started from a place is described by the same shape that
+            offered it. */}
+        <View style={styles.statGroup}>
+          <View style={styles.liveStat}>
+            <Text style={styles.statValue}>
+              {km.toFixed(2)}
+              <Text style={styles.statUnit}> km</Text>
+            </Text>
           </View>
           <View style={styles.statDivider} />
-          <View style={styles.stat}>
-            <Text style={styles.statValue}>{liveKcal > 0 ? liveKcal : '—'}</Text>
-            <Text style={styles.statLabel}>KCAL SO FAR</Text>
+          <View style={styles.liveStat}>
+            <Text style={styles.statValue}>
+              {liveKcal > 0 ? liveKcal : '—'}
+              <Text style={styles.statUnit}> kcal</Text>
+            </Text>
           </View>
         </View>
 
@@ -599,10 +705,21 @@ function WalkScreenInner() {
 
       {/* Always reachable, never shouting. The prompt is what makes the camera
           land at the right moment; this is for the times the walker sees
-          something first. Quiet by design — yellow belongs to Finish. */}
+          something first. Quiet by design — yellow belongs to Finish.
+
+          Positioned on the card's REAL top edge. This was
+          `insets.bottom + 260` — a guess at the card's height that was only
+          ever right for the layout it was written against, and that drifts
+          silently every time a line is added to or removed from the card below.
+          `bottomCardHeight` is already measured for the route progress card;
+          reusing it means the button cannot come adrift again. The literal
+          survives only as the first-frame fallback, before onLayout reports. */}
       {WALK_CAMERA_ENABLED && !acquiring && (
         <TouchableOpacity
-          style={[styles.captureBtn, { bottom: insets.bottom + 260 }]}
+          style={[
+            styles.captureBtn,
+            { bottom: (bottomCardHeight ?? 260 + insets.bottom) + space.md },
+          ]}
           onPress={keepsakes.openCamera}
           accessibilityRole="button"
           accessibilityLabel="Capture a moment"
@@ -998,21 +1115,20 @@ function WalkSummaryView({
    * Unlike `kcal` this does not need a logged weight — breed defaults supply the
    * size band — so it survives an incomplete profile.
    */
-  const dogSteps = useMemo(() => {
-    if (summary.distanceM <= 0) return 0;
-    const profile = deriveDogWalkProfile({
-      species: activePet?.species ?? 'dog',
-      breed: activePet?.breed ?? null,
-      ageYears: activePet?.age_years ?? null,
-      weightKg: activePet?.current_weight_kg ?? null,
-      medicalConditions: activePet?.medical_conditions ?? null,
-    });
-    return estimateDogSteps({
-      distanceM: summary.distanceM,
-      movingTimeS: summary.movingTimeS,
-      profile,
-    }).steps;
-  }, [activePet, summary.distanceM, summary.movingTimeS]);
+  const dogSteps = useMemo(
+    () =>
+      estimateDogSteps({
+        // The session machine's cleaned distance, never a raw trace — a GPS
+        // jump must not become extra steps.
+        distanceM: summary.distanceM,
+        species: activePet?.species ?? 'dog',
+        breed: activePet?.breed ?? null,
+        sex: activePet?.gender ?? null,
+        ageYears: activePet?.age_years ?? null,
+        weightKg: activePet?.current_weight_kg ?? null,
+      }).steps,
+    [activePet, summary.distanceM],
+  );
 
   const kcal = useMemo(() => {
     if (!activePet?.current_weight_kg) return 0;
@@ -1467,7 +1583,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radius.xxl,
     borderTopRightRadius: radius.xxl,
     paddingHorizontal: space.xxl,
-    paddingTop: space.xl,
+    paddingTop: space.lg,
     borderTopWidth: 0.5,
     borderColor: color.hairline,
     ...shadow.raised,
@@ -1492,18 +1608,33 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontVariant: ['tabular-nums'],
   },
-  timerLabel: {
-    ...type.caption,
-    color: color.slateFaint,
-    textAlign: 'center',
-    marginTop: 2,
-  },
-  statRow: {
+  /**
+   * The two supporting numbers, as one object.
+   *
+   * A filled group rather than two columns adrift in white space: it gives the
+   * pair a single edge to sit against, which is what stops them competing with
+   * the timer above. Same shape as the groups in SpotDetailsSheet — one card
+   * language across both walk surfaces.
+   */
+  statGroup: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: space.lg,
-    gap: space.xxl,
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.lg,
+    paddingVertical: space.md,
+  },
+  /**
+   * The live card's half of the group. Distinct from `stat` below, which the
+   * post-walk summary shares — the two look similar and are not: this one
+   * splits a filled group in half, that one is a free-standing column with a
+   * caption under it. Folding them into one style is how a tweak to the live
+   * readout silently reflows the summary.
+   */
+  liveStat: {
+    flex: 1,
+    alignItems: 'center',
   },
   stat: {
     alignItems: 'center',
@@ -1511,17 +1642,29 @@ const styles = StyleSheet.create({
     minWidth: 96,
   },
   statDivider: {
-    width: 1,
-    height: 34,
+    width: StyleSheet.hairlineWidth,
+    height: 26,
     backgroundColor: color.hairline,
   },
   statValue: {
     fontFamily: font.display,
-    fontSize: 30,
-    lineHeight: 32,
+    fontSize: 28,
+    lineHeight: 30,
     color: color.navy,
     fontVariant: ['tabular-nums'],
   },
+  /** Lowercase and quieter: the unit qualifies the number, it is not a heading. */
+  statUnit: {
+    fontFamily: font.semibold,
+    fontSize: 13,
+    color: color.slateMuted,
+  },
+  /**
+   * Still used by the post-walk summary further down this file, which is a
+   * different surface with a different job: there the numbers are a result
+   * being read once, not a live readout being glanced at, and the caption earns
+   * its room.
+   */
   statLabel: {
     ...type.caption,
     color: color.slateFaint,
@@ -1534,7 +1677,7 @@ const styles = StyleSheet.create({
     backgroundColor: color.yellow,
     borderRadius: radius.pill,
     paddingVertical: 16,
-    marginTop: space.xl,
+    marginTop: space.lg,
     ...shadow.card,
   },
   finishBtnText: {

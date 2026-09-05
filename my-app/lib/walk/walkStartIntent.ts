@@ -30,6 +30,12 @@ export interface WalkDestination {
   name: string;
   lat: number;
   lng: number;
+  /**
+   * The device-centred Home coordinate at the moment "Walk here" was tapped.
+   * It lets the suggested path start loading before the walk's first accepted
+   * background GPS fix. Presentation only; walk tracking never reads it.
+   */
+  origin?: { lat: number; lng: number };
 }
 
 let armed = false;

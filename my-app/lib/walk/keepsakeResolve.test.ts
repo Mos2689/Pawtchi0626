@@ -30,6 +30,7 @@ function keepsake(overrides: Partial<Keepsake> = {}): Keepsake {
     elapsedS: 120,
     mediaType: 'photo',
     source: 'camera',
+    localPath: null,
     localAssetId: 'ph://ABC',
     width: 4032,
     height: 3024,
@@ -41,14 +42,58 @@ function keepsake(overrides: Partial<Keepsake> = {}): Keepsake {
   };
 }
 
-describe('resolveKeepsake — rung 1, the original', () => {
+describe('resolveKeepsake — rung 1a, our own copy', () => {
+  it('uses the owned file when it is really there', () => {
+    const render = resolveKeepsake({
+      keepsake: keepsake({ localPath: '1700-abc.jpg' }),
+      ownedFileAvailable: true,
+      localAvailable: false,
+      access: 'denied',
+    });
+    expect(render).toEqual({ rung: 'original', source: 'owned', localAssetId: 'ph://ABC' });
+  });
+
+  it('prefers our copy over the library even when both are available', () => {
+    const render = resolveKeepsake({
+      keepsake: keepsake({ localPath: '1700-abc.jpg' }),
+      ownedFileAvailable: true,
+      localAvailable: true,
+      access: 'granted',
+    });
+    expect(render).toMatchObject({ source: 'owned' });
+  });
+
+  it('needs no photo permission at all', () => {
+    // The whole point: Android never gets READ_MEDIA_IMAGES, and this rung
+    // still answers there.
+    const render = resolveKeepsake({
+      keepsake: keepsake({ localPath: '1700-abc.jpg', localAssetId: null }),
+      ownedFileAvailable: true,
+      localAvailable: false,
+      access: 'denied',
+    });
+    expect(render).toMatchObject({ rung: 'original', source: 'owned', localAssetId: null });
+  });
+
+  it('does not trust a local_path whose file is gone — the reinstall case', () => {
+    const render = resolveKeepsake({
+      keepsake: keepsake({ localPath: '1700-abc.jpg' }),
+      ownedFileAvailable: false,
+      localAvailable: false,
+      access: 'granted',
+    });
+    expect(render.rung).toBe('thumbnail');
+  });
+});
+
+describe('resolveKeepsake — rung 1b, the camera-roll original', () => {
   it('uses the local original when it is really there', () => {
     const render = resolveKeepsake({
       keepsake: keepsake(),
       localAvailable: true,
       access: 'granted',
     });
-    expect(render).toEqual({ rung: 'original', localAssetId: 'ph://ABC' });
+    expect(render).toEqual({ rung: 'original', source: 'library', localAssetId: 'ph://ABC' });
   });
 
   it('works under limited access when the asset was among the chosen ones', () => {
@@ -134,15 +179,20 @@ describe('resolveKeepsake — totality (rung 4: never a broken image)', () => {
 
   it('always returns one of the three rungs, for every combination', () => {
     for (const access of accesses) {
-      for (const localAvailable of [true, false]) {
-        for (const localAssetId of ['ph://ABC', null]) {
-          for (const thumbPath of ['thumbs/k1.jpg', null]) {
-            const render = resolveKeepsake({
-              keepsake: keepsake({ localAssetId, thumbPath }),
-              localAvailable,
-              access,
-            });
-            expect(['original', 'thumbnail', 'context']).toContain(render.rung);
+      for (const ownedFileAvailable of [true, false]) {
+        for (const localAvailable of [true, false]) {
+          for (const localPath of ['1700-abc.jpg', null]) {
+            for (const localAssetId of ['ph://ABC', null]) {
+              for (const thumbPath of ['thumbs/k1.jpg', null]) {
+                const render = resolveKeepsake({
+                  keepsake: keepsake({ localPath, localAssetId, thumbPath }),
+                  ownedFileAvailable,
+                  localAvailable,
+                  access,
+                });
+                expect(['original', 'thumbnail', 'context']).toContain(render.rung);
+              }
+            }
           }
         }
       }

@@ -51,33 +51,33 @@ const BREED_HINTS: { match: (b: string) => boolean; entries: WatchOut[] }[] = [
   {
     match: (b) => /labrador|golden retriever|beagle|cocker spaniel/i.test(b),
     entries: [
-      { icon: 'restaurant', text: 'this breed loves food more than the body needs it; measure each meal rather than free-pouring.' },
-      { icon: 'pets', text: 'ears trap moisture after baths and swims, so a quick dry helps prevent infections.' },
+      { icon: 'restaurant', text: 'This breed wants more food than its body needs; measure each meal rather than free-pouring.' },
+      { icon: 'pets', text: 'Drop ears trap moisture after baths and swims, so a quick dry helps prevent infections.' },
     ],
   },
   {
     match: (b) => /bulldog|pug|boxer|shih.?tzu|boston terrier|cavalier|persian|himalayan|exotic|british shorthair/i.test(b),
     entries: [
-      { icon: 'monitor-heart', text: 'a shorter muzzle makes breathing harder when warm; avoid midday walks in summer and keep water close.' },
-      { icon: 'pets', text: 'skin folds need a wipe and dry every couple of days to stay calm.' },
+      { icon: 'monitor-heart', text: 'A shorter muzzle makes breathing harder when warm; avoid midday walks in summer and keep water close.' },
+      { icon: 'pets', text: 'Skin folds need a wipe and a dry every couple of days to stay free of irritation.' },
     ],
   },
   {
     match: (b) => /german shepherd|rottweiler|great dane|saint bernard|mastiff|husky/i.test(b),
     entries: [
-      { icon: 'directions-walk', text: 'large breeds carry more pressure on hips and elbows; steady daily movement protects joints more than weekend bursts.' },
+      { icon: 'directions-walk', text: 'Large breeds carry more pressure on hips and elbows; steady daily movement protects joints more than weekend bursts.' },
     ],
   },
   {
     match: (b) => /poodle|maltese|yorkshire|bichon|schnauzer/i.test(b),
     entries: [
-      { icon: 'pets', text: 'this coat does not shed much, so a brush every few days keeps mats and tangles away.' },
+      { icon: 'pets', text: 'This coat does not shed much, so a brush every few days keeps mats and tangles away.' },
     ],
   },
   {
     match: (b) => /maine coon|ragdoll|norwegian forest/i.test(b),
     entries: [
-      { icon: 'pets', text: 'long coats need a brush a few times a week to stop hairballs and mats.' },
+      { icon: 'pets', text: 'Long coats need a brush a few times a week to stop hairballs and mats.' },
     ],
   },
 ];
@@ -94,48 +94,48 @@ function fromSizeAndLifeStage(species: 'dog' | 'cat', size: SizeCategory | null,
     if (size === 'large' || size === 'giant') {
       out.push({
         icon: 'directions-walk',
-        text: 'large frames feel weight extra; keeping the daily plate tight is one of the best things you can do for joints.',
+        text: 'Large frames feel extra weight the most; keeping the daily plate tight is one of the best things you can do for their joints.',
       });
     }
     if (size === 'toy' || size === 'small') {
       out.push({
         icon: 'pets',
-        text: 'small dogs build tartar quickly, so a daily brush or dental chew goes a long way.',
+        text: 'Small dogs build tartar quickly, so a daily brush or dental chew goes a long way.',
       });
     }
     if (stage === 'puppy' || stage === 'junior') {
       out.push({
         icon: 'restaurant',
-        text: 'growing bones need steady, smaller meals across the day rather than two big ones.',
+        text: 'Growing bones need steady, smaller meals across the day rather than two big ones.',
       });
     }
     if (stage === 'senior' || stage === 'geriatric' || stage === 'mature') {
       out.push({
         icon: 'directions-walk',
-        text: 'shorter, more frequent walks are gentler on older joints than one long outing.',
+        text: 'Shorter, more frequent walks are gentler on older joints than one long outing.',
       });
     }
   } else {
     // cats
     out.push({
       icon: 'water-drop',
-      text: 'cats are quiet drinkers; a wide bowl or a small fountain in a calm spot encourages more sips.',
+      text: 'Cats are quiet drinkers; a wide bowl or a small fountain in a calm spot encourages more sips.',
     });
     if (stage === 'kitten' || stage === 'junior') {
       out.push({
         icon: 'restaurant',
-        text: 'kittens do best on a few small meals a day while they grow.',
+        text: 'Kittens do best on a few small meals a day while they grow.',
       });
     } else {
       out.push({
         icon: 'pets',
-        text: 'adult cats build tartar without noticing; a soft toothbrush or a vet-approved chew helps.',
+        text: 'Adult cats build tartar without noticing; a soft toothbrush or a vet-approved chew helps.',
       });
     }
     if (stage === 'senior' || stage === 'geriatric' || stage === 'mature') {
       out.push({
         icon: 'monitor-heart',
-        text: 'older cats often hide stiffness; a low-step litter tray and a warm sleep spot make daily life easier.',
+        text: 'Older cats often hide stiffness; a low-step litter tray and a warm sleep spot make daily life easier.',
       });
     }
   }
@@ -173,7 +173,7 @@ function fromBrachycephalicOverweight(
 
   return [{
     icon: 'monitor-heart',
-    text: 'flat-faced breeds often look muscular even when carrying extra weight; even mild excess makes breathing harder, so a vet weigh-in is worth booking.',
+    text: 'Flat-faced breeds often look muscular even when carrying extra weight, and mild excess already makes breathing harder — a vet weigh-in is worth booking.',
   }];
 }
 
@@ -182,19 +182,19 @@ function fromBodyAndWeight(bcs: number | null, weightVsTargetKg: number | null):
   if (typeof bcs === 'number' && bcs >= 7) {
     out.push({
       icon: 'restaurant',
-      text: 'the score sits above the ideal range; staying on the daily plate beats any quick fix.',
+      text: 'The score sits above the ideal range; staying on the daily plate beats any quick fix.',
     });
   }
   if (typeof weightVsTargetKg === 'number' && weightVsTargetKg >= 0.5) {
     out.push({
       icon: 'directions-walk',
-      text: 'small, steady losses of around one percent of body weight a week are safer than crash changes.',
+      text: 'Small, steady losses of around one percent of body weight a week are safer than crash changes.',
     });
   }
   if (typeof weightVsTargetKg === 'number' && weightVsTargetKg <= -0.5) {
     out.push({
       icon: 'restaurant',
-      text: 'a touch under target is fine while energy stays good; keep the plate consistent rather than topping up.',
+      text: 'A touch under target is fine while energy stays good; keep the plate consistent rather than topping up.',
     });
   }
   return out;

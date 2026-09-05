@@ -2,7 +2,7 @@
   "expo": {
     "name": "Pawtchi",
     "slug": "pawtchi",
-    "version": "1.0.20",
+    "version": "1.0.22",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "pawtchi",
@@ -47,7 +47,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 36,
+      "versionCode": 38,
       "permissions": [
         "android.permission.INTERNET"
       ],

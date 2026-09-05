@@ -1,0 +1,729 @@
+{
+  "calorie_integrity_reports": [
+    {
+      "name": "check_name",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "details",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "entity_key",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "first_seen_at",
+      "type": "timestamp with time zone",
+      "nullable": "NO"
+    },
+    {
+      "name": "last_reported_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "report_count",
+      "type": "integer",
+      "nullable": "NO"
+    }
+  ],
+  "daily_logs": [
+    {
+      "name": "calorie_quality",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "calories_consumed",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "created_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "log_date",
+      "type": "date",
+      "nullable": "NO"
+    },
+    {
+      "name": "pet_id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "reconciled_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "treats_consumed",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "updated_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "walks_count",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "was_goal_met",
+      "type": "boolean",
+      "nullable": "YES"
+    },
+    {
+      "name": "water_ml",
+      "type": "integer",
+      "nullable": "YES"
+    }
+  ],
+  "food_pantry": [
+    {
+      "name": "allergy_flags",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "brand",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "expiry_date",
+      "type": "date",
+      "nullable": "YES"
+    },
+    {
+      "name": "fat_pct",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "fibre_pct",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "first_scanned_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "food_type",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "image_url",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "is_archived",
+      "type": "boolean",
+      "nullable": "NO"
+    },
+    {
+      "name": "is_favorite",
+      "type": "boolean",
+      "nullable": "NO"
+    },
+    {
+      "name": "is_primary",
+      "type": "boolean",
+      "nullable": "YES"
+    },
+    {
+      "name": "kcal_per_100g_as_fed",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "kcal_per_serving",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "key_ingredients",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "label_consistency",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "last_scanned_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "moisture_pct",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "nutrition_provenance",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "nutrition_revision",
+      "type": "integer",
+      "nullable": "NO"
+    },
+    {
+      "name": "pet_id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "product_name",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "protein_pct",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "scan_count",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "serving_grams",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "serving_size_raw",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "serving_unit",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "usual_portion",
+      "type": "jsonb",
+      "nullable": "YES"
+    }
+  ],
+  "food_scans": [
+    {
+      "name": "ai_confidence_score",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_estimated_calories",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_estimated_carbs_g",
+      "type": "real",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_estimated_fats_g",
+      "type": "real",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_estimated_protein_g",
+      "type": "real",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_identified_food",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "anomaly_confirmed_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "anomaly_flags",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "carbs_g",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "created_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "day_assignment",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "fat_g",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "food_analysis",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "health_score",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "idempotency_key",
+      "type": "uuid",
+      "nullable": "YES"
+    },
+    {
+      "name": "image_url",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "ingredients",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "is_treat",
+      "type": "boolean",
+      "nullable": "YES"
+    },
+    {
+      "name": "is_user_confirmed",
+      "type": "boolean",
+      "nullable": "YES"
+    },
+    {
+      "name": "kcal_basis",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "log_date",
+      "type": "date",
+      "nullable": "YES"
+    },
+    {
+      "name": "meal_grams",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "nutrition_snapshot",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "pantry_item_id",
+      "type": "uuid",
+      "nullable": "YES"
+    },
+    {
+      "name": "pet_id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "portion_mode",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "portion_quantity",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "protein_g",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "quality",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "revision",
+      "type": "integer",
+      "nullable": "NO"
+    },
+    {
+      "name": "tz_name",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "tz_offset_minutes",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "unit_basis",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "verdict_narration",
+      "type": "text",
+      "nullable": "YES"
+    }
+  ],
+  "pets": [
+    {
+      "name": "activity_level",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "age_years",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_bcs_confidence",
+      "type": "real",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_bcs_high",
+      "type": "smallint",
+      "nullable": "YES"
+    },
+    {
+      "name": "ai_bcs_low",
+      "type": "smallint",
+      "nullable": "YES"
+    },
+    {
+      "name": "allergies",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "bcs_check_answers",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "bcs_source",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "bcs_updated_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "body_condition_score",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "bowl_size",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "breed",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "created_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "current_avatar_url",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "current_weight_kg",
+      "type": "numeric",
+      "nullable": "NO"
+    },
+    {
+      "name": "current_weight_logged_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "diet_type",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "equipped_items",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "first_dog",
+      "type": "boolean",
+      "nullable": "YES"
+    },
+    {
+      "name": "food_brands",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "gender",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "healthy_band_high_kg",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "healthy_band_low_kg",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "household_walkers",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "ideal_weight_kg",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "image_url",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "is_neutered",
+      "type": "boolean",
+      "nullable": "YES"
+    },
+    {
+      "name": "meal_grams_per_serving",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "medical_conditions",
+      "type": "ARRAY",
+      "nullable": "YES"
+    },
+    {
+      "name": "name",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "owner_id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "parent_title",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "pregnancy_weeks",
+      "type": "smallint",
+      "nullable": "YES"
+    },
+    {
+      "name": "reproductive_status",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "severe_obesity_vet_confirmed_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "species",
+      "type": "text",
+      "nullable": "NO"
+    },
+    {
+      "name": "target_daily_calories",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "target_weight_kg",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "unlocked_items",
+      "type": "jsonb",
+      "nullable": "YES"
+    },
+    {
+      "name": "updated_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "walksign",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "walksign_assigned_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "walksign_history",
+      "type": "jsonb",
+      "nullable": "NO"
+    },
+    {
+      "name": "walksign_status",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_assessed_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_assessment_bcs",
+      "type": "integer",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_assessment_confidence",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_assessment_kg",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_assessment_source",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_journey_start_kg",
+      "type": "numeric",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_journey_started_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_plan_revision",
+      "type": "integer",
+      "nullable": "NO"
+    },
+    {
+      "name": "weight_plan_status",
+      "type": "text",
+      "nullable": "YES"
+    }
+  ],
+  "weight_logs": [
+    {
+      "name": "id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "logged_at",
+      "type": "timestamp with time zone",
+      "nullable": "YES"
+    },
+    {
+      "name": "measurement_source",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "notes",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "pet_id",
+      "type": "uuid",
+      "nullable": "NO"
+    },
+    {
+      "name": "source",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "source_event_id",
+      "type": "text",
+      "nullable": "YES"
+    },
+    {
+      "name": "weight_kg",
+      "type": "numeric",
+      "nullable": "NO"
+    }
+  ]
+}

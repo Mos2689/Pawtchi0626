@@ -236,7 +236,12 @@ function KeepsakeSlide({
   cardW: number;
   cardH: number;
 }) {
-  const resolved = useKeepsakeImage(pin.uri ? null : pin.keepsake ?? null);
+  // The viewer is the one place the original is worth reaching for: the user
+  // tapped a photograph to look at it, so a thumbnail stretched to card size
+  // would be visibly soft. Elsewhere the ladder stays off the photo library.
+  const resolved = useKeepsakeImage(pin.uri ? null : pin.keepsake ?? null, {
+    allowLocalOriginal: true,
+  });
   const uri = pin.uri ?? resolved.uri;
 
   const animated = useAnimatedStyle(() => {
@@ -307,6 +312,7 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
   // thumbnail is a stand-in for rendering, not something to hand to Instagram.
   const shareable = useKeepsakeImage(
     current?.uri ? null : current?.keepsake ?? null,
+    { allowLocalOriginal: true },
   );
   const shareUri = current?.uri ?? (shareable.rung === 'original' ? shareable.uri : null);
 

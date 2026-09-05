@@ -33,8 +33,14 @@ import {
 } from '../lib/walk/placeMemory';
 import { placeKeyOrNull } from '../lib/walk/placeKey';
 import { elapsedSecondsInto, snapToRoute, type Keepsake } from '../lib/walk/keepsake';
-import { fetchPlaceCandidates, insertKeepsake, attachThumbnail } from '../lib/walk/keepsakeSync';
+import {
+  fetchPlaceCandidates,
+  fetchPendingThumbnails,
+  insertKeepsake,
+  attachThumbnail,
+} from '../lib/walk/keepsakeSync';
 import { uploadThumbnail, thumbnailUrl } from '../lib/walk/keepsakeThumbnail';
+import { sweepKeepsakeFiles } from '../lib/walk/keepsakeFile';
 import { readPlacePromptLog, recordPlacePrompt } from '../lib/walk/placePromptLog';
 import { haversineMeters } from '../lib/walk/geo';
 import type { WalkCaptureResult } from '../components/walk/WalkCamera';
@@ -267,6 +273,7 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
           routeIndex: capture.routeIndex,
           elapsedS: capture.elapsedS,
           source: 'camera',
+          localPath: capture.localPath,
           localAssetId: capture.localAssetId,
           width: capture.width,
           height: capture.height,
@@ -285,6 +292,19 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
           height: capture.height,
         });
         if (path) await attachThumbnail(stored.id, path);
+      }
+
+      // ── Keep our own copies within budget ──
+      //
+      // Runs after the uploads, not before, so a capture that just became
+      // durable is eligible and one that did not is protected. The protected
+      // list is every keepsake still owing a thumbnail — for those the file we
+      // hold is the only copy anywhere, and the budget yields to that.
+      try {
+        const pending = await fetchPendingThumbnails(petId, 100);
+        sweepKeepsakeFiles(pending.flatMap((k) => (k.localPath ? [k.localPath] : [])));
+      } catch {
+        // A sweep that does not happen costs disk, never a photo.
       }
     })();
   }, [enabled, walkSessionId, ownerId, petId]);

@@ -1,0 +1,253 @@
+{
+  "$comment": [
+    "Golden vectors for the canonical meal calculation.",
+    "",
+    "The TypeScript resolver (lib/mealLogKcal.ts) runs these under Jest. The SQL",
+    "calculator added in stage 6 runs the SAME file under pgTAP, and both must",
+    "produce identical output. That is the whole point: once the server becomes",
+    "the authoritative persisted calculator, any arithmetic difference between",
+    "the two — a rounding step applied in a different order, an integer divide —",
+    "becomes a number on screen that disagrees with the number in the database.",
+    "",
+    "Coverage is deliberate: every portion mode, both unit bases, a stated",
+    "serving weight versus a derived one, and the circular-derivation case that",
+    "an earlier design of this check would have passed."
+  ],
+  "vectors": [
+    {
+      "name": "gram unit, derived serving weight — the original defect, corrected",
+      "why": "200 g of a 120 kcal/100 g food is 240 kcal. The pre-fix build logged 24,000.",
+      "item": {
+        "serving_unit": "gram",
+        "kcal_per_serving": 120,
+        "kcal_per_100g_as_fed": 120,
+        "protein_pct": 9,
+        "fat_pct": 4,
+        "fibre_pct": 1,
+        "moisture_pct": 72,
+        "food_type": "wet_food"
+      },
+      "servings": 2,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 240,
+        "mealGrams": 200,
+        "kcalBasis": "label_serving",
+        "labelConsistency": "unverifiable",
+        "quality": "unverifiable",
+        "portionMode": "weight",
+        "portionQuantity": 200,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "gram unit, stated serving weight, fully observed",
+      "why": "The only shape that can reach 'verified': all three facts printed and cross-checked.",
+      "item": {
+        "serving_unit": "gram",
+        "kcal_per_serving": 120,
+        "kcal_per_100g_as_fed": 120,
+        "serving_grams": 100,
+        "protein_pct": 9,
+        "fat_pct": 4,
+        "fibre_pct": 1,
+        "moisture_pct": 72,
+        "food_type": "wet_food",
+        "label_consistency": "consistent",
+        "nutrition_revision": 3,
+        "nutrition_provenance": {
+          "kcal_per_serving": "label",
+          "kcal_per_100g_as_fed": "label",
+          "serving_grams": "label"
+        }
+      },
+      "servings": 2,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 240,
+        "mealGrams": 200,
+        "kcalBasis": "label_serving",
+        "labelConsistency": "consistent",
+        "quality": "verified",
+        "portionMode": "weight",
+        "portionQuantity": 200,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "circular derivation must not certify itself",
+      "why": "Both calorie figures are label-observed, but the serving weight was computed FROM them. The database may say 'consistent'; the meal is still unverifiable.",
+      "item": {
+        "serving_unit": "gram",
+        "kcal_per_serving": 120,
+        "kcal_per_100g_as_fed": 120,
+        "protein_pct": 9,
+        "food_type": "wet_food",
+        "label_consistency": "consistent",
+        "nutrition_provenance": {
+          "kcal_per_serving": "label",
+          "kcal_per_100g_as_fed": "label"
+        }
+      },
+      "servings": 1,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 120,
+        "mealGrams": 100,
+        "kcalBasis": "label_serving",
+        "labelConsistency": "consistent",
+        "quality": "unverifiable",
+        "portionMode": "weight",
+        "portionQuantity": 100,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "pouch with a printed serving weight beats the species table",
+      "why": "The serving-weight gap was never gram-only. A 100 g pouch is 100 g, not the table's generic 85 g.",
+      "item": {
+        "serving_unit": "pouch",
+        "kcal_per_serving": 95,
+        "kcal_per_100g_as_fed": 95,
+        "serving_grams": 100,
+        "protein_pct": 8,
+        "food_type": "wet_food"
+      },
+      "servings": 1,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 95,
+        "mealGrams": 100,
+        "kcalBasis": "label_serving",
+        "labelConsistency": "unverifiable",
+        "quality": "unverifiable",
+        "portionMode": "fraction",
+        "portionQuantity": 1,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "small supplement dose survives intact",
+      "why": "Natural Animal Solutions Omega oil: a real 4.6 g serving. The derived-value sanity band would round it to 5 g; a stated weight is never clamped.",
+      "item": {
+        "serving_unit": "gram",
+        "kcal_per_serving": 44.2,
+        "kcal_per_100g_as_fed": 960.87,
+        "serving_grams": 4.6,
+        "food_type": "supplement"
+      },
+      "servings": 10,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 442,
+        "mealGrams": 46,
+        "kcalBasis": "label_serving",
+        "labelConsistency": "unverifiable",
+        "quality": "unverifiable",
+        "portionMode": "weight",
+        "portionQuantity": 46,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "half a medium bowl of kibble",
+      "why": "A bowl is the owner's container, not the manufacturer's serving. unitBasis says so, and the meal can never be label-verified through it.",
+      "item": {
+        "serving_unit": "cup",
+        "kcal_per_serving": 300,
+        "kcal_per_100g_as_fed": 120,
+        "protein_pct": 26,
+        "fat_pct": 14,
+        "moisture_pct": 10,
+        "food_type": "kibble"
+      },
+      "servings": 0.5,
+      "opts": { "species": "dog", "bowl": { "size": "medium" } },
+      "expect": {
+        "kcal": 120,
+        "mealGrams": 100,
+        "kcalBasis": "label_density",
+        "labelConsistency": "unverifiable",
+        "quality": "unverifiable",
+        "portionMode": "fraction",
+        "portionQuantity": 0.5,
+        "unitBasis": "bowl"
+      }
+    },
+    {
+      "name": "three treats, count mode",
+      "why": "Count mode quantity is whole pieces, not a multiplier of anything.",
+      "item": {
+        "serving_unit": "piece",
+        "kcal_per_serving": 30,
+        "kcal_per_100g_as_fed": 300,
+        "protein_pct": 20,
+        "food_type": "treat"
+      },
+      "servings": 3,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 90,
+        "mealGrams": 30,
+        "kcalBasis": "label_serving",
+        "labelConsistency": "unverifiable",
+        "quality": "unverifiable",
+        "portionMode": "count",
+        "portionQuantity": 3,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "no label data at all is 'estimated', never 'default'",
+      "why": "The 350 kcal fallback may support display guidance. A meal written on it is an estimate and has to say so.",
+      "item": {
+        "serving_unit": "cup",
+        "kcal_per_serving": null,
+        "kcal_per_100g_as_fed": null,
+        "food_type": "kibble"
+      },
+      "servings": 1,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 350,
+        "mealGrams": 100,
+        "kcalBasis": "estimated",
+        "labelConsistency": "unverifiable",
+        "quality": "unverifiable",
+        "portionMode": "fraction",
+        "portionQuantity": 1,
+        "unitBasis": "manufacturer"
+      }
+    },
+    {
+      "name": "an owner-corrected figure is attributed to the owner",
+      "why": "The basis records who is responsible for the number, which matters when it later turns out to be wrong.",
+      "item": {
+        "serving_unit": "gram",
+        "kcal_per_serving": 150,
+        "kcal_per_100g_as_fed": 150,
+        "serving_grams": 100,
+        "protein_pct": 10,
+        "food_type": "raw",
+        "label_consistency": "consistent",
+        "nutrition_provenance": {
+          "kcal_per_serving": "owner_corrected",
+          "kcal_per_100g_as_fed": "label",
+          "serving_grams": "owner_corrected"
+        }
+      },
+      "servings": 1,
+      "opts": { "species": "dog" },
+      "expect": {
+        "kcal": 150,
+        "mealGrams": 100,
+        "kcalBasis": "owner_corrected",
+        "labelConsistency": "consistent",
+        "quality": "verified",
+        "portionMode": "weight",
+        "portionQuantity": 100,
+        "unitBasis": "manufacturer"
+      }
+    }
+  ]
+}

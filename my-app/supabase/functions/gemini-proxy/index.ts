@@ -109,17 +109,18 @@ IMPORTANT RULES:
 2. Cross-reference the ingredient list against the pet's known allergies. Flag ANY match.
 3. Identify ingredients of concern for the pet's species and medical conditions.
 4. Provide a short recommendation (1-2 sentences).
-5. ALWAYS PROVIDE A CALORIE ESTIMATE: If the label is missing or it is just "unknown kibble", use generic averages (e.g., standard dry food is ~350 kcal/cup). NEVER return null or 0 for calories_per_serving.
-   - FATAL ERROR PREVENTION: NEVER return calorie values > 5000. If your math results in a number like "196000", you incorrectly converted kcal into single calories. You MUST divide by 1000 and return the kcal value (e.g., 196) instead. The required unit is ALWAYS kilocalories (kcal).
+5. CALORIES — REPORT, DO NOT INVENT: If the label states calories, extract them. If it does NOT, return null for calories_per_serving rather than substituting a generic average. A null tells us to ask the owner; a plausible-looking guess is indistinguishable from a reading and gets fed to a real animal.
+   - The unit is ALWAYS kilocalories (kcal). If you find yourself about to return something like 196000, you have converted kcal into calories — recheck the label rather than dividing by 1000, because the error may not be a factor of 1000.
 6. PANTRY MATCHING & SERVING MATH: If scanning a generic unlabelled bowl/food, MATCH it to the pet's Known Food Pantry (use the PRIMARY item for that type). 
    - Estimate the physical weight/volume of the food in the image (e.g., 1 cup ≈ 100g).
    - Use the Pantry Item's kcal density to estimate total calories. 
    - CRITICAL: Calculate absolute grams for macros based on your weight estimate. If the Pantry item says 26% Protein, and you estimate 100g of food, then "protein_g" MUST be 26.
    - COPY the exact "Ingredients" from the matched Pantry Item into "key_ingredients". Do NOT output null.
-7. NEW FOOD DETECTION (Labels): Only output "is_labeled_product: true" if a brand label is visible. If the label DOES NOT explicitly print its calorie count, calculate it safely (e.g., Protein% * 3.5 + Fat% * 8.5 + Carbs% * 3.5 = kcal per 100g) and base the calories_per_serving on a standard serving. DO NOT hallucinate extreme numbers. Default to standard veterinary averages (350 kcal/cup for kibble, 30 kcal/piece for treats).
+7. NEW FOOD DETECTION (Labels): Only output "is_labeled_product: true" if a brand label is visible. If the label does NOT print a calorie count, return null for calories_per_serving and set "needs_owner_review": true. Do not back-calculate it from macros and do not fall back to veterinary averages — an owner holding the packet can read the real number, and we would rather ask than guess.
 8. LABEL EXTRACTION: If a clear product label or packaging is visible, extract brand and product_name as separate fields. Also extract protein_pct, fat_pct, fibre_pct, and key_ingredients from the guaranteed analysis/ingredient list.
 9. MOISTURE EXTRACTION: If the guaranteed analysis lists "Moisture" (often shown as "Moisture (max.) X%"), extract the numeric value into "moisture_pct". This is critical for wet food and broths. If the label does not state moisture, return null — DO NOT guess.
 10. CALORIE DENSITY EXTRACTION: If the label states a calorie content per kg (e.g. "1080 kcal ME/kg" or "3650 kcal/kg") OR per 100g (e.g. "365 kcal per 100g"), convert to per-100g (divide kcal/kg by 10) and return in "kcal_per_100g_as_fed". This is a separate field from the per-serving calories. If the label does not state any per-mass calorie figure, return null — DO NOT guess and DO NOT compute it from macros.
+10b. SERVING WEIGHT: If the serving size states a weight — "1 cup (120g)", "100g tray", "85 g pouch" — return that weight in grams as "serving_grams", and return the serving size text verbatim in "serving_size". This applies to EVERY unit, not just gram-measured foods; a pouch or can prints its weight too. Convert kg to grams and oz to grams (1 oz = 28.35 g). If no weight is stated, return null — do NOT derive it from the calorie figures, because a weight computed from the calories cannot then be used to check them.
 11. EXTRACTION ONLY — DO NOT SCORE OR RATE: Your job is to extract what is on the label and what is in the image. Do NOT rate, judge, or score this food. Health scoring happens deterministically client-side from the data you extract.
 12. MACRO SANITY: protein_g, carbs_g, and fats_g must represent the absolute grams in ONE serving. A single serving can NEVER have more than 200g of any single macro. If your calculation produces a higher number, you have a math error. When a selected pantry item provides protein_pct / fat_pct / moisture_pct, the macro grams MUST be derived from that pantry item's label values using: meal_grams × nutrient_pct / 100.
 13. TIME-OF-DAY JUDGMENT (use TODAY'S LIVE BUDGET if provided): Judge this scan against today's REMAINING budget, not just the static daily ceiling. If this food's calories_per_serving would push consumption over today_calories_remaining, the recommendation MUST advise to defer this food, split it across days, or reduce portion. If it's a treat and today_treat_calories_consumed already exceeds treat_budget, the recommendation MUST say to skip it today. When today's remaining budget is healthy (>30% of daily ceiling), DO NOT artificially scold — the food can be appropriate today even if it would be too rich on a tighter day. Be specific: cite remaining-kcal numbers in the recommendation when they drive the verdict.
@@ -137,9 +138,11 @@ You MUST respond with ONLY valid JSON in this exact format, no markdown, no extr
   "brand": "string or null if not identifiable",
   "product_name": "string or null if not identifiable",
   "food_type": "kibble | wet_food | treat | raw | supplement | human_food",
-  "calories_per_serving": "number (MUST be in kcal and realistically between 10 and 2000)",
-  "serving_size": "string (e.g. '1 cup / 240g')",
-  "serving_unit": "cup | pouch | piece | gram | can | null",
+  "calories_per_serving": "number in kcal, or null if the label does not state it",
+  "serving_size": "string, verbatim from the label (e.g. '1 cup / 240g')",
+  "serving_grams": "number of grams in one serving, or null if not stated",
+  "serving_unit": "cup | pouch | piece | gram | can | sachet | tray | null",
+  "needs_owner_review": "boolean — true when a figure we need is missing or unreadable",
   "protein_pct": number or null,
   "fat_pct": number or null,
   "fibre_pct": number or null,
@@ -247,43 +250,135 @@ If you cannot read the label clearly, set confidence below 0.5 and explain in re
     const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     // Try to parse the JSON from the response
-    let analysis = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let analysis: any = null;
     try {
       // Strip markdown code fences if present (shouldn't happen with JSON mode, but defensive)
       const cleaned = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       analysis = JSON.parse(cleaned);
 
-      // ---- Server-side validation & sanitization ----
+      // ---- Server-side validation ----
+      //
+      // VALIDATION, not repair. Every rule below either accepts a value or
+      // rejects it; none of them invents one.
+      //
+      // What this replaces was a set of guesses about how the model had gone
+      // wrong: a missing calorie count became 350, anything over 5000 was
+      // divided by 1000, a macro over 200 g was divided by 10. Each turned a
+      // loud, catchable error into a quiet plausible one. The divide-by-1000
+      // is the clearest example — it assumes the failure was a unit conversion,
+      // so a genuinely misread 24,000 silently became a very believable 24.
+      //
+      // A number we are not sure of is worth less than no number, because the
+      // owner can read the packet and we cannot.
 
-      // 1. Calorie guardrails
-      if (!analysis.calories_per_serving || typeof analysis.calories_per_serving !== 'number') {
-        analysis.calories_per_serving = analysis.is_treat ? 35 : 350;
-        if (analysis.food_name === 'Unknown' || analysis.food_name === 'string') {
-          analysis.food_name = 'Generic Pet Food Estimate';
-        }
-      } else if (analysis.calories_per_serving > 5000) {
-        // Fallback: Gemini likely multiplied kcal by 1000 to get pure calories. Revert to kcal.
-        analysis.calories_per_serving = Math.round(analysis.calories_per_serving / 1000);
-      }
-      // Floor: no food item has negative or near-zero calories
-      if (analysis.calories_per_serving < 1) {
-        analysis.calories_per_serving = analysis.is_treat ? 35 : 350;
+      const finite = (v: unknown): number | null =>
+        typeof v === 'number' && Number.isFinite(v) ? v : null;
+
+      const reasons: string[] = [];
+      const flag = (r: string) => { if (!reasons.includes(r)) reasons.push(r); };
+
+      // 1. Calories. Absent or implausible → null and ask, never substitute.
+      //    2000 kcal in a single serving is already past any real pet food
+      //    portion; the ceiling exists to catch unit errors, not to clamp.
+      const kcal = finite(analysis.calories_per_serving);
+      if (kcal === null) {
+        analysis.calories_per_serving = null;
+        flag('calories_missing');
+      } else if (kcal < 1 || kcal > 5000) {
+        analysis.calories_per_serving = null;
+        flag('calories_implausible');
       }
 
-      // 2. Normalize fat field naming (Gemini may return fats_g or fat_g)
-      analysis.fat_g = analysis.fats_g ?? analysis.fat_g ?? 0;
+      // 2. Normalize fat field naming (the model returns fats_g or fat_g).
+      analysis.fat_g = analysis.fats_g ?? analysis.fat_g ?? null;
       delete analysis.fats_g;
 
-      // 3. Macro sanity: cap at 200g per serving, fix negatives
+      // 3. Macro grams. Out-of-range is dropped to null rather than rescaled:
+      //    "probably a percentage misread as grams" is a guess about the cause,
+      //    and dividing by ten bakes that guess into the record.
       for (const key of ['protein_g', 'carbs_g', 'fat_g'] as const) {
-        const val = analysis[key];
-        if (typeof val !== 'number' || val < 0) {
-          analysis[key] = 0;
-        } else if (val > 200) {
-          // Likely a percentage misread as grams — scale down
-          analysis[key] = Math.round(val / 10);
+        const val = finite(analysis[key]);
+        if (val === null || val < 0 || val > 200) {
+          if (val !== null) flag('macro_grams_implausible');
+          analysis[key] = null;
         }
       }
+
+      // 3b. Serving weight. Accepted at any size — a 4.6 g supplement dose is a
+      //     real serving — but not beyond what one meal could physically be.
+      const servingGrams = finite(analysis.serving_grams);
+      if (servingGrams === null || servingGrams <= 0 || servingGrams > 5000) {
+        if (servingGrams !== null) flag('serving_grams_implausible');
+        analysis.serving_grams = null;
+      }
+
+      // 3c. Serving unit. Synonyms are normalized; anything unrecognised
+      //     becomes null rather than falling through to a 100 g default that
+      //     nobody chose.
+      const UNIT_SYNONYMS: Record<string, string> = {
+        g: 'gram', gram: 'gram', grams: 'gram', gm: 'gram',
+        cup: 'cup', cups: 'cup',
+        pouch: 'pouch', pouches: 'pouch', sachet: 'sachet', sachets: 'sachet',
+        can: 'can', cans: 'can', tin: 'can', tins: 'can',
+        tray: 'tray', trays: 'tray',
+        piece: 'piece', pieces: 'piece', treat: 'piece', treats: 'piece',
+      };
+      const rawUnit = typeof analysis.serving_unit === 'string'
+        ? analysis.serving_unit.trim().toLowerCase()
+        : '';
+      analysis.serving_unit = UNIT_SYNONYMS[rawUnit] ?? null;
+
+      // 3d. Percentages. Each must be a real percentage, and they must not sum
+      //     past 100 — protein + fat + fibre + moisture + ash all come out of
+      //     the same 100 g, so a sum over 100 means at least one is misread.
+      let pctSum = 0;
+      for (const key of ['protein_pct', 'fat_pct', 'fibre_pct', 'moisture_pct'] as const) {
+        const val = finite(analysis[key]);
+        if (val === null) { analysis[key] = null; continue; }
+        if (val < 0 || val > 100) {
+          analysis[key] = null;
+          flag('percentage_out_of_range');
+          continue;
+        }
+        pctSum += val;
+      }
+      if (pctSum > 100) flag('percentages_exceed_100');
+
+      // 3e. Calorie density. Nothing edible exceeds ~900 kcal/100 g (pure fat
+      //     is ~884), and below ~20 is water. Outside that, the figure is a
+      //     misread — commonly a kcal/kg value that was never divided by ten.
+      const density = finite(analysis.kcal_per_100g_as_fed);
+      if (density !== null && (density < 20 || density > 900)) {
+        analysis.kcal_per_100g_as_fed = null;
+        flag('density_implausible');
+      }
+
+      // 3f. Cross-field consistency — the one genuinely independent check
+      //     available at extraction time, and only when all three were read off
+      //     the label rather than computed from each other.
+      //
+      //     Neither figure is privileged when they disagree. The older instinct
+      //     was to drop calories_per_serving as "least reliable", but any
+      //     extracted field can be wrong and picking a winner silently is how
+      //     you end up confidently storing the wrong one. An unresolved
+      //     conflict is the owner's to settle.
+      const c = finite(analysis.calories_per_serving);
+      const g = finite(analysis.serving_grams);
+      const d = finite(analysis.kcal_per_100g_as_fed);
+      if (c !== null && g !== null && d !== null) {
+        const expected = (d * g) / 100;
+        // Absolute + relative, because labels round energy to ~5-10 kcal. Same
+        // tolerance as lib/mealLogKcal.ts and the food_pantry trigger.
+        if (Math.abs(c - expected) > Math.max(5, 0.03 * expected)) {
+          flag('label_figures_conflict');
+        }
+      }
+
+      analysis.extraction_flags = reasons;
+      // The client must not silently log a meal whose calories we never read.
+      analysis.needs_owner_review =
+        analysis.calories_per_serving === null || reasons.includes('label_figures_conflict');
 
       // 4. Health score is now computed client-side (lib/healthScore.ts).
       //    Strip any health_score the model emits — the client recomputes it.

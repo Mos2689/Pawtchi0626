@@ -16,12 +16,23 @@
  *
  * ── The privacy stance, restated because it constrains the types ──
  * The original photo NEVER leaves the device. What travels is this metadata
- * plus a ~20 KB thumbnail. `localAssetId` is therefore a CACHE HINT and nothing
- * more: iOS `ph://` ids survive reinstall but not device migration, and Android
- * MediaStore ids survive neither reliably. Anything that treats it as the
- * source of truth will work perfectly on the developer's phone and lose users'
- * memories on their next one. The durable locator is capturedAt + coordinate +
- * dimensions — see keepsakeResolve.ts.
+ * plus a ~20 KB thumbnail.
+ *
+ * ── Two local copies, and only one of them is ours ──
+ * `localPath` names Pawtchi's own file, in the app's document directory. It is
+ * the source of truth for rendering: reading our own container needs no
+ * permission on either platform, it survives an OS update and an iCloud device
+ * restore, and it is the only reason Android can show an original at all.
+ * Stored as a bare FILENAME — iOS regenerates the container UUID on update, so
+ * an absolute path is broken by the next release.
+ *
+ * `localAssetId` is the courtesy copy in the user's camera roll, and is a CACHE
+ * HINT and nothing more: iOS `ph://` ids survive reinstall but not device
+ * migration, and Android MediaStore ids survive neither reliably. Anything that
+ * treats it as the source of truth will work perfectly on the developer's phone
+ * and lose users' memories on their next one. It is read only for keepsakes
+ * written before `localPath` existed; for those the durable locator is
+ * capturedAt + coordinate + dimensions — see keepsakeResolve.ts.
  */
 
 import { haversineMeters, type GeoPoint } from './geo';
@@ -47,7 +58,12 @@ export interface Keepsake {
   mediaType: KeepsakeMediaType;
   source: KeepsakeSource;
 
-  /** Cache hint ONLY — never the source of truth. See the module header. */
+  /**
+   * Filename of Pawtchi's own copy in the document directory — the rendering
+   * source of truth. Bare filename, never a path. See the module header.
+   */
+  localPath: string | null;
+  /** The camera-roll copy. Cache hint ONLY — never the source of truth. */
   localAssetId: string | null;
   width: number | null;
   height: number | null;
@@ -264,6 +280,7 @@ export function normalizeKeepsake(row: unknown): Keepsake | null {
     elapsedS: finiteOrNull(r.elapsed_s ?? r.elapsedS),
     mediaType: (MEDIA_TYPES.includes(mediaType) ? mediaType : 'photo') as KeepsakeMediaType,
     source: (SOURCES.includes(source) ? source : 'camera') as KeepsakeSource,
+    localPath: stringOrNull(r.local_path ?? r.localPath),
     localAssetId: stringOrNull(r.local_asset_id ?? r.localAssetId),
     width: finiteOrNull(r.width),
     height: finiteOrNull(r.height),
@@ -291,6 +308,7 @@ export interface KeepsakeInsert {
   elapsed_s: number | null;
   media_type: KeepsakeMediaType;
   source: KeepsakeSource;
+  local_path: string | null;
   local_asset_id: string | null;
   width: number | null;
   height: number | null;
@@ -308,6 +326,7 @@ export interface KeepsakeInsertInput {
   elapsedS?: number | null;
   mediaType?: KeepsakeMediaType;
   source: KeepsakeSource;
+  localPath?: string | null;
   localAssetId?: string | null;
   width?: number | null;
   height?: number | null;
@@ -340,6 +359,7 @@ export function buildKeepsakeInsert(input: KeepsakeInsertInput): KeepsakeInsert 
     elapsed_s: input.elapsedS ?? null,
     media_type: input.mediaType ?? 'photo',
     source: input.source,
+    local_path: input.localPath ?? null,
     local_asset_id: input.localAssetId ?? null,
     width: input.width ?? null,
     height: input.height ?? null,
@@ -356,5 +376,5 @@ export function buildKeepsakeInsert(input: KeepsakeInsertInput): KeepsakeInsert 
  * surface whose entire job is displaying a picture.
  */
 export function hasImage(keepsake: Keepsake): boolean {
-  return Boolean(keepsake.thumbPath || keepsake.localAssetId);
+  return Boolean(keepsake.thumbPath || keepsake.localPath || keepsake.localAssetId);
 }
