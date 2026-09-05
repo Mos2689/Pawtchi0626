@@ -58,5 +58,3 @@ ios/
 android/
 email-preview.html
 .tmp-assets/
-
-package-lock.json

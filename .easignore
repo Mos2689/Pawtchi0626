@@ -20,7 +20,6 @@ my-app/expo-env.d.ts
 my-app/scratch_test/
 my-app/graphify-out/
 my-app/stitch_html/
-my-app/package-lock.json
 my-app/*.txt
 my-app/*.html
 my-app/*.log
