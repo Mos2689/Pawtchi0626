@@ -323,7 +323,10 @@ export default function RedeemScreen() {
 function WorkingContent() {
   return (
     <View style={styles.workingContent} accessibilityLiveRegion="polite">
-      <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(80)}>
+      <Animated.View
+        entering={FadeInDown.duration(motion.duration.base).delay(80)}
+        style={styles.successIntro}
+      >
         <Text style={styles.workingTitle}>{REDEEM_WORKING_TITLE}</Text>
         <Text style={styles.workingBody}>{REDEEM_WORKING_BODY}</Text>
         <LassoJourney mode="working" />
@@ -417,7 +420,10 @@ function SuccessContent({
       contentContainerStyle={styles.successContent}
       showsVerticalScrollIndicator={false}
     >
-      <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(80)}>
+      <Animated.View
+        entering={FadeInDown.duration(motion.duration.base).delay(80)}
+        style={styles.successIntro}
+      >
         <Text style={[styles.eyebrow, styles.successEyebrow]}>{REDEEM_SUCCESS_EYEBROW}</Text>
         <Text style={[styles.headline, styles.successHeadline]}>{REDEEM_SUCCESS_TITLE}</Text>
         <LassoJourney mode="complete" />
@@ -666,6 +672,10 @@ const styles = StyleSheet.create({
   successEyebrow: {
     textAlign: 'center',
     marginBottom: space.sm,
+  },
+  successIntro: {
+    width: '100%',
+    alignItems: 'center',
   },
   successHeadline: {
     textAlign: 'center',
