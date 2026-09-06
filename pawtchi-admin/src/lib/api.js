@@ -237,6 +237,34 @@ export async function setCreatorCodeActive(code, isActive) {
 }
 
 /**
+ * Attaches a creator's Pawtchi account to a code that was created without one.
+ *
+ * This is not an edge case, it is the normal sequence: a deal is agreed and the
+ * code goes out before the creator has signed up. The schema was built for it
+ * (creator_owner_id is nullable) and the first version of this panel then had
+ * no way to complete it, which made every late signup a hand-written SQL
+ * statement.
+ *
+ * Linking is what turns on their Creator screen in Profile and what makes the
+ * comp possible, so a code that stays unlinked is a collaboration running half
+ * blind.
+ */
+export async function linkCreatorAccount(code, email) {
+  const ownerId = await findUserIdByEmail(email);
+  if (!ownerId) {
+    throw new Error(
+      `No Pawtchi account for ${email}. They need to sign up first — the code keeps working for their audience meanwhile.`,
+    );
+  }
+  const { error } = await supabase
+    .from('creator_codes')
+    .update({ creator_owner_id: ownerId, updated_at: new Date().toISOString() })
+    .eq('code', code);
+  if (error) throw translateCreator(error);
+  return ownerId;
+}
+
+/**
  * Gives the creator their own year of Plus.
  *
  * A creator cannot make content about features they cannot see, so this is a

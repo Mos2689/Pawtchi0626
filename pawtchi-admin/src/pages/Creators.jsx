@@ -5,6 +5,7 @@ import {
   fetchCreatorCodes,
   findUserIdByEmail,
   grantCreatorComp,
+  linkCreatorAccount,
   setCreatorCodeActive,
 } from '../lib/api';
 
@@ -63,6 +64,26 @@ export default function Creators() {
           ? `${code} now has Pawtchi Plus until ${new Date(until).toLocaleDateString()}.`
           : `${code} now has Pawtchi Plus.`,
       );
+      await load();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusyCode(null);
+    }
+  };
+
+  // Completing the deliberate half-state: a code created before the creator
+  // signed up. Without this the only way to finish the link was a hand-written
+  // SQL statement, which is not a workflow.
+  const link = async (code) => {
+    const email = window.prompt(`Which Pawtchi account owns ${code}? Enter their email.`);
+    if (!email) return;
+    setBusyCode(code);
+    setError(null);
+    setNotice(null);
+    try {
+      await linkCreatorAccount(code, email.trim());
+      setNotice(`${code} is now linked to ${email.trim()}. They can see it in their Profile, and Comp is available.`);
       await load();
     } catch (e) {
       setError(e.message);
@@ -135,6 +156,7 @@ export default function Creators() {
               item={c}
               busy={busyCode === c.code}
               onComp={() => comp(c.code)}
+              onLink={() => link(c.code)}
               onToggle={() => toggle(c.code, !c.isActive)}
             />
           ))}
@@ -144,7 +166,7 @@ export default function Creators() {
   );
 }
 
-function CodeRow({ item, busy, onComp, onToggle }) {
+function CodeRow({ item, busy, onComp, onLink, onToggle }) {
   const comped = item.compExpiresAt && new Date(item.compExpiresAt) > new Date();
 
   const meta = [
@@ -181,6 +203,14 @@ function CodeRow({ item, busy, onComp, onToggle }) {
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+        {/* Shown only while the code has no account. A permanent button here
+            would invite re-pointing a live code at a different person, which
+            would hand them someone else's redemption history. */}
+        {!item.creatorOwnerId && (
+          <button className="btn btn-ghost btn-sm" onClick={onLink} disabled={busy}>
+            Link account
+          </button>
+        )}
         <button
           className="btn btn-ghost btn-sm"
           onClick={onComp}
