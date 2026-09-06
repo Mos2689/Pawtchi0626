@@ -53,7 +53,18 @@ export interface SubscriptionContextValue extends SubscriptionState {
     getOfferings: () => Promise<PurchasesPackage[]>;
     /** A named offering's packages, or null when it is not available on this store. */
     getOfferingById: (offeringId: string) => Promise<PurchasesPackage[] | null>;
-    refresh: () => Promise<void>;
+    refresh: (options?: SubscriptionRefreshOptions) => Promise<boolean>;
+    /**
+     * Reflect a successful server-side promotional grant immediately. RevenueCat
+     * can briefly return its previous cached CustomerInfo after a grant, so this
+     * keeps the rest of the app from lagging behind the success screen.
+     */
+    activatePromotionalAccess: (expiresAt: Date) => void;
+}
+
+interface SubscriptionRefreshOptions {
+    invalidateCache?: boolean;
+    preserveAccessOnMiss?: boolean;
 }
 
 const ENTITLEMENT_ID = 'Pawtchi Pro'; // Must match the RevenueCat entitlement identifier
@@ -84,6 +95,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     // listener re-delivers CustomerInfo on every refresh, and two RPCs per
     // foreground is noise for a write-once column.
     const entitlementMirroredRef = useRef(false);
+    // Set only after the redemption edge function confirms a grant. RevenueCat
+    // can emit one older CustomerInfo snapshot while its promotional
+    // entitlement propagates; this prevents that listener event from undoing
+    // the success the server has already confirmed.
+    const promotionalGrantRef = useRef<Date | null>(null);
 
     // Translate a RevenueCat CustomerInfo snapshot into our state.
     // Access rule: a subscriber always has access; everyone else has full access for the
@@ -99,6 +115,15 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
             }
 
             const entitlement = customerInfo.entitlements.active[ENTITLEMENT_ID];
+
+            if (
+                !entitlement &&
+                promotionalGrantRef.current &&
+                promotionalGrantRef.current.getTime() > Date.now()
+            ) {
+                return;
+            }
+            if (entitlement) promotionalGrantRef.current = null;
 
             // The win-back offer is for people who have NEVER subscribed, so
             // any entitlement — active or lapsed — permanently disqualifies
@@ -184,6 +209,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         // revoked — the same shape of cross-account leak the notification
         // centre's runtimeItems reset exists to prevent.
         entitlementMirroredRef.current = false;
+        promotionalGrantRef.current = null;
 
         // RevenueCat is configured in the layout effect, which can run after this provider
         // mounts. Rather than bail when not configured, poll briefly until it is, then
@@ -390,10 +416,32 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         [],
     );
 
-    const refresh = useCallback(async () => {
+    const activatePromotionalAccess = useCallback((expiresAt: Date) => {
+        promotionalGrantRef.current = expiresAt;
+        const daysLeft = Math.max(
+            1,
+            Math.ceil((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
+        );
+
+        setState((prev) => ({
+            ...prev,
+            status: 'active',
+            daysLeft,
+            isTrialActive: false,
+            isPro: true,
+            hasFullAccess: true,
+            isPromoAccess: true,
+            expiresAt,
+        }));
+    }, []);
+
+    const refresh = useCallback(async (options: SubscriptionRefreshOptions = {}): Promise<boolean> => {
         try {
-            if (!(await Purchases.isConfigured())) return;
-            if (Platform.OS === 'android') {
+            if (!(await Purchases.isConfigured())) return false;
+            if (options.invalidateCache) {
+                await Purchases.invalidateCustomerInfoCache();
+            }
+            if (Platform.OS === 'android' && !options.preserveAccessOnMiss) {
                 try {
                     await Purchases.syncPurchases();
                 } catch {
@@ -401,15 +449,39 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
                 }
             }
             const info = await Purchases.getCustomerInfo();
-            processRef.current(info);
+            const hasActiveEntitlement = !!info.entitlements.active[ENTITLEMENT_ID];
+            // A just-granted entitlement may take a moment to appear even after
+            // invalidating RevenueCat's device cache. Do not replace the
+            // server-confirmed access with that stale miss while it settles.
+            if (hasActiveEntitlement || !options.preserveAccessOnMiss) {
+                processRef.current(info);
+            }
+            return hasActiveEntitlement;
         } catch (e) {
             console.warn('Subscription refresh failed:', e);
+            return false;
         }
     }, []);
 
     const value = useMemo<SubscriptionContextValue>(
-        () => ({ ...state, restorePurchases, purchasePackage, getOfferings, getOfferingById, refresh }),
-        [state, restorePurchases, purchasePackage, getOfferings, getOfferingById, refresh],
+        () => ({
+            ...state,
+            restorePurchases,
+            purchasePackage,
+            getOfferings,
+            getOfferingById,
+            refresh,
+            activatePromotionalAccess,
+        }),
+        [
+            state,
+            restorePurchases,
+            purchasePackage,
+            getOfferings,
+            getOfferingById,
+            refresh,
+            activatePromotionalAccess,
+        ],
     );
 
     return <SubscriptionContext.Provider value={value}>{children}</SubscriptionContext.Provider>;

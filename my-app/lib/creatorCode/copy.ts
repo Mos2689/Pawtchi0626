@@ -55,7 +55,11 @@ export const REDEEM_SUBCOPY =
 export const REDEEM_FIELD_LABEL = 'Your code';
 export const REDEEM_FIELD_PLACEHOLDER = 'SARAHK';
 export const REDEEM_CTA = 'Unlock three months';
-export const REDEEM_CTA_WORKING = 'Checking';
+export const REDEEM_CTA_WORKING = 'Opening Pawtchi Plus…';
+
+export const REDEEM_WORKING_TITLE = 'OPENING EVERYTHING';
+export const REDEEM_WORKING_BODY =
+  'Checking the code and bringing Pawtchi Plus into view.';
 
 /**
  * Sits under the field. Says the one thing people actually worry about before
@@ -119,7 +123,15 @@ export function redeemFailureCopy(
 
 // ── Success ─────────────────────────────────────────────────────────────────
 
-export const REDEEM_SUCCESS_TITLE = 'YOU’RE IN';
+export const REDEEM_SUCCESS_EYEBROW = 'Pawtchi Plus';
+export const REDEEM_SUCCESS_TITLE = 'EVERYTHING’S OPEN';
+export const REDEEM_SUCCESS_NOTE = 'No charge. Nothing renews.';
+export const REDEEM_SUCCESS_BENEFITS = [
+  'Food scans',
+  'Health insights',
+  'Activity and walks',
+  'Routine reminders',
+] as const;
 
 /**
  * Names the creator, because the person did this on their say-so and the
@@ -134,7 +146,7 @@ export function redeemSuccessBody(creatorName: string | null | undefined, until:
     : `Three months of Pawtchi Plus. Everything is open until ${date}.`;
 }
 
-export const REDEEM_SUCCESS_CTA = 'Start looking';
+export const REDEEM_SUCCESS_CTA = 'Explore Pawtchi Plus';
 
 // ── Membership card and paywall, for someone on granted access ──────────────
 

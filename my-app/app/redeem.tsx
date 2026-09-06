@@ -33,11 +33,23 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  Easing,
+  FadeIn,
+  FadeInDown,
+  ZoomIn,
+  cancelAnimation,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 
-import { color, displayLine, font, radius, space } from '../constants/design';
+import { color, displayLine, font, motion, radius, space } from '../constants/design';
 import { TextField } from '../components/ui/TextField';
 import { BreathingPaw } from '../components/BreathingPaw';
+import { PawShower } from '../components/PawShower';
 import { useSubscription } from '../providers/SubscriptionProvider';
 import { track } from '../lib/analytics';
 import { redeemCreatorCode } from '../lib/creatorCode/client';
@@ -55,20 +67,28 @@ import {
   REDEEM_HEADLINE,
   REDEEM_REASSURANCE,
   REDEEM_SUBCOPY,
+  REDEEM_SUCCESS_BENEFITS,
   REDEEM_SUCCESS_CTA,
+  REDEEM_SUCCESS_EYEBROW,
+  REDEEM_SUCCESS_NOTE,
   REDEEM_SUCCESS_TITLE,
+  REDEEM_WORKING_BODY,
+  REDEEM_WORKING_TITLE,
   redeemFailureCopy,
   redeemSuccessBody,
 } from '../lib/creatorCode/copy';
 import type { RedeemOutcome } from '../lib/creatorCode/copy';
 
 /**
- * RevenueCat writes the entitlement before it answers, so the refresh that
- * follows almost always sees it. Almost: propagation is not contractually
- * instant, and a person who just typed a code correctly must not be shown a
- * screen that behaves as though nothing happened. One retry, once.
+ * The transition has a short minimum duration so a fast network response does
+ * not turn it into a flash. RevenueCat then gets three fresh reads in the
+ * background because promotional entitlements can take a moment to propagate.
  */
-const ENTITLEMENT_SETTLE_MS = 1500;
+const MIN_WORKING_MS = 850;
+const RECONCILE_DELAYS_MS = [0, 700, 1400] as const;
+
+const wait = (duration: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, duration));
 
 type Phase =
   | { kind: 'entry' }
@@ -79,11 +99,11 @@ type Phase =
 export default function RedeemScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { isPro, isPromoAccess, refresh } = useSubscription();
+  const reducedMotion = useReducedMotion();
+  const { isPro, isPromoAccess, refresh, activatePromotionalAccess } = useSubscription();
 
   const [code, setCode] = useState('');
   const [phase, setPhase] = useState<Phase>({ kind: 'entry' });
-  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * Fires the impression once per visit, not once per mount.
@@ -105,13 +125,6 @@ export default function RedeemScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(
-    () => () => {
-      if (settleTimer.current) clearTimeout(settleTimer.current);
-    },
-    [],
-  );
-
   const exit = useCallback(() => {
     // Reached from the paywall footer and from Profile, and pushed both times —
     // but ask() rather than assume, because a deep link into this route would
@@ -129,7 +142,12 @@ export default function RedeemScreen() {
     setPhase({ kind: 'working' });
     track('creator_code_submitted');
 
-    const result = await redeemCreatorCode(normalised);
+    // Keep the transition visible long enough to read as intentional progress
+    // when the network answers immediately.
+    const [result] = await Promise.all([
+      redeemCreatorCode(normalised),
+      wait(MIN_WORKING_MS),
+    ]);
 
     if (!result.ok) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -144,12 +162,18 @@ export default function RedeemScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     track('creator_code_redeemed');
 
-    // The grant is already live server-side; this pulls it into the app's own
-    // state so every gated screen opens by the time the person taps through.
-    await refresh();
-    settleTimer.current = setTimeout(() => {
-      refresh();
-    }, ENTITLEMENT_SETTLE_MS);
+    // The edge function's success response is the grant boundary. Reflect it
+    // in the shared app state before showing success so Profile and every gate
+    // change in the same render, then reconcile RevenueCat in the background.
+    if (result.expiresAt) activatePromotionalAccess(result.expiresAt);
+
+    void (async () => {
+      for (const delay of RECONCILE_DELAYS_MS) {
+        if (delay) await wait(delay);
+        const settled = await refresh({ invalidateCache: true, preserveAccessOnMiss: true });
+        if (settled) return;
+      }
+    })();
 
     setPhase({ kind: 'done', creatorName: result.creatorName, expiresAt: result.expiresAt });
   };
@@ -159,11 +183,10 @@ export default function RedeemScreen() {
   // can redeem, and both deserve to be told why rather than watching a code
   // they were given fail against a rule they cannot see.
   //
-  // Gated on the phase, not just on `isPro`, and that is not defensive noise.
-  // A successful redemption calls refresh() — which flips `isPro` true — before
-  // the phase moves to 'done'. On the plain `isPro` check, React re-renders in
-  // that gap and the happy path flashes "you have already used a creator code"
-  // at the one person who just used one correctly.
+  // Gated on the phase, not just on `isPro`. A successful redemption activates
+  // the shared subscription state before the done screen renders; the phase
+  // guard prevents that new state from replacing the celebration with an
+  // already-redeemed message.
   if (isPro && (phase.kind === 'entry' || phase.kind === 'failed')) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -191,20 +214,9 @@ export default function RedeemScreen() {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <StatusBar style="light" />
+        <PawShower active={!reducedMotion} />
         <Nav onClose={exit} />
-        <View style={styles.centred}>
-          <Animated.View entering={FadeIn.duration(420)} style={styles.settledMark}>
-            <BreathingPaw settled size={30} />
-          </Animated.View>
-          <Animated.View entering={FadeInDown.duration(520).delay(120)}>
-            <Text style={styles.headline}>{REDEEM_SUCCESS_TITLE}</Text>
-            {!!phase.expiresAt && (
-              <Text style={styles.body}>
-                {redeemSuccessBody(phase.creatorName, phase.expiresAt)}
-              </Text>
-            )}
-          </Animated.View>
-        </View>
+        <SuccessContent creatorName={phase.creatorName} expiresAt={phase.expiresAt} />
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom + space.xl }]}>
           <TouchableOpacity style={styles.cta} onPress={exit} activeOpacity={0.88}>
             <Text style={styles.ctaText}>{REDEEM_SUCCESS_CTA}</Text>
@@ -214,9 +226,17 @@ export default function RedeemScreen() {
     );
   }
 
-  // ─── Entry ───
-  const working = phase.kind === 'working';
+  if (phase.kind === 'working') {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <StatusBar style="light" />
+        <Nav onClose={exit} />
+        <WorkingContent />
+      </View>
+    );
+  }
 
+  // ─── Entry ───
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -265,7 +285,7 @@ export default function RedeemScreen() {
             maxLength={CREATOR_CODE_MAX_LENGTH}
             returnKeyType="go"
             onSubmitEditing={submit}
-            editable={!working}
+            editable
             error={phase.kind === 'failed'}
             containerStyle={styles.field}
             inputStyle={styles.fieldInput}
@@ -287,11 +307,114 @@ export default function RedeemScreen() {
           disabled={!canSubmit}
           activeOpacity={0.88}
         >
-          {working && <BreathingPaw size={18} />}
-          <Text style={styles.ctaText}>{working ? REDEEM_CTA_WORKING : REDEEM_CTA}</Text>
+          <Text style={styles.ctaText}>{REDEEM_CTA}</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
+  );
+}
+
+function WorkingContent() {
+  const reducedMotion = useReducedMotion();
+  const turn = useSharedValue(0);
+
+  useEffect(() => {
+    if (reducedMotion) return;
+    turn.value = withRepeat(
+      withTiming(1, { duration: 1400, easing: Easing.linear }),
+      -1,
+      false,
+    );
+    return () => cancelAnimation(turn);
+  }, [reducedMotion, turn]);
+
+  const orbitStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${turn.value * 360}deg` }],
+  }));
+
+  return (
+    <View style={styles.workingContent} accessibilityLiveRegion="polite">
+      <Animated.View entering={ZoomIn.duration(motion.duration.base)} style={styles.loaderStage}>
+        <View style={styles.loaderHalo} />
+        <Animated.View style={[styles.loaderOrbit, orbitStyle]}>
+          <View style={styles.loaderDot} />
+        </Animated.View>
+        <View style={styles.loaderCore}>
+          <BreathingPaw size={40} workingColor={color.yellow} />
+        </View>
+      </Animated.View>
+      <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(80)}>
+        <Text style={styles.workingTitle}>{REDEEM_WORKING_TITLE}</Text>
+        <Text style={styles.workingBody}>{REDEEM_WORKING_BODY}</Text>
+        <View style={styles.workingPill}>
+          <View style={styles.workingPillDot} />
+          <Text style={styles.workingPillText}>{REDEEM_CTA_WORKING}</Text>
+        </View>
+      </Animated.View>
+    </View>
+  );
+}
+
+const BENEFIT_ICONS = ['document-scanner', 'favorite', 'directions-walk', 'notifications'] as const;
+
+function SuccessContent({
+  creatorName,
+  expiresAt,
+}: {
+  creatorName: string | null;
+  expiresAt: Date | null;
+}) {
+  return (
+    <ScrollView
+      style={styles.successScroll}
+      contentContainerStyle={styles.successContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <Animated.View entering={ZoomIn.springify().damping(13).stiffness(210)} style={styles.successMedallion}>
+        <View style={styles.successMedallionInner}>
+          <MaterialIcons name="pets" size={44} color={color.navy} />
+        </View>
+        <View style={styles.successCheck}>
+          <MaterialIcons name="check" size={16} color={color.navy} />
+        </View>
+      </Animated.View>
+
+      <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(80)}>
+        <Text style={[styles.eyebrow, styles.successEyebrow]}>{REDEEM_SUCCESS_EYEBROW}</Text>
+        <Text style={[styles.headline, styles.successHeadline]}>{REDEEM_SUCCESS_TITLE}</Text>
+        {!!expiresAt && (
+          <Text style={[styles.body, styles.successBody]}>
+            {redeemSuccessBody(creatorName, expiresAt)}
+          </Text>
+        )}
+      </Animated.View>
+
+      <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(140)} style={styles.accessCard}>
+        <View style={styles.accessCardTop}>
+          <Text style={styles.accessMonths}>3</Text>
+          <View>
+            <Text style={styles.accessLabel}>MONTHS INCLUDED</Text>
+            <Text style={styles.accessPlan}>Pawtchi Plus</Text>
+          </View>
+        </View>
+        <View style={styles.accessRule} />
+        <View style={styles.benefitsGrid}>
+          {REDEEM_SUCCESS_BENEFITS.map((benefit, index) => (
+            <View key={benefit} style={styles.benefit}>
+              <View style={styles.benefitIcon}>
+                <MaterialIcons name={BENEFIT_ICONS[index]} size={17} color={color.yellow} />
+              </View>
+              <Text style={styles.benefitText}>{benefit}</Text>
+            </View>
+          ))}
+        </View>
+      </Animated.View>
+
+      <Animated.View entering={FadeIn.duration(motion.duration.base).delay(220)} style={styles.successNoteRow}>
+        <MaterialIcons name="verified-user" size={16} color={color.creamFaint} />
+        <Text style={styles.successNote}>{REDEEM_SUCCESS_NOTE}</Text>
+      </Animated.View>
+    </ScrollView>
   );
 }
 
@@ -338,9 +461,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: space.xxl,
-  },
-  settledMark: {
-    marginBottom: space.xxl,
   },
   eyebrow: {
     fontFamily: font.bold,
@@ -425,5 +545,219 @@ const styles = StyleSheet.create({
     fontFamily: font.extrabold,
     fontSize: 16,
     color: color.navy,
+  },
+  workingContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: space.xxl,
+    paddingBottom: 72,
+  },
+  loaderStage: {
+    width: 156,
+    height: 156,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.xxxl,
+  },
+  loaderHalo: {
+    position: 'absolute',
+    width: 156,
+    height: 156,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellowSoft,
+  },
+  loaderOrbit: {
+    position: 'absolute',
+    width: 132,
+    height: 132,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+  },
+  loaderDot: {
+    position: 'absolute',
+    top: -5,
+    left: 61,
+    width: 10,
+    height: 10,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
+  },
+  loaderCore: {
+    width: 92,
+    height: 92,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+  },
+  workingTitle: {
+    ...displayLine(38),
+    textAlign: 'center',
+    letterSpacing: 0.5,
+    color: color.cream,
+    marginBottom: space.md,
+  },
+  workingBody: {
+    alignSelf: 'center',
+    maxWidth: 310,
+    fontFamily: font.regular,
+    fontSize: 14.5,
+    lineHeight: 22,
+    textAlign: 'center',
+    color: color.creamDim,
+  },
+  workingPill: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.xl,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellowSoft,
+  },
+  workingPillDot: {
+    width: 6,
+    height: 6,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
+  },
+  workingPillText: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.cream,
+  },
+  successScroll: {
+    flex: 1,
+  },
+  successContent: {
+    alignItems: 'center',
+    paddingHorizontal: space.xxl,
+    paddingTop: space.md,
+    paddingBottom: space.xl,
+  },
+  successMedallion: {
+    width: 106,
+    height: 106,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.xl,
+    backgroundColor: color.yellowSoft,
+    borderWidth: 1,
+    borderColor: color.yellow,
+  },
+  successMedallionInner: {
+    width: 76,
+    height: 76,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.yellow,
+  },
+  successCheck: {
+    position: 'absolute',
+    right: 1,
+    bottom: 8,
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.cream,
+    borderWidth: 3,
+    borderColor: color.navy,
+  },
+  successEyebrow: {
+    textAlign: 'center',
+    marginBottom: space.sm,
+  },
+  successHeadline: {
+    textAlign: 'center',
+    fontSize: 42,
+    lineHeight: 51,
+    marginBottom: space.md,
+  },
+  successBody: {
+    maxWidth: 340,
+    textAlign: 'center',
+  },
+  accessCard: {
+    width: '100%',
+    marginTop: space.xl,
+    padding: space.xl,
+    borderRadius: radius.xxl,
+    backgroundColor: color.navyRaised,
+    borderWidth: 1,
+    borderColor: color.hairlineOnNavy,
+  },
+  accessCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+  },
+  accessMonths: {
+    ...displayLine(54),
+    color: color.yellow,
+  },
+  accessLabel: {
+    fontFamily: font.bold,
+    fontSize: 11,
+    letterSpacing: 1.6,
+    color: color.yellow,
+  },
+  accessPlan: {
+    marginTop: 2,
+    fontFamily: font.semibold,
+    fontSize: 17,
+    color: color.cream,
+  },
+  accessRule: {
+    height: 1,
+    marginVertical: space.lg,
+    backgroundColor: color.hairlineOnNavy,
+  },
+  benefitsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: space.md,
+  },
+  benefit: {
+    width: '50%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
+  benefitIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.yellowSoft,
+  },
+  benefitText: {
+    flex: 1,
+    paddingRight: space.sm,
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    lineHeight: 17,
+    color: color.cream,
+  },
+  successNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.lg,
+  },
+  successNote: {
+    fontFamily: font.medium,
+    fontSize: 12.5,
+    color: color.creamFaint,
   },
 });
