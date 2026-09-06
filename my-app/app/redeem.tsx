@@ -85,7 +85,22 @@ export default function RedeemScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: 'entry' });
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * Fires the impression once per visit, not once per mount.
+   *
+   * A bare `useEffect(..., [])` double-fired in a real dev build — twice in the
+   * logs, with no StrictMode anywhere in the app to explain it away. This event
+   * is the top of the creator-code funnel, so counting it twice halves the
+   * apparent redemption rate: the number that decides whether a collaboration
+   * gets renewed would say the audience ignored the code.
+   *
+   * Same ref guard as `membershipImpressionRef` in app/(tabs)/profile.tsx,
+   * which exists for exactly this reason.
+   */
+  const impressionRef = useRef(false);
   useEffect(() => {
+    if (impressionRef.current) return;
+    impressionRef.current = true;
     track('creator_code_screen_viewed', { already_pro: isPro });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

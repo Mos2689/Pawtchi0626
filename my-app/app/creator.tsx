@@ -19,7 +19,7 @@
  * on this screen are there so they arrive at it already informed.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -52,13 +52,18 @@ export default function CreatorScreen() {
   const [row, setRow] = useState<MyCreatorCode | null>(null);
   const [loaded, setLoaded] = useState(false);
 
+  // Guarded for the same reason as the redeem screen's impression: a bare
+  // mount effect fired twice in a real dev build, and `alive` only suppresses
+  // a late result, not a second mount.
+  const impressionRef = useRef(false);
   useEffect(() => {
     let alive = true;
     loadMyCreatorCode().then(result => {
       if (!alive) return;
       setRow(result);
       setLoaded(true);
-      if (result) {
+      if (result && !impressionRef.current) {
+        impressionRef.current = true;
         track('creator_dashboard_viewed', { redemptions: result.redemptionsGranted });
       }
     });
