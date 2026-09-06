@@ -182,6 +182,29 @@ function calculatePlanCalories(
 async function regenerateAfterPlanChange(
   pet: Pet,
 ): Promise<boolean> {
+  // Weight/profile reconciliation is allowed to REBUILD an activity plan, not
+  // create the owner's first one. Those are separate choices in the product:
+  // the Activity tab asks the owner to set their routine and explicitly build
+  // a seven-day plan. Without this guard, a fresh onboarding assessment could
+  // trigger the weight reconciler on first boot and silently manufacture that
+  // plan before the owner had made the choice.
+  //
+  // Any historical AI-generated row proves the owner created a plan before,
+  // even if its seven-day window has passed. Manual activity logs do not.
+  const { data: existingPlan, error: existingPlanError } = await supabase
+    .from('activities')
+    .select('id')
+    .eq('pet_id', pet.id)
+    .eq('is_ai_generated', true)
+    .limit(1)
+    .maybeSingle();
+
+  if (existingPlanError) {
+    console.warn('[weightPlan] could not verify existing activity plan:', existingPlanError);
+    return false;
+  }
+  if (!existingPlan) return false;
+
   useActivePetStore.getState().setRecalibrating(true);
   try {
     const context = usePetContextStore.getState();
