@@ -31,12 +31,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 
 import { supabase } from '../lib/supabase';
+import { withTimeout } from '../lib/withTimeout';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
 import type { GeoPoint } from '../lib/walk/geo';
 import {
   acknowledgeLocationDisclosure,
   hasAcknowledgedLocationDisclosure,
 } from '../lib/walk/locationDisclosure';
+import { homeMark } from '../lib/perf/homeTrace';
 
 /**
  * One ask per account, not per install. A declined prompt must never become a
@@ -70,6 +72,21 @@ const CENTER_CACHE_PREFIX = 'home:map_center:';
 
 /** How many recent rows to scan for a usable coordinate before giving up. */
 const PLACE_LOOKUP_LIMIT = 5;
+
+/**
+ * Ceiling on the coordinate lookup.
+ *
+ * This is the one query on Home that something waits for: `resolving` gates the
+ * map skeleton, and `canAskLocation` — which decides whether the location offer
+ * ever appears — is only settled after this pass completes. `lib/supabase.ts`
+ * sets no global fetch timeout, so on a stalled connection the promise never
+ * settles, the skeleton breathes forever and the owner is never offered the one
+ * thing that would fix it.
+ *
+ * Eight seconds because there is somewhere useful to go afterwards: a cached OS
+ * fix, or the offer. A wait that has a fallback should be short.
+ */
+const PLACE_LOOKUP_TIMEOUT_MS = 8_000;
 
 /** route JSONB may be [[lat,lng], ...] or [{lat,lng}, ...] — same as the feed. */
 function firstPointOf(raw: unknown): GeoPoint | null {
@@ -161,25 +178,43 @@ export function useHomeMapCenter(
       // The lookup below still runs and overwrites this if the dog has moved.
       const cached = await readCachedCenter(petId);
       if (cancelled) return;
-      if (cached) setCenter(cached);
+      if (cached) {
+        setCenter(cached);
+        homeMark('map_camera');
+      }
 
       // ── 1. The dog's own geography ──
-      const { data } = await supabase
-        .from('walk_sessions')
-        .select('route')
-        .eq('pet_id', petId)
-        .not('route', 'is', null)
-        .neq('validation_verdict', 'likely_vehicle')
-        .order('started_at', { ascending: false })
-        .limit(PLACE_LOOKUP_LIMIT);
+      // Bounded, and a timeout is not an error here: it simply means this rung
+      // had no answer in time, and the ladder continues to the next one.
+      let rows: { route: unknown }[] = [];
+      try {
+        const { data } = await withTimeout(
+          supabase
+            .from('walk_sessions')
+            .select('route')
+            .eq('pet_id', petId)
+            .not('route', 'is', null)
+            .neq('validation_verdict', 'likely_vehicle')
+            .order('started_at', { ascending: false })
+            .limit(PLACE_LOOKUP_LIMIT)
+            .then(r => r),
+          PLACE_LOOKUP_TIMEOUT_MS,
+          'homeMapCenter',
+        );
+        rows = (data ?? []) as { route: unknown }[];
+      } catch {
+        // Offline, or a connection that never answered. Fall through.
+      }
 
       if (cancelled) return;
 
-      for (const row of data ?? []) {
-        const point = firstPointOf((row as { route: unknown }).route);
+      for (const row of rows) {
+        const point = firstPointOf(row.route);
         if (point) {
           setCenter(point);
           setResolving(false);
+          homeMark('map_camera');
+          homeMark('location_resolved');
           void writeCachedCenter(petId, point);
           return;
         }
@@ -196,6 +231,8 @@ export function useHomeMapCenter(
             const point = { lat: last.coords.latitude, lng: last.coords.longitude };
             setCenter(point);
             setResolving(false);
+            homeMark('map_camera');
+            homeMark('location_resolved');
             void writeCachedCenter(petId, point);
             return;
           }
@@ -224,7 +261,10 @@ export function useHomeMapCenter(
         if (!cancelled) setCanAskLocation(false);
       } finally {
         // Nothing left to find. Whatever the cache gave us is the final answer.
-        if (!cancelled) setResolving(false);
+        if (!cancelled) {
+          setResolving(false);
+          homeMark('location_resolved');
+        }
       }
     })();
 

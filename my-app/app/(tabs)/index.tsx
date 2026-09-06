@@ -71,6 +71,9 @@ import { HomeTopBar } from '../../components/home/HomeTopBar';
 import { HomeRail, type RailEntry } from '../../components/home/HomeRail';
 import { MapControls } from '../../components/home/MapControls';
 import { MapLocationPrompt } from '../../components/home/MapLocationPrompt';
+import { SpotArrivalPrompt } from '../../components/home/SpotArrivalPrompt';
+import { useSpotArrival } from '../../hooks/useSpotArrival';
+import { armArrivalIntent } from '../../lib/spots/arrivalIntent';
 import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
 import { useHomeMapCenter } from '../../hooks/useHomeMapCenter';
 import { useCurrentWalkWeather } from '../../hooks/useCurrentWalkWeather';
@@ -94,7 +97,8 @@ import { createWalkStorySnapshot } from '../../lib/walkStorySnapshot';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../lib/supabase';
 import { useNotificationPermission } from '../../hooks/useNotificationPermission';
-import { usePushNotifications } from '../../hooks/usePushNotifications';
+import { requestPushPermission } from '../../lib/notifications/pushRegistration';
+import { homeMark, homeTraceReset } from '../../lib/perf/homeTrace';
 import { NotificationBell } from '../../components/notifications/NotificationBell';
 import {
   selectHasUrgentUnread,
@@ -205,6 +209,13 @@ function buildSpotEntries(input: {
 }
 
 export default function HomeScreen() {
+  // Development-only, and off by default — see lib/perf/homeTrace.ts. Every mark
+  // below folds to nothing in a release build.
+  React.useEffect(() => {
+    homeTraceReset();
+    homeMark('mount');
+  }, []);
+
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const activePet = useActivePetStore(s => s.activePet);
@@ -219,8 +230,13 @@ export default function HomeScreen() {
   // onboarding, which they had all already passed. These two surfaces are that
   // route — a header chip while they are unreachable, and one primer shown at a
   // moment when the app has already demonstrated it is worth hearing from.
+  //
+  // The ASK is `requestPushPermission()`, a plain function, deliberately not
+  // `usePushNotifications`. That hook owns the app's notification listeners and
+  // the root bridge in app/_layout.tsx already mounts it for the session; a
+  // second copy here registered a second response listener, so every tapped
+  // notification routed twice and every delivery was counted twice.
   const notifPermission = useNotificationPermission();
-  const { requestPermission: requestNotificationPermission } = usePushNotifications();
   const [homePrimerVisible, setHomePrimerVisible] = React.useState(false);
   const primerConsidered = React.useRef(false);
 
@@ -283,29 +299,35 @@ export default function HomeScreen() {
    *
    * The map pans now, so these are two different facts and conflating them is
    * how you end up measuring distances from someone's house to a park they are
-   * looking at three suburbs away. `viewCenter` is only ever used to decide
-   * whether to OFFER a new search — it never triggers one.
+   * looking at three suburbs away. This is only ever used to decide whether to
+   * OFFER a new search — it never triggers one.
+   *
+   * ── Why a ref and not state ──
+   * MapLibre reports its region CONTINUOUSLY through a drag
+   * (`MAP_CAMERA_STREAMS`, WalkMap.android.tsx), so this value changes at
+   * gesture frame rate. As state it re-rendered the whole of Home — the header,
+   * the segmented control, the filter chips, the card rail, the map controls,
+   * the sheet — sixty times a second, to recompute a single boolean. On a
+   * low-end Android that is the pan stutter.
+   *
+   * The coordinate lives here where nothing renders from it, and only the
+   * ANSWER (`canSearchArea` below) is state. The pins still follow the map:
+   * HomeMapLayer keeps its own live camera, and that re-render is the one that
+   * genuinely has to happen.
    */
-  const [viewCenter, setViewCenter] = React.useState<GeoPoint | null>(null);
+  const viewCenterRef = React.useRef<GeoPoint | null>(null);
+  const [canSearchArea, setCanSearchArea] = React.useState(false);
 
   /**
    * The coordinate the spots on screen were actually fetched for.
    *
    * Null until the owner asks about somewhere other than where they are, at
    * which point it takes over from Home's own centre. Kept as its own piece of
-   * state rather than derived from `viewCenter` so that panning the map is
+   * state rather than derived from the view centre so that panning the map is
    * free: nothing is queried until it is asked for.
    */
   const [searchCenter, setSearchCenter] = React.useState<GeoPoint | null>(null);
   const spotsCenter = searchCenter ?? mapCenter;
-
-  const onViewCameraChange = useCallback((next: MapCamera) => {
-    setViewCenter(prev =>
-      prev && prev.lat === next.center.lat && prev.lng === next.center.lng
-        ? prev
-        : next.center,
-    );
-  }, []);
 
   const {
     spots: allSpots,
@@ -323,6 +345,41 @@ export default function HomeScreen() {
     center: spotsCenter,
     canAskLocation,
   });
+
+  /**
+   * Re-answer "is the map far enough away to be worth a new search?".
+   *
+   * Declared after `useNearbySpots` because it reads the radius that hook owns.
+   * Setting only on a genuine flip is what keeps a drag free: the boolean is
+   * false for most of a gesture and true for the rest, so Home re-renders once
+   * per pan rather than once per frame.
+   */
+  const evaluateAreaSearch = useCallback(() => {
+    const next =
+      segment === 'spots' &&
+      shouldOfferAreaSearch({
+        viewCenter: viewCenterRef.current,
+        searchedCenter: spotsCenter,
+        radiusMeters: spotsRadius,
+      });
+    setCanSearchArea(prev => (prev === next ? prev : next));
+  }, [segment, spotsCenter, spotsRadius]);
+
+  const onViewCameraChange = useCallback(
+    (next: MapCamera) => {
+      const prev = viewCenterRef.current;
+      if (prev && prev.lat === next.center.lat && prev.lng === next.center.lng) return;
+      viewCenterRef.current = next.center;
+      evaluateAreaSearch();
+    },
+    [evaluateAreaSearch],
+  );
+
+  // The other half: the offer also has to change when what we SEARCHED changes —
+  // a widened radius or a search run somewhere else — not only when the map moves.
+  React.useEffect(() => {
+    evaluateAreaSearch();
+  }, [evaluateAreaSearch]);
 
   /**
    * Which way the open spot is, and roughly how long at this dog's pace.
@@ -415,13 +472,8 @@ export default function HomeScreen() {
 
   // Offered, not permanent: only once the view has travelled far enough that
   // the results on screen have stopped describing it (lib/spots/areaSearch.ts).
-  const canSearchArea =
-    segment === 'spots' &&
-    shouldOfferAreaSearch({
-      viewCenter,
-      searchedCenter: spotsCenter,
-      radiusMeters: spotsRadius,
-    });
+  // The decision itself lives in `evaluateAreaSearch` above, which is the only
+  // thing a pan is allowed to wake.
 
   // Reported once per resolved outcome, not per render. `cache_status` is the
   // operational number that matters: upstream_fetch per active user is our load
@@ -653,23 +705,32 @@ export default function HomeScreen() {
   const onRecentre = useCallback(() => {
     setSelectedId(null);
     setSearchCenter(null);
-    setViewCenter(null);
+    // The map is about to be commanded somewhere new, so whatever it last
+    // reported no longer describes it — and the offer that was derived from it
+    // has to go with it.
+    viewCenterRef.current = null;
+    setCanSearchArea(false);
   }, []);
 
   const onSearchArea = useCallback(() => {
-    if (!viewCenter) return;
+    const target = viewCenterRef.current;
+    if (!target) return;
     // Moving the searched centre is what re-runs the hook's resolve pass; there
     // is no separate "go" call, and a cell we have already asked about answers
     // from cache rather than costing another upstream request.
-    setSearchCenter(viewCenter);
+    setSearchCenter(target);
     // The spot that was selected may not be in the new answer at all, and a
     // selection pointing at nothing strands the rail and the label.
     setSelectedId(null);
+    // The offer has just been taken: the searched centre is now the view centre,
+    // so it is no longer true. `evaluateAreaSearch` will confirm that on the
+    // next pass; clearing here stops the pill lingering for a frame.
+    setCanSearchArea(false);
     track('spots_search_area_requested', {
       search_radius_m: spotsRadius,
       source_screen: 'moved_map',
     });
-  }, [viewCenter, spotsRadius]);
+  }, [spotsRadius]);
 
   // Reset the pointer when the segment changes — a walk id means nothing in the
   // sniffs list, and leaving it set would strand the map on the wrong pin.
@@ -677,6 +738,11 @@ export default function HomeScreen() {
     setSegment(next);
     setSelectedId(null);
     setOpenSniffId(null);
+    // Only Spots subscribes to the camera, so a report from a previous visit is
+    // the last thing this map said before Walks stopped listening — stale by
+    // definition. `evaluateAreaSearch` clears the offer for a non-spots segment
+    // anyway; this drops the coordinate that would have re-armed it.
+    viewCenterRef.current = null;
     if (next === 'spots') track('spots_tab_opened', {});
   }, []);
 
@@ -884,6 +950,35 @@ export default function HomeScreen() {
     [mapCenter, router],
   );
 
+  /**
+   * The owner is driving there instead.
+   *
+   * The sheet has already opened their map app; this is the note that survives
+   * the journey. Fire-and-forget on purpose — the handoff must not wait on a
+   * disk write, and a failed write costs the prompt and nothing else.
+   *
+   * The sheet is deliberately NOT closed here. On iOS the map app takes the
+   * screen either way, and an owner who cancels out of Apple Maps immediately
+   * comes back to the sheet they were reading rather than to a map with no
+   * memory of what they tapped.
+   */
+  const onSpotDirections = useCallback(
+    (spot: PawtchiSpot) => {
+      void armArrivalIntent(user?.id, {
+        spotId: spot.id,
+        name: displayName(spot.name, spot.category),
+        lat: spot.latitude,
+        lng: spot.longitude,
+      });
+      track('spot_directions_opened', {
+        spot_category: spot.category,
+        provider: spot.provider,
+        distance_bucket: distanceBucket(spot.distanceMeters),
+      });
+    },
+    [user?.id],
+  );
+
   // ── First-walk intro video ────────────────────────────────────────────────
   // A one-time, ~9s silent demo of what a tracked Pawtchi walk looks like,
   // shown to fresh dog owners the first time Home mounts after onboarding.
@@ -895,6 +990,40 @@ export default function HomeScreen() {
   // it fires strictly after onboarding provisioned a pet, not on the auth
   // gate's optimistic /(tabs) redirect for a returning user.
   const walkPhase = useWalkStore(s => s.phase);
+
+  /**
+   * ── Arrival ───────────────────────────────────────────────────────────────
+   * The other half of "Get directions": the owner drove to a place they walk
+   * the dog, and Home offers to start the walk now they are standing in it.
+   *
+   * Gated on `spotsEnabled`, which already folds in the walk flag and the
+   * dogs-only rule — a cat profile has no Spots and therefore no arrival. And
+   * on an idle walk phase, because offering to start a walk during one is
+   * nonsense; the note keeps until the current walk has finished.
+   */
+  const spotArrival = useSpotArrival(user?.id, spotsEnabled, walkPhase === 'idle');
+
+  /**
+   * Start the walk they came here for.
+   *
+   * The same path as `onWalkHere` and for the same reason — `armWalkStart` is
+   * the one gesture that begins a walk — with the destination read back off the
+   * note instead of off an open sheet. No prefetch: the owner is standing at
+   * the place, so there is no route to draw them towards.
+   */
+  const onArrivalStart = useCallback(() => {
+    const arrived = spotArrival.accept();
+    if (!arrived) return;
+    armWalkStart({
+      id: arrived.spotId,
+      name: arrived.name,
+      lat: arrived.lat,
+      lng: arrived.lng,
+    });
+    track('spot_arrival_walk_started', {});
+    router.push('/walk' as any);
+  }, [router, spotArrival]);
+
   const introEligible =
     walkEnabled && !!activePet?.id && walkPhase === 'idle';
   const { visible: introVisible, markSeenAndClose: closeIntro } = useFirstWalkIntro({
@@ -1011,7 +1140,7 @@ export default function HomeScreen() {
   const handleHomePrimerAccept = async () => {
     setHomePrimerVisible(false);
     try {
-      await requestNotificationPermission();
+      await requestPushPermission();
     } catch {
       // A denied prompt or a missing native module both just mean no token.
     }
@@ -1182,6 +1311,19 @@ export default function HomeScreen() {
             to say covers the map any more, and the bell in the row above is the
             single way in. */}
 
+        {/* The arrival offer, above the location prompt in the column and in
+            priority: the two are mutually exclusive in practice — an arrival
+            can only be detected with location already granted, and the location
+            prompt only appears when it is not — but if that ever stopped being
+            true, the owner standing at a beach has the more urgent question. */}
+        {!!spotArrival.intent && (
+          <SpotArrivalPrompt
+            placeName={spotArrival.intent.name}
+            onStart={onArrivalStart}
+            onDismiss={spotArrival.dismiss}
+          />
+        )}
+
         {showLocationPrompt && (
           <MapLocationPrompt
             needsDisclosure={locationNeedsDisclosure}
@@ -1261,6 +1403,7 @@ export default function HomeScreen() {
         spot={openSpot}
         visits={openSpot ? spotVisits[openSpot.id] ?? 0 : 0}
         onWalkHere={onWalkHere}
+        onDirections={onSpotDirections}
         way={openSpotWay}
         petName={activePet?.name ?? null}
         routeDistanceM={spotPreview.distanceM}

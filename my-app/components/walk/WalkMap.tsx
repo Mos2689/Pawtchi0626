@@ -71,6 +71,22 @@ export type WalkMapProps = {
    */
   suggestedRoute?: GeoPoint[] | null;
   /**
+   * Every route this pet has ever walked, drawn as one faint web underneath
+   * everything else.
+   *
+   * The walk gallery's map layer. Deliberately separate from `path`, which is
+   * the ONE walk being looked at: that line is the subject and draws in the
+   * cased navy-and-yellow, while these are the record and draw in a single
+   * muted stroke (`color.trail`). Collapsing the two into one array would lose
+   * that distinction and put a hundred yellow lines on a screen where yellow is
+   * supposed to mark the one thing that matters.
+   *
+   * Callers are expected to have simplified and capped these already — see
+   * TRAIL_MAX_WALKS in lib/memoryMap.ts for why the cap exists and which
+   * platform it is for.
+   */
+  trails?: readonly GeoPoint[][];
+  /**
    * Temporary lower-map chrome, in screen points. Live camera framing uses it
    * to keep the current position and destination visible above that chrome.
    * It changes presentation only; it never enters the tracking engine.

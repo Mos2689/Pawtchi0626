@@ -9,9 +9,19 @@
  * only a discarded car ride (validation_verdict='likely_vehicle') stays out
  * of the feed.
  *
- * Refetches on focus and after a walk finishes (the Home screen already
- * calls invalidateContext on completion; this hook piggybacks on a matching
- * version bump so no extra plumbing is needed).
+ * Refetches when something has actually changed, not on every focus. The feed
+ * is a week of walks with their full `route`, `pause_points` and `sniff_points`
+ * JSONB, so re-reading it on each tab return was tens of kilobytes and a full
+ * rail + marker recompute to redraw an identical screen. The signal it watches
+ * instead is `usePetContextStore.dataVersion`, which `invalidateContext` bumps
+ * from every mutation path — including `fireCompletionSideEffects`, which runs
+ * at step 3 of lib/walk/walkSync.ts, AFTER the `walk_sessions` upsert at step 1.
+ * So a finished walk still lands immediately.
+ *
+ * A max-age fallback backs that up, because one field arrives late: `weather` is
+ * written to the row in a fire-and-forget update after the bump. Without the
+ * fallback a walk fetched in that gap would keep a null weather for the rest of
+ * the session, and its Walk Story would silently lose the conditions card.
  *
  * The feed is cached per pet and painted before the query runs, for the same
  * reason hooks/useHomeMapCenter.ts caches its coordinate: this hook is what
@@ -26,10 +36,13 @@ import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { getLocalYMD } from '../lib/dateUtils';
+import { withTimeout } from '../lib/withTimeout';
 import type { GeoPoint } from '../lib/walk/geo';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
 import { parseWalkStoryWeather } from '../lib/walkStorySnapshot';
 import type { WalkWeather } from '../lib/walkStory';
+import { usePetContextStore } from '../store/usePetContextStore';
+import { homeMark } from '../lib/perf/homeTrace';
 
 export interface RecentWalk {
   id: string;
@@ -90,6 +103,27 @@ const FEED_CACHE_PREFIX = 'home:recent_walks:';
  */
 const CACHE_MAX_WALKS = 20;
 
+/**
+ * Ceiling on the feed query.
+ *
+ * `lib/supabase.ts` sets no global fetch timeout, so a stalled connection leaves
+ * this promise pending forever — and with it `loading`, which is what the rail
+ * reads to decide between "opening the logbook" and "no walks yet". A breathing
+ * card that never resolves is the worst of the three states.
+ *
+ * Generous rather than snappy: this is a week of routes over a bad connection,
+ * and abandoning a request that was about to land would cost the whole screen.
+ */
+const FEED_TIMEOUT_MS = 12_000;
+
+/**
+ * How long a delivered feed is trusted without a change signal.
+ *
+ * Only reached when nothing has been logged, completed or regenerated — so it is
+ * a backstop for late server-side enrichment rather than the normal path.
+ */
+const FEED_MAX_AGE_MS = 5 * 60 * 1000;
+
 /** Normalises the window the same way the query does, so a read and a write of
  *  the same request can never land on two different keys. */
 function feedCacheKey(petId: string, days: number): string {
@@ -138,6 +172,16 @@ async function writeCachedWalks(
   }
 }
 
+/**
+ * What the feed in state is an answer TO: which pet, which window, which day,
+ * and how many logged-data changes ago. Any of the four moving means the answer
+ * may have moved with it; none of them moving means asking again would return
+ * the same rows.
+ */
+function feedSignature(petId: string, days: number, dataVersion: number): string {
+  return `${petId}:${Math.max(1, Math.floor(days))}:${getLocalYMD(new Date())}:${dataVersion}`;
+}
+
 export function useRecentWalks(
   petId: string | null | undefined,
   days: number = 1,
@@ -158,25 +202,65 @@ export function useRecentWalks(
    */
   const answered = useRef(false);
 
+  /**
+   * The feed currently in state, as a signature: which pet, which day, and how
+   * many logged-data changes ago. Compared on focus to decide whether there is
+   * anything new to ask for. Same shape as the weekly-stats guard in
+   * app/(tabs)/activity.tsx, for the same reason.
+   */
+  const deliveredKey = useRef<string | null>(null);
+  const deliveredAt = useRef(0);
+
+  /**
+   * Which request owns the answer.
+   *
+   * Two passes can be in flight at once — a focus refetch that is still going
+   * when a walk completes and forces another — and the slower one must not win.
+   * The pet is checked alongside the pass because a switch mid-request would
+   * otherwise caption one dog's walks with the other's name.
+   */
+  const passId = useRef(0);
+
+  /** The pet the screen is on RIGHT NOW, readable from inside a live request. */
+  const petIdRef = useRef(petId);
+  petIdRef.current = petId;
+
   const fetchWalks = useCallback(async () => {
     if (!WALK_TRACKING_ENABLED || !petId) {
       setWalks([]);
       setLoading(false);
       return;
     }
+    const pass = ++passId.current;
+    const forPet = petId;
+    // Captured at the START of the request, not at its answer. A walk that
+    // completes while this is in flight bumps the version, and recording the
+    // post-bump number would mark data that predates it as already covering it.
+    const forKey = feedSignature(forPet, days, usePetContextStore.getState().dataVersion);
     setLoading(true);
     try {
       const rangeDays = Math.max(1, Math.floor(days));
       const startIso = startOfDayNDaysAgo(rangeDays - 1).toISOString();
       // Every real walk is a post — short outings and patchy-GPS ambles
       // included. Only vehicle rides stay out of the feed.
-      const { data, error } = await supabase
-        .from('walk_sessions')
-        .select('id, started_at, duration_s, moving_time_s, distance_m, route, pause_points, sniff_points, avg_speed_kmh, validation_verdict, start_label, end_label, farthest_label, weather')
-        .eq('pet_id', petId)
-        .neq('validation_verdict', 'likely_vehicle')
-        .gte('started_at', startIso)
-        .order('started_at', { ascending: false });
+      const { data, error } = await withTimeout(
+        supabase
+          .from('walk_sessions')
+          .select('id, started_at, duration_s, moving_time_s, distance_m, route, pause_points, sniff_points, avg_speed_kmh, validation_verdict, start_label, end_label, farthest_label, weather')
+          .eq('pet_id', forPet)
+          .neq('validation_verdict', 'likely_vehicle')
+          .gte('started_at', startIso)
+          .order('started_at', { ascending: false })
+          .then(r => r),
+        FEED_TIMEOUT_MS,
+        'useRecentWalks',
+      );
+
+      // A late answer for a pet we have moved on from, or one a newer pass has
+      // already superseded, is discarded rather than rendered. The pet is
+      // checked in its own right because a switch made while Home is BLURRED
+      // never re-runs the focus effect, so `passId` alone would not have moved.
+      if (pass !== passId.current || forPet !== petIdRef.current) return;
 
       if (error) {
         // Deliberately does NOT clear the feed. Whatever is on screen came from
@@ -218,11 +302,20 @@ export function useRecentWalks(
 
       setWalks(parsed);
       answered.current = true;
-      void writeCachedWalks(petId, rangeDays, parsed);
+      // Recorded on success only. A failed or timed-out pass must leave the
+      // signature stale so the next focus tries again rather than treating a
+      // dropped connection as a delivered answer.
+      deliveredKey.current = forKey;
+      deliveredAt.current = Date.now();
+      homeMark('walks_resolved');
+      void writeCachedWalks(forPet, rangeDays, parsed);
     } catch (e) {
+      // A timeout lands here too, and is treated exactly like an error: whatever
+      // is on screen stays, and `loading` clears so the rail stops promising
+      // cards that are not coming.
       console.error('[useRecentWalks] unexpected', e);
     } finally {
-      setLoading(false);
+      if (pass === passId.current) setLoading(false);
     }
   }, [petId, days]);
 
@@ -235,6 +328,9 @@ export function useRecentWalks(
    */
   useEffect(() => {
     answered.current = false;
+    // A different pet is a different feed; nothing already delivered covers it.
+    deliveredKey.current = null;
+    deliveredAt.current = 0;
 
     if (!WALK_TRACKING_ENABLED || !petId) {
       setWalks([]);
@@ -252,6 +348,7 @@ export function useRecentWalks(
       const cached = await readCachedWalks(petId, days);
       if (cancelled || answered.current || !cached) return;
       setWalks(cached);
+      homeMark('walks_cached');
     })();
 
     return () => {
@@ -259,10 +356,22 @@ export function useRecentWalks(
     };
   }, [petId, days]);
 
+  /**
+   * Bumped by every mutation path in the app via `invalidateContext`. Subscribed
+   * rather than read on demand so a walk finishing while Home is already focused
+   * refreshes the rail without waiting for the next focus.
+   */
+  const dataVersion = usePetContextStore(s => s.dataVersion);
+
   useFocusEffect(
     useCallback(() => {
+      if (!WALK_TRACKING_ENABLED || !petId) return;
+      const key = feedSignature(petId, days, dataVersion);
+      const fresh =
+        deliveredKey.current === key && Date.now() - deliveredAt.current < FEED_MAX_AGE_MS;
+      if (fresh) return;
       fetchWalks();
-    }, [fetchWalks]),
+    }, [fetchWalks, petId, days, dataVersion]),
   );
 
   return { walks, loading, refetch: fetchWalks };

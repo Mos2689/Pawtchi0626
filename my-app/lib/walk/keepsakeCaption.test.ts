@@ -206,6 +206,7 @@ describe('buildKeepsakeCaption', () => {
       // 1 prior visit + this photo = "2 times". Off-by-one here would make the
       // product quietly wrong about the thing it is proudest of noticing.
       expect(buildKeepsakeCaption({ ...base, priorVisits: 1 }).note).toEqual({
+        kind: 'visits',
         lead: 'You’ve stopped here together ',
         highlight: '2 times',
         trail: '.',
@@ -216,6 +217,7 @@ describe('buildKeepsakeCaption', () => {
     it('falls back to how long ago it was', () => {
       const old = { ...base, capturedAt: NOW - 400 * DAY_MS };
       expect(buildKeepsakeCaption(old).note).toEqual({
+        kind: 'ago',
         lead: '',
         highlight: 'A year ago',
         trail: '.',

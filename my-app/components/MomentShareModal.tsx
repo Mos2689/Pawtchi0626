@@ -35,7 +35,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { color, radius, shadow, space, type } from '../constants/design';
+import { color, font, radius, shadow, space, type } from '../constants/design';
 import { TemplateRenderer } from './moments/TemplateRenderer';
 import {
   availableColorways,
@@ -384,6 +384,20 @@ export function MomentShareModal({
               <Text style={styles.quietBtnOnNavyText}>Not now</Text>
             </TouchableOpacity>
           </View>
+
+          {/* ── What the picker is ──
+              Tapping "Add a photo" opens Apple's own picker, which shows the
+              whole library because that is what a picker is for. It runs
+              outside this app: Pawtchi is never granted the library and is
+              handed exactly one image. True, and worth saying, because from the
+              owner's side a grid of every photo they own looks identical to an
+              app that has just been let in. The line only appears next to the
+              button it explains. */}
+          {selectedDef.id === 'fieldbook' && !selectedLocked && !photoUri && (
+            <Text style={styles.pickerNote}>
+              Pawtchi only receives the photo you pick. It never reads your library.
+            </Text>
+          )}
         </View>
       </View>
     </Modal>
@@ -484,6 +498,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: space.xxl,
     marginTop: space.xs,
+  },
+  /**
+   * Quieter than the buttons above it: read once, not every time.
+   *
+   * Not `type.caption` — that carries 1.2 of letter-spacing for the uppercase
+   * eyebrows it was cut for, and tracking a sentence that wide makes a
+   * reassurance read like a legal disclaimer.
+   */
+  pickerNote: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: color.creamFaint,
+    textAlign: 'center',
+    paddingHorizontal: space.md,
   },
   pillRow: {
     flexDirection: 'row',

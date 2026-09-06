@@ -33,6 +33,12 @@ import {
   PlayfairDisplay_500Medium,
   PlayfairDisplay_500Medium_Italic,
 } from '@expo-google-fonts/playfair-display';
+import {
+  PlusJakartaSans_400Regular,
+  PlusJakartaSans_500Medium,
+  PlusJakartaSans_600SemiBold,
+  PlusJakartaSans_700Bold,
+} from '@expo-google-fonts/plus-jakarta-sans';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -49,6 +55,7 @@ import { consumeFreshSignup } from '@/lib/onboardingFunnel';
 import { isRecoveryInProgress } from '@/lib/passwordRecovery';
 import { PostHogProvider } from 'posthog-react-native';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { registerPushToken } from '@/lib/notifications/pushRegistration';
 import { useEmailDeepLinks } from '@/hooks/useEmailDeepLinks';
 import * as QuickActions from 'expo-quick-actions';
 import { useQuickActionCallback } from 'expo-quick-actions/hooks';
@@ -87,6 +94,13 @@ const INFORMATIONAL_ENTITLEMENT_VERIFICATION =
 // The ask now lives in components/NotificationPrimer.tsx, after the plan
 // reveal, behind an explicit tap. This bridge only registers a token when
 // permission has already been granted, and keeps it fresh across rotations.
+//
+// It is also the ONLY place `usePushNotifications` may be mounted. The hook owns
+// the response / received / token-rotation listeners, so a second copy routes a
+// tapped notification twice and double-counts the delivery funnel. Home, the
+// notification settings screen and the onboarding reveal each used to mount one
+// purely to reach the permission request; they now call `requestPushPermission()`
+// from lib/notifications/pushRegistration.ts instead.
 function PushNotificationsBridge({ userId }: { userId: string }) {
   const { registration, setMarkOpened } = usePushNotifications();
 
@@ -100,16 +114,17 @@ function PushNotificationsBridge({ userId }: { userId: string }) {
     });
   }, [setMarkOpened]);
 
+  // Destructured rather than passing `registration` straight through, so the
+  // dependency list is the three VALUES the RPC actually sends. The hook hands
+  // back a fresh object on every permission re-read, and depending on the object
+  // would re-sync an unchanged token on each one.
+  const token = registration?.token;
+  const platform = registration?.platform;
+  const timezone = registration?.timezone;
   useEffect(() => {
-    if (!userId || !registration?.token) return;
-    supabase.rpc('register_push_token', {
-      push_token: registration.token,
-      platform: registration.platform,
-      timezone: registration.timezone,
-    }).then(({ error }) => {
-      if (error) console.error('Failed to sync push token:', error.message);
-    });
-  }, [userId, registration?.token, registration?.platform, registration?.timezone]);
+    if (!userId || !token || !platform) return;
+    registerPushToken({ token, platform, timezone: timezone ?? null });
+  }, [userId, token, platform, timezone]);
 
   return null;
 }
@@ -195,6 +210,12 @@ function RootLayoutNav() {
     Geist_500Medium,
     Geist_600SemiBold,
     GeistMono_400Regular,
+    // Walk Memory typography — the listing face. Viewer only; see the fence in
+    // constants/design.ts.
+    PlusJakartaSans_400Regular,
+    PlusJakartaSans_500Medium,
+    PlusJakartaSans_600SemiBold,
+    PlusJakartaSans_700Bold,
   });
 
   // Initialize RevenueCat SDK on mount
@@ -380,6 +401,10 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
+        {/* Pushed from the paywall footer, so a card rather than a modal —
+            stacking a modal on the modal paywall traps the close gesture. */}
+        <Stack.Screen name="redeem" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="creator" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="walk" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="walk-story" options={{ presentation: 'fullScreenModal', headerShown: false, animation: 'fade' }} />
         <Stack.Screen name="ask" options={{ presentation: 'card', headerShown: false }} />

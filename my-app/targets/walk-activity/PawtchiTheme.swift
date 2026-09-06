@@ -49,40 +49,44 @@ enum PawtchiColor {
   }
 }
 
-/// Mirrors the `font` tokens in constants/design.ts.
+/// Mirrors the `font.memory*` tokens in constants/design.ts.
 ///
-/// The design handoff specifies Instrument Serif and Plus Jakarta Sans. Neither
-/// exists in this app, and shipping two families that appear on no other screen
-/// is exactly what the design-system rule forbids — so the app's own faces stand
-/// in: Playfair Display for the serif (the sanctioned editorial face, see the
-/// fence comment on `font.memoryTitle`) and Montserrat for UI, with ExtraLight
-/// carrying the large timer where the handoff asks for Jakarta 200.
+/// Plus Jakarta Sans, which is what the design handoff asked for. The first
+/// build could not use it: adding a family for one surface is what the
+/// design-system rule forbids, so Playfair carried the name and Montserrat the
+/// UI, with ExtraLight standing in for Jakarta 200 on the timer.
+///
+/// That changed when the Walk Memory viewer adopted Jakarta (Sep 2026). The card
+/// and the screen it belongs to are now set in one face, which is the point of
+/// the handoff and the reason this file exists: a walk should look like the same
+/// product on the Lock Screen as it does in the app.
 ///
 /// Each face degrades to a weight-matched system font rather than to San
 /// Francisco Regular: an unstyled card reads as broken, not as neutral. Google
-/// ships PostScript names like "Montserrat-Bold" while the @expo-google-fonts
-/// filenames use "Montserrat_700Bold", so both spellings are tried.
+/// ships PostScript names like "PlusJakartaSans-Bold" while the
+/// @expo-google-fonts filenames use "PlusJakartaSans_700Bold", so both
+/// spellings are tried.
 enum PawtchiFont {
-  /// Dog name and wrap-up title. `font.memoryTitle`.
-  static func serif(_ size: CGFloat) -> Font {
-    resolve(["PlayfairDisplay-Medium", "PlayfairDisplay_500Medium"], size, .regular, .serif)
+  /// Dog name and wrap-up title. `font.memoryBold`, as on the viewer's headline.
+  static func title(_ size: CGFloat) -> Font {
+    resolve(["PlusJakartaSans-Bold", "PlusJakartaSans_700Bold"], size, .bold, .default)
   }
 
   /// The big timer. Handoff asks for a 200 weight at 54pt.
   static func extraLight(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-ExtraLight", "Montserrat_200ExtraLight"], size, .thin, .default)
+    resolve(["PlusJakartaSans-ExtraLight", "PlusJakartaSans_200ExtraLight"], size, .thin, .default)
   }
 
   static func medium(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-Medium", "Montserrat_500Medium"], size, .medium, .default)
+    resolve(["PlusJakartaSans-Medium", "PlusJakartaSans_500Medium"], size, .medium, .default)
   }
 
   static func semibold(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-SemiBold", "Montserrat_600SemiBold"], size, .semibold, .default)
+    resolve(["PlusJakartaSans-SemiBold", "PlusJakartaSans_600SemiBold"], size, .semibold, .default)
   }
 
   static func bold(_ size: CGFloat) -> Font {
-    resolve(["Montserrat-Bold", "Montserrat_700Bold"], size, .bold, .default)
+    resolve(["PlusJakartaSans-Bold", "PlusJakartaSans_700Bold"], size, .bold, .default)
   }
 
   private static func resolve(

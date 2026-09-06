@@ -64,7 +64,19 @@ export function useNotificationPermission(): NotificationPermission {
   // event does not produce an RPC call on every single app switch.
   const lastSynced = useRef<PermissionState | null>(null);
 
-  const refresh = useCallback(async (): Promise<PermissionState> => {
+  /**
+   * The pass currently in flight, if any.
+   *
+   * Home calls `refresh` from its focus effect while this hook's own mount
+   * effect is already running one — the two fire in the same commit — so every
+   * cold start was paying for the whole pass twice. Handing the second caller
+   * the first one's promise collapses that without introducing a staleness
+   * window, which matters: the one thing this hook must never miss is the owner
+   * coming back from the settings screen having just changed the answer.
+   */
+  const inFlight = useRef<Promise<PermissionState> | null>(null);
+
+  const runRefresh = useCallback(async (): Promise<PermissionState> => {
     let next: PermissionState = 'undetermined';
     let ask = true;
     try {
@@ -91,18 +103,40 @@ export function useNotificationPermission(): NotificationPermission {
 
     // Pawtchi's own switch. A missing row means the owner never opened the
     // settings screen, which defaults to enabled.
-    const { data: auth } = await supabase.auth.getUser();
-    if (auth?.user?.id) {
-      const { data } = await supabase
-        .from('owner_preferences')
-        .select('push_enabled')
-        .eq('owner_id', auth.user.id)
-        .maybeSingle();
-      setPushEnabledInApp((data as { push_enabled?: boolean } | null)?.push_enabled ?? true);
+    //
+    // `getSession` rather than `getUser`: the latter is a round trip to the auth
+    // server, and this pass runs on every foreground and every Home focus. The
+    // session is already on disk and carries the same id — the only thing this
+    // needs it for.
+    try {
+      const { data: auth } = await supabase.auth.getSession();
+      const ownerId = auth?.session?.user?.id;
+      if (ownerId) {
+        const { data } = await supabase
+          .from('owner_preferences')
+          .select('push_enabled')
+          .eq('owner_id', ownerId)
+          .maybeSingle();
+        setPushEnabledInApp((data as { push_enabled?: boolean } | null)?.push_enabled ?? true);
+      }
+    } catch {
+      // A dropped connection is not evidence the owner switched Pawtchi off.
+      // Leaving the previous answer in place keeps `isReachable` honest, and an
+      // unhandled rejection here would surface on a screen that only wanted to
+      // know whether to draw a badge.
     }
 
     return next;
   }, []);
+
+  const refresh = useCallback(async (): Promise<PermissionState> => {
+    if (inFlight.current) return inFlight.current;
+    const pass = runRefresh().finally(() => {
+      inFlight.current = null;
+    });
+    inFlight.current = pass;
+    return pass;
+  }, [runRefresh]);
 
   useEffect(() => {
     void refresh();

@@ -45,6 +45,7 @@ import {
 } from '../lib/spots/nearbySpotsClient';
 import { prepareForDisplay } from '../lib/spots/rank';
 import type { PawtchiSpot, SpotCacheStatus } from '../lib/spots/types';
+import { homeMark } from '../lib/perf/homeTrace';
 
 export interface UseNearbySpotsOptions {
   /** Feature flag AND "the Spots segment is on screen". */
@@ -103,8 +104,16 @@ export function useNearbySpots({
 
   const key = center ? localCacheKey(center.lat, center.lng, radius) : null;
 
+  // Depended on as numbers rather than as the `center` object. Home rebuilds
+  // that object whenever its centre is revalidated — usually to the identical
+  // coordinate — and depending on the object alone re-ran this whole pass
+  // (a cache read, a `walk:active` read, a fetch decision) for nothing.
+  const lat = center?.lat;
+  const lng = center?.lng;
+
   useEffect(() => {
-    if (!enabled || !center || !key) return;
+    if (!enabled || lat === undefined || lng === undefined || !key) return;
+    const from: GeoPoint = { lat, lng };
 
     const pass = ++passId.current;
     const wasUserRequested = userRequested.current;
@@ -152,18 +161,20 @@ export function useNearbySpots({
         if (!cached) {
           setRaw(decision.reason === 'walk_active' ? null : []);
         }
+        homeMark('spots_resolved');
         return;
       }
 
       setLoading(true);
       spinnerPass.current = pass;
       try {
-        const result = await fetchNearbySpots(center.lat, center.lng, radius);
+        const result = await fetchNearbySpots(from.lat, from.lng, radius);
         if (cancelled || pass !== passId.current) return;
         setRaw(result.spots);
         setShownAt(result.fetchedAt);
         setCacheStatus(resolveCacheStatus('network', result.cacheStatus, true));
         setFailed(false);
+        homeMark('spots_resolved');
       } catch (err) {
         if (cancelled || pass !== passId.current) return;
         // A failed refresh over good data is a footnote, not an error screen —
@@ -186,7 +197,7 @@ export function useNearbySpots({
     return () => {
       cancelled = true;
     };
-  }, [enabled, center, key, radius, requestNonce]);
+  }, [enabled, lat, lng, key, radius, requestNonce]);
 
   // Measure from the real position, drop the cell query's over-fetch, order.
   // Done here rather than server-side because the server never learns where the

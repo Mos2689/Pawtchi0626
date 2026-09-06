@@ -62,6 +62,16 @@ export interface KeepsakeFact {
  * middle keeps the copy in one place and the styling in the other.
  */
 export interface KeepsakeNote {
+  /**
+   * Which observation this is.
+   *
+   * The two are chosen by priority below and read very differently — one is a
+   * count of a shared habit, the other is the calendar. A surface that renders
+   * the note as anything other than the sentence (the viewer sets it as a stat)
+   * needs to know which it got, and inferring it by re-testing `priorVisits`
+   * would duplicate the priority rule where it could silently disagree.
+   */
+  kind: 'visits' | 'ago';
   lead: string;
   highlight: string;
   trail: string;
@@ -177,13 +187,14 @@ export function buildKeepsakeCaption(input: KeepsakeCaptionInput): KeepsakeCapti
   let note: KeepsakeNote | null = null;
   if (visits >= 2) {
     note = {
+      kind: 'visits',
       lead: 'You’ve stopped here together ',
       highlight: `${visits} times`,
       trail: '.',
     };
   } else {
     const ago = agoPhrase(input.capturedAt, input.now);
-    if (ago) note = { lead: '', highlight: ago, trail: '.' };
+    if (ago) note = { kind: 'ago', lead: '', highlight: ago, trail: '.' };
   }
 
   return { dateLine: dateLineFor(input.capturedAt), headline, facts, note };

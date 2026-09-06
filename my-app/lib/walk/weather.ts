@@ -20,6 +20,28 @@ function coarsen(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * The identity of a weather request: the coordinate as it will actually be sent.
+ *
+ * Callers that re-request when their coordinate changes should watch this rather
+ * than the raw latitude and longitude, because everything finer than this grid
+ * produces a byte-identical request. Home's centre in particular is resolved in
+ * two steps — a cached coordinate painted immediately, then the revalidated one
+ * a round trip later — and those two are almost always the same cell, so keying
+ * on the raw pair spent a second request to receive the first answer again.
+ *
+ * Null for a coordinate that could never be asked about, so a caller can use it
+ * as the whole "is there anything to fetch?" test.
+ */
+export function weatherCellKey(
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+): string | null {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return `${coarsen(lat)},${coarsen(lng)}`;
+}
+
 /** WMO weather-code → a calm, lowercase label (Copy Spec v1: no urgency). */
 export function labelForWeatherCode(code: number): string {
   if (code === 0) return 'clear';

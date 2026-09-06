@@ -167,6 +167,32 @@ async function readBannerDismissals(petId: string | null): Promise<{
 /** Cached so a rebuild does not fire a round trip per focus change. */
 let checkinCache: { petId: string; value: PendingCheckin | null } | null = null;
 
+/**
+ * When the `notification_history` leg last actually ran.
+ *
+ * `rebuild` is called on every Home focus and again whenever today's totals
+ * move, so a tab switch was a round trip to re-read a table that only changes
+ * when the server sends a push. Everything else in a rebuild is local — nudges,
+ * banners, runtime items — and stays exact.
+ *
+ * Module-level rather than store state on purpose: it is bookkeeping about a
+ * fetch, not something any subscriber should re-render over.
+ */
+let remoteFetchedAt = 0;
+
+/**
+ * How long the last remote answer stands in for a fresh one.
+ *
+ * Short enough that the bell is never meaningfully behind — a push that arrives
+ * while the app is open is not rendered by this table anyway; it comes through
+ * the notification listener — and long enough to collapse the two rebuilds Home
+ * fires on mount and the one it fires per tab return.
+ *
+ * A caller that genuinely needs the truth (opening the inbox) passes
+ * `includeRemote: true` and bypasses this entirely.
+ */
+const REMOTE_STALE_MS = 30_000;
+
 async function bannerItems(
   now: Date,
   subscription: SubscriptionSnapshot | null,
@@ -348,7 +374,12 @@ export const useNotificationCenterStore = create<NotificationCenterState>((set, 
   },
 
   rebuild: async (opts) => {
-    const includeRemote = opts?.includeRemote ?? true;
+    // Three answers, not two. An explicit `true` always fetches (the inbox
+    // opening); an explicit `false` never does (a local publish/retract); and an
+    // absent option — every periodic rebuild — fetches only if the last one has
+    // aged out.
+    const includeRemote =
+      opts?.includeRemote ?? Date.now() - remoteFetchedAt > REMOTE_STALE_MS;
     if (get().building) return;
     set({ building: true });
 
@@ -358,6 +389,11 @@ export const useNotificationCenterStore = create<NotificationCenterState>((set, 
       const now = new Date();
       const subscription = get().subscription;
       const pet = useActivePetStore.getState().activePet;
+
+      // Stamped before the request rather than after it, so two rebuilds racing
+      // in the same tick (Home's focus effect and its data effect) cannot both
+      // decide the table is stale.
+      if (includeRemote) remoteFetchedAt = Date.now();
 
       const [banners, remote] = await Promise.all([
         bannerItems(now, subscription),
@@ -539,4 +575,7 @@ async function mirrorBannerDismissal(item: InboxItem): Promise<void> {
 /** Lets a fresh pet selection re-ask for a pending check-in. */
 export function invalidateNotificationCenterCaches(): void {
   checkinCache = null;
+  // The next account on this device must never inherit the previous one's
+  // "already fetched recently" — their history is a different table of rows.
+  remoteFetchedAt = 0;
 }

@@ -16,20 +16,15 @@
  * loudest thing here, saying the same thing every launch.
  *
  * ── The map moves, so the markers have to move with it ──
- * The camera below is where we ASK the map to point. Where it actually ends up
- * is a different question the moment the owner drags it, so the map reports
- * back and the projection follows that instead. Without this the pins stayed
- * welded to the screen while the streets slid underneath — a park could end up
- * drawn in the sea.
- *
- * On a platform that only reports its camera once the gesture settles (iOS —
- * see MAP_CAMERA_STREAMS), the pins are hidden for the duration of the drag
- * rather than left somewhere untrue and snapped back at the end. A pin that is
- * briefly absent is honest; a pin in the wrong place is not.
+ * The camera we compute is where we ASK the map to point; where it actually
+ * ends up is a different question the moment the owner drags it. That whole
+ * negotiation — commanding by value, projecting against what the map reports,
+ * and hiding the pins on a platform that only reports on settle — lives in
+ * `useLiveMapCamera`, shared with the walk gallery's map so the two can never
+ * drift apart. The reasoning is written down there.
  */
 
 import React, {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -56,7 +51,8 @@ import {
   type MapCamera,
 } from '../../lib/walk/mapCamera';
 import { clusterByScreen } from '../../lib/spots/cluster';
-import WalkMap, { MAP_CAMERA_STREAMS, NATIVE_MAP_AVAILABLE } from '../walk/WalkMap';
+import { useLiveMapCamera } from '../../hooks/useLiveMapCamera';
+import WalkMap, { NATIVE_MAP_AVAILABLE } from '../walk/WalkMap';
 import {
   KeepsakeMapOverlay,
   type KeepsakeMapPin,
@@ -64,6 +60,7 @@ import {
 import { KeepsakeViewer, type KeepsakeWalkContext } from '../walk/KeepsakeViewer';
 import { MapSkeleton } from './MapSkeleton';
 import type { MapPin } from '../../lib/home/homeRail';
+import { homeMark } from '../../lib/perf/homeTrace';
 
 /** Keeps a framed route clear of the floating chrome above and below it. */
 const FRAME_PADDING = 96;
@@ -71,17 +68,6 @@ const FRAME_PADDING = 96;
 /** Stable identity for "no route", so the map's props don't churn every render. */
 const NO_PATH: GeoPoint[] = [];
 
-/**
- * How long to keep the pins hidden after the finger lifts, waiting for the
- * settle event that carries the map's final position.
- *
- * Long enough for MapKit to report, short enough that a tap which moved nothing
- * doesn't leave a visible gap.
- */
-const SETTLE_GRACE_MS = 450;
-
-/** Belt and braces: never leave the pins hidden because an event never came. */
-const DRAG_GIVE_UP_MS = 2500;
 const DOT = 18;
 const SELECTED_DOT = 22;
 /** Bigger than either, so a group reads as "more here" before the number does. */
@@ -217,86 +203,8 @@ export function HomeMapLayer({
     });
   }, [route, markers, center, width, height, frameBottomInset, frameTopInset]);
 
-  /**
-   * The framing, held stable by VALUE rather than by identity.
-   *
-   * `framing` is a fresh object whenever anything it derives from re-renders —
-   * a new marker array with the same coordinates, a re-render from an unrelated
-   * bit of Home. Handing that straight to the map would re-send the camera prop
-   * constantly and yank the view back out from under a drag. Only a genuinely
-   * different centre or zoom should command the map.
-   */
-  const framingKey = framing
-    ? `${framing.center.lat.toFixed(6)}|${framing.center.lng.toFixed(6)}|${framing.zoom.toFixed(4)}`
-    : '';
-  const committed = useRef<MapCamera | null>(null);
-  const committedKey = useRef<string>('');
-  if (committedKey.current !== framingKey) {
-    committedKey.current = framingKey;
-    committed.current = framing;
-  }
-  const camera = committed.current;
-
-  /**
-   * Where the map says it actually is. Null until it has been moved, so the
-   * commanded framing is what everything reads from on a fresh screen.
-   */
-  const [live, setLive] = useState<MapCamera | null>(null);
-
-  // A new framing is an instruction to the map, so whatever it last reported is
-  // now out of date. Dropping it here stops one stale pan from surviving a
-  // recentre and quietly re-applying itself.
-  useEffect(() => {
-    setLive(null);
-  }, [framingKey]);
-
-  /**
-   * True while a finger is dragging a map that cannot tell us where it is.
-   *
-   * Only ever set on a non-streaming platform: where the map reports
-   * continuously the pins simply follow, and hiding them would be a flicker for
-   * no reason.
-   */
-  const [dragging, setDragging] = useState(false);
-  const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleRelease = useCallback((ms: number) => {
-    if (releaseTimer.current) clearTimeout(releaseTimer.current);
-    releaseTimer.current = setTimeout(() => setDragging(false), ms);
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (releaseTimer.current) clearTimeout(releaseTimer.current);
-    },
-    [],
-  );
-
-  const handleCameraChange = useCallback(
-    (next: MapCamera) => {
-      setLive(next);
-      // The map has spoken, so the pins can be trusted again — no need to wait
-      // out the grace period.
-      if (releaseTimer.current) clearTimeout(releaseTimer.current);
-      setDragging(false);
-      onViewCameraChange?.(next);
-    },
-    [onViewCameraChange],
-  );
-
-  const onTouchMove = useCallback(() => {
-    if (MAP_CAMERA_STREAMS) return;
-    setDragging(true);
-    scheduleRelease(DRAG_GIVE_UP_MS);
-  }, [scheduleRelease]);
-
-  const onTouchEnd = useCallback(() => {
-    if (MAP_CAMERA_STREAMS) return;
-    scheduleRelease(SETTLE_GRACE_MS);
-  }, [scheduleRelease]);
-
-  /** What the pins are drawn against: reality if we know it, our request if not. */
-  const viewCamera = live ?? camera;
+  const { camera, viewCamera, pinsHidden, handleCameraChange, touchHandlers } =
+    useLiveMapCamera(framing, onViewCameraChange);
 
   const path = useMemo(() => route ?? NO_PATH, [route]);
 
@@ -307,7 +215,10 @@ export function HomeMapLayer({
   const [ready, setReady] = useState(false);
   useEffect(() => {
     if (!canMap) return;
-    const handle = InteractionManager.runAfterInteractions(() => setReady(true));
+    const handle = InteractionManager.runAfterInteractions(() => {
+      setReady(true);
+      homeMark('map_ready');
+    });
     return () => handle.cancel();
   }, [canMap]);
 
@@ -317,12 +228,31 @@ export function HomeMapLayer({
   // breathe forever.
   const showSkeleton = NATIVE_MAP_AVAILABLE && (resolving || (canMap && !ready));
 
+  /**
+   * Which surface the owner actually got — reported once the answer is settled.
+   *
+   * It used to fire on the first effect pass, which is always before `ready`
+   * can be true and usually before a camera exists at all: the coordinate is
+   * read from disk asynchronously. So every session reported `ground`, and the
+   * metric said the map almost never drew when in fact it almost always does.
+   *
+   * `map` the moment tiles are up. `ground` only once we know none are coming —
+   * a device that cannot draw one (Expo Go), or a resolve pass that finished
+   * without a coordinate.
+   */
   const reported = useRef(false);
   useEffect(() => {
     if (reported.current || !onSurfaceResolved) return;
-    reported.current = true;
-    onSurfaceResolved(canMap && ready ? 'map' : 'ground');
-  }, [canMap, ready, onSurfaceResolved]);
+    if (canMap && ready) {
+      reported.current = true;
+      onSurfaceResolved('map');
+      return;
+    }
+    if (!NATIVE_MAP_AVAILABLE || (!resolving && !canMap)) {
+      reported.current = true;
+      onSurfaceResolved('ground');
+    }
+  }, [canMap, ready, resolving, onSurfaceResolved]);
 
   const placed = useMemo(() => {
     if (!viewCamera) return [];
@@ -362,20 +292,11 @@ export function HomeMapLayer({
   const [openKeepsakes, setOpenKeepsakes] = useState<KeepsakeMapPin[] | null>(null);
   const [openIndex, setOpenIndex] = useState(0);
 
-  /** Pins are untrustworthy mid-drag on a map that won't say where it is. */
-  const pinsHidden = dragging;
-
   return (
     // `box-none`, always: the map underneath is now a real, pannable map, so
     // every gap in this layer has to fall through to it. Only the pins
     // themselves take touches, and only when there is something to do with one.
-    <View
-      style={styles.layer}
-      pointerEvents="box-none"
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-      onTouchCancel={onTouchEnd}
-    >
+    <View style={styles.layer} pointerEvents="box-none" {...touchHandlers}>
       {canMap && ready ? (
         <WalkMap
           mode="summary"

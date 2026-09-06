@@ -54,9 +54,32 @@
  * someone trying to reach a vet, offering the worse tool to keep them in-app is
  * how a walking app loses the trust it earned. The directory risk the header
  * describes was about parks — and for parks, nothing has changed.
+ *
+ * ── Two kinds of OWNER (Sep 2026) ──
+ * And then it changed, because the sheet had been reading the wrong variable.
+ * Every decision above is about the PLACE. But two owners can open the same
+ * beach with completely different journeys in mind: one sets off from the front
+ * door with the lead in their hand, the other loads the dog into the car and
+ * drives twenty minutes. The first is the only one this sheet was built for.
+ *
+ * The second was being served by an underlined grey link at the bottom, which
+ * is what you offer someone whose need you have decided is marginal. It is not
+ * marginal — for a beach an hour away it is the ONLY way the walk happens.
+ *
+ * So "Start" became "Walk", "Open in Maps" became "Get directions", and the two
+ * sit side by side at equal width. The hierarchy still exists and still says the
+ * same thing — Walk is filled in yellow, Get directions is outlined — but the
+ * difference is now a recommendation between two real options rather than a
+ * button and an apology.
+ *
+ * What makes this safe, and what the old header was right to worry about: the
+ * maps handoff is no longer an exit. Tapping it writes an arrival note
+ * (lib/spots/arrivalIntent.ts), and when the owner reopens Pawtchi standing at
+ * that beach, Home offers to start the walk. Both buttons now lead to a tracked
+ * walk. Only one of them goes via a car.
  */
 
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   Linking,
   Platform,
@@ -73,6 +96,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import { color, font, radius, shadow, space } from '../../constants/design';
+import { BrandLasso } from '../BrandLasso';
 import { haptic } from '../../lib/haptics';
 import {
   CATEGORY_LABEL,
@@ -105,6 +129,18 @@ interface SpotDetailsSheetProps {
    * The details sheet has no subscription concept because tracking is free.
    */
   onWalkHere?: (spot: PawtchiSpot) => void;
+  /**
+   * The owner is driving there instead.
+   *
+   * Fired alongside the maps handoff, never in place of it: this sheet still
+   * owns opening the URL, because the link has to work whether or not anyone is
+   * listening. What the call site does with the notice is arm the arrival
+   * prompt, which is the half of this journey that happens outside the sheet.
+   *
+   * Only ever called for a walkable place. A vet is not a walk with a car in
+   * front of it, and nothing should be waiting for the owner when they get there.
+   */
+  onDirections?: (spot: PawtchiSpot) => void;
   /**
    * Which way the place is, and roughly how long at this dog's pace.
    *
@@ -144,6 +180,9 @@ interface SpotDetailsSheetProps {
   onClose: () => void;
 }
 
+/** Matches the endpoint chips, so the lasso runs along their centreline. */
+const LASSO_HEIGHT = 26;
+
 /** A row that renders only when it has something true to say. */
 function DetailRow({ icon, text }: { icon: React.ReactNode; text: string | null }) {
   if (!text) return null;
@@ -159,6 +198,7 @@ export function SpotDetailsSheet({
   spot,
   visits = 0,
   onWalkHere,
+  onDirections,
   way = null,
   petName = null,
   routeDistanceM = null,
@@ -186,6 +226,20 @@ export function SpotDetailsSheet({
     },
     [onHeightChange],
   );
+
+  /**
+   * How much room is left between the two ends, so the lasso can be drawn at
+   * real pixel width rather than stretched to fit.
+   *
+   * Rounded and compared before setting: the gap re-measures whenever the
+   * destination label reflows, and a state write on every sub-pixel settle
+   * would re-render the sheet mid-layout.
+   */
+  const [trailWidth, setTrailWidth] = useState(0);
+  const onTrailLayout = useCallback((event: LayoutChangeEvent) => {
+    const next = Math.round(event.nativeEvent.layout.width);
+    setTrailWidth((prev) => (prev === next ? prev : next));
+  }, []);
 
   if (!spot) return null;
 
@@ -221,6 +275,12 @@ export function SpotDetailsSheet({
 
   const openInMaps = () => {
     haptic.tap();
+    // The notice goes out BEFORE the handoff, and is not awaited. `openURL`
+    // backgrounds this app immediately on both platforms; anything queued after
+    // it runs in a process that is already on its way out, and on a cold return
+    // would never have run at all. Arming first costs nothing if the URL then
+    // fails — a note for a place the owner never drove to simply expires.
+    if (walkable) onDirections?.(spot);
     const platform = Platform.OS === 'ios' ? 'ios' : 'android';
     // `maps://` and `geo:` have no handler on a device with no map app at all —
     // rare but real. The OSM web fallback always opens, so the link never
@@ -328,61 +388,119 @@ export function SpotDetailsSheet({
             {/* ── Where from, where to ──
                 The pair every directions card opens with, and the reason it
                 works: the route on the map is a shape, and this says what the
-                two ends of it are. */}
+                two ends of it are.
+
+                Laid across rather than down. Stacked, the two rows were a list
+                of two places and the reader had to supply the arrow themselves;
+                a journey has a left end and a right end, and the lasso between
+                them is the same line drawn on the map above and in every
+                campaign. It says "from here, to there" in one look instead of
+                two, in the brand's own mark rather than in a generic rule.
+
+                The left end is the constant and stays quiet; the destination
+                carries the weight, because it is the only half the owner
+                actually chose. */}
             {walkable && (
               <View style={styles.group}>
-                <View style={styles.endpointRow}>
-                  <MaterialCommunityIcons
-                    name="navigation-variant"
-                    size={17}
-                    color={color.electric}
-                  />
-                  <Text style={styles.endpointText} numberOfLines={1}>
-                    {copy.preview.fromHere}
-                  </Text>
-                </View>
-                <View style={styles.groupDivider} />
-                <View style={styles.endpointRow}>
-                  <MaterialCommunityIcons name="map-marker" size={17} color={color.navy} />
-                  <Text style={styles.endpointText} numberOfLines={1}>
-                    {title}
-                  </Text>
+                <View
+                  style={styles.endpoints}
+                  accessible
+                  accessibilityLabel={`${copy.preview.fromHere} to ${title}`}
+                >
+                  <View style={styles.endpoint}>
+                    <View style={styles.endpointIcon}>
+                      <MaterialCommunityIcons
+                        name="navigation-variant"
+                        size={15}
+                        color={color.electric}
+                      />
+                    </View>
+                    <Text style={styles.endpointFromText} numberOfLines={1}>
+                      {copy.preview.fromHere}
+                    </Text>
+                  </View>
+
+                  {/* The brand's own line, the same one drawn on the map above
+                      and on every campaign: a walk is not a straight rule
+                      between two pins.
+
+                      Decorative — the grouped label already says the whole
+                      sentence, and a screen reader has no use for a squiggle. */}
+                  <View
+                    style={styles.trail}
+                    onLayout={onTrailLayout}
+                    importantForAccessibility="no-hide-descendants"
+                  >
+                    <BrandLasso width={trailWidth} height={LASSO_HEIGHT} />
+                  </View>
+
+                  <View style={[styles.endpoint, styles.endpointTo]}>
+                    <View style={styles.endpointIcon}>
+                      <MaterialCommunityIcons
+                        name="map-marker"
+                        size={15}
+                        color={color.navy}
+                      />
+                    </View>
+                    <Text style={styles.endpointToText} numberOfLines={1}>
+                      {title}
+                    </Text>
+                  </View>
                 </View>
               </View>
             )}
 
-            {/* ── The decision, and the button that acts on it ──
-                Side by side, as one unit: the number and the commitment belong
-                to the same glance. A full-width button underneath separated the
-                answer from the thing you do about it. */}
+            {/* ── The decision ──
+                The numbers, on their own, above both buttons.
+
+                The Walk pill used to sit inside this card, beside the time, so
+                that "twenty minutes" and "go" read as one statement. That was
+                right while there was one button. It stopped being right the
+                moment there were two: a pill in the card and a button under it
+                would have ranked the choice before the owner made it, and the
+                card would have looked like it belonged to only one of them.
+
+                It belongs to both — the walking time is the reason to walk, and
+                the reason someone with an hour's drive decides not to. */}
             {walkable && (
               <View style={styles.summary}>
-                <View style={styles.summaryText}>
-                  {routeStatus === 'loading' && !way ? (
-                    <Text style={styles.previewFinding}>{copy.preview.finding}</Text>
-                  ) : (
-                    <>
-                      <Text style={styles.previewEta}>
-                        {way?.eta ? way.eta : distance ?? ''}
-                      </Text>
-                      <Text style={styles.previewMeta}>
-                        {[arrivalLabel, way?.eta && distance ? distance : null]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </Text>
-                      <Text style={styles.previewMetaFaint}>
-                        {copy.preview.atPace(petName)}
-                      </Text>
-                      {routeStatus === 'unavailable' && (
-                        <Text style={styles.previewNote}>{copy.preview.unavailable}</Text>
-                      )}
-                    </>
-                  )}
-                </View>
+                {routeStatus === 'loading' && !way ? (
+                  <Text style={styles.previewFinding}>{copy.preview.finding}</Text>
+                ) : (
+                  <>
+                    <Text style={styles.previewEta}>
+                      {way?.eta ? way.eta : distance ?? ''}
+                    </Text>
+                    <Text style={styles.previewMeta}>
+                      {[arrivalLabel, way?.eta && distance ? distance : null]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                    <Text style={styles.previewMetaFaint}>
+                      {copy.preview.atPace(petName)}
+                    </Text>
+                    {routeStatus === 'unavailable' && (
+                      <Text style={styles.previewNote}>{copy.preview.unavailable}</Text>
+                    )}
+                  </>
+                )}
+              </View>
+            )}
 
+            {/* ── The two ways to arrive ──
+                Equal width, equal height, equal weight in the layout. The only
+                thing separating them is the fill, which is the whole of the
+                recommendation: Pawtchi would rather you walked, and will not
+                pretend that is always possible.
+
+                `Walk` renders only when the call site can start one; the row
+                collapses to a single full-width Get directions rather than
+                leaving a gap where a button was. */}
+            {walkable && (
+              <View style={styles.actions}>
                 {!!onWalkHere && (
                   <TouchableOpacity
-                    style={styles.go}
+                    style={[styles.action, styles.actionWalk]}
                     activeOpacity={0.9}
                     onPress={() => {
                       haptic.tap();
@@ -391,9 +509,23 @@ export function SpotDetailsSheet({
                     accessibilityRole="button"
                     accessibilityLabel={`${copy.actions.startWalk}: ${title}`}
                   >
-                    <Text style={styles.goText}>{copy.actions.startWalk}</Text>
+                    <MaterialCommunityIcons name="paw" size={17} color={color.navy} />
+                    <Text style={styles.actionWalkText}>{copy.actions.startWalk}</Text>
                   </TouchableOpacity>
                 )}
+
+                <TouchableOpacity
+                  style={[styles.action, styles.actionDirections]}
+                  activeOpacity={0.85}
+                  onPress={openInMaps}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${copy.actions.getDirections}: ${title}`}
+                >
+                  <MaterialIcons name="directions" size={17} color={color.navy} />
+                  <Text style={styles.actionDirectionsText}>
+                    {copy.actions.getDirections}
+                  </Text>
+                </TouchableOpacity>
               </View>
             )}
 
@@ -514,20 +646,8 @@ export function SpotDetailsSheet({
             </View>
             )}
 
-            {/* The way out for someone genuinely lost. A link, never a button:
-                on a park, Start stays the only filled control, so this cannot
-                pull the sheet back into being a directory. */}
-            {walkable && (
-              <TouchableOpacity
-                style={styles.mapsLink}
-                activeOpacity={0.7}
-                onPress={openInMaps}
-                accessibilityRole="link"
-                accessibilityLabel={`${copy.actions.openInMaps}: ${title}`}
-              >
-                <Text style={styles.mapsLinkText}>{copy.actions.openInMaps}</Text>
-              </TouchableOpacity>
-            )}
+            {/* The underlined "Open in Maps" link that used to sit here has
+                moved up into the button row, as an equal. See the header. */}
 
             {/* ── An errand ──
                 One button, and it leaves. No tracked walk is offered for a vet
@@ -693,40 +813,87 @@ const styles = StyleSheet.create({
     backgroundColor: color.surfaceSubtle,
     borderRadius: radius.lg,
     paddingHorizontal: space.md,
+    paddingVertical: space.md,
   },
-  groupDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: color.hairline,
-    // Starts past the icon column so the rule reads as joining the two rows
-    // rather than cutting the card in half.
-    marginLeft: 26,
-  },
-  endpointRow: {
+  endpoints: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    paddingVertical: 13,
+    // The two ends align on their icons, not on their labels: the labels are
+    // different lengths and one of them can wrap to the ellipsis, so anything
+    // measured from the text moves the trail off the chips it connects.
+    alignItems: 'flex-start',
   },
-  endpointText: {
-    flex: 1,
+  /**
+   * The origin end.
+   *
+   * `flexShrink: 0` — its label is a constant short string, so there is nothing
+   * to gain by squeezing it, and everything to lose: truncating "Your location"
+   * to make room for a long place name would shorten the half the owner cannot
+   * change in order to shorten the half they can read on the map anyway.
+   */
+  endpoint: {
+    flexShrink: 0,
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  /**
+   * The destination end, right-aligned so the pair reads as two edges.
+   *
+   * Uncapped and shrinkable: a long name takes the trail's slack first — the
+   * trail bottoms out at 24pt and is still legibly a line — and only ellipsises
+   * once there is genuinely no room left.
+   */
+  endpointTo: {
+    flexShrink: 1,
+    minWidth: 0,
+    alignItems: 'flex-end',
+  },
+  /**
+   * The white chip is what makes the dots read as a line BETWEEN two things
+   * rather than as a line passing behind them.
+   */
+  endpointIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: color.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  endpointFromText: {
+    fontFamily: font.regular,
+    fontSize: 12.5,
+    color: color.slateMuted,
+  },
+  endpointToText: {
     fontFamily: font.semibold,
-    fontSize: 15,
+    fontSize: 13.5,
     color: color.ink,
   },
-  /** The decision card: numbers on the left, the commitment on the right. */
+  /**
+   * `height` matches the chips so the lasso runs along their centreline.
+   *
+   * The clearance is a margin, not padding, because the measured width IS the
+   * drawing width — padding would report a box wider than the line inside it
+   * and the curve would run under the chips.
+   *
+   * `minWidth` is 36 rather than the 24 a dotted rule could live with: below
+   * that the two bends collapse into a wobble, which looks like a rendering
+   * fault rather than a route.
+   */
+  trail: {
+    flex: 1,
+    minWidth: 36,
+    height: LASSO_HEIGHT,
+    marginHorizontal: space.xs,
+    justifyContent: 'center',
+  },
+  /** The decision card: the numbers, and nothing to press. */
   summary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
+    gap: 1,
     backgroundColor: color.surfaceSubtle,
     borderRadius: radius.lg,
     paddingHorizontal: space.md,
     paddingVertical: space.md,
-  },
-  summaryText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
   },
   previewEta: {
     fontFamily: font.bold,
@@ -746,28 +913,62 @@ const styles = StyleSheet.create({
     color: color.slateMuted,
   },
   /**
-   * Apple's GO, in Pawtchi's yellow.
+   * The two ways to arrive.
    *
-   * A pill rather than the full-width bar this used to be. Sitting beside the
-   * time makes the two one statement — "twenty minutes, go" — where a button
-   * below the card was a second thought you had to travel to.
+   * `flex: 1` on both children rather than a fixed split, so the pair stays
+   * even at every text size — "Get directions" is the longer label by some
+   * margin, and at the largest accessibility sizes a proportional split would
+   * wrap it while the Walk button sat half empty.
    */
-  go: {
-    backgroundColor: color.yellow,
-    borderRadius: radius.pill,
-    paddingHorizontal: space.lg,
-    paddingVertical: 14,
-    minWidth: 92,
+  actions: {
+    flexDirection: 'row',
+    gap: space.sm,
+  },
+  action: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    // Sits ON the card rather than in it. Yellow on the card's grey has almost
-    // no tonal contrast, so without a shadow the pill reads as a coloured patch
-    // of the same surface instead of the one thing here you can press.
+    gap: 7,
+    borderRadius: radius.pill,
+    // 14 + the 1.5 border below = the same 15.5 half-height as the filled
+    // button, so the two sit level. A border on one of a pair is the classic
+    // way to end up with buttons a hair different in height.
+    paddingVertical: 14,
+    paddingHorizontal: space.sm,
+    minHeight: 50,
+  },
+  actionWalk: {
+    backgroundColor: color.yellow,
+    borderWidth: 1.5,
+    // Its own colour, not the navy outline: the border exists to equalise the
+    // box, not to draw a line. A visible ring around the yellow would make the
+    // recommendation look like a variant of the other button.
+    borderColor: color.yellow,
     ...shadow.card,
   },
-  goText: {
+  actionWalkText: {
     fontFamily: font.bold,
-    fontSize: 16,
+    fontSize: 15,
+    color: color.navy,
+    letterSpacing: 0.2,
+  },
+  /**
+   * Outlined, not filled and not grey.
+   *
+   * Grey would have made it a lesser button, which is the arrangement this
+   * replaced. An outline in the same navy as its own label reads as a peer of
+   * the yellow — equally deliberate, equally pressable — while leaving exactly
+   * one filled control on the sheet, which is the brand rule the yellow serves.
+   */
+  actionDirections: {
+    backgroundColor: color.surface,
+    borderWidth: 1.5,
+    borderColor: color.navy,
+  },
+  actionDirectionsText: {
+    fontFamily: font.bold,
+    fontSize: 15,
     color: color.navy,
     letterSpacing: 0.2,
   },
@@ -794,20 +995,6 @@ const styles = StyleSheet.create({
     fontFamily: font.semibold,
     fontSize: 13,
     color: color.navy,
-  },
-  // A link, not a button: no fill, no border, centred under the CTA.
-  mapsLink: {
-    alignSelf: 'center',
-    // Horizontal padding only — the body's gap already spaces it, and the
-    // vertical padding was doubling that into a hole above the footer.
-    paddingVertical: space.xs,
-    paddingHorizontal: space.md,
-  },
-  mapsLinkText: {
-    fontFamily: font.semibold,
-    fontSize: 13,
-    color: color.slateMuted,
-    textDecorationLine: 'underline',
   },
   visited: {
     flexDirection: 'row',

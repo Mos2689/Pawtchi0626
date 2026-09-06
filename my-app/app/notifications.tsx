@@ -28,7 +28,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { color, font, radius, space, type } from '../constants/design';
 import { PawLoader } from '../components/loader/PawLoader';
 import { useNotificationPermission } from '../hooks/useNotificationPermission';
-import { usePushNotifications } from '../hooks/usePushNotifications';
+import { requestPushPermission } from '../lib/notifications/pushRegistration';
 import { useAuth } from '../providers/AuthProvider';
 import { track } from '../lib/analytics';
 import { haptic } from '../lib/haptics';
@@ -57,11 +57,13 @@ export default function NotificationSettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [picking, setPicking] = useState<'start' | 'end' | null>(null);
   const permission = useNotificationPermission();
-  const { requestPermission } = usePushNotifications();
 
   const handleTurnOn = async () => {
     try {
-      await requestPermission();
+      // The standalone request, not `usePushNotifications` — mounting the hook
+      // here would register a second set of notification listeners alongside the
+      // root bridge's, and a tapped notification would then route twice.
+      await requestPushPermission();
     } catch {
       // Denied, or no native module. `refresh` reports whatever actually happened.
     }

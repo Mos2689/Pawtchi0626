@@ -130,3 +130,41 @@ export async function thumbnailUrl(path: string): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Sign a whole screen's worth of thumbnails at once.
+ *
+ * `thumbnailUrl` above is one round trip per photograph, which is the right
+ * shape for a viewer looking at one image and the wrong shape for a map. The
+ * gallery map holds the entire archive: thirty pins on screen would be thirty
+ * requests, and every pan re-clusters and remounts them, so it would be thirty
+ * more. Storage will sign a batch in a single call, so it should.
+ *
+ * Returns a path → url map with the failures simply absent. A partial answer is
+ * the useful one: nineteen pins that render and one that falls back to context
+ * is a working map, whereas failing the batch would blank the screen because one
+ * object was missing.
+ */
+export async function thumbnailUrls(
+  paths: readonly string[],
+): Promise<Record<string, string>> {
+  const wanted = [...new Set(paths.filter((p) => p.length > 0))];
+  if (wanted.length === 0) return {};
+
+  try {
+    const { data, error } = await supabase.storage
+      .from(KEEPSAKE_THUMB_BUCKET)
+      .createSignedUrls(wanted, THUMB_URL_TTL_S);
+    if (error || !data) return {};
+
+    const urls: Record<string, string> = {};
+    for (const row of data) {
+      // Each entry carries its own error, so one missing object does not spoil
+      // the rest of the batch.
+      if (row?.path && row.signedUrl) urls[row.path] = row.signedUrl;
+    }
+    return urls;
+  } catch {
+    return {};
+  }
+}

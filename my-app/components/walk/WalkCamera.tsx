@@ -22,11 +22,24 @@
  * library back to display it) put an unrequested system permission sheet over
  * the Home screen at launch.
  *
- * Then, as a courtesy, a full-resolution copy into the user's own photo
- * library, so a walk photo sits with the rest of their pictures. That save is
- * WRITE-ONLY: on iOS an add-only authorisation has no "limited" state, so it
- * cannot produce the "Select More Photos" sheet, and refusing it now costs the
- * user nothing at all.
+ * Then, IF THE OWNER HAS ASKED FOR IT, a full-resolution copy into their own
+ * photo library, so a walk photo sits with the rest of their pictures. That save
+ * is WRITE-ONLY: on iOS an add-only authorisation has no "limited" state, so it
+ * cannot produce the "Select More Photos" sheet.
+ *
+ * ── Why the second copy stopped being automatic (Sep 2026) ──
+ * It used to happen on every capture, which meant iOS put a permission alert on
+ * screen seconds after the first shutter of a walk. Technically it was the
+ * narrowest prompt available — add-only, no read, no library access. It did not
+ * matter. A system sheet about photos, arriving unrequested mid-walk, is read as
+ * the app reaching for the camera roll, and that is the precise impression the
+ * container copy exists to prevent. Being right in the entitlements is no use if
+ * the owner's experience is a privacy question they did not ask.
+ *
+ * So the courtesy is now a control in this camera, off by default, and the OS is
+ * only asked when the owner turns it on — a prompt that answers a question they
+ * just posed. Off costs nothing: the photo still exists, still renders, still
+ * syncs its thumbnail. See store/useWalkPhotoPrefsStore.ts.
  *
  * The original never reaches a Pawtchi server. What syncs is still the
  * metadata and a ~20 KB thumbnail.
@@ -41,6 +54,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { color, font, radius, space } from '../../constants/design';
 import { haptic } from '../../lib/haptics';
 import { persistCapture } from '../../lib/walk/keepsakeFile';
+import { useWalkPhotoPrefsStore } from '../../store/useWalkPhotoPrefsStore';
 
 /** What the walk knows, stamped onto the frame. */
 export interface WalkCameraContext {
@@ -93,6 +107,37 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
   });
   const [capturing, setCapturing] = useState(false);
 
+  const saveToLibrary = useWalkPhotoPrefsStore(s => s.saveToLibrary);
+  const setSaveToLibrary = useWalkPhotoPrefsStore(s => s.setSaveToLibrary);
+
+  /**
+   * Turn the camera-roll copy on or off.
+   *
+   * Asking the OS happens HERE, on the tap, rather than at the next shutter:
+   * the owner has just asked for the thing the alert is about, which is the
+   * only arrangement in which a photo-permission sheet is not a surprise.
+   *
+   * A refusal switches the control back off rather than leaving it on and
+   * silently saving nothing — a toggle that says it is saving when it cannot is
+   * worse than one that admits the answer was no. iOS will not ask twice, so
+   * turning it on again after a refusal opens Settings' worth of nothing; that
+   * is the platform's rule, and the control reflects it by simply staying off.
+   */
+  const onToggleSaveToLibrary = useCallback(async () => {
+    haptic.tap();
+    if (saveToLibrary) {
+      setSaveToLibrary(false);
+      return;
+    }
+    try {
+      const granted =
+        libraryPermission?.granted || (await requestLibraryPermission())?.granted;
+      setSaveToLibrary(Boolean(granted));
+    } catch {
+      setSaveToLibrary(false);
+    }
+  }, [saveToLibrary, setSaveToLibrary, libraryPermission, requestLibraryPermission]);
+
   const handleCapture = useCallback(async () => {
     // Guard rather than disable: a double-tap while the shutter is open would
     // otherwise produce two keepsakes for one moment.
@@ -119,23 +164,24 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
         height: photo.height,
       });
 
-      // ── Then the camera roll, as a courtesy ──
+      // ── Then the camera roll, if the owner asked for it ──
       //
       // Full-resolution, unlike ours, because someone who goes looking for the
-      // original in Photos should find the original. Refusal is a normal
-      // outcome and costs nothing now: a null asset id used to mean the photo
-      // existed nowhere we could reach, and today it means only that we did not
-      // put a second copy in the user's library.
+      // original in Photos should find the original.
+      //
+      // No permission is REQUESTED here — only used. The ask belongs to the
+      // toggle, where the owner initiated it; a shutter press is a request to
+      // take a photo and nothing else, and it must never be the thing that
+      // summons a system sheet. A null asset id is an ordinary outcome and
+      // costs nothing: it means only that no second copy was made.
       let localAssetId: string | null = null;
-      try {
-        const granted =
-          libraryPermission?.granted || (await requestLibraryPermission())?.granted;
-        if (granted) {
+      if (saveToLibrary && libraryPermission?.granted) {
+        try {
           const asset = await MediaLibrary.createAssetAsync(photo.uri);
           localAssetId = asset?.id ?? null;
+        } catch {
+          localAssetId = null;
         }
-      } catch {
-        localAssetId = null;
       }
 
       onCaptured({
@@ -156,7 +202,7 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
     } finally {
       setCapturing(false);
     }
-  }, [capturing, libraryPermission, requestLibraryPermission, onCaptured, onClose]);
+  }, [capturing, saveToLibrary, libraryPermission, onCaptured, onClose]);
 
   if (!visible) return null;
 
@@ -223,8 +269,39 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
             <View style={styles.shutterPlaceholder} />
           )}
 
-          {/* Balances the close button so the shutter sits centred. */}
-          <View style={styles.close} />
+          {/* Where the balancing spacer used to be.
+              The slot was already reserved to keep the shutter centred, so the
+              control costs no layout — and this is the right place for it: the
+              decision is about the photo being taken, made where it is taken,
+              by the person taking it. */}
+          {permission?.granted ? (
+            <TouchableOpacity
+              style={styles.close}
+              onPress={onToggleSaveToLibrary}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: saveToLibrary }}
+              accessibilityLabel="Also save a copy to your Photos library"
+              accessibilityHint={
+                saveToLibrary
+                  ? 'On. Walk photos are also saved to your own Photos library.'
+                  : 'Off. Walk photos stay in Pawtchi.'
+              }
+              hitSlop={10}
+            >
+              <View style={[styles.saveIcon, saveToLibrary && styles.saveIconOn]}>
+                <MaterialIcons
+                  name="photo-library"
+                  size={17}
+                  color={saveToLibrary ? color.navy : color.creamDim}
+                />
+              </View>
+              <Text style={[styles.saveLabel, saveToLibrary && styles.saveLabelOn]}>
+                Photos
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.close} />
+          )}
         </View>
       </View>
     </Modal>
@@ -252,9 +329,13 @@ function PermissionGate({
     <View style={styles.gate}>
       <MaterialIcons name="photo-camera" size={34} color={color.creamDim} />
       <Text style={styles.gateTitle}>Capture the walk</Text>
+      {/* Was "Photos are saved to your own library", which stopped being true
+          when that copy became something the owner turns on. The replacement
+          describes what happens by default, and it is the stronger sentence
+          anyway: the photo stays here. */}
       <Text style={styles.gateBody}>
-        Photos are saved to your own library. Pawtchi keeps a small thumbnail and where along
-        the walk it was taken.
+        Photos stay in Pawtchi, on this phone. Only a small thumbnail and where along the walk
+        it was taken are ever uploaded.
       </Text>
       {canAskAgain ? (
         <TouchableOpacity style={styles.gateButton} onPress={onRequest} accessibilityRole="button">
@@ -322,6 +403,34 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 3,
+  },
+  /**
+   * On is a filled chip, off is a bare dim glyph.
+   *
+   * Not a colour change alone: at 17pt against arbitrary camera input, cream
+   * against faint-cream is not a state anyone can read at a glance. The fill is
+   * cream rather than yellow — the shutter is the one thing that matters on this
+   * screen, and a yellow control beside it would argue with that.
+   */
+  saveIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveIconOn: {
+    backgroundColor: color.cream,
+  },
+  saveLabel: {
+    fontFamily: font.semibold,
+    fontSize: 10,
+    letterSpacing: 0.3,
+    color: color.creamFaint,
+  },
+  saveLabelOn: {
+    color: color.cream,
   },
   shutter: {
     width: SHUTTER,

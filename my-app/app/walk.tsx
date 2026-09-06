@@ -1336,6 +1336,9 @@ function WalkSummaryView({
           // rather than this screen opening a query to fill it.
           weather: null,
           route,
+          // Lets the viewer's route rail sit the photos on the real duration
+          // rather than on the stretch between the first and last of them.
+          durationS: summary.durationS,
         }}
         onClose={() => setOpenKeepsakes(null)}
       />

@@ -36,7 +36,7 @@ import { WalksignCrest } from '../../components/walksign/WalksignCrest';
 import { WALKSIGN_COPY, buildProvisionalNote, buildRevealTitle } from '../../lib/walksign/copy';
 import type { WalksignId } from '../../lib/walksign/types';
 import { useSubscription } from '../../hooks/useSubscription';
-import { usePushNotifications } from '../../hooks/usePushNotifications';
+import { requestPushPermission } from '../../lib/notifications/pushRegistration';
 import { useNotificationPermission } from '../../hooks/useNotificationPermission';
 import { NotificationPrimer } from '../../components/NotificationPrimer';
 
@@ -79,7 +79,6 @@ export default function RevealScreen() {
   const notifPermission = useNotificationPermission();
   const insets = useSafeAreaInsets();
   const { isPro } = useSubscription();
-  const { requestPermission } = usePushNotifications();
   const [primerVisible, setPrimerVisible] = useState(false);
 
   const {
@@ -305,7 +304,10 @@ export default function RevealScreen() {
     // Failure here must never block the funnel — a denied prompt, a simulator,
     // or a network error all just mean no token yet.
     try {
-      await requestPermission();
+      // The standalone request rather than `usePushNotifications`: the root
+      // bridge already owns the notification listeners, and a second copy would
+      // route a tapped notification twice.
+      await requestPushPermission();
     } catch {
       // Nothing to do; the owner can enable notifications from Profile later.
     }

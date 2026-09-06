@@ -137,6 +137,45 @@ export async function fetchKeepsakeCounts(
 }
 
 /**
+ * Every PLACED moment across a set of walks — the gallery map's photo layer.
+ *
+ * One query for the whole screen, the same reasoning as `fetchKeepsakeCounts`
+ * directly above: a map of a hundred walks must not open a hundred requests.
+ *
+ * ── Scoped by walk id, never by pet ──
+ * The obvious query is "every moment this pet ever photographed", and it would
+ * be wrong. The gallery's own window is already filtered — newest 120, and never
+ * a `likely_vehicle` verdict — so a pet-wide photo query would pin moments from
+ * walks the very same screen refuses to list. The map and the grid have to agree
+ * about what the archive is, and the walk ids are that agreement.
+ *
+ * ── Placed only ──
+ * `lat is not null` is applied HERE rather than in the caller so an unplaceable
+ * moment never crosses the wire at all. Its position is estimated from elapsed
+ * time, which is fine on a bare route drawing and a lie on a real map — there it
+ * becomes a claim about a specific doorway. Same rule useKeepsakePins applies to
+ * one walk, applied to the archive.
+ */
+export async function fetchKeepsakesForWalks(
+  walkSessionIds: readonly string[],
+): Promise<Keepsake[]> {
+  if (walkSessionIds.length === 0) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('walk_media')
+      .select(SELECT_COLUMNS)
+      .in('walk_session_id', [...walkSessionIds])
+      .not('lat', 'is', null)
+      .order('captured_at', { ascending: true });
+    if (error || !data) return [];
+    return sortKeepsakes(data.flatMap((row) => normalizeKeepsake(row) ?? []));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Attach an uploaded thumbnail to a keepsake.
  *
  * Separate from the insert on purpose: the row is written the instant the photo

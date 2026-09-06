@@ -164,23 +164,36 @@ export const copy = {
      *
      * "Walk here" had to carry two meanings at once — show me this place, and
      * begin recording now — because there was only ever one tap. With the route
-     * on the map and the distance in front of you, the tap means one thing, and
-     * the word is the plainest one for it. Nothing starts until you say Start.
+     * on the map and the distance in front of you, the tap means one thing.
+     *
+     * It said "Start" until it acquired a neighbour. Paired with "Get
+     * directions", "Start" was the odd word out: one button named after the
+     * mechanism (something begins) and one named after the journey (you are
+     * driven there). "Walk" and "Get directions" are the same kind of word —
+     * two ways of arriving, which is exactly the choice being offered.
      */
-    startWalk: 'Start',
+    startWalk: 'Walk',
     /**
-     * The escape hatch, and deliberately worded as an exit rather than an offer.
+     * The other way to arrive, and no longer an escape hatch.
      *
-     * "Open in Maps" describes what happens; "Get directions" would sell it, and
-     * selling it is what turned this sheet into a directory the first time.
+     * This was a quiet underlined link called "Open in Maps", deliberately
+     * worded as an exit so it could not sell itself. That framing assumed one
+     * kind of owner: someone standing at home who might get lost on the way.
      *
-     * Its weight now depends on the place. For a park it stays a quiet text link
-     * under the yellow CTA. For a vet or a pet shop it IS the action — see
-     * spotAction.ts — because Pawtchi has no traffic, no opening hours and no
-     * turn-by-turn, and an errand deserves the app that does.
+     * There is a second kind, and they are not lost. They drive the dog to the
+     * beach and start walking when they get out of the car — for them the maps
+     * handoff is not a failure of the sheet, it is the first half of the walk.
+     * So it is a button now, the same size as its neighbour, and named for what
+     * the owner wants rather than for what the app does.
+     *
+     * The directory risk that "Open in Maps" was hedging against is answered a
+     * different way: `arrival` below brings them back. Handing someone to Apple
+     * Maps stopped being an ejection the moment Pawtchi was waiting at the
+     * other end.
+     *
+     * One string for both kinds of place. On a vet it has always been the
+     * filled CTA and the only action — see spotAction.ts.
      */
-    openInMaps: 'Open in Maps',
-    /** The primary button on a place you are not walking the dog to. */
     getDirections: 'Get directions',
     /** Screen-reader label for the sheet's dismiss control. */
     close: 'Close',
@@ -194,6 +207,37 @@ export const copy = {
      * the same thing the moment the map became pannable.
      */
     searchArea: 'Search this area',
+  },
+
+  /**
+   * The prompt waiting on Home after a drive.
+   *
+   * The whole point of the "Get directions" button, and the reason handing an
+   * owner to Apple Maps is no longer an ejection: they tapped it because they
+   * intended to walk the dog somewhere, and this is Pawtchi remembering that
+   * across a car journey and an app switch.
+   *
+   * Every word here is load-bearing.
+   *
+   * The title states an observation, not an achievement — "You're at Calangute
+   * Beach" is something the owner can immediately verify by looking up, which
+   * is the only reason a prompt appearing out of nowhere reads as helpful
+   * rather than as surveillance. It never congratulates them for arriving.
+   *
+   * The body says what the walk covers, because the honest answer to "why is
+   * this here" is that Pawtchi wants to record the walk, not that it wants to
+   * welcome them. And the dismissal is "Not now" rather than "No thanks": they
+   * may well be walking in five minutes, and a decline is about this moment,
+   * not about the feature.
+   *
+   * There is no version of this that fires without the owner having asked for
+   * directions to this exact place. See lib/spots/arrivalIntent.ts.
+   */
+  arrival: {
+    title: (place: string) => `You’re at ${place}`,
+    body: 'Start the walk and Pawtchi will map it from here.',
+    action: 'Start the walk',
+    dismiss: 'Not now',
   },
 
   details: {

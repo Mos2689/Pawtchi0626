@@ -126,6 +126,7 @@ export default function WalkMap({
   quiet = false,
   spots = [],
   suggestedRoute = null,
+  trails,
   liveBottomInset = 0,
   camera,
   onCameraChange,
@@ -165,6 +166,24 @@ export default function WalkMap({
       width: number;
     }[] = [];
 
+    // The archive web goes down FIRST, so everything else draws over it. One
+    // thin stroke each, no casing: the cased two-stroke is what marks the walk
+    // being looked at, and it only means that while it stays exclusive to it.
+    //
+    // This is the one place the polyline count is unbounded by the screen rather
+    // than by the walk, because MapKit takes an array and each entry is a
+    // separate native overlay. The caller caps it — see TRAIL_MAX_WALKS.
+    if (trails) {
+      for (const trail of trails) {
+        if (trail.length < 2) continue;
+        lines.push({
+          coordinates: trail.map(p => ({ latitude: p.lat, longitude: p.lng })),
+          color: color.trail,
+          width: 2.5,
+        });
+      }
+    }
+
     if (suggestedRoute && suggestedRoute.length >= 2) {
       const coordinates = suggestedRoute.map(p => ({ latitude: p.lat, longitude: p.lng }));
       // MapKit exposes no dash pattern. A pale casing keeps the blue route
@@ -184,7 +203,7 @@ export default function WalkMap({
     }
 
     return lines;
-  }, [path, suggestedRoute]);
+  }, [path, suggestedRoute, trails]);
 
   // Yellow start dot — reads as the "you began here" spark against the navy
   // trace — plus any spots the caller dropped.

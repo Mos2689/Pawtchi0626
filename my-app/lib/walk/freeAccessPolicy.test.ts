@@ -30,10 +30,15 @@ describe('walk free-access policy', () => {
       }
     }
 
-    // Home, Walk Here, Activity, Inbox, the active tab bar, and the retired
-    // dock kept as a reusable component. If one disappears, review the policy
-    // surface rather than silently weakening this guard.
-    expect(callers).toHaveLength(6);
+    // Home, Walk Here, the spot arrival prompt, Activity, Inbox, the active tab
+    // bar, and the retired dock kept as a reusable component. If one disappears,
+    // review the policy surface rather than silently weakening this guard.
+    //
+    // The arrival prompt is the newest and the one most worth stating plainly:
+    // a walk begun by an owner who DROVE to a park is free on exactly the same
+    // terms as one begun at the front door. Tracking has never been the paid
+    // thing, and a car journey is not the seam to start charging at.
+    expect(callers).toHaveLength(7);
   });
 
   test('the tracking screen itself has no subscription dependency', () => {

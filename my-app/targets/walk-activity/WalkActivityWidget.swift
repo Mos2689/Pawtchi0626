@@ -29,6 +29,14 @@ private extension PawtchiWalkAttributes.ContentState {
   var distanceText: String { String(format: "%.2f km", distanceKm) }
   var sniffText: String { "\(sniffCount) sniff\(sniffCount == 1 ? "" : "s")" }
   var islandDistanceText: String { String(format: "%.1f km", distanceKm) }
+
+  // Split for the shelf's value-and-label pairs. Not new copy: these are the
+  // same two strings above, taken apart at the space that was already in them,
+  // so the number can carry the weight and the unit can step back.
+  var distanceValue: String { String(format: "%.2f", distanceKm) }
+  var distanceUnit: String { "km" }
+  var sniffValue: String { "\(sniffCount)" }
+  var sniffUnit: String { sniffCount == 1 ? "sniff" : "sniffs" }
 }
 
 // The handoff's corner emblem is deliberately absent.
@@ -79,6 +87,9 @@ private struct ElapsedClock: View {
 }
 
 /// The uppercase label beside the live pulse.
+///
+/// 1.7 of tracking, matching the viewer's dateline eyebrow. At this size the
+/// tracking IS the style — it is what separates a label from a small heading.
 private struct Eyebrow: View {
   let text: String
   var color: Color = PawtchiColor.ink
@@ -86,9 +97,36 @@ private struct Eyebrow: View {
   var body: some View {
     Text(text)
       .font(PawtchiFont.bold(9.5))
-      .tracking(1.5)
+      .tracking(1.7)
       .foregroundColor(color)
       .lineLimit(1)
+  }
+}
+
+/// One cell of the stats shelf — the viewer's divided stat row, at card scale.
+///
+/// Value and label are stacked there and set side by side here, for one reason:
+/// iOS clips the Lock Screen presentation at roughly 160pt and this card already
+/// measures ~153. A second line of type in the shelf is the whole remaining
+/// budget. The pattern that survives the cut is the DIVIDER — hairline-separated
+/// facts rather than dot-separated ones — which is what carries the family
+/// resemblance to the viewer.
+@available(iOS 16.2, *)
+private struct StatCell: View {
+  let value: String
+  let label: String
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Text(value)
+        .font(PawtchiFont.bold(12.5))
+        .monospacedDigit()
+        .foregroundColor(PawtchiColor.ink)
+      Text(label)
+        .font(PawtchiFont.medium(11.5))
+        .foregroundColor(PawtchiColor.inkFaint)
+    }
+    .lineLimit(1)
   }
 }
 
@@ -161,7 +199,8 @@ struct WalkLockScreenView: View {
       HStack(alignment: .bottom, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
           Text(state.title)
-            .font(PawtchiFont.serif(20))
+            .font(PawtchiFont.title(20))
+            .tracking(-0.4)
             .foregroundColor(PawtchiColor.ink)
             .lineLimit(1)
             .minimumScaleFactor(0.7)
@@ -211,17 +250,16 @@ struct WalkLockScreenView: View {
 
       Group {
         if state.hasSignal {
-          HStack(spacing: 7) {
-            Text(state.distanceText)
-              .font(PawtchiFont.bold(12.5))
-              .monospacedDigit()
-              .foregroundColor(PawtchiColor.ink)
-            Circle()
-              .fill(PawtchiColor.inkTrace)
-              .frame(width: 3, height: 3)
-            Text(state.sniffText)
-              .font(PawtchiFont.bold(12.5))
-              .foregroundColor(PawtchiColor.ink)
+          HStack(spacing: 0) {
+            StatCell(value: state.distanceValue, label: state.distanceUnit)
+            // The hairline that replaced a dot. Same rule as the viewer's stat
+            // row: facts are divided, not strung together — a separator dot
+            // makes two measurements read as one phrase.
+            Rectangle()
+              .fill(PawtchiColor.hairline)
+              .frame(width: 1, height: 13)
+              .padding(.horizontal, 10)
+            StatCell(value: state.sniffValue, label: state.sniffUnit)
             Spacer(minLength: 6)
             if !state.endsAtHomeLabel.isEmpty {
               GeofencePill(label: state.endsAtHomeLabel)
@@ -249,7 +287,8 @@ struct WalkLockScreenView: View {
       VStack(alignment: .leading, spacing: 5) {
         Eyebrow(text: state.eyebrow, color: PawtchiColor.inkFaint)
         Text(state.title)
-          .font(PawtchiFont.serif(24))
+          .font(PawtchiFont.title(24))
+          .tracking(-0.4)
           .foregroundColor(PawtchiColor.ink)
           .lineLimit(1)
           .minimumScaleFactor(0.7)
@@ -270,7 +309,8 @@ struct WalkLockScreenView: View {
       VStack(alignment: .leading, spacing: 5) {
         Eyebrow(text: state.eyebrow, color: PawtchiColor.discovery)
         Text(state.title)
-          .font(PawtchiFont.serif(24))
+          .font(PawtchiFont.title(24))
+          .tracking(-0.4)
           .foregroundColor(PawtchiColor.ink)
           .lineLimit(1)
           .minimumScaleFactor(0.7)
@@ -328,7 +368,8 @@ struct WalkActivityWidget: Widget {
         DynamicIslandExpandedRegion(.trailing) {
           VStack(alignment: .trailing, spacing: 2) {
             Text(context.state.title)
-              .font(PawtchiFont.serif(18))
+              .font(PawtchiFont.title(18))
+              .tracking(-0.4)
               .foregroundColor(PawtchiColor.islandInk)
               .lineLimit(1)
             Text("\(context.state.distanceText) · \(context.state.sniffText)")

@@ -16,7 +16,15 @@
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
 	<!--
-	  Montserrat, so the Lock Screen card is set in the same face as the app.
+	  Plus Jakarta Sans, the face the Walk Memory viewer uses — so a walk looks
+	  like the same product on the Lock Screen as it does in the app.
+
+	  This is what the original design handoff asked for. The first build shipped
+	  Montserrat and Playfair standing in for it, because adding a family for one
+	  surface is what the design-system rule forbids; the app has since adopted
+	  Jakarta for the memory surfaces (see the fence in constants/design.ts), so
+	  the stand-ins are gone and the handoff is met.
+
 	  The whole target folder is synchronized into the Xcode target, so these
 	  .ttf files are already copied as resources; this is what registers them.
 	  PawtchiTheme falls back to a weight-matched system font if registration
@@ -24,11 +32,10 @@
 	-->
 	<key>UIAppFonts</key>
 	<array>
-		<string>Montserrat_200ExtraLight.ttf</string>
-		<string>Montserrat_500Medium.ttf</string>
-		<string>Montserrat_600SemiBold.ttf</string>
-		<string>Montserrat_700Bold.ttf</string>
-		<string>PlayfairDisplay_500Medium.ttf</string>
+		<string>PlusJakartaSans_200ExtraLight.ttf</string>
+		<string>PlusJakartaSans_500Medium.ttf</string>
+		<string>PlusJakartaSans_600SemiBold.ttf</string>
+		<string>PlusJakartaSans_700Bold.ttf</string>
 	</array>
 </dict>
 </plist>

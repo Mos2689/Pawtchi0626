@@ -89,6 +89,24 @@ export const color = {
     sniff: '#144EFF',
   },
 
+  // ── The archive trail ──────────────────────────────────────────────────────
+  // Every route this pet has ever walked, drawn together as one faint web under
+  // the walk gallery's map. It is the layer that turns a scatter of pins into
+  // "look how much of this place we have covered".
+  //
+  // Muted ink, and deliberately NOT yellow, for two reasons that agree. The
+  // brand book is explicit that yellow does not hold as ink on a light ground,
+  // and a hundred pale yellow lines over map tiles are close to invisible.
+  // Beyond legibility, yellow marks the ONE thing that matters per surface — a
+  // hundred yellow lines would mark nothing. The selected walk still draws in
+  // the standard cased navy + yellow over the top, so the singular yellow is
+  // preserved and the web reads as the quiet record underneath it.
+  //
+  // Low enough alpha that a single walk is a whisper and a favourite route,
+  // walked fifty times, accumulates into something solid. The map draws the
+  // frequency for free.
+  trail: 'rgba(15, 23, 42, 0.18)',
+
   // ── Correspondence surface (Write to Founder) ──────────────────────────────
   // A white-ground, postal-themed surface with its own two-colour system. It is
   // scoped to the letter flow on purpose: this is the only place in the app
@@ -303,6 +321,26 @@ export const font = {
   momentMedium: 'Inter_500Medium',
   momentSemibold: 'Inter_600SemiBold',
   momentBold: 'Inter_700Bold',
+
+  // ── Walk Memory type — the listing face (Sep 2026) ──
+  // A sixth family, and the same rule as the serif above: one surface, named,
+  // and no drift. It exists because the Walk Memory viewer was rebuilt to the
+  // proportions of a travel listing page, and that layout depends on a
+  // geometric-humanist sans to hold together — a big tight title, a muted
+  // subtitle, and a divided stat row all reading as one voice.
+  //
+  // Plus Jakarta Sans is the closest freely-licensable face to Airbnb Cereal,
+  // which is proprietary. Montserrat could not do this job: it is wider and
+  // has a larger x-height, so at display size it takes three lines where this
+  // takes two, and its round bowls make a bold title look inflated rather than
+  // confident.
+  //
+  // Sanctioned surface: the Walk Memory viewer (components/walk/KeepsakeViewer).
+  // Nowhere else. Every screen, card and button stays on Montserrat.
+  memoryRegular: 'PlusJakartaSans_400Regular',
+  memoryMedium: 'PlusJakartaSans_500Medium',
+  memorySemibold: 'PlusJakartaSans_600SemiBold',
+  memoryBold: 'PlusJakartaSans_700Bold',
 } as const;
 
 // Bebas Neue is an all-caps display face whose glyphs fill — and slightly

@@ -19,8 +19,9 @@
  * you can actually re-read.
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, type ComponentProps } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Reanimated from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import { color, font, radius, shadow } from '../../constants/design';
 import {
@@ -84,6 +85,16 @@ interface Props {
   size?: number;
   /** Receives every moment in the tapped cluster, lead first. */
   onPress?: (pins: KeepsakeMapPin[]) => void;
+  /**
+   * Optional per-pin entrance, resolved by pin id.
+   *
+   * Opt-in, and absent everywhere except the gallery's map, where the whole
+   * archive appears at once and the pins bloom outward from the middle of the
+   * screen. Home shows one walk's moments alongside a route that is already
+   * there, so there is no arrival to stage — and returning `undefined` leaves
+   * these views behaving exactly as they always have.
+   */
+  entering?: (pinId: string) => ComponentProps<typeof Reanimated.View>['entering'];
 }
 
 const DEFAULT_SIZE = 46;
@@ -127,6 +138,7 @@ export function KeepsakeMapOverlay({
   height,
   size = DEFAULT_SIZE,
   onPress,
+  entering,
 }: Props) {
   const placed = useMemo(() => {
     if (!camera || width <= 0 || height <= 0) return [];
@@ -181,8 +193,9 @@ export function KeepsakeMapOverlay({
         );
 
         return (
-          <View
+          <Reanimated.View
             key={pin.id}
+            entering={entering?.(pin.id)}
             style={[
               styles.anchor,
               {
@@ -203,7 +216,7 @@ export function KeepsakeMapOverlay({
               body
             )}
             <View style={styles.tip} />
-          </View>
+          </Reanimated.View>
         );
       })}
     </View>

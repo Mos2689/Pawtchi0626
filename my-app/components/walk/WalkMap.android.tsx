@@ -110,6 +110,7 @@ export default function WalkMap({
   quiet = false,
   spots = [],
   suggestedRoute = null,
+  trails,
   liveBottomInset = 0,
   camera,
   onCameraChange,
@@ -138,6 +139,26 @@ export default function WalkMap({
     }),
     [path],
   );
+
+  /**
+   * The whole archive as ONE feature.
+   *
+   * A MultiLineString rather than a source per walk: MapLibre draws this in a
+   * single layer whatever the count, so the trail web costs the same as one
+   * route. (iOS has no equivalent — MapKit takes an array of overlays — which is
+   * the entire reason the caller caps the list at all. See TRAIL_MAX_WALKS.)
+   */
+  const trailsGeoJson = useMemo(() => {
+    const coordinates = (trails ?? [])
+      .filter(t => t.length >= 2)
+      .map(t => t.map(p => [p.lng, p.lat]));
+    if (coordinates.length === 0) return null;
+    return {
+      type: 'Feature' as const,
+      properties: {},
+      geometry: { type: 'MultiLineString' as const, coordinates },
+    };
+  }, [trails]);
 
   // Null rather than an empty Feature when there is nothing to suggest, so the
   // layer is unmounted entirely instead of drawing a zero-length line.
@@ -346,6 +367,26 @@ export default function WalkMap({
         zoomEnabled={interactive}
       >
         {cameraStop && <Camera {...cameraStop} />}
+
+        {/* The archive web, first of all so everything draws over it. A single
+            muted stroke, never the cased yellow: that pairing marks the walk
+            being looked at, and it only carries that meaning while it stays
+            exclusive to it. Low opacity is doing real work here — one walk is a
+            whisper, and a route walked fifty times stacks into something solid,
+            so the map draws frequency without a heatmap. */}
+        {trailsGeoJson && (
+          <ShapeSource id="walk-trails" shape={trailsGeoJson as any}>
+            <LineLayer
+              id="walk-trails-layer"
+              style={{
+                lineColor: color.trail,
+                lineWidth: 2.5,
+                lineJoin: 'round',
+                lineCap: 'round',
+              }}
+            />
+          </ShapeSource>
+        )}
 
         {/* The suggested way, drawn BEFORE the walk so it sits underneath.
             Dashed electric blue so it cannot be mistaken for the yellow trace:

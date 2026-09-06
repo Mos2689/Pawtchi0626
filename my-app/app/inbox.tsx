@@ -72,7 +72,11 @@ export default function InboxScreen() {
       // push deep-links straight to this screen, so Home may never have mounted
       // to bind the store to the signed-in user. `hydrate` no-ops when the id is
       // already loaded, so the common path pays nothing.
-      void hydrate(user?.id ?? null).then(() => rebuild());
+      // `includeRemote: true` explicitly: periodic rebuilds elsewhere let the
+      // notification_history read age out for up to 30s, but this screen IS the
+      // history — opening it must show what the server has now, not what the
+      // bell last counted.
+      void hydrate(user?.id ?? null).then(() => rebuild({ includeRemote: true }));
       track('notification_center_opened', {});
     }, [rebuild, hydrate, user?.id, setSubscriptionSnapshot, status, daysLeft]),
   );
