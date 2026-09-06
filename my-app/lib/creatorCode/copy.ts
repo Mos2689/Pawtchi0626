@@ -57,9 +57,8 @@ export const REDEEM_FIELD_PLACEHOLDER = 'SARAHK';
 export const REDEEM_CTA = 'Unlock three months';
 export const REDEEM_CTA_WORKING = 'Opening Pawtchi Plus…';
 
-export const REDEEM_WORKING_TITLE = 'OPENING EVERYTHING';
-export const REDEEM_WORKING_BODY =
-  'Checking the code and bringing Pawtchi Plus into view.';
+export const REDEEM_WORKING_TITLE = 'UNLOCKING PREMIUM';
+export const REDEEM_WORKING_BODY = 'Checking your creator code.';
 
 /**
  * Sits under the field. Says the one thing people actually worry about before
@@ -124,7 +123,7 @@ export function redeemFailureCopy(
 // ── Success ─────────────────────────────────────────────────────────────────
 
 export const REDEEM_SUCCESS_EYEBROW = 'Pawtchi Plus';
-export const REDEEM_SUCCESS_TITLE = 'EVERYTHING’S OPEN';
+export const REDEEM_SUCCESS_TITLE = 'PREMIUM UNLOCKED';
 export const REDEEM_SUCCESS_NOTE = 'No charge. Nothing renews.';
 export const REDEEM_SUCCESS_BENEFITS = [
   'Food scans',
@@ -146,7 +145,7 @@ export function redeemSuccessBody(creatorName: string | null | undefined, until:
     : `Three months of Pawtchi Plus. Everything is open until ${date}.`;
 }
 
-export const REDEEM_SUCCESS_CTA = 'Explore Pawtchi Plus';
+export const REDEEM_SUCCESS_CTA = 'View my profile';
 
 // ── Membership card and paywall, for someone on granted access ──────────────
 

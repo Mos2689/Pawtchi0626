@@ -33,13 +33,14 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import Svg, { Path } from 'react-native-svg';
 import Animated, {
   Easing,
   FadeIn,
   FadeInDown,
   ZoomIn,
   cancelAnimation,
-  useAnimatedStyle,
+  useAnimatedProps,
   useReducedMotion,
   useSharedValue,
   withRepeat,
@@ -48,8 +49,7 @@ import Animated, {
 
 import { color, displayLine, font, motion, radius, space } from '../constants/design';
 import { TextField } from '../components/ui/TextField';
-import { BreathingPaw } from '../components/BreathingPaw';
-import { PawShower } from '../components/PawShower';
+import { lassoPath } from '../components/BrandLasso';
 import { useSubscription } from '../providers/SubscriptionProvider';
 import { track } from '../lib/analytics';
 import { redeemCreatorCode } from '../lib/creatorCode/client';
@@ -99,7 +99,6 @@ type Phase =
 export default function RedeemScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const reducedMotion = useReducedMotion();
   const { isPro, isPromoAccess, refresh, activatePromotionalAccess } = useSubscription();
 
   const [code, setCode] = useState('');
@@ -131,6 +130,14 @@ export default function RedeemScreen() {
     // have nothing to pop and the close button would silently do nothing.
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)' as never);
+  }, [router]);
+
+  const goToProfile = useCallback(() => {
+    // Remove both full-screen redemption and the paywall modal beneath it,
+    // while selecting Profile as the tab destination. Returning one level
+    // would expose the paywall's already-covered screen as an unnecessary
+    // second confirmation.
+    router.dismissTo('/(tabs)/profile' as never);
   }, [router]);
 
   const normalised = normalizeCreatorCode(code);
@@ -214,11 +221,10 @@ export default function RedeemScreen() {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <StatusBar style="light" />
-        <PawShower active={!reducedMotion} />
-        <Nav onClose={exit} />
+        <Nav onClose={goToProfile} />
         <SuccessContent creatorName={phase.creatorName} expiresAt={phase.expiresAt} />
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom + space.xl }]}>
-          <TouchableOpacity style={styles.cta} onPress={exit} activeOpacity={0.88}>
+          <TouchableOpacity style={styles.cta} onPress={goToProfile} activeOpacity={0.88}>
             <Text style={styles.ctaText}>{REDEEM_SUCCESS_CTA}</Text>
           </TouchableOpacity>
         </View>
@@ -315,43 +321,84 @@ export default function RedeemScreen() {
 }
 
 function WorkingContent() {
-  const reducedMotion = useReducedMotion();
-  const turn = useSharedValue(0);
-
-  useEffect(() => {
-    if (reducedMotion) return;
-    turn.value = withRepeat(
-      withTiming(1, { duration: 1400, easing: Easing.linear }),
-      -1,
-      false,
-    );
-    return () => cancelAnimation(turn);
-  }, [reducedMotion, turn]);
-
-  const orbitStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${turn.value * 360}deg` }],
-  }));
-
   return (
     <View style={styles.workingContent} accessibilityLiveRegion="polite">
-      <Animated.View entering={ZoomIn.duration(motion.duration.base)} style={styles.loaderStage}>
-        <View style={styles.loaderHalo} />
-        <Animated.View style={[styles.loaderOrbit, orbitStyle]}>
-          <View style={styles.loaderDot} />
-        </Animated.View>
-        <View style={styles.loaderCore}>
-          <BreathingPaw size={40} workingColor={color.yellow} />
-        </View>
-      </Animated.View>
       <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(80)}>
         <Text style={styles.workingTitle}>{REDEEM_WORKING_TITLE}</Text>
         <Text style={styles.workingBody}>{REDEEM_WORKING_BODY}</Text>
+        <LassoJourney mode="working" />
         <View style={styles.workingPill}>
           <View style={styles.workingPillDot} />
           <Text style={styles.workingPillText}>{REDEEM_CTA_WORKING}</Text>
         </View>
       </Animated.View>
     </View>
+  );
+}
+
+const AnimatedPath = Animated.createAnimatedComponent(Path);
+const LASSO_LENGTH = 430;
+const LASSO_D = lassoPath(320, 120, 38);
+
+function LassoJourney({ mode }: { mode: 'working' | 'complete' }) {
+  const reducedMotion = useReducedMotion();
+  const dashOffset = useSharedValue(mode === 'complete' ? LASSO_LENGTH : 0);
+
+  useEffect(() => {
+    if (reducedMotion) {
+      dashOffset.value = mode === 'complete' ? 0 : -145;
+      return;
+    }
+
+    if (mode === 'complete') {
+      dashOffset.value = withTiming(0, {
+        duration: motion.duration.ring,
+        easing: Easing.out(Easing.cubic),
+      });
+    } else {
+      dashOffset.value = withRepeat(
+        withTiming(-LASSO_LENGTH, { duration: 1450, easing: Easing.linear }),
+        -1,
+        false,
+      );
+    }
+    return () => cancelAnimation(dashOffset);
+  }, [dashOffset, mode, reducedMotion]);
+
+  const animatedProps = useAnimatedProps(() => ({
+    strokeDashoffset: dashOffset.value,
+  }));
+
+  return (
+    <Animated.View
+      entering={FadeIn.duration(motion.duration.base)}
+      style={[styles.lassoStage, mode === 'complete' && styles.lassoStageComplete]}
+    >
+      <Svg width="100%" height="100%" viewBox="0 0 320 120">
+        <Path
+          d={LASSO_D}
+          fill="none"
+          stroke={color.yellow}
+          strokeOpacity={mode === 'working' ? 0.14 : 0.18}
+          strokeWidth={mode === 'working' ? 2 : 7}
+          strokeLinecap="round"
+        />
+        <AnimatedPath
+          animatedProps={animatedProps}
+          d={LASSO_D}
+          fill="none"
+          stroke={color.yellow}
+          strokeWidth={mode === 'complete' ? 5 : 6}
+          strokeLinecap="round"
+          strokeDasharray={mode === 'complete' ? `${LASSO_LENGTH} ${LASSO_LENGTH}` : '92 338'}
+        />
+      </Svg>
+      {mode === 'complete' && (
+        <Animated.View entering={ZoomIn.delay(650).duration(motion.duration.fast)} style={styles.lassoCheck}>
+          <MaterialIcons name="check" size={16} color={color.navy} />
+        </Animated.View>
+      )}
+    </Animated.View>
   );
 }
 
@@ -370,18 +417,10 @@ function SuccessContent({
       contentContainerStyle={styles.successContent}
       showsVerticalScrollIndicator={false}
     >
-      <Animated.View entering={ZoomIn.springify().damping(13).stiffness(210)} style={styles.successMedallion}>
-        <View style={styles.successMedallionInner}>
-          <MaterialIcons name="pets" size={44} color={color.navy} />
-        </View>
-        <View style={styles.successCheck}>
-          <MaterialIcons name="check" size={16} color={color.navy} />
-        </View>
-      </Animated.View>
-
       <Animated.View entering={FadeInDown.duration(motion.duration.base).delay(80)}>
         <Text style={[styles.eyebrow, styles.successEyebrow]}>{REDEEM_SUCCESS_EYEBROW}</Text>
         <Text style={[styles.headline, styles.successHeadline]}>{REDEEM_SUCCESS_TITLE}</Text>
+        <LassoJourney mode="complete" />
         {!!expiresAt && (
           <Text style={[styles.body, styles.successBody]}>
             {redeemSuccessBody(creatorName, expiresAt)}
@@ -552,48 +591,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xxl,
     paddingBottom: 72,
   },
-  loaderStage: {
-    width: 156,
-    height: 156,
-    alignSelf: 'center',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: space.xxxl,
-  },
-  loaderHalo: {
-    position: 'absolute',
-    width: 156,
-    height: 156,
-    borderRadius: radius.pill,
-    backgroundColor: color.yellowSoft,
-  },
-  loaderOrbit: {
-    position: 'absolute',
-    width: 132,
-    height: 132,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: color.hairlineOnNavy,
-  },
-  loaderDot: {
-    position: 'absolute',
-    top: -5,
-    left: 61,
-    width: 10,
-    height: 10,
-    borderRadius: radius.pill,
-    backgroundColor: color.yellow,
-  },
-  loaderCore: {
-    width: 92,
-    height: 92,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: color.navyRaised,
-    borderWidth: 1,
-    borderColor: color.hairlineOnNavy,
-  },
   workingTitle: {
     ...displayLine(38),
     textAlign: 'center',
@@ -609,6 +606,31 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     textAlign: 'center',
     color: color.creamDim,
+  },
+  lassoStage: {
+    position: 'relative',
+    width: '100%',
+    height: 150,
+    alignSelf: 'center',
+    marginTop: space.xxl,
+  },
+  lassoStageComplete: {
+    height: 96,
+    marginTop: 0,
+    marginBottom: space.sm,
+  },
+  lassoCheck: {
+    position: 'absolute',
+    right: 0,
+    top: 43,
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.cream,
+    borderWidth: 3,
+    borderColor: color.navy,
   },
   workingPill: {
     alignSelf: 'center',
@@ -640,38 +662,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xxl,
     paddingTop: space.md,
     paddingBottom: space.xl,
-  },
-  successMedallion: {
-    width: 106,
-    height: 106,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: space.xl,
-    backgroundColor: color.yellowSoft,
-    borderWidth: 1,
-    borderColor: color.yellow,
-  },
-  successMedallionInner: {
-    width: 76,
-    height: 76,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: color.yellow,
-  },
-  successCheck: {
-    position: 'absolute',
-    right: 1,
-    bottom: 8,
-    width: 28,
-    height: 28,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: color.cream,
-    borderWidth: 3,
-    borderColor: color.navy,
   },
   successEyebrow: {
     textAlign: 'center',
