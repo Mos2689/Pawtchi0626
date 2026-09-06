@@ -55,6 +55,26 @@ export type AnalyticsEvent =
   // receives the bare name with no properties, as it does for every event that
   // has no entry in its own map.
   | 'purchase_conversion_unverified'
+  // ── Creator codes ──
+  //
+  // A separate funnel from the paywall's, and deliberately so: `variant` was
+  // the right call for the win-back because both arms are the same act at two
+  // prices, and both belong in one conversion rate. This is not that act. Nobody
+  // is buying anything, nothing is priced, and folding a redemption into
+  // `paywall_purchase_succeeded` would inflate the number the business is
+  // actually run on with people who paid nothing.
+  //
+  // `creator_code_rejected` carries a `reason` — the same set the edge function
+  // returns. It is the only honest read on whether a creator's audience is
+  // failing to redeem because the code is wrong, exhausted, or because they
+  // already subscribed, and those three point at three different conversations.
+  | 'creator_code_screen_viewed'
+  | 'creator_code_submitted'
+  | 'creator_code_redeemed'
+  | 'creator_code_rejected'
+  | 'creator_code_failed'
+  | 'creator_dashboard_viewed'
+  | 'creator_code_shared'
   // Auth
   | 'auth_screen_viewed'
   | 'auth_mode_switched'
@@ -227,6 +247,16 @@ export type AnalyticsEvent =
   | 'pawprint_milestone_celebrated'
   | 'pawprint_recap_viewed'
   | 'pawprint_teaser_tapped'
+  // The gallery's map view — the archive laid out where it happened rather than
+  // as a grid of route drawings. `viewed` carries the shape of what was drawn
+  // (walks, photo pins, tile pins) so we can tell an owner who has a rich map
+  // from one looking at three lines; `view_toggled` measures whether anyone
+  // goes back to the grid, which is the question that decides if map-default
+  // was right; `pin_opened` separates the two ways in, because a photo pin and
+  // a route tile are answering different impulses.
+  | 'memory_map_viewed'
+  | 'memory_map_view_toggled'
+  | 'memory_map_pin_opened'
   // Earned share-card templates — the walk-count-gated library. `unlocked`
   // fires when a gate is first crossed (persisted to pet_milestones),
   // `locked_preview_viewed` when the picker pages onto a template the user
@@ -347,12 +377,28 @@ export type AnalyticsEvent =
   //     view. Spots exists to feed the walking loop; if people browse parks and
   //     never walk to one, it is a directory, not a feature.
   //
-  //     There is deliberately no `directions_tapped` any more. The CTA that
-  //     fired it handed the owner to Apple or Google Maps, which is the exact
-  //     behaviour the metric above says we do not want to encourage. In its
-  //     place, `spot_walk_started` measures the tap that actually matters — a
-  //     tracked walk begun with a place in mind — and is the closest thing to
-  //     a single number for whether Spots is earning its position on Home.
+  //     `spot_walk_started` measures the tap that actually matters — a tracked
+  //     walk begun with a place in mind — and is the closest thing to a single
+  //     number for whether Spots is earning its position on Home.
+  //
+  //     A directions event was removed once, on the grounds that handing the
+  //     owner to Apple or Google Maps was the exact behaviour the metric above
+  //     says we do not want to encourage. `spot_directions_opened` reinstates
+  //     it, because that reasoning turned out to be measuring the wrong thing:
+  //     an owner who drives the dog to a beach an hour away and walks it there
+  //     is the BEST outcome Spots can produce, and it was invisible.
+  //
+  //     It is only legible as a pair. On its own the directions tap is still
+  //     ambiguous — it could be someone leaving. `spot_arrival_walk_started` is
+  //     the other half: a walk begun from the arrival prompt, which can only
+  //     happen if the owner drove somewhere and walked the dog when they got
+  //     there. Read as a ratio against `spot_directions_opened`, it answers the
+  //     question the deleted event could not: did the handoff come back?
+  //
+  //     Neither carries a coordinate, and the arrival event carries nothing at
+  //     all — the place is already described by the directions tap that armed
+  //     it, and repeating the category on arrival would say where a specific
+  //     person was standing at a specific minute.
   //
   //  2. **Is the data any good, and are we being a good OSM citizen?**
   //     `results_loaded` carries `cache_status` and `results_count`;
@@ -377,6 +423,8 @@ export type AnalyticsEvent =
   | 'spot_marker_viewed'
   | 'spot_details_opened'
   | 'spot_walk_started'
+  | 'spot_directions_opened'
+  | 'spot_arrival_walk_started'
   // First-walk intro video — the silent map demo shown once on Home after a
   // fresh dog owner completes onboarding. The funnel is viewed → (skipped |
   // completed → cta_clicked); `failed` is the honest coverage signal for

@@ -1,4 +1,9 @@
 import type { SubscriptionStatus } from '../providers/SubscriptionProvider';
+import {
+  PROMO_PLAN_LABEL,
+  PROMO_STATUS_LABEL,
+  promoAccessDetail,
+} from './creatorCode/copy';
 
 /**
  * Four states, because they are four different conversations.
@@ -24,12 +29,24 @@ import type { SubscriptionStatus } from '../providers/SubscriptionProvider';
  * word for word what someone currently enjoying everything sees. The one
  * moment the card had something urgent to say was the moment it said nothing.
  */
+/**
+ * `granted` is the sixth, and it exists because `isPro` used to mean exactly one
+ * thing — a paid store subscription — and now means two.
+ *
+ * Someone holding a creator code, or a comped creator, is `isPro` with no
+ * billing period, no renewal and nothing to manage. Folding them into `plus`
+ * printed "N days in this billing period" over access that has no billing
+ * period, under a "Manage" button that opens an empty App Store subscriptions
+ * page. Both are small lies about money, which is the worst category of thing
+ * for this card to be wrong about.
+ */
 export type ProfileMembershipTone =
   | 'loading'
   | 'free'
   | 'locked'
   | 'trial'
-  | 'plus';
+  | 'plus'
+  | 'granted';
 
 export interface ProfileMembershipPresentation {
   tone: ProfileMembershipTone;
@@ -50,6 +67,10 @@ interface ProfileMembershipInput {
   daysLeft: number | null;
   isPro: boolean;
   hasFullAccess: boolean;
+  /** Access was granted (creator code, or a comp), not purchased. */
+  isPromoAccess?: boolean;
+  /** When granted access ends. Only read for the `granted` tone. */
+  expiresAt?: Date | null;
 }
 
 function dayCount(days: number): string {
@@ -69,6 +90,8 @@ export function buildProfileMembershipPresentation({
   daysLeft,
   isPro,
   hasFullAccess,
+  isPromoAccess = false,
+  expiresAt = null,
 }: ProfileMembershipInput): ProfileMembershipPresentation {
   if (status === 'loading') {
     return {
@@ -82,6 +105,26 @@ export function buildProfileMembershipPresentation({
   }
 
   if (isPro) {
+    // Checked before `trial` and `plus`, because both of those would otherwise
+    // claim someone whose access was given rather than bought. Requires a
+    // date — without one there is nothing honest to say about when it ends, so
+    // it falls through to the ordinary paid copy rather than printing a blank.
+    if (isPromoAccess && expiresAt) {
+      return {
+        tone: 'granted',
+        planLabel: PROMO_PLAN_LABEL,
+        statusLabel: PROMO_STATUS_LABEL,
+        detail: promoAccessDetail(expiresAt),
+        // Deliberately null. There is no store subscription behind this, so a
+        // "Manage" button would open an empty App Store page — a dead end that
+        // reads as a billing bug.
+        actionLabel: null,
+        // Unlike a paid plan, this one genuinely is a deadline. Counting down
+        // to it is the honest thing, not a nudge toward cancelling.
+        daysLeft: daysLeft != null && daysLeft > 0 ? daysLeft : null,
+      };
+    }
+
     if (status === 'trial') {
       const remaining = daysLeft != null && daysLeft > 0
         ? `${dayCount(daysLeft)} left in your trial · Full access`

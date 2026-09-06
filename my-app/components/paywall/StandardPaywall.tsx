@@ -54,6 +54,7 @@ import { useSubscription } from '../../hooks/useSubscription';
 import { track } from '../../lib/analytics';
 import { recordPaywallInteraction } from '../../lib/proOffer/client';
 import { openManageSubscription } from '../../lib/manageSubscription';
+import { promoPaywallBody } from '../../lib/creatorCode/copy';
 import { BILLING_HELP_LABEL } from '../../lib/support/copy';
 import { FailureModal } from '../FailureModal';
 import { errorCopy, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../../lib/appError';
@@ -296,7 +297,10 @@ export function StandardPaywall() {
     const insets = useSafeAreaInsets();
     const router = useRouter();
     const activePet = useActivePetStore(s => s.activePet);
-    const { restorePurchases, purchasePackage, getOfferings, status, isPro, isFreemiumActive, daysSinceCreation } = useSubscription();
+    const {
+        restorePurchases, purchasePackage, getOfferings, status, isPro,
+        isFreemiumActive, daysSinceCreation, isPromoAccess, expiresAt,
+    } = useSubscription();
 
     const [purchasing, setPurchasing] = useState(false);
     const [packages, setPackages] = useState<PurchasesPackage[]>([]);
@@ -317,6 +321,11 @@ export function StandardPaywall() {
     const petPossessive = petName ? `${petName}'s` : "your pet's";
 
     const mode = deriveMode(status, isFreemiumActive, daysSinceCreation);
+
+    // Set only when access was GRANTED and we know when it ends. Both halves
+    // matter: without a date there is nothing honest to put on the screen, so
+    // the ordinary paid copy is the safer fallback.
+    const grantedUntil = isPromoAccess && expiresAt ? expiresAt : null;
 
     // A dismissal inside the 30-day freemium window is not a refusal — nothing
     // was being withheld. The eligibility rules count the two separately, and
@@ -488,17 +497,29 @@ export function StandardPaywall() {
                             {"YOU'RE\nALL SET."}
                         </Text>
                         <Text style={styles.subcopy}>
-                            {petName
-                                ? `You're already on Pawtchi Plus. ${petPossessive} full picture is unlocked.`
-                                : "You're already on Pawtchi Plus. Your pet's full picture is unlocked."}
+                            {/* Granted access — a creator code, or a comped
+                                creator — is `isPro` with no store subscription
+                                behind it. The paid copy would tell them their
+                                plan renews, which it does not. */}
+                            {grantedUntil
+                                ? promoPaywallBody(grantedUntil)
+                                : petName
+                                    ? `You're already on Pawtchi Plus. ${petPossessive} full picture is unlocked.`
+                                    : "You're already on Pawtchi Plus. Your pet's full picture is unlocked."}
                         </Text>
                     </Animated.View>
                 </View>
 
                 <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }]}>
-                    <TouchableOpacity style={styles.cta} onPress={openManageSubscription} activeOpacity={0.9}>
-                        <Text style={styles.ctaText}>Manage subscription</Text>
-                    </TouchableOpacity>
+                    {/* No "Manage subscription" on granted access. There is
+                        nothing at the store to manage, so the button would open
+                        an empty App Store subscriptions page — a dead end that
+                        reads as our billing being broken. */}
+                    {!grantedUntil && (
+                        <TouchableOpacity style={styles.cta} onPress={openManageSubscription} activeOpacity={0.9}>
+                            <Text style={styles.ctaText}>Manage subscription</Text>
+                        </TouchableOpacity>
+                    )}
                     <TouchableOpacity onPress={safeExit} style={styles.activeCloseBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                         <Text style={styles.activeCloseText}>Close</Text>
                     </TouchableOpacity>
@@ -697,6 +718,20 @@ export function StandardPaywall() {
 
                 {/* Footer links */}
                 <View style={styles.footerLinks}>
+                    {/* The one entry point that matters. This is the screen a
+                        creator's audience lands on the moment they hit anything
+                        gated, so it is where someone holding a code is actually
+                        looking — no new navigation, no onboarding step, and no
+                        prominence taken from the purchase this screen exists
+                        for. "Creator code", never "promo code": the latter is
+                        the App Store's own feature name. */}
+                    <TouchableOpacity
+                        onPress={() => router.push('/redeem' as never)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                        <Text style={styles.footerLink}>Have a creator code?</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.footerDot}>·</Text>
                     <TouchableOpacity onPress={handleRestore} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                         <Text style={styles.footerLink}>Restore purchase</Text>
                     </TouchableOpacity>

@@ -26,6 +26,25 @@ interface SubscriptionState {
     daysSinceCreation: number;
     isFreemiumActive: boolean;
     hasFullAccess: boolean;
+    /**
+     * Access came from a RevenueCat *promotional* entitlement — a creator code,
+     * or a comp we granted — rather than from a purchase.
+     *
+     * Surfaces need this because `isPro` has always implied "has a store
+     * subscription", and two screens act on that: the paywall offers "Manage
+     * subscription", and the membership card counts down a billing period.
+     * Neither exists behind a granted entitlement, so both would send someone
+     * to an empty App Store page or tell them about a renewal that will never
+     * happen.
+     */
+    isPromoAccess: boolean;
+    /**
+     * When the active entitlement ends, as a date rather than `daysLeft`'s
+     * count. Granted access is described by when it stops ("open until 6
+     * December"), which is a fact a person can plan around; "92 days left" is
+     * arithmetic they have to do themselves.
+     */
+    expiresAt: Date | null;
 }
 
 export interface SubscriptionContextValue extends SubscriptionState {
@@ -57,6 +76,8 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         daysSinceCreation: 0,
         isFreemiumActive: true,
         hasFullAccess: true,
+        isPromoAccess: false,
+        expiresAt: null,
     });
 
     // Fires the pro-offer entitlement mirror at most once per mount. The RC
@@ -88,7 +109,19 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
             // to close whether or not this device's owner ever opens the
             // paywall again. Best-effort by design; the live `isPro` check in
             // useProOffer is what actually keeps the screen away from a payer.
-            const everEntitled = !!customerInfo.entitlements.all[ENTITLEMENT_ID];
+            //
+            // Promotional entitlements are excluded, and that exclusion is
+            // load-bearing rather than tidy. A creator code — and the year we
+            // comp a creator so they can film the paid features — arrives here
+            // as an entitlement like any other. Counting it as "has subscribed"
+            // would permanently disqualify every one of those people from the
+            // win-back offer, and would report every creator as their own
+            // converted customer in get_creator_code_stats(), where
+            // `converted_to_paid` reads this exact column. The number that
+            // decides whether a collaboration gets renewed would be the number
+            // of people we gave it to for nothing.
+            const allEntitlement = customerInfo.entitlements.all[ENTITLEMENT_ID];
+            const everEntitled = !!allEntitlement && allEntitlement.store !== 'PROMOTIONAL';
             if (everEntitled && !entitlementMirroredRef.current) {
                 entitlementMirroredRef.current = true;
                 recordEntitlementSeen();
@@ -110,11 +143,15 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
                     daysSinceCreation,
                     isFreemiumActive,
                     hasFullAccess: true, // a subscriber always has access
+                    isPromoAccess: entitlement.store === 'PROMOTIONAL',
+                    expiresAt: expirationDate,
                 });
             } else {
                 // Distinguish "subscription lapsed" from "never subscribed".
-                const allEntitlements = customerInfo.entitlements.all[ENTITLEMENT_ID];
-                const hasExpired = allEntitlements && !allEntitlements.isActive;
+                // A creator's three months running out lands here too, and
+                // 'expired' is the right answer for them: they did have Plus,
+                // and it did end.
+                const hasExpired = allEntitlement && !allEntitlement.isActive;
 
                 setState({
                     status: hasExpired ? 'expired' : 'none',
@@ -125,6 +162,8 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
                     isFreemiumActive,
                     // No gating during the first 30 days; gated only once freemium has elapsed.
                     hasFullAccess: isFreemiumActive,
+                    isPromoAccess: false,
+                    expiresAt: null,
                 });
             }
         },
@@ -207,6 +246,12 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
                         isTrialActive: false,
                         isPro: true,
                         hasFullAccess: true,
+                        // Cleared rather than carried over from `prev`. We are
+                        // claiming access without evidence, and the promo
+                        // surfaces render an end date — carrying a stale flag
+                        // here would put "open until <no date>" on the card.
+                        isPromoAccess: false,
+                        expiresAt: null,
                     }));
                 }
             }

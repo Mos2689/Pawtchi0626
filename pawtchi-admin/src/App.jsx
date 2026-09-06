@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom';
 
 import { supabase } from './lib/supabase';
 import { isAdmin } from './lib/api';
 import Login from './pages/Login.jsx';
 import Inbox from './pages/Inbox.jsx';
 import Thread from './pages/Thread.jsx';
+import Creators from './pages/Creators.jsx';
 
 /**
  * Auth shell.
@@ -90,6 +91,10 @@ export default function App() {
       <header className="topbar">
         <span className="wordmark">PAWTCHI</span>
         <span className="topbar-tag">admin</span>
+        {/* Two tools, one shell. These sit before the spacer so they read as
+            navigation rather than as more account controls. */}
+        <NavLink to="/" end className="topbar-link">Inbox</NavLink>
+        <NavLink to="/creators" className="topbar-link">Creators</NavLink>
         <span className="topbar-spacer" />
         <span className="topbar-user">{session.user.email}</span>
         <button className="btn btn-ghost btn-sm" onClick={signOut}>Sign out</button>
@@ -97,6 +102,7 @@ export default function App() {
 
       <Routes>
         <Route path="/" element={<Inbox />} />
+        <Route path="/creators" element={<Creators />} />
         <Route path="/:kind/:id" element={<Thread />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

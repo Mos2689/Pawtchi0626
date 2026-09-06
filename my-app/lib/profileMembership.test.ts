@@ -170,4 +170,76 @@ describe('buildProfileMembershipPresentation', () => {
       expect(text).not.toMatch(/[$€£₹]|\d+\s*%|free trial|per month|\/mo|year/i);
     }
   });
+
+  // ── Granted access: a creator code, or a comped creator ──────────────────
+  //
+  // `isPro` used to mean exactly one thing. These tests pin the two places
+  // where treating granted access as a purchase told somebody something untrue
+  // about their money.
+
+  describe('granted access', () => {
+    const GRANTED = {
+      status: 'active',
+      daysLeft: 88,
+      isPro: true,
+      hasFullAccess: true,
+      isPromoAccess: true,
+      expiresAt: new Date(2026, 11, 6),
+    } as const;
+
+    test('gets its own tone rather than reading as a paid plan', () => {
+      expect(buildProfileMembershipPresentation(GRANTED).tone).toBe('granted');
+    });
+
+    test('offers no action, because there is no subscription to manage', () => {
+      // The failure this prevents: "Manage" opening an empty App Store
+      // subscriptions page, which reads as our billing being broken.
+      expect(buildProfileMembershipPresentation(GRANTED).actionLabel).toBeNull();
+    });
+
+    test('says when access ends, not that it renews', () => {
+      const { detail } = buildProfileMembershipPresentation(GRANTED);
+      expect(detail).toContain('6 December');
+      expect(detail.toLowerCase()).not.toContain('billing');
+      expect(detail.toLowerCase()).not.toContain('renew');
+    });
+
+    test('counts down, unlike a paid plan', () => {
+      expect(buildProfileMembershipPresentation(GRANTED).daysLeft).toBe(88);
+    });
+
+    test('without an end date it falls back to the paid copy rather than a blank', () => {
+      // A promo flag with no expiry means we do not actually know when this
+      // stops. Printing "open until " with nothing after it is worse than
+      // showing the ordinary Plus card.
+      const presentation = buildProfileMembershipPresentation({
+        ...GRANTED,
+        expiresAt: null,
+      });
+      expect(presentation.tone).toBe('plus');
+      expect(presentation.detail).not.toContain('until');
+    });
+
+    test('a real subscriber is never given the granted tone', () => {
+      for (const status of ['trial', 'active'] as const) {
+        const presentation = buildProfileMembershipPresentation({
+          status,
+          daysLeft: 7,
+          isPro: true,
+          hasFullAccess: true,
+          isPromoAccess: false,
+          expiresAt: new Date(2026, 11, 6),
+        });
+        expect(presentation.tone).not.toBe('granted');
+        expect(presentation.actionLabel).toBe('Manage');
+      }
+    });
+
+    test('states no price either', () => {
+      const { planLabel, statusLabel, detail, actionLabel } =
+        buildProfileMembershipPresentation(GRANTED);
+      const text = [planLabel, statusLabel, detail, actionLabel].join(' ');
+      expect(text).not.toMatch(/[$€£₹]|\d+\s*%|free trial|per month|\/mo/i);
+    });
+  });
 });

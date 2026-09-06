@@ -56,6 +56,8 @@ import { isAssessableWeightKg } from '../../lib/weightPlan';
 import { TAB_BAR_CLEARANCE } from '../../components/navigation/SplitTabBar';
 import { ProfileMembershipCard } from '../../components/ProfileMembershipCard';
 import { buildProfileMembershipPresentation } from '../../lib/profileMembership';
+import { loadMyCreatorCode, type MyCreatorCode } from '../../lib/creatorCode/client';
+import { creatorRedemptionLine } from '../../lib/creatorCode/copy';
 
 // Profile — the pet's identity card. A navy hero carries who they are; the
 // light sections below are quiet, single-recipe rows. One yellow per surface:
@@ -108,7 +110,34 @@ export default function ProfileScreen() {
   const fetchPantry = useActivePetStore(s => s.fetchPantry);
   const togglePantryFavorite = useActivePetStore(s => s.togglePantryFavorite);
   const setPantryExpiry = useActivePetStore(s => s.setPantryExpiry);
-  const { status: subStatus, daysLeft: subDaysLeft, isPro, hasFullAccess } = useSubscription();
+  const {
+    status: subStatus,
+    daysLeft: subDaysLeft,
+    isPro,
+    hasFullAccess,
+    isPromoAccess,
+    expiresAt: subExpiresAt,
+  } = useSubscription();
+
+  // Null for very nearly every account, and that is the whole mechanism: the
+  // Creator row renders only when this resolves to a row, so there is no
+  // "is a creator" flag anywhere that could disagree with the code table.
+  //
+  // Fetched once per mount rather than on focus. The count moves when someone
+  // else redeems, not as a result of anything the creator just did on this
+  // screen, so re-fetching every time Profile comes forward would be a request
+  // per tab switch for a number that almost never changed.
+  const [myCreatorCode, setMyCreatorCode] = useState<MyCreatorCode | null>(null);
+  useEffect(() => {
+    let alive = true;
+    loadMyCreatorCode().then(row => {
+      if (alive) setMyCreatorCode(row);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const membershipImpressionRef = useRef<string | null>(null);
   useEffect(() => {
     if (subStatus === 'loading') return;
@@ -133,9 +162,13 @@ export default function ProfileScreen() {
     track('profile_membership_tapped', {
       plan: isPro ? 'plus' : 'free',
       subscription_status: subStatus,
-      action: isPro ? 'manage' : 'explore',
+      action: isPromoAccess ? 'granted' : isPro ? 'manage' : 'explore',
     });
-    if (!isPro) {
+    // Granted access — a creator code, or a comp — has no store subscription
+    // behind it, so both branches below are wrong for it: there is nothing to
+    // manage and nobody is leaving anything. The paywall knows this state and
+    // explains it, which makes it the only honest destination.
+    if (!isPro || isPromoAccess) {
       router.push({ pathname: '/paywall', params: { source: 'profile_membership' } } as never);
       return;
     }
@@ -977,6 +1010,8 @@ export default function ProfileScreen() {
     daysLeft: subDaysLeft,
     isPro,
     hasFullAccess,
+    isPromoAccess,
+    expiresAt: subExpiresAt,
   });
   const weightPlan = activePet
     ? weightPlanViewModelFromRecord(activePet)
@@ -1390,6 +1425,19 @@ export default function ProfileScreen() {
             onPress={() => router.push('/notifications' as any)}
           />
           <Row icon="group-add" label="Invite a friend" onPress={() => router.push('/invite' as any)} />
+          {/* Only for accounts with a linked creator code — get_my_creator_code()
+              returns nothing for everyone else, which is why there is no
+              separate "is a creator" flag to keep in sync with the code table.
+              Sits beside Invite because it is the same act: handing Pawtchi to
+              someone, at a different scale. */}
+          {!!myCreatorCode && (
+            <Row
+              icon="campaign"
+              label="Your creator code"
+              sub={creatorRedemptionLine(myCreatorCode.redemptionsGranted)}
+              onPress={() => router.push('/creator' as any)}
+            />
+          )}
           {/* The two human doors sit together, functional first: support is for
               "something is wrong", the letter for "here is what I think". */}
           <Row

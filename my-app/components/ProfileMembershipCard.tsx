@@ -30,6 +30,10 @@ interface ProfileMembershipCardProps {
  *   plus   Navy. A different substance entirely, echoing the profile header
  *          above it. It sells nothing — it has nothing left to sell — it just
  *          confirms, quietly and expensively, that this account is different.
+ *   granted A creator code, or a comped creator. The same navy, because they do
+ *          have everything — but with the trial's countdown and no action at
+ *          all. There is no store subscription behind granted access, so
+ *          "Manage" would open an empty App Store page.
  *
  * ── The line that is not crossed ──
  * No prices, no trial lengths, no "50% off" anywhere in here. Those must come
@@ -46,10 +50,22 @@ export function ProfileMembershipCard({
   const isFree = presentation.tone === 'free';
   const isLocked = presentation.tone === 'locked';
   const isLoading = presentation.tone === 'loading';
+  /**
+   * A creator code, or a comped creator. Wears the navy of `plus` — the person
+   * does have everything — but takes the trial's countdown, because unlike a
+   * paid plan this one genuinely ends on a date.
+   */
+  const isGranted = presentation.tone === 'granted';
   /** Both states where the card is asking, and so both that carry a button. */
   const isOffering = isFree || isLocked;
-  const accessibilityAction =
-    isPlus || isTrial ? 'Manage subscription' : 'Explore Pawtchi Plus';
+  /** The two navy states. Same material, different reason for being there. */
+  const isEarned = isPlus || isGranted;
+  const showCountdown = (isTrial || isGranted) && presentation.daysLeft != null;
+  const accessibilityAction = isGranted
+    ? 'Opens Pawtchi Plus'
+    : isPlus || isTrial
+      ? 'Manage subscription'
+      : 'Explore Pawtchi Plus';
 
   return (
     <TouchableOpacity
@@ -58,7 +74,7 @@ export function ProfileMembershipCard({
         isFree && styles.cardFree,
         isLocked && styles.cardLocked,
         isTrial && styles.cardTrial,
-        isPlus && styles.cardPlus,
+        isEarned && styles.cardPlus,
         isLoading && styles.cardLoading,
       ]}
       activeOpacity={0.78}
@@ -70,18 +86,24 @@ export function ProfileMembershipCard({
         isLoading ? '' : accessibilityAction
       }`}
       accessibilityHint={
-        isPlus
-          ? 'Opens subscription management'
-          : 'Opens Pawtchi Plus plans and benefits'
+        isGranted
+          ? 'Opens Pawtchi Plus, which explains this access'
+          : isPlus
+            ? 'Opens subscription management'
+            : 'Opens Pawtchi Plus plans and benefits'
       }
     >
       {/* On a trial the mark's job goes to the number — days remaining is the
           single most useful thing this card can say, and a medal icon beside it
-          would be decoration competing with information. */}
-      {isTrial && presentation.daysLeft != null ? (
+          would be decoration competing with information. Granted access gets the
+          same treatment for the same reason: it has an end date, and a medal
+          would say "you have this" while hiding "until when". */}
+      {showCountdown ? (
         <View style={styles.countdown}>
-          <Text style={styles.countdownNumber}>{presentation.daysLeft}</Text>
-          <Text style={styles.countdownUnit}>
+          <Text style={[styles.countdownNumber, isGranted && styles.countdownOnNavy]}>
+            {presentation.daysLeft}
+          </Text>
+          <Text style={[styles.countdownUnit, isGranted && styles.countdownOnNavy]}>
             {presentation.daysLeft === 1 ? 'day' : 'days'}
           </Text>
         </View>
@@ -89,7 +111,7 @@ export function ProfileMembershipCard({
         <View
           style={[
             styles.mark,
-            isPlus && styles.markPlus,
+            isEarned && styles.markPlus,
             isLocked && styles.markLocked,
             isTrial && styles.markTrial,
             isLoading && styles.markLoading,
@@ -100,21 +122,21 @@ export function ProfileMembershipCard({
               isLoading ? 'more-horiz' : isLocked ? 'lock-outline' : 'workspace-premium'
             }
             size={21}
-            color={isPlus ? color.yellow : isLoading ? color.slateFaint : color.navy}
+            color={isEarned ? color.yellow : isLoading ? color.slateFaint : color.navy}
           />
         </View>
       )}
 
       <View style={styles.copyBlock}>
         <View style={styles.titleRow}>
-          <Text style={[styles.planLabel, isPlus && styles.planLabelPlus]}>
+          <Text style={[styles.planLabel, isEarned && styles.planLabelPlus]}>
             {presentation.planLabel}
           </Text>
           {!!presentation.statusLabel && (
             <View
               style={[
                 styles.statusPill,
-                isPlus && styles.statusPillPlus,
+                isEarned && styles.statusPillPlus,
                 isLocked && styles.statusPillLocked,
                 isTrial && styles.statusPillTrial,
               ]}
@@ -122,7 +144,7 @@ export function ProfileMembershipCard({
               <Text
                 style={[
                   styles.statusText,
-                  isPlus && styles.statusTextPlus,
+                  isEarned && styles.statusTextPlus,
                   isLocked && styles.statusTextLocked,
                   isTrial && styles.statusTextTrial,
                 ]}
@@ -132,7 +154,7 @@ export function ProfileMembershipCard({
             </View>
           )}
         </View>
-        <Text style={[styles.detail, isPlus && styles.detailPlus]} numberOfLines={2}>
+        <Text style={[styles.detail, isEarned && styles.detailPlus]} numberOfLines={2}>
           {presentation.detail}
         </Text>
       </View>
@@ -148,13 +170,13 @@ export function ProfileMembershipCard({
           </View>
         ) : (
           <View style={styles.action}>
-            <Text style={[styles.actionText, isPlus && styles.actionTextPlus]}>
+            <Text style={[styles.actionText, isEarned && styles.actionTextPlus]}>
               {presentation.actionLabel}
             </Text>
             <MaterialIcons
               name="chevron-right"
               size={18}
-              color={isPlus ? color.creamDim : color.navy}
+              color={isEarned ? color.creamDim : color.navy}
             />
           </View>
         ))}
@@ -231,6 +253,14 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 13,
     color: color.alertDeep,
+  },
+  /**
+   * The countdown on the navy card. Amber on navy is barely legible and reads as
+   * a warning; on granted access nothing is wrong, so it takes the brand yellow
+   * that already carries the mark on this material.
+   */
+  countdownOnNavy: {
+    color: color.yellow,
   },
   mark: {
     width: 42,

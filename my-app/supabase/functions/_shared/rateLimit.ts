@@ -123,4 +123,8 @@ export const RATE_LIMITS: Record<string, number> = {
   // at all — so this ceiling is about stopping abuse of OUR upstream quota,
   // not about pacing genuine use.
   'nearby-spots': 40,
+  // A creator code is typed once, correctly or not. Ten an hour leaves room for
+  // typos and a retry after a failed grant, and makes brute-forcing the code
+  // space (36^3 at the shortest permitted length) pointless.
+  'redeem-creator-code': 10,
 };

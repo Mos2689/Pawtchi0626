@@ -158,3 +158,119 @@ export async function signedAttachmentUrl(path) {
   if (error) return null;
   return data?.signedUrl ?? null;
 }
+
+// ── Creator codes ───────────────────────────────────────────────────────────
+//
+// The whole management surface for the creator programme. Onboarding a creator
+// is a row, a comp, and nothing else — no App Store Connect, no Play Console,
+// no build. Everything below is admin-gated in the database (`is_admin()`), not
+// here: this bundle ships the anon key, so hiding a button is not access
+// control.
+
+/** Every code with its redemption and conversion counts. */
+export async function fetchCreatorCodes() {
+  const { data, error } = await supabase.rpc('get_creator_code_stats');
+  if (error) throw translateCreator(error);
+  return (data ?? []).map((r) => ({
+    code: r.code,
+    creatorName: r.creator_name,
+    creatorHandle: r.creator_handle,
+    creatorOwnerId: r.creator_owner_id,
+    creatorEmail: r.creator_email,
+    isActive: r.is_active,
+    duration: r.duration,
+    maxRedemptions: r.max_redemptions,
+    expiresAt: r.expires_at,
+    compExpiresAt: r.comp_expires_at,
+    redemptionsGranted: r.redemptions_granted,
+    redemptionsFailed: r.redemptions_failed,
+    convertedToPaid: r.converted_to_paid,
+    createdAt: r.created_at,
+  }));
+}
+
+/**
+ * Resolve a creator's email to their account id.
+ *
+ * Returns null when there is no such account, which is a normal state rather
+ * than an error: deals get agreed before the creator has signed up, and the
+ * code can be created unlinked and linked later.
+ */
+export async function findUserIdByEmail(email) {
+  const { data, error } = await supabase.rpc('find_user_id_by_email', { p_email: email });
+  if (error) throw translateCreator(error);
+  return data ?? null;
+}
+
+export async function createCreatorCode({
+  code,
+  creatorName,
+  creatorHandle,
+  creatorOwnerId,
+  duration,
+  maxRedemptions,
+  expiresAt,
+  note,
+}) {
+  const { error } = await supabase.from('creator_codes').insert({
+    // Uppercased here so the CHECK constraint's message never reaches a human.
+    // The database normalises on read; this is about the write not failing on a
+    // lowercase code somebody typed.
+    code: (code ?? '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase(),
+    creator_name: creatorName,
+    creator_handle: creatorHandle || null,
+    creator_owner_id: creatorOwnerId || null,
+    duration: duration || 'three_month',
+    max_redemptions: maxRedemptions ? Number(maxRedemptions) : null,
+    expires_at: expiresAt || null,
+    note: note || null,
+  });
+  if (error) throw translateCreator(error);
+}
+
+export async function setCreatorCodeActive(code, isActive) {
+  const { error } = await supabase
+    .from('creator_codes')
+    .update({ is_active: isActive, updated_at: new Date().toISOString() })
+    .eq('code', code);
+  if (error) throw translateCreator(error);
+}
+
+/**
+ * Gives the creator their own year of Plus.
+ *
+ * A creator cannot make content about features they cannot see, so this is a
+ * precondition of the collaboration rather than a courtesy. It writes to
+ * creator_codes.comp_*, never to the redemptions table — a comp counted as a
+ * redemption would put every creator inside their own conversion numbers.
+ */
+export async function grantCreatorComp(code) {
+  const { data, error } = await supabase.functions.invoke('grant-creator-comp', {
+    body: { code },
+  });
+  if (error) throw new Error('The comp did not go through. Try again in a moment.');
+  if (data?.reason === 'not_linked') {
+    throw new Error(
+      'This code has no Pawtchi account linked to it yet. Add their email to the code first.',
+    );
+  }
+  if (!data?.success) throw new Error('The comp did not go through. Try again in a moment.');
+  return data.expires_at ?? null;
+}
+
+function translateCreator(error) {
+  const msg = error?.message ?? '';
+  if (msg.includes('forbidden')) {
+    return new Error('Your account is not on the admin list any more. Sign out and back in.');
+  }
+  if (msg.includes('creator_codes_pkey') || msg.includes('duplicate key')) {
+    return new Error('That code already exists. Codes are unique across every creator.');
+  }
+  if (msg.includes('creator_codes_code_check')) {
+    return new Error('Codes are 3 to 24 letters and digits. No spaces or punctuation.');
+  }
+  if (msg.includes('creator_codes_creator_owner_id_key')) {
+    return new Error('That account already has a code. One code per creator.');
+  }
+  return new Error('That did not save. Nothing was lost — try again in a moment.');
+}
