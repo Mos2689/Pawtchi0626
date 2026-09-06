@@ -10,6 +10,15 @@
 const ALLOWED_ORIGINS = [
   'https://pawtchi.com',
   'https://www.pawtchi.com',
+  // The admin panel. It is a BROWSER client, which makes it the only caller
+  // that CORS actually governs — every other consumer of these functions is the
+  // native app, where CORS does not apply at all. That is why this omission
+  // stayed invisible until the first admin-triggered edge function
+  // (grant-creator-comp): the preflight returned 200 but carried
+  // `Access-Control-Allow-Origin: https://pawtchi.com` (the fallback below), so
+  // the browser refused to send the POST. Three preflights, no request, and a
+  // generic "did not go through" in the UI.
+  'https://admin.pawtchi.com',
   'http://localhost:8081',   // Expo dev (Metro)
   'http://localhost:19006',  // Expo web dev
   'http://localhost:5173',   // Vite dev server
