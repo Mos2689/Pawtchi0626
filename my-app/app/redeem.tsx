@@ -227,7 +227,14 @@ export default function RedeemScreen() {
         <Nav onClose={exit} />
       </View>
 
+      {/* `style={flex:1}` is not decoration. Without it a ScrollView in a flex
+          column sizes to its CONTENT rather than to the space left over, so it
+          never scrolls: everything past the fold is clipped and the CTA bar
+          below is pushed off-screen. With a 46pt display headline above it, the
+          field itself was the thing that fell off the bottom — the screen
+          opened, the impression fired, and there was no input to tap. */}
       <ScrollView
+        style={styles.scrollView}
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -313,7 +320,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: space.xl,
   },
+  /** Bounds the scroller to the space between the nav and the CTA bar. */
+  scrollView: {
+    flex: 1,
+  },
   scroll: {
+    // flexGrow, not flex: the content must be allowed to exceed the viewport on
+    // a small screen (that is the whole point of scrolling) while still filling
+    // it when it is shorter.
+    flexGrow: 1,
     paddingHorizontal: space.xxl,
     paddingTop: space.xxl,
     paddingBottom: space.xxxl,
@@ -338,7 +353,12 @@ const styles = StyleSheet.create({
   headline: {
     // displayLine carries the family, the size and the 1.2 line-height ratio
     // Bebas needs to clear its ascenders. Never hand-write a lineHeight here.
-    ...displayLine(46),
+    //
+    // 38 rather than the 46 this started at, and than app/creator.tsx uses. This
+    // screen has one job and one interactive element, so the headline competing
+    // for vertical space with the field is a straight loss: the point is to be
+    // able to type a code without scrolling to find where.
+    ...displayLine(38),
     letterSpacing: 0.5,
     color: color.cream,
     marginBottom: space.lg,
@@ -350,7 +370,7 @@ const styles = StyleSheet.create({
     color: color.creamDim,
   },
   fieldBlock: {
-    marginTop: space.xxxl,
+    marginTop: space.xxl,
   },
   fieldLabel: {
     fontFamily: font.semibold,
