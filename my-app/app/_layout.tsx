@@ -401,9 +401,16 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
-        {/* Pushed from the paywall footer, so a card rather than a modal —
-            stacking a modal on the modal paywall traps the close gesture. */}
-        <Stack.Screen name="redeem" options={{ presentation: 'card', headerShown: false }} />
+        {/* fullScreenModal, NOT card, and this is the whole reason it works.
+            The paywall is presentation: 'modal'. A 'card' pushed while a modal
+            is presented lands in the stack UNDERNEATH it — the screen opens
+            behind the paywall and looks like nothing happened. (/privacy avoids
+            this only by never being registered here at all.) A modal presents
+            above a modal, and full-screen rather than a stacked sheet because
+            this is a focused single-field task, not a peek at the layer below.
+            /redeem is pushed from the paywall footer and nowhere else, so this
+            presentation has no other entry point to regress. */}
+        <Stack.Screen name="redeem" options={{ presentation: 'fullScreenModal', headerShown: false }} />
         <Stack.Screen name="creator" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="walk" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="walk-story" options={{ presentation: 'fullScreenModal', headerShown: false, animation: 'fade' }} />
@@ -417,7 +424,13 @@ function RootLayoutNav() {
             white ground and two-colour system, different voice — the team
             rather than the founders. All three are operational surfaces. */}
         <Stack.Screen name="support/index" options={{ presentation: 'card', headerShown: false }} />
-        <Stack.Screen name="support/new" options={{ presentation: 'card', headerShown: false }} />
+        {/* Same fix, same reason: reached from the paywall's billing-help
+            link, where a card opened behind the paywall. It is ALSO reached
+            from Profile via support/index, where it used to push; it now covers
+            instead. That is a deliberate trade — a compose screen reads fine as
+            a cover, and one presentation that works everywhere beats two that
+            disagree about which surface launched it. */}
+        <Stack.Screen name="support/new" options={{ presentation: 'fullScreenModal', headerShown: false }} />
         <Stack.Screen name="support/[id]" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="notifications" options={{ presentation: 'card', headerShown: false }} />
         {/* The center. `notifications` above is the settings screen — the two
