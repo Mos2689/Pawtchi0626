@@ -47,7 +47,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 38,
+      "versionCode": 93,
       "permissions": [
         "android.permission.INTERNET"
       ],

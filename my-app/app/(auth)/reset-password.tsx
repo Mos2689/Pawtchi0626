@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -52,6 +53,37 @@ export default function ResetPasswordScreen() {
   // saving the password should let the user retry updateUser WITHOUT re-entering
   // (and re-consuming) the one-shot code.
   const codeVerified = useRef(false);
+  const scrollRef = useRef<ScrollView>(null);
+
+  // Android only: reset scroll when keyboard dismisses
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    });
+    return () => hide.remove();
+  }, []);
+
+  const handlePasswordFocus = () => {
+    if (Platform.OS !== 'android') return;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: 120, animated: true });
+    }, 60);
+  };
+
+  const handleConfirmFocus = () => {
+    if (Platform.OS !== 'android') return;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: 160, animated: true });
+    }, 60);
+  };
+
+  const handleTopFocus = () => {
+    if (Platform.OS !== 'android') return;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    }, 60);
+  };
 
   // The recovery latch must never outlive this screen — clear it on unmount so
   // a back-swipe mid-flow can't leave the auth gate frozen.
@@ -183,12 +215,16 @@ export default function ResetPasswordScreen() {
     <View style={styles.container}>
       <StatusBar style="dark" />
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
         <ScrollView
+          ref={scrollRef}
           style={{ flex: 1 }}
-          contentContainerStyle={{ flexGrow: 1 }}
+          contentContainerStyle={[
+            { flexGrow: 1 },
+            Platform.OS === 'android' && { paddingBottom: 140 },
+          ]}
           bounces={false}
           keyboardShouldPersistTaps="handled"
         >
@@ -225,6 +261,7 @@ export default function ResetPasswordScreen() {
                     placeholderTextColor={color.slateFaint}
                     value={email}
                     onChangeText={(v) => { clearError(); setEmail(v); }}
+                    onFocus={handleTopFocus}
                     autoCapitalize="none"
                     keyboardType="email-address"
                   />
@@ -240,6 +277,7 @@ export default function ResetPasswordScreen() {
                       placeholderTextColor={color.slateFaint}
                       value={code}
                       onChangeText={(v) => { clearError(); setCode(v.replace(/[^0-9]/g, '').slice(0, CODE_LENGTH)); }}
+                      onFocus={handleTopFocus}
                       keyboardType="number-pad"
                       maxLength={CODE_LENGTH}
                     />
@@ -256,6 +294,7 @@ export default function ResetPasswordScreen() {
                       placeholderTextColor={color.slateFaint}
                       value={password}
                       onChangeText={(v) => { clearError(); setPassword(v); }}
+                      onFocus={handlePasswordFocus}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
                     />
@@ -282,6 +321,7 @@ export default function ResetPasswordScreen() {
                       placeholderTextColor={color.slateFaint}
                       value={confirm}
                       onChangeText={(v) => { clearError(); setConfirm(v); }}
+                      onFocus={handleConfirmFocus}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
                     />

@@ -1551,7 +1551,10 @@ export default function ProfileScreen() {
 
       {/* Edit Profile Modal */}
       <Modal visible={editModalVisible} animationType="slide" transparent={true}>
-        <View style={styles.editModalOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.editModalOverlay}
+        >
           <View style={styles.editModalContent}>
             <View style={styles.editModalHeader}>
               <Text style={styles.editModalTitle}>Edit profile</Text>
@@ -1594,7 +1597,7 @@ export default function ProfileScreen() {
               />
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* BCS Picker Modal */}
@@ -1662,7 +1665,7 @@ export default function ProfileScreen() {
       {/* Chips Picker Modal — allergies, medical conditions, parent title */}
       <Modal visible={!!chipsKind} animationType="slide" transparent onRequestClose={closeChipsPicker}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.editModalOverlay}
         >
           <View style={[styles.editModalContent, { maxHeight: '88%' }]}>
@@ -1777,7 +1780,7 @@ export default function ProfileScreen() {
 
       {/* Inline Edit Modal */}
       <Modal visible={inlineEditVisible} animationType="slide" transparent={true}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.editModalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.editModalOverlay}>
           <View style={styles.editModalContent}>
             <View style={styles.editModalHeader}>
               <Text style={styles.editModalTitle}>Edit {inlineEditField?.label?.toLowerCase()}</Text>

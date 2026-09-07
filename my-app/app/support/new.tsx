@@ -107,6 +107,7 @@ export default function NewSupportRequestScreen() {
   // not the same intent as starting to write, and conflating them would inflate
   // the funnel's most important step. (Same reasoning as letter/compose.tsx.)
   const startedRef = useRef(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   const trimmed = body.trim();
   const canSend = trimmed.length > 0 && !sending;
@@ -240,7 +241,11 @@ export default function NewSupportRequestScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.scroll,
+            Platform.OS === 'android' && { paddingBottom: 140 },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -298,6 +303,11 @@ export default function NewSupportRequestScreen() {
                   style={styles.input}
                   value={body}
                   onChangeText={handleChange}
+                  onFocus={() => {
+                    if (Platform.OS === 'android') {
+                      setTimeout(() => scrollRef.current?.scrollTo({ y: 110, animated: true }), 60);
+                    }
+                  }}
                   multiline
                   maxLength={SUPPORT_MAX_CHARS}
                   placeholder={topicCopy.placeholder}

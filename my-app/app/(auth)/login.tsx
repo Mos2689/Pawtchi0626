@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -66,6 +66,7 @@ export default function LoginScreen() {
   // lands unscrolled on a viewport the fixed 380pt design overflowed. Measured
   // rather than tabulated because the content height moves with the mode
   // toggle, the font scale and the copy. See lib/ui/authHeroHeight.ts.
+  const scrollRef = useRef<ScrollView>(null);
   const { height: windowHeight } = useWindowDimensions();
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -76,12 +77,29 @@ export default function LoginScreen() {
   React.useEffect(() => {
     if (!IS_ANDROID) return;
     const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardOpen(true));
-    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardOpen(false));
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardOpen(false);
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    });
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
+
+  const handlePasswordFocus = () => {
+    if (!IS_ANDROID) return;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: 150, animated: true });
+    }, 60);
+  };
+
+  const handleEmailFocus = () => {
+    if (!IS_ANDROID) return;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    }, 60);
+  };
 
   // The measurement covers the content's children plus its own bottom padding,
   // which is where the navigation-bar inset lives.
@@ -229,8 +247,12 @@ export default function LoginScreen() {
         style={{ flex: 1 }}
       >
         <ScrollView
+          ref={scrollRef}
           style={{ flex: 1 }}
-          contentContainerStyle={{ flexGrow: 1 }}
+          contentContainerStyle={[
+            { flexGrow: 1 },
+            IS_ANDROID && keyboardOpen && { paddingBottom: 140 },
+          ]}
           bounces={false}
           keyboardShouldPersistTaps="handled"
           // The screen is sized to fit, so the bar would only ever flash on
@@ -238,7 +260,13 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={!IS_ANDROID}
         >
           {/* ── HERO IMAGE ── */}
-          <View style={[styles.hero, IS_ANDROID && { height: heroHeight }]}>
+          <View
+            style={[
+              styles.hero,
+              IS_ANDROID && { height: heroHeight },
+              IS_ANDROID && keyboardOpen && { marginBottom: 8 },
+            ]}
+          >
             <Image source={HERO_IMAGE} style={styles.heroImage} />
 
             {/* Top darkening gradient for status bar legibility */}
@@ -254,7 +282,12 @@ export default function LoginScreen() {
             />
 
             {/* PAWTCHI wordmark — same display treatment as the welcome screen */}
-            <View style={[styles.wordmarkWrap, { top: insets.top + 20 }]}>
+            <View
+              style={[
+                styles.wordmarkWrap,
+                { top: insets.top + (IS_ANDROID && keyboardOpen ? 8 : 20) },
+              ]}
+            >
               <Text style={styles.wordmark}>PAWTCHI</Text>
             </View>
 
@@ -361,6 +394,7 @@ export default function LoginScreen() {
                   placeholderTextColor={color.slateFaint}
                   value={email}
                   onChangeText={setEmailClean}
+                  onFocus={handleEmailFocus}
                   autoCapitalize="none"
                   keyboardType="email-address"
                 />
@@ -378,6 +412,7 @@ export default function LoginScreen() {
                   placeholderTextColor={color.slateFaint}
                   value={password}
                   onChangeText={setPasswordClean}
+                  onFocus={handlePasswordFocus}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
                 />

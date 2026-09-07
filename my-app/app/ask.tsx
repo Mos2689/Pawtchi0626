@@ -104,6 +104,8 @@ export default function AskScreen() {
   // call failed — the first ask, a clarified ask, or a follow-up.
   const [failure, setFailure] = useState<ErrorCopy | null>(null);
   const retryRef = useRef<null | (() => void)>(null);
+  const answerScrollRef = useRef<ScrollView>(null);
+  const idleScrollRef = useRef<ScrollView>(null);
 
   // ── Case / thread state ──
   const [caseId, setCaseId] = useState<string | null>(null);
@@ -354,7 +356,15 @@ export default function AskScreen() {
       <SafeAreaView style={styles.container}>
         <Header title="Second Opinion" onBack={askAnother} />
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <ScrollView
+            ref={answerScrollRef}
+            contentContainerStyle={[
+              styles.scroll,
+              Platform.OS === 'android' && { paddingBottom: 140 },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
             <Animated.View entering={FadeInDown.duration(380)}>
               {/* Original question + answer */}
               <View style={styles.askedBubble}>
@@ -429,6 +439,11 @@ export default function AskScreen() {
                       style={styles.composerInput}
                       value={followupText}
                       onChangeText={setFollowupText}
+                      onFocus={() => {
+                        if (Platform.OS === 'android') {
+                          setTimeout(() => answerScrollRef.current?.scrollToEnd({ animated: true }), 60);
+                        }
+                      }}
                       multiline
                       maxLength={500}
                       placeholder={`Add an update or ask a follow-up about ${petName}`}
@@ -481,7 +496,15 @@ export default function AskScreen() {
     <SafeAreaView style={styles.container}>
       <Header title="Second Opinion" />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <ScrollView
+          ref={idleScrollRef}
+          contentContainerStyle={[
+            styles.scroll,
+            Platform.OS === 'android' && { paddingBottom: 140 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           {/* Hero */}
           <Animated.View entering={FadeInDown.duration(360)} style={styles.hero}>
             <View style={styles.heroAvatarRing}>
@@ -517,6 +540,11 @@ export default function AskScreen() {
                   style={styles.input}
                   value={question}
                   onChangeText={setQuestion}
+                  onFocus={() => {
+                    if (Platform.OS === 'android') {
+                      setTimeout(() => idleScrollRef.current?.scrollTo({ y: 140, animated: true }), 60);
+                    }
+                  }}
                   multiline
                   maxLength={500}
                   placeholder={`e.g. ${petName} has been scratching ${their} ears more than usual`}

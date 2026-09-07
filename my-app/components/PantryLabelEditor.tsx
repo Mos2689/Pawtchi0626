@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -250,15 +250,28 @@ export function PantryLabelEditor({
     }
   };
 
+  const scrollRef = useRef<ScrollView>(null);
+
   if (!item || !d) return null;
 
-  const field = (label: string, key: keyof Draft, hint?: string, kb: 'numeric' | 'default' = 'numeric') => (
+  const field = (
+    label: string,
+    key: keyof Draft,
+    hint?: string,
+    kb: 'numeric' | 'default' = 'numeric',
+    offset?: number,
+  ) => (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput
         style={styles.input}
         value={d[key]}
         onChangeText={(v) => set(key, v)}
+        onFocus={() => {
+          if (Platform.OS === 'android' && offset !== undefined) {
+            setTimeout(() => scrollRef.current?.scrollTo({ y: offset, animated: true }), 60);
+          }
+        }}
         keyboardType={kb === 'numeric' ? 'decimal-pad' : 'default'}
         placeholder="—"
         placeholderTextColor={color.slateFaint}
@@ -284,7 +297,14 @@ export function PantryLabelEditor({
             </TouchableOpacity>
           </View>
 
-          <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={[
+              styles.body,
+              Platform.OS === 'android' && { paddingBottom: 160 },
+            ]}
+            keyboardShouldPersistTaps="handled"
+          >
             <Text style={styles.itemName} numberOfLines={2}>
               {item.brand}{item.product_name ? ` ${item.product_name}` : ''}
             </Text>
@@ -298,8 +318,8 @@ export function PantryLabelEditor({
 
             <View style={styles.sectionHead}><Text style={styles.sectionLabel}>SERVING</Text></View>
             {field('Calories per serving (kcal)', 'kcal_per_serving')}
-            {field('One serving weighs (g)', 'serving_grams', 'The weight the packet states — any size is fine.')}
-            {field('Calories per 100 g', 'kcal_per_100g_as_fed', 'Often printed as kcal/kg — divide that by 10.')}
+            {field('One serving weighs (g)', 'serving_grams', 'The weight the packet states — any size is fine.', 'numeric', 100)}
+            {field('Calories per 100 g', 'kcal_per_100g_as_fed', 'Often printed as kcal/kg — divide that by 10.', 'numeric', 160)}
 
             {!!check && (
               <View style={[
@@ -330,10 +350,10 @@ export function PantryLabelEditor({
             </View>
 
             <View style={styles.sectionHead}><Text style={styles.sectionLabel}>GUARANTEED ANALYSIS</Text></View>
-            {field('Protein %', 'protein_pct')}
-            {field('Fat %', 'fat_pct')}
-            {field('Fibre %', 'fibre_pct')}
-            {field('Moisture %', 'moisture_pct')}
+            {field('Protein %', 'protein_pct', undefined, 'numeric', 260)}
+            {field('Fat %', 'fat_pct', undefined, 'numeric', 320)}
+            {field('Fibre %', 'fibre_pct', undefined, 'numeric', 380)}
+            {field('Moisture %', 'moisture_pct', undefined, 'numeric', 440)}
             {pctSum > 100 && (
               <View style={[styles.check, styles.checkConflict]}>
                 <MaterialIcons name="error-outline" size={16} color={color.error} />
@@ -346,7 +366,7 @@ export function PantryLabelEditor({
 
             <View style={styles.sectionHead}><Text style={styles.sectionLabel}>YOUR USUAL PORTION</Text></View>
             {field(`How much you normally serve (${usualUnitLabel})`, 'usual_quantity',
-              'Just the amount you actually feed. It pre-fills the portion picker and never changes the label figures above.')}
+              'Just the amount you actually feed. It pre-fills the portion picker and never changes the label figures above.', 'numeric', 500)}
 
             <Text style={styles.footnote}>
               Meals you have already logged keep the figures they were logged with.

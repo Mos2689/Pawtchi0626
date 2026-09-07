@@ -50,7 +50,7 @@ export const AUTH_HERO_MIN = 236;
  * because it is decorative. Collapsing here is what lifts the password field
  * clear of the keyboard without needing to fight Android's own window resize.
  */
-export const AUTH_HERO_COMPACT = 132;
+export const AUTH_HERO_COMPACT = 84;
 
 /** `styles.hero.marginBottom` — the gap between the photo and the content. */
 export const AUTH_HERO_GAP = 22;

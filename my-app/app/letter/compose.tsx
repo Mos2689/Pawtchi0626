@@ -49,6 +49,7 @@ export default function ComposeLetterScreen() {
   // not the same intent as starting to write, and conflating them would inflate
   // the funnel's most important step.
   const startedRef = useRef(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   const source = (params.source as LetterEntrySource) || 'profile';
   const petName = activePet?.name?.trim() || 'your animal';
@@ -109,7 +110,11 @@ export default function ComposeLetterScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.scroll,
+            Platform.OS === 'android' && { paddingBottom: 140 },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -144,6 +149,11 @@ export default function ComposeLetterScreen() {
                   style={styles.input}
                   value={body}
                   onChangeText={handleChange}
+                  onFocus={() => {
+                    if (Platform.OS === 'android') {
+                      setTimeout(() => scrollRef.current?.scrollTo({ y: 120, animated: true }), 60);
+                    }
+                  }}
                   multiline
                   maxLength={LETTER_MAX_CHARS}
                   placeholder="Share your honest thoughts…"

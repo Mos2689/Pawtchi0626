@@ -143,6 +143,13 @@ export default function VetReportScreen() {
   // Track whether the owner has touched the reason field, so a re-entry from
   // the same case doesn't clobber their edits with a fresh prefill.
   const reasonEditedRef = React.useRef(false);
+  const scrollRef = React.useRef<ScrollView>(null);
+  const scrollToOffset = (y: number) => {
+    if (Platform.OS !== 'android') return;
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y, animated: true });
+    }, 60);
+  };
   const prefilledForCaseRef = React.useRef<string | null>(null);
   const [medications, setMedications] = useState<Medication[]>([]);
   const [vaccinations, setVaccinations] = useState<Vaccination[]>([]);
@@ -472,7 +479,14 @@ export default function VetReportScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.scroll,
+            Platform.OS === 'android' && { paddingBottom: 160 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+        >
           <Typography variant="title" weight="bold" style={{ marginBottom: space.xs }}>
             A summary for {petName}&apos;s vet
           </Typography>
@@ -503,6 +517,7 @@ export default function VetReportScreen() {
             style={[styles.input, styles.multiline]}
             value={reason}
             onChangeText={(t) => { reasonEditedRef.current = true; setReason(t); }}
+            onFocus={() => scrollToOffset(120)}
             multiline
             placeholder="e.g. Limping on right hind leg for the past week…"
             placeholderTextColor={color.slateFaint}
@@ -528,6 +543,7 @@ export default function VetReportScreen() {
                 style={[styles.input, styles.flex2]}
                 value={m.name}
                 onChangeText={(t) => updateMedication(i, 'name', t)}
+                onFocus={() => scrollToOffset(260 + i * 50)}
                 placeholder="Medication"
                 placeholderTextColor={color.slateFaint}
               />
@@ -535,6 +551,7 @@ export default function VetReportScreen() {
                 style={[styles.input, styles.flex1]}
                 value={m.dosage ?? ''}
                 onChangeText={(t) => updateMedication(i, 'dosage', t)}
+                onFocus={() => scrollToOffset(260 + i * 50)}
                 placeholder="Dosage"
                 placeholderTextColor={color.slateFaint}
               />
@@ -564,6 +581,7 @@ export default function VetReportScreen() {
                 style={[styles.input, styles.flex2]}
                 value={v.name}
                 onChangeText={(t) => updateVaccination(i, 'name', t)}
+                onFocus={() => scrollToOffset(360 + i * 50)}
                 placeholder="Vaccine"
                 placeholderTextColor={color.slateFaint}
               />
@@ -571,6 +589,7 @@ export default function VetReportScreen() {
                 style={[styles.input, styles.flex1]}
                 value={v.date ?? ''}
                 onChangeText={(t) => updateVaccination(i, 'date', t)}
+                onFocus={() => scrollToOffset(360 + i * 50)}
                 placeholder="Date"
                 placeholderTextColor={color.slateFaint}
               />
