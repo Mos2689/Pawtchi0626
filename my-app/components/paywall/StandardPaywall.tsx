@@ -28,6 +28,7 @@ import {
     Image,
     Dimensions,
     ScrollView,
+    Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -85,25 +86,38 @@ const { height: SCREEN_H } = Dimensions.get('window');
  */
 const HERO_HEIGHT = SCREEN_H * 0.48;
 
+/** Breathing room between the footer links and Android's navigation bar. */
+const CONTENT_BOTTOM_GAP = 12;
+
 /**
- * The hero must give back exactly what the bottom inset now takes.
+ * How much the bottom of this screen must reserve for a system bar.
  *
- * The content below is unchanged and still needs its original 52%; reserving
- * `insets.bottom` for the system bar without taking it from somewhere is what
- * pushed the footer row off the bottom. Taking it from the hero keeps the
- * content's height at what it was designed against, on both platforms, rather
- * than guessing at a minimum content height — a guessed constant here would be
- * the same mistake as the hardcoded paddings this is fixing.
- *
- * The floor stops a device with an unusually tall navigation bar from
- * collapsing the hero into a strip.
+ * ANDROID ONLY, and deliberately so. Android's navigation bar is a real
+ * reserved area that the footer row was landing behind. iOS's home indicator is
+ * an overlay the existing margins already cleared, and this screen was correct
+ * on iOS — so on iOS this is 0 and the layout below is byte-identical to what
+ * shipped.
  */
-function heroHeightFor(bottomInset: number): number {
-    return Math.max(HERO_HEIGHT - bottomInset - CONTENT_BOTTOM_GAP, SCREEN_H * 0.32);
+function bottomReserveFor(bottomInset: number): number {
+    return Platform.OS === 'android' ? bottomInset + CONTENT_BOTTOM_GAP : 0;
 }
 
-/** Breathing room between the footer links and the system bar. */
-const CONTENT_BOTTOM_GAP = 12;
+/**
+ * The hero gives back exactly what the bottom reserve takes.
+ *
+ * The content block was tuned against the original 52%; reserving space for the
+ * navigation bar without taking it from somewhere is precisely what pushed the
+ * footer off the bottom. Taking it from the hero holds the content's usable
+ * height at its designed value instead of guessing at a minimum content height
+ * — a guessed constant here would be the same mistake as the hardcoded paddings
+ * this is fixing.
+ *
+ * On iOS the reserve is 0, so this returns HERO_HEIGHT unchanged. The floor
+ * stops an unusually tall navigation bar from collapsing the hero to a strip.
+ */
+function heroHeightFor(bottomInset: number): number {
+    return Math.max(HERO_HEIGHT - bottomReserveFor(bottomInset), SCREEN_H * 0.32);
+}
 
 const OFFERINGS_TIMEOUT_MS = 8000;
 
@@ -663,7 +677,7 @@ export function StandardPaywall() {
                 // indicator is a thin strip the 16pt margin happened to clear;
                 // the Android task bar is several times taller and clipped the
                 // whole row, including the creator-code and billing-help links.
-                style={[styles.content, { paddingBottom: insets.bottom + CONTENT_BOTTOM_GAP }]}
+                style={[styles.content, { paddingBottom: bottomReserveFor(insets.bottom) }]}
             >
                 {USE_MOCK_PLANS && (
                     <View style={styles.devBanner}>

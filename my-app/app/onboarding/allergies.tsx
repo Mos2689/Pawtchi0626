@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -123,9 +123,13 @@ export default function AllergiesScreen() {
         footer={
           <LinearGradient
             colors={['transparent', 'rgba(255,255,255,0.95)', color.surface]}
-            // The scaffold applies insets.bottom to the bar itself now, so this is
-            // breathing room only. Adding the inset here as well would double it.
-            style={[styles.footerGradient, { paddingBottom: space.xl }]}
+            // On Android the scaffold now lifts the bar clear of the navigation
+            // bar, so adding the inset here too would double it. On iOS the
+            // scaffold does nothing and this keeps its original behaviour.
+            style={[
+              styles.footerGradient,
+              { paddingBottom: (Platform.OS === 'android' ? 0 : insets.bottom) + space.xl },
+            ]}
             locations={[0, 0.4, 1]}
           >
             <PawtchiButton

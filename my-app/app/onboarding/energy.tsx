@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Platform} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { RunningDogIcon } from '../../components/icons/RunningDogIcon';
@@ -174,7 +174,12 @@ export default function EnergyScreen() {
         </View>
       </ScrollView>
 
-      <View style={[styles.sticky, { paddingBottom: space.xxl + insets.bottom }]}>
+      <View
+        style={[
+          styles.sticky,
+          { paddingBottom: space.xxl + (Platform.OS === 'android' ? insets.bottom : 0) },
+        ]}
+      >
         <PawtchiButton
           title="Continue"
           variant="primary"

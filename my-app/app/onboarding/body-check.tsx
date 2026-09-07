@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import Animated, {
@@ -235,7 +235,10 @@ export default function BodyCheckScreen() {
       <OnboardingHeader step={stepIndex('body_check')} stepId="body_check" />
 
       <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: 48 + insets.bottom }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: 48 + (Platform.OS === 'android' ? insets.bottom : 0) },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {phase === 'intro' && (

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, Alert, Platform} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import {
   forwardCompletionParams,
@@ -702,7 +702,10 @@ export default function GoalScreen() {
       <OnboardingHeader step={stepIndex('goal')} stepId="goal" />
 
       <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: 48 + insets.bottom }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: 48 + (Platform.OS === 'android' ? insets.bottom : 0) },
+        ]}
         showsVerticalScrollIndicator={false}
       >
 

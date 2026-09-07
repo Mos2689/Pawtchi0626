@@ -105,10 +105,16 @@ export function OnboardingFormScaffold({
   // callers meant six of the eight onboarding steps forgot it and shipped a
   // Continue button behind the task bar.
   //
-  // Only applied while the keyboard is down. With the keyboard up the bar is
+  // ANDROID ONLY. iOS's home indicator is an overlay these screens already
+  // cleared, and their iOS layouts were correct before this fix; applying the
+  // inset on both would shift a set of screens nobody reported a problem with.
+  // allergies keeps handling its own iOS inset for the same reason.
+  //
+  // Also only while the keyboard is down: with the keyboard up the bar is
   // already translated above it and the navigation bar is covered, so adding
   // the inset there would float the bar off the keyboard by a nav-bar's height.
   const insets = useSafeAreaInsets();
+  const androidNavInset = Platform.OS === 'android' ? insets.bottom : 0;
 
   const rootRef = useRef<View>(null);
   const scrollRef = useRef<ScrollView>(null);
@@ -198,7 +204,7 @@ export function OnboardingFormScaffold({
             of the same box, an overlap would briefly stack them and make the
             bar jump to their combined height. */}
         <Animated.View
-          style={[styles.bar, { paddingBottom: keyboardVisible ? 0 : insets.bottom }, barStyle]}
+          style={[styles.bar, { paddingBottom: keyboardVisible ? 0 : androidNavInset }, barStyle]}
           pointerEvents="box-none"
         >
           {showAccessory ? (
