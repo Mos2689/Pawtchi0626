@@ -40,6 +40,8 @@ import Animated, {
   Easing, FadeIn, useAnimatedStyle, useSharedValue, withTiming,
 } from 'react-native-reanimated';
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { keyboardLift, useKeyboardInset } from '../../hooks/useKeyboardInset';
 import { KEYBOARD_ACCESSORY_HEIGHT, KeyboardAccessoryBar } from './KeyboardAccessoryBar';
 import { space } from '../../constants/design';
@@ -96,6 +98,17 @@ export function OnboardingFormScaffold({
 }: OnboardingFormScaffoldProps) {
   const { height: keyboardHeight, visible: keyboardVisible, duration } = useKeyboardInset();
   const lift = keyboardLift(keyboardHeight);
+
+  // The bar is absolutely positioned at bottom: 0, so it sits UNDER Android's
+  // navigation bar unless something lifts it. This belongs here rather than in
+  // each screen's footer: the scaffold owns the bar, and leaving the inset to
+  // callers meant six of the eight onboarding steps forgot it and shipped a
+  // Continue button behind the task bar.
+  //
+  // Only applied while the keyboard is down. With the keyboard up the bar is
+  // already translated above it and the navigation bar is covered, so adding
+  // the inset there would float the bar off the keyboard by a nav-bar's height.
+  const insets = useSafeAreaInsets();
 
   const rootRef = useRef<View>(null);
   const scrollRef = useRef<ScrollView>(null);
@@ -184,7 +197,10 @@ export function OnboardingFormScaffold({
             length of its animation, and since these are normal-flow children
             of the same box, an overlap would briefly stack them and make the
             bar jump to their combined height. */}
-        <Animated.View style={[styles.bar, barStyle]} pointerEvents="box-none">
+        <Animated.View
+          style={[styles.bar, { paddingBottom: keyboardVisible ? 0 : insets.bottom }, barStyle]}
+          pointerEvents="box-none"
+        >
           {showAccessory ? (
             <Animated.View key="accessory" entering={FadeIn.duration(140)}>
               <KeyboardAccessoryBar

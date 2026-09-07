@@ -23,6 +23,7 @@ import { bucketForBcs, deriveBcsSuggestion, resolveBcsSource } from '../../lib/b
 import { haptic } from '../../lib/haptics';
 import { track } from '../../lib/analytics';
 import { stepIndex, trackStepCompleted, useOnboardingStepTracking } from '../../lib/onboardingFunnel';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Phase = 'intro' | 'questions' | 'reveal' | 'fallback';
 
@@ -69,6 +70,7 @@ function SpectrumBar({ lo, hi }: { lo: number; hi: number }) {
  * photo read live in lib/bcsCheck.ts; this screen is choreography.
  */
 export default function BodyCheckScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
   useOnboardingStepTracking('body_check');
@@ -232,7 +234,10 @@ export default function BodyCheckScreen() {
     <View style={styles.container}>
       <OnboardingHeader step={stepIndex('body_check')} stepId="body_check" />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 48 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
         {phase === 'intro' && (
           <Animated.View entering={FadeInDown.duration(420)}>
             <Text style={styles.eyebrow}>STEP {stepIndex('body_check')}</Text>

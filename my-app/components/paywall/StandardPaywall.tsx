@@ -624,7 +624,15 @@ export function StandardPaywall() {
             </Animated.View>
 
             {/* ─── BOTTOM CONTENT ─── */}
-            <Animated.View entering={FadeInDown.duration(500).delay(150)} style={styles.content}>
+            <Animated.View
+                entering={FadeInDown.duration(500).delay(150)}
+                // insets.bottom, or the footer links sit under Android's
+                // navigation bar. iOS got away with it because the home
+                // indicator is a thin strip the 16pt margin happened to clear;
+                // the Android task bar is several times taller and clipped the
+                // whole row, including the creator-code and billing-help links.
+                style={[styles.content, { paddingBottom: insets.bottom }]}
+            >
                 {USE_MOCK_PLANS && (
                     <View style={styles.devBanner}>
                         <Text style={styles.devBannerText}>DEV PREVIEW · SAMPLE PRICES</Text>

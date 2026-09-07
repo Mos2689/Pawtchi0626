@@ -19,6 +19,7 @@ import {
   stepIndex, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
 import { track } from '../../lib/analytics';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Activity-level definitions are intentionally concrete (time, not feel) — when
 // an owner picks "highly active" because it sounds nice, the resulting kcal
@@ -42,6 +43,7 @@ const ACTIVITY_OPTIONS: {
 // Step 4 of 6 — energy. Big tappable cards, one decision. Breed pre-selects the
 // likely answer, and we *tell* the user we did it so the intelligence is felt.
 export default function EnergyScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
   useOnboardingStepTracking('energy');
@@ -172,7 +174,7 @@ export default function EnergyScreen() {
         </View>
       </ScrollView>
 
-      <View style={styles.sticky}>
+      <View style={[styles.sticky, { paddingBottom: space.xxl + insets.bottom }]}>
         <PawtchiButton
           title="Continue"
           variant="primary"

@@ -44,10 +44,12 @@ import {
   stepIndex, trackStepCompleted, useOnboardingStepTracking,
 } from '../../lib/onboardingFunnel';
 import { deriveProvisionalWalksign } from '../../lib/walksign/walksignEngine';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 
 // Step 6 of 6 — set goal. The last input screen before the plan reveal.
 export default function GoalScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const completionParams = useLocalSearchParams<{ mode?: string; feature?: string }>();
   const completing = isCompletionMode(completionParams);
@@ -699,7 +701,10 @@ export default function GoalScreen() {
     <View style={styles.container}>
       <OnboardingHeader step={stepIndex('goal')} stepId="goal" />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 48 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+      >
 
         <Animated.View entering={FadeInDown.duration(420)}>
           <Text style={styles.eyebrow}>STEP {stepIndex('goal')}</Text>

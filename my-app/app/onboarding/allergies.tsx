@@ -123,7 +123,9 @@ export default function AllergiesScreen() {
         footer={
           <LinearGradient
             colors={['transparent', 'rgba(255,255,255,0.95)', color.surface]}
-            style={[styles.footerGradient, { paddingBottom: insets.bottom + space.xl }]}
+            // The scaffold applies insets.bottom to the bar itself now, so this is
+            // breathing room only. Adding the inset here as well would double it.
+            style={[styles.footerGradient, { paddingBottom: space.xl }]}
             locations={[0, 0.4, 1]}
           >
             <PawtchiButton
