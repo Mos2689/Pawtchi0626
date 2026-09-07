@@ -27,6 +27,7 @@ import {
     Linking,
     Image,
     Dimensions,
+    ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -77,7 +78,32 @@ import {
 import { ArrowIcon, BrandMark, CloseIcon, StarIcon, FEATURE_CHIPS } from './icons';
 
 const { height: SCREEN_H } = Dimensions.get('window');
+
+/**
+ * The hero's designed share of the screen. The block below it was tuned
+ * against the remaining 52% on a screen with nothing reserved at the bottom.
+ */
 const HERO_HEIGHT = SCREEN_H * 0.48;
+
+/**
+ * The hero must give back exactly what the bottom inset now takes.
+ *
+ * The content below is unchanged and still needs its original 52%; reserving
+ * `insets.bottom` for the system bar without taking it from somewhere is what
+ * pushed the footer row off the bottom. Taking it from the hero keeps the
+ * content's height at what it was designed against, on both platforms, rather
+ * than guessing at a minimum content height — a guessed constant here would be
+ * the same mistake as the hardcoded paddings this is fixing.
+ *
+ * The floor stops a device with an unusually tall navigation bar from
+ * collapsing the hero into a strip.
+ */
+function heroHeightFor(bottomInset: number): number {
+    return Math.max(HERO_HEIGHT - bottomInset - CONTENT_BOTTOM_GAP, SCREEN_H * 0.32);
+}
+
+/** Breathing room between the footer links and the system bar. */
+const CONTENT_BOTTOM_GAP = 12;
 
 const OFFERINGS_TIMEOUT_MS = 8000;
 
@@ -548,8 +574,23 @@ export function StandardPaywall() {
         <View style={styles.container}>
             <StatusBar style="dark" />
 
+            {/* Scrollable, and `flexGrow: 1` so it is invisible when everything
+                fits — which is the common case. It exists for the cases the
+                floor above cannot cover: a small device, a large OS font size,
+                a tall navigation bar. Padding cannot create space that is not
+                there, so without this the last row is simply unreachable. */}
+            <ScrollView
+                style={styles.scroller}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+            >
+
             {/* ─── HERO MOSAIC ─── */}
-            <Animated.View entering={FadeIn.duration(500)} style={styles.hero}>
+            <Animated.View
+                entering={FadeIn.duration(500)}
+                style={[styles.hero, { height: heroHeightFor(insets.bottom) }]}
+            >
                 <View style={styles.mosaic}>
                     {/* Left column */}
                     <View style={styles.mosaicSide}>
@@ -612,15 +653,6 @@ export function StandardPaywall() {
                     pointerEvents="none"
                 />
 
-                {/* Close button */}
-                <TouchableOpacity
-                    style={[styles.closeBtn, { top: insets.top + 8 }]}
-                    onPress={handleDismiss}
-                    activeOpacity={0.7}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                >
-                    <CloseIcon />
-                </TouchableOpacity>
             </Animated.View>
 
             {/* ─── BOTTOM CONTENT ─── */}
@@ -631,7 +663,7 @@ export function StandardPaywall() {
                 // indicator is a thin strip the 16pt margin happened to clear;
                 // the Android task bar is several times taller and clipped the
                 // whole row, including the creator-code and billing-help links.
-                style={[styles.content, { paddingBottom: insets.bottom }]}
+                style={[styles.content, { paddingBottom: insets.bottom + CONTENT_BOTTOM_GAP }]}
             >
                 {USE_MOCK_PLANS && (
                     <View style={styles.devBanner}>
@@ -769,6 +801,21 @@ export function StandardPaywall() {
                     </TouchableOpacity>
                 </View>
             </Animated.View>
+            </ScrollView>
+
+            {/* Outside the ScrollView on purpose. Inside it, the X scrolled away
+                with the hero — and this screen has a standing rule that it must
+                never become uncloseable. Rendered after the scroller so it sits
+                above it, and before the overlays so they still cover it. */}
+            <TouchableOpacity
+                style={[styles.closeBtn, { top: insets.top + 8 }]}
+                onPress={handleDismiss}
+                activeOpacity={0.7}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+                <CloseIcon />
+            </TouchableOpacity>
+
             {/* Loader ONLY during an active purchase — never during offerings
                 load. The initial load is shown inline (CTA reads "Loading…",
                 disabled) so the screen stays interactive and the close button
@@ -797,7 +844,8 @@ const styles = StyleSheet.create({
     // ─── Hero mosaic ───
     hero: {
         width: '100%',
-        height: HERO_HEIGHT,
+        // Height is applied inline from heroHeightFor(insets.bottom) — it
+        // depends on a hook, so it cannot live in the static sheet.
         overflow: 'hidden',
     },
     mosaic: {
@@ -842,8 +890,17 @@ const styles = StyleSheet.create({
     },
 
     // ─── Bottom content ───
-    content: {
+    scroller: {
         flex: 1,
+    },
+    scrollContent: {
+        flexGrow: 1,
+    },
+    content: {
+        // flexGrow, not flex: inside a ScrollView `flex: 1` collapses to the
+        // content's own height instead of filling, which is how the block ended
+        // up shorter than the space available to it.
+        flexGrow: 1,
         alignItems: 'center',
         paddingHorizontal: 28,
         marginTop: -20,
