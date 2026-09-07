@@ -3,5 +3,6 @@
   "walkStory": true,
   "spotsOsmMvp": true,
   "walkCamera": true,
+  "walkPhotoImport": false,
   "walkLiveActivity": true
 }

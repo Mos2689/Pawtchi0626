@@ -14,8 +14,16 @@
  *
  * ── Failure posture ──
  * Nothing here may fail a walk. Every write is best-effort; the photo is
- * already safe in the user's own library the instant it is taken, which is the
+ * already safe in Pawtchi's own container the instant it is taken, which is the
  * entire point of the local-first design.
+ *
+ * Best-effort is not the same as disposable, though, and the flush used to
+ * confuse the two: it emptied its queue before awaiting the insert, so a write
+ * that failed took the keepsake with it — on a walk, where no signal is the
+ * ordinary case rather than the edge one. Failures now go to
+ * lib/walk/keepsakeOutbox.ts and are retried at the start of the next walk, and
+ * their files are protected from the storage sweep in the meantime, because a
+ * queued entry's container copy is the only copy of that photograph anywhere.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -41,6 +49,15 @@ import {
 } from '../lib/walk/keepsakeSync';
 import { uploadThumbnail, thumbnailUrl } from '../lib/walk/keepsakeThumbnail';
 import { sweepKeepsakeFiles } from '../lib/walk/keepsakeFile';
+import {
+  drainOutbox,
+  enqueueOutbox,
+  newOutboxId,
+  outboxLocalPaths,
+  readOutbox,
+  type KeepsakeOutboxEntry,
+} from '../lib/walk/keepsakeOutbox';
+import { outboxPorts } from '../lib/walk/keepsakeOutboxPorts';
 import { readPlacePromptLog, recordPlacePrompt } from '../lib/walk/placePromptLog';
 import { haversineMeters } from '../lib/walk/geo';
 import type { WalkCaptureResult } from '../components/walk/WalkCamera';
@@ -82,6 +99,7 @@ interface UseWalkKeepsakesInput {
  */
 const PLACE_QUERY_MIN_MOVE_M = 40;
 const PLACE_QUERY_MIN_INTERVAL_MS = 45_000;
+
 
 export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
   const { enabled, ownerId, petId, session, startedAt, now, walkSessionId } = input;
@@ -230,10 +248,18 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
     })();
   }, [enabled, prompt, cameraOpen, petId, ownerId, lat, lng]);
 
+  const accept = useCallback((capture: PendingCapture) => {
+    pendingRef.current.push(capture);
+    setCaptures((prev) => [...prev, capture]);
+    setPrompt(null);
+  }, []);
+
   // ── Capture ──
+  //
+  // A photo taken HERE gets the live fix, because here is where it was taken.
   const onCaptured = useCallback(
     (result: WalkCaptureResult) => {
-      const capture: PendingCapture = {
+      accept({
         ...result,
         lat,
         lng,
@@ -243,13 +269,14 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
             : null,
         elapsedS: startedAt != null ? elapsedSecondsInto(startedAt, result.capturedAt) : null,
         placeKey: placeKeyOrNull(lat, lng),
-      };
-      pendingRef.current.push(capture);
-      setCaptures((prev) => [...prev, capture]);
-      setPrompt(null);
+      });
     },
-    [lat, lng, session, startedAt],
+    [accept, lat, lng, session, startedAt],
   );
+
+  // Importing an existing photo is NOT here. It happens on the walk summary,
+  // after the walk has a session id, so it writes straight to the outbox rather
+  // than through this pending queue — see `onImport` in app/walk.tsx.
 
   // ── Flush once the walk has a session id ──
   useEffect(() => {
@@ -262,6 +289,8 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
     pendingRef.current = [];
 
     void (async () => {
+      const failed: KeepsakeOutboxEntry[] = [];
+
       for (const capture of batch) {
         const stored = await insertKeepsake({
           ownerId,
@@ -272,14 +301,48 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
           lng: capture.lng,
           routeIndex: capture.routeIndex,
           elapsedS: capture.elapsedS,
-          source: 'camera',
+          source: capture.source,
           localPath: capture.localPath,
-          localAssetId: capture.localAssetId,
+          // Always null now. Nothing in the app writes to the photo library —
+          // the walk camera's opt-in copy went with the rest of its chrome. The
+          // column stays for keepsakes written before that, which useKeepsakeImage
+          // still resolves from the camera roll.
+          localAssetId: null,
           width: capture.width,
           height: capture.height,
           placeKey: capture.placeKey,
         });
-        if (!stored) continue;
+
+        // A failed write is not a lost moment. Queue it and try again next
+        // walk; the photograph itself is already on disk, and until the row
+        // exists that file is the only copy of it anywhere.
+        if (!stored) {
+          failed.push({
+            id: newOutboxId(capture.capturedAt),
+            ownerId,
+            petId,
+            walkSessionId,
+            capturedAt: capture.capturedAt,
+            lat: capture.lat,
+            lng: capture.lng,
+            routeIndex: capture.routeIndex,
+            elapsedS: capture.elapsedS,
+            mediaType: 'photo',
+            source: capture.source,
+            localPath: capture.localPath,
+            // Always null now. Nothing in the app writes to the photo library —
+          // the walk camera's opt-in copy went with the rest of its chrome. The
+          // column stays for keepsakes written before that, which useKeepsakeImage
+          // still resolves from the camera roll.
+          localAssetId: null,
+            width: capture.width,
+            height: capture.height,
+            placeKey: capture.placeKey,
+            attempts: 1,
+            queuedAt: Date.now(),
+          });
+          continue;
+        }
 
         // The thumbnail follows the row rather than gating it: a keepsake that
         // has not uploaded yet is still perfectly usable from the local
@@ -294,20 +357,42 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
         if (path) await attachThumbnail(stored.id, path);
       }
 
+      if (failed.length > 0) await enqueueOutbox(failed);
+
       // ── Keep our own copies within budget ──
       //
       // Runs after the uploads, not before, so a capture that just became
       // durable is eligible and one that did not is protected. The protected
-      // list is every keepsake still owing a thumbnail — for those the file we
-      // hold is the only copy anywhere, and the budget yields to that.
+      // list is every keepsake still owing a thumbnail — plus everything still
+      // queued, which has no row and therefore no rung underneath it at all.
+      // For both, the file we hold is the only copy anywhere, and the budget
+      // yields to that.
       try {
-        const pending = await fetchPendingThumbnails(petId, 100);
-        sweepKeepsakeFiles(pending.flatMap((k) => (k.localPath ? [k.localPath] : [])));
+        const [pending, queued] = await Promise.all([
+          fetchPendingThumbnails(petId, 100),
+          readOutbox(),
+        ]);
+        sweepKeepsakeFiles([
+          ...pending.flatMap((k) => (k.localPath ? [k.localPath] : [])),
+          ...outboxLocalPaths(queued),
+        ]);
       } catch {
         // A sweep that does not happen costs disk, never a photo.
       }
     })();
   }, [enabled, walkSessionId, ownerId, petId]);
+
+  // ── Retry whatever a previous walk could not write ──
+  //
+  // Here rather than in app/_layout.tsx's boot path: the boot gate is the one
+  // place in this app that must never gain an await that can hang (see the
+  // Android login hang). The start of a walk is both a safe moment and the
+  // right one — it is when a phone that had no signal last time usually has
+  // some, and when the owner is about to care about these photos again.
+  useEffect(() => {
+    if (!enabled || !ownerId || !petId) return;
+    void drainOutbox(outboxPorts);
+  }, [enabled, ownerId, petId]);
 
   const openCamera = useCallback(() => {
     setPrompt(null);

@@ -19,6 +19,22 @@
  * work, and only a user would ever see the difference. So it is asserted here,
  * against the source, where the rule is cheap to keep and impossible to lose
  * silently.
+ *
+ * ── Why the scan drops comment lines ──
+ * Because it reads source as text, and text cannot tell a CALL from a MENTION.
+ * The rule is worth explaining at its call sites, and every doc comment that
+ * explains it has to name the thing it is forbidding — which used to trip the
+ * guard, teaching the next person that the way past a privacy assertion is to
+ * delete the paragraph explaining it.
+ *
+ * The masking direction is the more dangerous one, and it was live: the
+ * `writeOnly` assertion clears a file that merely CONTAINS the text
+ * `writeOnly: true`, so a prose sentence about add-only access sitting near a
+ * request that had lost the flag would have hidden a real regression.
+ *
+ * So whole-line comments are removed before matching. Only whole-line — a
+ * trailing comment on a line of code stays, which can only ever produce a false
+ * ALARM, and a guard that occasionally cries wolf is the safe failure for this.
  */
 
 import { readFileSync, readdirSync, statSync } from 'fs';
@@ -46,16 +62,47 @@ function sourceFiles(dir: string, prefix: string): string[] {
   });
 }
 
+/**
+ * Drop lines that are nothing but comment, keep everything else verbatim.
+ *
+ * Deliberately line-based rather than a real tokenizer. A tokenizer would have
+ * to reason about regex literals versus division to know whether `//` opens a
+ * comment, and getting that wrong would silently swallow a line of real code —
+ * the one failure mode this file cannot afford.
+ */
+export function codeOnly(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t === '*/');
+    })
+    .join('\n');
+}
+
 const files = SEARCHED.flatMap((dir) => sourceFiles(join(ROOT, dir), dir)).map((path) => ({
   path,
-  text: readFileSync(join(ROOT, path), 'utf8'),
+  text: codeOnly(readFileSync(join(ROOT, path), 'utf8')),
 }));
+
+function find(suffix: string) {
+  const file = files.find((f) => f.path.endsWith(suffix));
+  expect(file).toBeDefined();
+  return file!;
+}
 
 describe('photo library access', () => {
   it('scans a real source tree', () => {
     // Guards the guard: a broken walk would make every assertion below vacuous.
     expect(files.length).toBeGreaterThan(100);
     expect(files.some((f) => f.path.endsWith('components/walk/WalkCamera.tsx'))).toBe(true);
+  });
+
+  it('strips prose without stripping code', () => {
+    // Guards the guard again, and this one matters more: over-stripping would
+    // make every assertion below quietly stop looking at anything.
+    expect(codeOnly('// a\n * b\n/* c */\nconst x = 1; // d\n')).toBe('const x = 1; // d\n');
+    expect(find('components/walk/WalkCamera.tsx').text).toContain('takePictureAsync');
   });
 
   it('never requests read access through expo-image-picker', () => {
@@ -74,19 +121,36 @@ describe('photo library access', () => {
   });
 
   /**
-   * The shutter must not be what summons a system sheet. Permission is asked
-   * for by the control the owner taps to turn the camera-roll copy ON, and used
-   * — never requested — at capture time.
+   * Import is a picker, not a permission.
+   *
+   * `launchImageLibraryAsync` runs out of process on both platforms — Apple's
+   * PHPickerViewController and Android's system photo picker — so the user
+   * chooses one photo and hands it over without granting the app anything. That
+   * is the whole reason a walk can take an existing photo at all while
+   * READ_MEDIA_IMAGES stays blocked in app.config.ts.
+   *
+   * It lives on the walk SUMMARY, not in the camera: mid-walk, "add an existing
+   * photo" is a question nobody is asking, and putting it beside the shutter
+   * turned a one-purpose surface into a menu.
    */
-  it('does not request photo permission from the capture path', () => {
-    const camera = files.find((f) => f.path.endsWith('components/walk/WalkCamera.tsx'));
-    expect(camera).toBeDefined();
+  it('imports through the system picker alone', () => {
+    const walk = find('app/walk.tsx');
+    expect(walk.text).toContain('ImagePicker.launchImageLibraryAsync');
+  });
 
-    const capture = camera!.text.slice(
-      camera!.text.indexOf('const handleCapture'),
-      camera!.text.indexOf('if (!visible) return null'),
-    );
-    expect(capture.length).toBeGreaterThan(200);
-    expect(capture).not.toMatch(/requestLibraryPermission|requestPermissionsAsync/);
+  /**
+   * The camera does not touch the photo library, in either direction.
+   *
+   * It is the one surface where a system sheet about photos would be read as
+   * the app reaching for the camera roll — which is the precise impression the
+   * app-container copy (lib/walk/keepsakeFile.ts) exists to prevent. There is
+   * no longer anything on that screen that could raise one: the opt-in
+   * camera-roll copy and its permission request went with the rest of its
+   * chrome.
+   */
+  it('keeps the camera clear of the photo library', () => {
+    const camera = find('components/walk/WalkCamera.tsx');
+    expect(camera.text).toContain('takePictureAsync');
+    expect(camera.text).not.toMatch(/MediaLibrary|ImagePicker/);
   });
 });

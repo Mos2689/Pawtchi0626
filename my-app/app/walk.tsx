@@ -64,6 +64,21 @@ import { useAuth } from '../providers/AuthProvider';
 import { estimateActivityBurn } from '../lib/activityBurn';
 import { deriveDogWalkProfile, intensityForPace } from '../lib/walk/dogCalibration';
 import { estimateDogSteps, formatStepsProse } from '../lib/walk/stepEstimate';
+// The trail's words about time — reused from the moment viewer so a walk is
+// described the same way wherever it is read back.
+import { elapsedPhrase, partOfDay } from '../lib/walk/keepsakeCaption';
+import * as ImagePicker from 'expo-image-picker';
+import { persistCapture } from '../lib/walk/keepsakeFile';
+import { exifCapturedAt, exifCoordinate } from '../lib/walk/keepsakeExif';
+import {
+  elapsedSecondsInto,
+  estimateRouteIndexByTime,
+  isWithinWalkWindow,
+  snapToRoute,
+} from '../lib/walk/keepsake';
+import { placeKeyOrNull } from '../lib/walk/placeKey';
+import { enqueueOutbox, newOutboxId, drainOutbox } from '../lib/walk/keepsakeOutbox';
+import { outboxPorts } from '../lib/walk/keepsakeOutboxPorts';
 import { dogPaceKmh, formatEta, walkEtaMinutes } from '../lib/walk/wayfinding';
 import { useWalkRoute } from '../hooks/useWalkRoute';
 import {
@@ -97,7 +112,11 @@ import {
 } from '../components/walk/KeepsakeMapOverlay';
 import { KeepsakeViewer } from '../components/walk/KeepsakeViewer';
 import { fitCamera, type MapCamera } from '../lib/walk/mapCamera';
-import { WALK_CAMERA_ENABLED, WALK_STORY_ENABLED } from '../constants/features';
+import {
+  WALK_CAMERA_ENABLED,
+  WALK_PHOTO_IMPORT_ENABLED,
+  WALK_STORY_ENABLED,
+} from '../constants/features';
 import { createWalkStorySnapshot } from '../lib/walkStorySnapshot';
 import { discardWalk } from '../lib/walk/discardWalk';
 import { getLocalYMD } from '../lib/dateUtils';
@@ -172,6 +191,9 @@ function WalkScreenInner() {
     now,
     walkSessionId: lastResult?.walkSessionId ?? null,
   });
+
+  /** The most recent moment, for the capture button's face. */
+  const lastCaptureUri = keepsakes.captures.at(-1)?.uri ?? null;
 
   /**
    * The destination as a map pin. Ink, because it is the one place that matters.
@@ -707,6 +729,13 @@ function WalkScreenInner() {
           land at the right moment; this is for the times the walker sees
           something first. Quiet by design — yellow belongs to Finish.
 
+          Once a walk holds a moment, the button BECOMES that moment: the last
+          photo fills it, with the count on top. A 10pt digit on an empty navy
+          circle was technically an indicator and practically invisible, which
+          left a walker who had just taken a photo with nothing anywhere on this
+          screen to confirm it. The uri is Pawtchi's own container copy, so this
+          costs no permission, no network and no resolution pass.
+
           Positioned on the card's REAL top edge. This was
           `insets.bottom + 260` — a guess at the card's height that was only
           ever right for the layout it was written against, and that drifts
@@ -722,9 +751,22 @@ function WalkScreenInner() {
           ]}
           onPress={keepsakes.openCamera}
           accessibilityRole="button"
-          accessibilityLabel="Capture a moment"
+          accessibilityLabel={
+            keepsakes.capturedCount > 0
+              ? `Capture a moment. ${keepsakes.capturedCount} kept so far.`
+              : 'Capture a moment'
+          }
         >
-          <MaterialIcons name="photo-camera" size={20} color={color.cream} />
+          {lastCaptureUri ? (
+            <Image
+              source={{ uri: lastCaptureUri }}
+              style={styles.captureThumb}
+              contentFit="cover"
+              transition={180}
+            />
+          ) : (
+            <MaterialIcons name="photo-camera" size={20} color={color.cream} />
+          )}
           {keepsakes.capturedCount > 0 && (
             <View style={styles.captureCount}>
               <Text style={styles.captureCountText}>{keepsakes.capturedCount}</Text>
@@ -893,6 +935,12 @@ function WalkSummaryView({
   const result = lastResult!;
   const { summary, verdict, sync, route, labels } = result;
 
+  // The walk's own window. Declared up here because the import handler below
+  // closes over both, and a dependency array cannot reference a `const` that
+  // has not been evaluated yet.
+  const startedAtMs = summary.startedAt;
+  const endedAtMs = startedAtMs + summary.durationS * 1000;
+
   // ── Moments on the map ──
   // The overlay projects coordinates itself, so it needs the card's real pixel
   // size and the camera the map is actually at.
@@ -929,14 +977,29 @@ function WalkSummaryView({
     );
   }, []);
 
+  /**
+   * Photos brought in from the library after the walk. See `onImport` below.
+   *
+   * Declared here rather than beside its handler because everything downstream
+   * — the pins, the map's framing, the trail, the story — reads `moments`, and
+   * an imported photo is a moment on this walk like any other.
+   */
+  const [imported, setImported] = useState<PendingCapture[]>([]);
+
+  /** Everything this walk holds, in the order it happened. */
+  const moments = useMemo(
+    () => [...keepsakes, ...imported].sort((a, b) => a.capturedAt - b.capturedAt),
+    [keepsakes, imported],
+  );
+
   const keepsakePins = useMemo<KeepsakeMapPin[]>(
     () =>
-      keepsakes.flatMap(k =>
+      moments.flatMap(k =>
         k.lat != null && k.lng != null
           ? [{ id: `local-${k.capturedAt}`, lat: k.lat, lng: k.lng, uri: k.uri }]
           : [],
       ),
-    [keepsakes],
+    [moments],
   );
 
   /**
@@ -969,6 +1032,118 @@ function WalkSummaryView({
   const canShare = verdict.verdict === 'valid' && route.length >= 2;
   const [shareOpen, setShareOpen] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+
+  /**
+   * Photos brought in from the library AFTER the walk, and why they live here
+   * rather than in the camera.
+   *
+   * The in-walk camera cannot win a race it is structurally set up to lose: the
+   * native camera is a lock-screen swipe, and reaching Pawtchi's is unlock, find
+   * app, tap, warm up. So for the spontaneous shots the walker will, correctly,
+   * use the other camera — and this is where those get picked up. Putting the
+   * button beside the shutter was the mistake it replaced: mid-walk, "add an
+   * existing photo" is a question nobody is asking, and it turned a one-purpose
+   * surface into a menu.
+   *
+   * ── Written straight to the outbox ──
+   * Not through the hook's pending queue: that queue exists to hold captures
+   * until the walk HAS a session id, and by now it has one. Enqueue-then-drain
+   * gives the insert, the thumbnail upload and the offline retry in one step,
+   * all of it already tested.
+   */
+  const [importing, setImporting] = useState(false);
+
+  const onImport = useCallback(async () => {
+    if (importing || !activePet?.id || !user?.id) return;
+    haptic.tap();
+    setImporting(true);
+    try {
+      // The system picker and nothing else — never
+      // `requestMediaLibraryPermissionsAsync`, which is asserted against source
+      // in lib/privacy/photoLibraryAccess.test.ts. This runs out of process on
+      // both platforms and has no permission to ask for.
+      const picked = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.9,
+        exif: true,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+
+      const asset = picked.assets[0];
+      if (!asset?.uri) return;
+
+      // ── Placement honesty ──
+      // A picked photo takes its time and its coordinate from its OWN EXIF, and
+      // gets null where the EXIF is silent. Borrowing the walk's coordinates
+      // would pin a photo of the kitchen to a tree three streets away and
+      // quietly poison the place index that lets a location recognise you months
+      // later. The rule lib/walk/keepsakeImport.ts documents.
+      const capturedAt = exifCapturedAt(asset.exif) ?? Date.now();
+      const coordinate = exifCoordinate(asset.exif);
+      const hasCoordinate = coordinate != null;
+      const withinWalk = isWithinWalkWindow(startedAtMs, endedAtMs, capturedAt);
+
+      const persisted = await persistCapture({
+        uri: asset.uri,
+        capturedAt,
+        width: asset.width,
+        height: asset.height,
+      });
+
+      const draft: PendingCapture = {
+        uri: persisted?.uri ?? asset.uri,
+        localPath: persisted?.fileName ?? null,
+        width: asset.width,
+        height: asset.height,
+        capturedAt,
+        source: 'import',
+        lat: coordinate?.lat ?? null,
+        lng: coordinate?.lng ?? null,
+        routeIndex: hasCoordinate
+          ? snapToRoute(route, { lat: coordinate.lat, lng: coordinate.lng })
+          : withinWalk
+            ? estimateRouteIndexByTime(route, startedAtMs, endedAtMs, capturedAt)
+            : null,
+        // "Eleven minutes in" is only true of a photo taken during the walk. One
+        // from last summer has no position on this timeline, and
+        // elapsedSecondsInto would happily return minus four hundred days.
+        elapsedS: withinWalk ? elapsedSecondsInto(startedAtMs, capturedAt) : null,
+        placeKey: hasCoordinate ? placeKeyOrNull(coordinate.lat, coordinate.lng) : null,
+      };
+
+      setImported((prev) => [...prev, draft]);
+      haptic.success();
+
+      await enqueueOutbox([
+        {
+          id: newOutboxId(capturedAt),
+          ownerId: user.id,
+          petId: activePet.id,
+          walkSessionId: result.walkSessionId,
+          capturedAt,
+          lat: draft.lat,
+          lng: draft.lng,
+          routeIndex: draft.routeIndex,
+          elapsedS: draft.elapsedS,
+          mediaType: 'photo',
+          source: 'import',
+          localPath: draft.localPath,
+          localAssetId: null,
+          width: draft.width,
+          height: draft.height,
+          placeKey: draft.placeKey,
+          attempts: 0,
+          queuedAt: Date.now(),
+        },
+      ]);
+      void drainOutbox(outboxPorts);
+    } catch {
+      // A picker that failed costs nothing; the walk is already saved and the
+      // row was never written. Nothing to roll back, nothing worth a dialog.
+    } finally {
+      setImporting(false);
+    }
+  }, [importing, activePet?.id, user?.id, result.walkSessionId, route, startedAtMs, endedAtMs]);
 
   const confirmDiscard = useCallback(() => {
     Alert.alert(
@@ -1054,9 +1229,15 @@ function WalkSummaryView({
         // database. The primed snapshot is what the FIRST viewing renders, and
         // the row + thumbnail may still be uploading — without this the moment
         // would be missing from the story until a later replay, which is the
-        // one viewing that matters least. `localAssetId` is enough for the
-        // slide: useKeepsakeImage resolves it straight from the photo library.
-        keepsakes: keepsakes.map((k) => ({
+        // one viewing that matters least.
+        //
+        // `local_path` is what carries the photograph, and it used to be absent
+        // here: the snapshot passed `local_asset_id` alone, on the reasoning
+        // that useKeepsakeImage would resolve it from the camera roll. That was
+        // true only while every capture was copied there automatically. It is
+        // not any more — nothing writes to the photo library — so a story primed
+        // without this would open on captions with no pictures under them.
+        keepsakes: moments.map((k) => ({
           id: `local-${k.capturedAt}`,
           walk_session_id: result.walkSessionId,
           pet_id: activePet.id,
@@ -1066,8 +1247,9 @@ function WalkSummaryView({
           route_index: k.routeIndex,
           elapsed_s: k.elapsedS,
           media_type: 'photo',
-          source: 'camera',
-          local_asset_id: k.localAssetId,
+          source: k.source,
+          local_path: k.localPath,
+          local_asset_id: null,
           width: k.width,
           height: k.height,
           place_key: k.placeKey,
@@ -1081,7 +1263,7 @@ function WalkSummaryView({
     });
   }, [
     activePet,
-    keepsakes,
+    moments,
     labels,
     pawTotals,
     petName,
@@ -1101,7 +1283,36 @@ function WalkSummaryView({
   const isLoop = labels.isLoop;
   const startLabel = labels.startLabel;
   const trailingLabel = isLoop ? labels.farthestLabel : labels.endLabel;
-  const showLabels = Boolean(startLabel || trailingLabel);
+
+  /**
+   * The walk as a sequence of beats — set off, what happened, home again.
+   *
+   * This screen used to be nine centred bands stacked down a page, each with
+   * its own margin and no relationship to the one above it. The worst of them
+   * put the photograph on the same baseline as the stat row, so a kept moment
+   * read as a fourth statistic.
+   *
+   * A walk IS a sequence, so it is drawn as one. Every fact now hangs off the
+   * beat it belongs to: the route under "set off", each photo where it happened,
+   * the numbers under "home again". That also fixes the thin-data case that
+   * looked worst — a one-minute walk has almost no numbers to show, but it
+   * still has a beginning, a middle and an end.
+   */
+
+  /** "8:28 pm" — a wall clock, not a duration. */
+  const clockAt = (ms: number) =>
+    new Date(ms).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit' });
+
+  const eyebrow = [
+    // "Tonight" rather than "This night", which nobody says.
+    partOfDay(startedAtMs) === 'night' ? 'Tonight' : `This ${partOfDay(startedAtMs)}`,
+    startLabel,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const setOffMeta = [clockAt(startedAtMs), startLabel].filter(Boolean).join(' · ');
+  const homeMeta = [clockAt(endedAtMs), trailingLabel].filter(Boolean).join(' · ');
 
   /**
    * How many steps the DOG took — modelled, not measured.
@@ -1169,160 +1380,267 @@ function WalkSummaryView({
     }
   })();
 
+  /**
+   * The numbers, as a grid rather than a centred row of columns.
+   *
+   * Labels are sentence case and quieter than their values — deliberately NOT
+   * `type.caption`, whose 1.2 letter-spaced caps made "KCAL BURNED" shout over
+   * the single digit above it. A caption should name a number, not compete
+   * with it.
+   *
+   * Steps are absent on purpose: they stay a sentence below this grid, because
+   * a sentence can say WHOSE steps these are and can carry the "around" hedge
+   * that a bare column cannot. See the note by `formatStepsProse` below.
+   */
+  const statCells: { value: string; unit?: string; label: string }[] = [
+    { value: String(minutes), unit: minutes === 1 ? 'min' : 'mins', label: 'Duration' },
+    { value: km.toFixed(2), unit: 'km', label: 'Distance' },
+    ...(kcal > 0 ? [{ value: String(kcal), unit: 'kcal', label: 'Burned' }] : []),
+  ];
+
   return (
-    <Reanimated.View style={[styles.summaryScreen, { paddingTop: insets.top + space.xl }, rootStyle]}>
-      <View style={styles.summaryHeader}>
-        <Reanimated.View style={pawStyle}>
-          {/* Breathes while hidden under the cover, fires its ONE heartbeat
-              the moment the tail reveals it (Living Paw contract). */}
-          <BreathingPaw settled={revealed} size={28} />
-        </Reanimated.View>
-        <Reanimated.View style={titleStyle}>
-          <Text style={styles.summaryTitle}>
+    <Reanimated.View style={[styles.summaryScreen, rootStyle]}>
+      {/* ── Header ──
+          Left-aligned, so the screen has an edge to read down. Everything used
+          to be centred, which left no anchor and turned the outcome sentence
+          into a two-line ribbon floating under a title. */}
+      <Reanimated.View style={[styles.sumHeader, { paddingTop: insets.top + space.lg }, titleStyle]}>
+        <Text style={styles.sumEyebrow} numberOfLines={1}>{eyebrow}</Text>
+        <View style={styles.sumTitleRow}>
+          <Reanimated.View style={pawStyle}>
+            {/* Breathes while hidden under the cover, fires its ONE heartbeat
+                the moment the tail reveals it (Living Paw contract). */}
+            <BreathingPaw settled={revealed} size={22} />
+          </Reanimated.View>
+          <Text style={styles.sumTitle} numberOfLines={1}>
             {isWalkLogged ? `Good walk, ${petName}` : 'Walk saved'}
           </Text>
-          <Text style={styles.summaryOutcome}>{outcomeCopy}</Text>
-        </Reanimated.View>
-      </View>
-
-      <Reanimated.View style={[styles.routeCard, cardStyle]}>
-        {route.length >= 2 ? (
-          <>
-            {/* A plain measured wrapper around BOTH the map and its overlay.
-                The projection only works if the box we fit the camera to is
-                exactly the box the map fills — measuring anything else (the
-                animated card, the screen) leaves the two disagreeing, and a
-                width of 0 silently yields no camera and no pins at all. */}
-            <View style={styles.routeMapWrap} onLayout={onRouteCardLayout}>
-              <WalkMap
-                mode="summary"
-                path={route}
-                style={styles.routeMap as any}
-                camera={fittedCamera}
-                onCameraChange={keepsakePins.length > 0 ? setReportedCamera : undefined}
-              />
-              {/* Photos pinned where they were taken. */}
-              <KeepsakeMapOverlay
-                pins={keepsakePins}
-                camera={mapCamera}
-                width={routeCardSize.width}
-                height={routeCardSize.height}
-                // A tapped cluster enters at its lead, but pages the whole
-                // walk, so the sequence stays continuous either side of it.
-                onPress={(tapped) =>
-                  openMoments(keepsakePins, keepsakePins.indexOf(tapped[0]))
-                }
-              />
-            </View>
-            {showLabels && startLabel && (
-              <View style={[styles.summaryPill, styles.summaryPillStart]} pointerEvents="none">
-                <MaterialIcons
-                  name={isLoop ? 'home' : 'place'}
-                  size={11}
-                  color={color.navy}
-                />
-                <Text style={styles.summaryPillText} numberOfLines={1}>{startLabel}</Text>
-              </View>
-            )}
-            {showLabels && trailingLabel && (
-              <View style={[styles.summaryPill, styles.summaryPillEnd]} pointerEvents="none">
-                <MaterialIcons
-                  name={isLoop ? 'landscape' : 'flag'}
-                  size={11}
-                  color={color.navy}
-                />
-                <Text style={styles.summaryPillText} numberOfLines={1}>{trailingLabel}</Text>
-              </View>
-            )}
-          </>
-        ) : (
-          <View style={styles.routeEmpty}>
-            <MaterialIcons name="satellite-alt" size={26} color={color.slateFaint} />
-            <Text style={styles.routeEmptyText}>
-              GPS was patchy — the route didn&rsquo;t draw itself this time.
-            </Text>
-          </View>
-        )}
+        </View>
+        <Text style={styles.sumOutcome}>{outcomeCopy}</Text>
       </Reanimated.View>
 
-      {/* Moments captured on this walk.
-          Rendered from the local uris the camera just wrote, NOT from the
-          database: the row must appear the instant the summary does, and the
-          insert plus thumbnail upload are still in flight behind it. Waiting
-          on the network here would mean a blank space on exactly the screen
-          that is supposed to hand the walk back to its owner. */}
-      {keepsakes.length > 0 && (
-        <Reanimated.View style={[styles.keepsakeRow, cardStyle]}>
-          <Text style={styles.keepsakeRowLabel}>
-            {keepsakes.length === 1 ? 'A MOMENT KEPT' : `${keepsakes.length} MOMENTS KEPT`}
-          </Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.keepsakeStrip}
-          >
-            {keepsakePins.map((pin, i) => (
-              <TouchableOpacity
-                key={pin.id}
-                activeOpacity={0.85}
-                // Opens the whole walk's moments, starting at this one, so the
-                // row behaves like a filmstrip rather than N separate photos.
-                onPress={() => openMoments(keepsakePins, i)}
-                accessibilityRole="button"
-                accessibilityLabel="Open this moment"
-              >
-                <Image
-                  source={{ uri: pin.uri ?? undefined }}
-                  style={styles.keepsakeThumb}
-                  contentFit="cover"
-                  transition={180}
-                />
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </Reanimated.View>
-      )}
+      {/* The trail scrolls; the footer does not. A moment is rendered at full
+          column width, so a walk with several of them is taller than a phone —
+          the old fixed layout could only have fitted them by shrinking them
+          back into thumbnails. */}
+      <ScrollView
+        style={styles.sumScroll}
+        contentContainerStyle={styles.sumScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── Beat: set off ── */}
+        <Reanimated.View style={[styles.beat, cardStyle]}>
+          <View style={styles.beatRail}>
+            <View style={[styles.node, styles.nodeStart]} />
+            <View style={styles.railLine} />
+          </View>
+          <View style={styles.beatBody}>
+            <Text style={styles.beatTitle}>Set off</Text>
+            {setOffMeta ? <Text style={styles.beatMeta}>{setOffMeta}</Text> : null}
 
-      <View style={styles.summaryStats}>
-        <Reanimated.View style={[styles.stat, stat1Style]}>
-          <Text style={styles.statValue}>{minutes}</Text>
-          <Text style={styles.statLabel}>MINUTES</Text>
+            {route.length >= 2 ? (
+              /* A plain measured wrapper around BOTH the map and its overlay.
+                 The projection only works if the box we fit the camera to is
+                 exactly the box the map fills — measuring anything else (the
+                 animated card, the screen) leaves the two disagreeing, and a
+                 width of 0 silently yields no camera and no pins at all.
+
+                 The corner pills that used to hang off this card are gone: the
+                 beat above and the one below now say where the walk started and
+                 ended, in the reading order, so the pills were repeating the
+                 trail on top of the map. */
+              <View style={styles.routeCard}>
+                <View style={styles.routeMapWrap} onLayout={onRouteCardLayout}>
+                  <WalkMap
+                    mode="summary"
+                    path={route}
+                    style={styles.routeMap as any}
+                    camera={fittedCamera}
+                    onCameraChange={keepsakePins.length > 0 ? setReportedCamera : undefined}
+                  />
+                  {/* Photos pinned where they were taken. */}
+                  <KeepsakeMapOverlay
+                    pins={keepsakePins}
+                    camera={mapCamera}
+                    width={routeCardSize.width}
+                    height={routeCardSize.height}
+                    // A tapped cluster enters at its lead, but pages the whole
+                    // walk, so the sequence stays continuous either side of it.
+                    onPress={(tapped) =>
+                      openMoments(keepsakePins, keepsakePins.indexOf(tapped[0]))
+                    }
+                  />
+                </View>
+              </View>
+            ) : (
+              <View style={[styles.routeCard, styles.routeEmpty]}>
+                <MaterialIcons name="satellite-alt" size={22} color={color.slateFaint} />
+                <Text style={styles.routeEmptyText}>
+                  GPS was patchy — the route didn&rsquo;t draw itself this time.
+                </Text>
+              </View>
+            )}
+          </View>
         </Reanimated.View>
-        <Reanimated.View style={[styles.statDivider, stat2Style]} />
-        <Reanimated.View style={[styles.stat, stat2Style]}>
-          <Text style={styles.statValue}>{km.toFixed(2)}</Text>
-          <Text style={styles.statLabel}>KM</Text>
-        </Reanimated.View>
-        {kcal > 0 && (
-          <>
-            <Reanimated.View style={[styles.statDivider, stat3Style]} />
-            <Reanimated.View style={[styles.stat, stat3Style]}>
-              <Text style={styles.statValue}>{kcal}</Text>
-              <Text style={styles.statLabel}>KCAL BURNED</Text>
+
+        {/* ── Beats: the moments ──
+            Rendered from the local uris the camera just wrote, NOT from the
+            database: these must appear the instant the summary does, and the
+            insert plus thumbnail upload are still in flight behind them.
+            Waiting on the network here would mean a blank space on exactly the
+            screen that is supposed to hand the walk back to its owner.
+
+            Each photo gets the full column at the camera's own 4:3, in the
+            place along the walk where it was taken. It was a 68px thumbnail
+            sharing a baseline with the stat row, which made a kept moment read
+            as a fourth statistic. */}
+        {moments.map((k, i) => {
+          const elapsed = elapsedPhrase(k.elapsedS);
+          // Only a placed photo can be opened: the viewer's route rail sits a
+          // moment on the walk by its coordinate, and an import with no EXIF
+          // GPS has none to sit on. The beat still shows it — larger here than
+          // the viewer would anyway.
+          const pinIndex = keepsakePins.findIndex(p => p.id === `local-${k.capturedAt}`);
+          const body = (
+            <>
+              <Text style={styles.beatTitle}>A moment kept</Text>
+              <Text style={styles.beatMeta}>
+                {[clockAt(k.capturedAt), elapsed].filter(Boolean).join(' · ')}
+              </Text>
+              <Image
+                source={{ uri: k.uri }}
+                style={styles.beatPhoto}
+                contentFit="cover"
+                transition={180}
+              />
+            </>
+          );
+          return (
+            <Reanimated.View key={`${k.capturedAt}-${i}`} style={[styles.beat, stat1Style]}>
+              <View style={styles.beatRail}>
+                {/* Electric marks discovery — something the dog found — which
+                    is precisely what a moment kept on a walk is. */}
+                <View style={[styles.node, styles.nodeMoment]} />
+                <View style={styles.railLine} />
+              </View>
+              {pinIndex >= 0 ? (
+                <TouchableOpacity
+                  style={styles.beatBody}
+                  activeOpacity={0.9}
+                  onPress={() => openMoments(keepsakePins, pinIndex)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open this moment"
+                >
+                  {body}
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.beatBody}>{body}</View>
+              )}
             </Reanimated.View>
-          </>
+          );
+        })}
+
+        {/* ── Beat: home again ──
+            The last node draws no line below it, which is what makes the trail
+            read as finished rather than cut off. */}
+        <Reanimated.View style={[styles.beat, stat2Style]}>
+          <View style={styles.beatRail}>
+            <View style={[styles.node, styles.nodeEnd]} />
+          </View>
+          <View style={styles.beatBody}>
+            <Text style={styles.beatTitle}>{isLoop ? 'Home again' : 'Finished'}</Text>
+            {homeMeta ? <Text style={styles.beatMeta}>{homeMeta}</Text> : null}
+
+            <Reanimated.View style={[styles.statGrid, stat3Style]}>
+              {statCells.map((cell, i) => {
+                // An odd last cell takes the whole row rather than half of it.
+                // Left at 50% it would carry a rule across only half the grid,
+                // which reads as a broken table rather than a short one.
+                const alone = i > 0 && i === statCells.length - 1 && statCells.length % 2 === 1;
+                return (
+                  <View
+                    key={cell.label}
+                    style={[
+                      styles.statCell,
+                      i % 2 === 1 && styles.statCellRight,
+                      i >= 2 && styles.statCellLower,
+                      alone && styles.statCellWide,
+                    ]}
+                  >
+                    <Text style={styles.sumStatValue}>
+                      {cell.value}
+                      {cell.unit ? <Text style={styles.sumStatUnit}> {cell.unit}</Text> : null}
+                    </Text>
+                    <Text style={styles.sumStatLabel}>{cell.label}</Text>
+                  </View>
+                );
+              })}
+            </Reanimated.View>
+
+            {/* The dog's own step count, in a sentence rather than a fourth
+                column. A sentence can say WHOSE steps these are, which a bare
+                stat cannot — and the phone counted the walker's route, not
+                Max's legs, so the attribution is the honest part. "around" is
+                the hedge: this is modelled from distance and pace, never
+                measured. */}
+            {dogSteps > 0 && (
+              <Reanimated.View style={stat3Style}>
+                <Text style={styles.stepsLine}>
+                  {petName} took {formatStepsProse(dogSteps)} steps
+                </Text>
+              </Reanimated.View>
+            )}
+
+            {isWalkLogged && lastEarnEvent && lastEarnEvent.coins > 0 && (
+              <Reanimated.View style={[styles.coinChip, coinsStyle]}>
+                <MaterialIcons name="paid" size={15} color={color.alert} />
+                <Text style={styles.coinChipText}>+{lastEarnEvent.coins} PawCoins</Text>
+              </Reanimated.View>
+            )}
+          </View>
+        </Reanimated.View>
+
+        {/* The backstop for everything the in-walk camera could not catch — the
+            shot taken on the phone's own camera, which will always be faster to
+            reach. Quiet, and after the walk rather than during it: mid-walk this
+            is a question nobody is asking.
+
+            Hidden behind its own flag while the flow is reworked — it did not
+            work on device. See WALK_PHOTO_IMPORT_ENABLED in constants/features.ts
+            for what to check when it comes back. */}
+        {WALK_CAMERA_ENABLED && WALK_PHOTO_IMPORT_ENABLED && (
+          <TouchableOpacity
+            style={styles.addPhotoRow}
+            onPress={onImport}
+            disabled={importing}
+            accessibilityRole="button"
+            accessibilityLabel="Add a photo from your library to this walk"
+          >
+            <View style={styles.addPhotoIcon}>
+              <MaterialIcons name="add-photo-alternate" size={18} color={color.slateMuted} />
+            </View>
+            <Text style={styles.addPhotoText}>
+              {importing ? 'Adding…' : 'Add a photo from your library'}
+            </Text>
+          </TouchableOpacity>
         )}
-      </View>
 
-      {/* The dog's own step count, in a sentence rather than a fourth column.
-          A sentence can say WHOSE steps these are, which a bare stat cannot —
-          and the phone counted the walker's route, not Max's legs, so the
-          attribution is the honest part. "around" is the hedge: this is
-          modelled from distance and pace, never measured. */}
-      {dogSteps > 0 && (
-        <Reanimated.View style={stat3Style}>
-          <Text style={styles.stepsLine}>
-            {petName} took {formatStepsProse(dogSteps)} steps
+        {/* Destructive, and therefore last — past everything the walk is for,
+            rather than stacked under the primary action where it was competing
+            with "Done" for the same tap. */}
+        <TouchableOpacity
+          style={styles.discardBtn}
+          onPress={confirmDiscard}
+          disabled={discarding}
+          accessibilityRole="button"
+          accessibilityLabel="Discard this walk"
+        >
+          <MaterialIcons name="delete-outline" size={16} color={color.error} />
+          <Text style={styles.discardBtnText}>
+            {discarding ? 'Discarding walk…' : 'Discard this walk'}
           </Text>
-        </Reanimated.View>
-      )}
-
-      {isWalkLogged && lastEarnEvent && lastEarnEvent.coins > 0 && (
-        <Reanimated.View style={[styles.coinRow, coinsStyle]}>
-          <MaterialIcons name="paid" size={16} color={color.alert} />
-          <Text style={styles.coinRowText}>+{lastEarnEvent.coins} PawCoins</Text>
-        </Reanimated.View>
-      )}
+        </TouchableOpacity>
+      </ScrollView>
 
       <KeepsakeViewer
         pins={openKeepsakes}
@@ -1343,8 +1661,14 @@ function WalkSummaryView({
         onClose={() => setOpenKeepsakes(null)}
       />
 
+      {/* ── Footer ──
+          One primary action on its own plane, with the quiet ones as peers in a
+          single row beneath it. It was a vertical stack of three — a yellow
+          pill, "Done", and a red destructive link — which asked the walker to
+          rank three unrelated things at the moment they were trying to put the
+          phone away. */}
       <Reanimated.View
-        style={[styles.summaryFooter, { paddingBottom: insets.bottom + space.xl }, footerStyle]}
+        style={[styles.sumFooter, { paddingBottom: insets.bottom + space.lg }, footerStyle]}
         pointerEvents={discarding ? 'none' : 'auto'}
       >
         {storyAvailable ? (
@@ -1357,14 +1681,16 @@ function WalkSummaryView({
               <MaterialIcons name="auto-awesome" size={18} color={color.navy} />
               <Text style={styles.finishBtnLightText}>See your Walk Story</Text>
             </TouchableOpacity>
-            {canShare && (
-              <TouchableOpacity style={styles.quietBtn} onPress={() => setShareOpen(true)}>
-                <Text style={styles.quietBtnText}>Share this walk</Text>
+            <View style={styles.quietRow}>
+              {canShare && (
+                <TouchableOpacity style={styles.quietBtn} onPress={() => setShareOpen(true)}>
+                  <Text style={styles.quietBtnText}>Share this walk</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.quietBtn} onPress={onDone}>
+                <Text style={styles.quietBtnText}>Done</Text>
               </TouchableOpacity>
-            )}
-            <TouchableOpacity style={styles.quietBtn} onPress={onDone}>
-              <Text style={styles.quietBtnText}>Done</Text>
-            </TouchableOpacity>
+            </View>
           </>
         ) : canShare ? (
           <>
@@ -1373,26 +1699,17 @@ function WalkSummaryView({
               <Text style={styles.finishBtnLightText}>Share this walk</Text>
             </TouchableOpacity>
             {nextUnlockLine && <Text style={styles.nextUnlockText}>{nextUnlockLine}</Text>}
-            <TouchableOpacity style={styles.quietBtn} onPress={onDone}>
-              <Text style={styles.quietBtnText}>Done</Text>
-            </TouchableOpacity>
+            <View style={styles.quietRow}>
+              <TouchableOpacity style={styles.quietBtn} onPress={onDone}>
+                <Text style={styles.quietBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </>
         ) : (
           <TouchableOpacity style={styles.finishBtnLight} onPress={onDone} activeOpacity={0.9}>
             <Text style={styles.finishBtnLightText}>Done</Text>
           </TouchableOpacity>
         )}
-        <TouchableOpacity
-          style={styles.discardBtn}
-          onPress={confirmDiscard}
-          accessibilityRole="button"
-          accessibilityLabel="Discard this walk"
-        >
-          <MaterialIcons name="delete-outline" size={17} color={color.error} />
-          <Text style={styles.discardBtnText}>
-            {discarding ? 'Discarding walk…' : 'Discard this walk'}
-          </Text>
-        </TouchableOpacity>
       </Reanimated.View>
 
       <MomentShareModal
@@ -1415,6 +1732,21 @@ function WalkSummaryView({
     </Reanimated.View>
   );
 }
+
+/** Diameter of a trail node, and therefore the width of the node column. */
+const TRAIL_NODE = 14;
+
+/**
+ * The route preview's height.
+ *
+ * Load-bearing, and it must stay a literal on all three of `routeCard`,
+ * `routeMapWrap` and `routeMap`. WalkMap's own root is `flex: 1`, which React
+ * Native resolves to `flexBasis: 0%`; Yoga then sizes the child from flexBasis
+ * and IGNORES `height`, so inside an auto-height parent the map collapses to
+ * nothing and the card renders as a bare hairline. A definite height on the
+ * chain is what gives it real space to grow into.
+ */
+const ROUTE_CARD_H = 190;
 
 const styles = StyleSheet.create({
   // ── Screen shell — body + tail whip overlay share one root ──
@@ -1520,27 +1852,6 @@ const styles = StyleSheet.create({
   // Rides just above the stats card so the prompt never covers the timer or
   // the Finish button. `box-none` on the wrapper keeps the map pannable
   // through the gap either side of the card.
-  keepsakeRow: {
-    marginTop: space.lg,
-    paddingHorizontal: space.xxl,
-  },
-  keepsakeRowLabel: {
-    fontFamily: font.semibold,
-    fontSize: 10,
-    letterSpacing: 1.1,
-    color: color.slateFaint,
-    marginBottom: space.sm,
-  },
-  keepsakeStrip: {
-    gap: space.sm,
-    paddingRight: space.xxl,
-  },
-  keepsakeThumb: {
-    width: 72,
-    height: 72,
-    borderRadius: radius.md,
-    backgroundColor: color.surfaceSubtle,
-  },
   keepsakePromptWrap: {
     position: 'absolute',
     left: space.lg,
@@ -1559,6 +1870,12 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: color.hairlineOnNavy,
     ...shadow.raised,
+  },
+  /** Inset by the border width so the photo sits inside the ring, not over it. */
+  captureThumb: {
+    width: 48 - 2,
+    height: 48 - 2,
+    borderRadius: radius.pill,
   },
   captureCount: {
     position: 'absolute',
@@ -1662,16 +1979,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: color.slateMuted,
   },
-  /**
-   * Still used by the post-walk summary further down this file, which is a
-   * different surface with a different job: there the numbers are a result
-   * being read once, not a live readout being glanced at, and the caption earns
-   * its room.
-   */
-  statLabel: {
-    ...type.caption,
-    color: color.slateFaint,
-  },
   finishBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1758,25 +2065,117 @@ const styles = StyleSheet.create({
   },
 
   // ── Summary ──
+  //
+  // One rhythm for the whole screen: a fixed header, a scrolling trail of
+  // beats, a pinned footer. The horizontal inset lives on the header, the
+  // scroll content and the footer rather than on the root, so the footer's
+  // surface can span the full width and read as its own plane.
   summaryScreen: {
     flex: 1,
     backgroundColor: color.surfaceSubtle,
+  },
+  sumHeader: {
     paddingHorizontal: space.xxl,
+    paddingBottom: space.lg,
   },
-  summaryHeader: {
+  /** "Tonight · Arpora" — when and where, before the headline says how it went. */
+  sumEyebrow: {
+    ...type.caption,
+    color: color.slateFaint,
+    textTransform: 'uppercase',
+  },
+  sumTitleRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    marginBottom: space.xxl,
+    gap: space.sm,
+    marginTop: space.sm,
   },
-  summaryTitle: {
+  sumTitle: {
     ...type.display,
     color: color.navy,
-    textAlign: 'center',
+    flexShrink: 1,
   },
-  summaryOutcome: {
+  sumOutcome: {
     ...type.body,
     color: color.slateMuted,
-    textAlign: 'center',
+    marginTop: space.xs,
+  },
+  sumScroll: { flex: 1 },
+  sumScrollContent: {
+    paddingHorizontal: space.xxl,
+    paddingBottom: space.xl,
+  },
+
+  // ── The trail ──
+  beat: {
+    flexDirection: 'row',
+    gap: space.md,
+  },
+  /**
+   * The node column, and the line between nodes.
+   *
+   * The line is drawn per beat rather than as one absolute spine, so it always
+   * ends exactly at the last node — a spine would have to guess where the final
+   * beat's content stops, and would trail past it every time the content
+   * changed. The negative bottom margin carries it through the gap to the next
+   * node.
+   */
+  beatRail: {
+    width: TRAIL_NODE,
+    alignItems: 'center',
+  },
+  railLine: {
+    flex: 1,
+    width: 2,
+    backgroundColor: color.hairline,
+    marginTop: space.xs,
+    marginBottom: -space.xl,
+  },
+  beatBody: {
+    flex: 1,
+    paddingBottom: space.xl,
+  },
+  node: {
+    width: TRAIL_NODE,
+    height: TRAIL_NODE,
+    borderRadius: radius.pill,
+    marginTop: 3,
+  },
+  /** Open, then discoveries, then closed. Yellow is spent on the CTA, not here. */
+  nodeStart: {
+    borderWidth: 2.5,
+    borderColor: color.navy,
+    backgroundColor: color.surfaceSubtle,
+  },
+  nodeMoment: { backgroundColor: color.electric },
+  nodeEnd: { backgroundColor: color.navy },
+
+  beatTitle: {
+    ...type.heading,
+    color: color.navy,
+  },
+  beatMeta: {
+    ...type.label,
+    fontFamily: font.medium,
+    color: color.slateFaint,
+    marginTop: 2,
+  },
+  /**
+   * Portrait 3:4 — the shape the walk camera actually saves, so a keepsake is
+   * shown whole rather than cropped again on the way in.
+   *
+   * Note it is NOT what the walker framed: the camera preview is full-bleed and
+   * expo-camera's hardcoded `.resizeAspectFill` shows the centre ~61% of the
+   * photo's width. So this frame carries a little more scene either side than
+   * was on screen at the shutter. That gap is documented and deliberate — see
+   * the header of components/walk/WalkCamera.tsx.
+   */
+  beatPhoto: {
+    width: '100%',
+    aspectRatio: 3 / 4,
+    borderRadius: radius.lg,
+    backgroundColor: color.surface,
+    marginTop: space.md,
   },
   /**
    * The explicit height is load-bearing — without it this card renders as a
@@ -1792,25 +2191,23 @@ const styles = StyleSheet.create({
    * grow into. Keep it in sync with `routeMap` / `routeEmpty` below.
    */
   routeCard: {
-    height: 210,
+    height: ROUTE_CARD_H,
     backgroundColor: color.surface,
-    borderRadius: radius.xl,
+    borderRadius: radius.lg,
     borderWidth: 0.5,
     borderColor: color.hairline,
     overflow: 'hidden',
-    marginBottom: space.xxl,
-    ...shadow.card,
+    marginTop: space.md,
   },
   routeMapWrap: {
     width: '100%',
-    height: 210,
+    height: ROUTE_CARD_H,
   },
   routeMap: {
     width: '100%',
-    height: 210,
+    height: ROUTE_CARD_H,
   },
   routeEmpty: {
-    height: 210,
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
@@ -1821,60 +2218,124 @@ const styles = StyleSheet.create({
     color: color.slateMuted,
     textAlign: 'center',
   },
-  summaryPill: {
-    position: 'absolute',
+
+  // ── The numbers ──
+  statGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: space.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.hairline,
+  },
+  statCell: {
+    width: '50%',
+    paddingVertical: space.md,
+  },
+  statCellRight: {
+    paddingLeft: space.lg,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: color.hairline,
+  },
+  statCellLower: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.hairline,
+  },
+  statCellWide: { width: '100%' },
+  /**
+   * Aligned to the trail's content column, so it reads as one more thing the
+   * walk can hold rather than as chrome bolted under it.
+   */
+  addPhotoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: color.surface,
-    borderWidth: 0.5,
-    borderColor: color.navy,
-    borderRadius: 999,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    maxWidth: '60%',
-    ...shadow.card,
+    gap: space.md,
+    minHeight: 44,
+    marginLeft: TRAIL_NODE + space.md,
   },
-  summaryPillStart: {
-    bottom: 10,
-    left: 10,
-  },
-  summaryPillEnd: {
-    top: 10,
-    right: 10,
-    borderColor: color.yellow,
-    backgroundColor: '#FFFDE0',
-  },
-  summaryPillText: {
-    ...type.label,
-    color: color.navy,
-    fontSize: 11,
-  },
-  summaryStats: {
-    flexDirection: 'row',
+  addPhotoIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: space.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.hairline,
+    backgroundColor: color.surface,
+  },
+  addPhotoText: {
+    ...type.label,
+    color: color.slateMuted,
+  },
+  /**
+   * Distinct from the live card's `statValue` — same reason that one is
+   * distinct from `stat`. These are numbers read once at the end of a walk, in
+   * a grid; that one is a live readout being glanced at mid-walk.
+   */
+  sumStatValue: {
+    fontFamily: font.display,
+    fontSize: 26,
+    lineHeight: 28,
+    color: color.navy,
+    fontVariant: ['tabular-nums'],
+  },
+  /** Lowercase and quieter: the unit qualifies the number, it is not a heading. */
+  sumStatUnit: {
+    fontFamily: font.semibold,
+    fontSize: 12,
+    color: color.slateMuted,
+  },
+  /**
+   * Sentence case, and deliberately NOT `type.caption`.
+   *
+   * The caption token is 1.2-letter-spaced caps, which turned "KCAL BURNED"
+   * into the loudest thing in a cell whose whole job was to present the number
+   * above it. A label names a value; it does not compete with one.
+   */
+  sumStatLabel: {
+    fontFamily: font.medium,
+    fontSize: 11,
+    lineHeight: 15,
+    color: color.slateFaint,
+    marginTop: 1,
   },
   stepsLine: {
     ...type.body,
     color: color.slateMuted,
-    textAlign: 'center',
-    marginTop: space.lg,
+    marginTop: space.md,
   },
-  coinRow: {
+  coinChip: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: space.sm,
-    marginTop: space.xxl,
+    gap: space.xs + 2,
+    marginTop: space.md,
+    paddingVertical: space.xs + 2,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+    backgroundColor: color.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.hairline,
   },
-  coinRowText: {
+  coinChipText: {
     ...type.label,
     color: color.navy,
   },
-  summaryFooter: {
-    marginTop: 'auto',
+  /**
+   * Its own plane, so the primary action never floats over the trail's last
+   * beat and the screen has a floor.
+   */
+  sumFooter: {
+    paddingHorizontal: space.xxl,
+    paddingTop: space.md,
+    backgroundColor: color.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.hairline,
+  },
+  quietRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.xxxl,
   },
   finishBtnLight: {
     flexDirection: 'row',
@@ -1898,13 +2359,20 @@ const styles = StyleSheet.create({
     ...type.label,
     color: color.slateMuted,
   },
+  /**
+   * Left-aligned with the trail it follows, and separated by a rule — it is
+   * the end of the page, not a peer of the footer's actions.
+   */
   discardBtn: {
     minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: space.xs,
-    marginTop: space.xs,
+    gap: space.xs + 2,
+    marginTop: space.sm,
+    paddingLeft: TRAIL_NODE + space.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.hairline,
+    paddingTop: space.lg,
   },
   discardBtnText: {
     ...type.label,

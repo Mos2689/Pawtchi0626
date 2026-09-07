@@ -32,6 +32,36 @@ export const WALK_STORY_ENABLED = FEATURE_FLAGS.walkStory;
 export const WALK_CAMERA_ENABLED = FEATURE_FLAGS.walkCamera;
 
 /**
+ * "Add a photo from your library" on the finished-walk summary — the backstop
+ * for shots taken on the phone's own camera during a walk.
+ *
+ * OFF (Sep 2026). The row shipped and did not work on device; rather than guess
+ * at a cause it is switched off until the flow is designed properly. No native
+ * footprint — the system photo picker needs no permission on either platform —
+ * so this is an OTA switch, not a store release.
+ *
+ * The code behind it stays wired on purpose. `onImport` in app/walk.tsx, the
+ * EXIF parsing in lib/walk/keepsakeExif.ts and the outbox write are all still
+ * referenced and still tested; only the row is hidden. Deleting them would mean
+ * rebuilding the placement-honesty rules (never borrow the walk's coordinates
+ * for a photo that carries its own) from scratch.
+ *
+ * ── When picking this back up ──
+ *  1. The `catch` in `onImport` is silent, which is why "not working" has no
+ *     detail attached to it. Log or surface the error first — the answer is
+ *     almost certainly in there.
+ *  2. Check the picker opens at all. If it does not, suspect presentation from
+ *     the summary screen rather than the picker call itself.
+ *  3. Confirm a picked photo reaches `moments` and the trail re-renders; the
+ *     draft is added to local state before the durable write, so display and
+ *     persistence fail independently.
+ *  4. lib/privacy/photoLibraryAccess.test.ts asserts this path uses the system
+ *     picker and nothing else. Keep it that way — requesting library
+ *     permission here would undo the whole photo architecture.
+ */
+export const WALK_PHOTO_IMPORT_ENABLED = FEATURE_FLAGS.walkPhotoImport;
+
+/**
  * The iOS walk Live Activity — the Lock Screen / Dynamic Island card for a walk
  * in progress.
  *
