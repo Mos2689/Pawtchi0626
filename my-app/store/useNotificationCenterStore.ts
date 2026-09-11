@@ -45,6 +45,12 @@ import {
   markRemoteRead,
 } from '../lib/notificationCenter/remote';
 import { dayScope, isStaleDayScoped, stableId } from '../lib/notificationCenter/stableId';
+import { hasNewAnnouncement, isItemRead } from '../lib/notificationCenter/announce';
+import {
+  EMPTY_SEGMENT_COUNTS,
+  segmentForItem,
+  type SegmentCounts,
+} from '../lib/notificationCenter/segments';
 import {
   compareItems,
   isUrgentTone,
@@ -70,6 +76,17 @@ import { useStreakStore } from './useStreakStore';
  */
 const readKey = (userId: string | null) => `notification_center_read_v1:${userId ?? 'anon'}`;
 const dismissedKey = (userId: string | null) => `notification_center_dismissed_v1:${userId ?? 'anon'}`;
+/**
+ * Which items have already had their turn in the bell's arrival pill.
+ *
+ * Deliberately separate from `readIds`. Announcing is about one glance at the
+ * header — "I have seen that these exist" — while read is a claim about the
+ * item itself that syncs to the server and survives a reinstall. Folding the
+ * two together would mean tapping the bell silently marked everything read,
+ * which is a far bigger promise than the tap makes.
+ */
+const announcedKey = (userId: string | null) =>
+  `notification_center_announced_v1:${userId ?? 'anon'}`;
 
 /**
  * Subscription state lives in a React context provider, not a store, so it
@@ -88,6 +105,8 @@ interface NotificationCenterState {
   readIds: string[];
   /** Ids of non-sticky items the owner swiped away. Cleared with their scope. */
   dismissedIds: string[];
+  /** Ids that have already been shown in the bell's arrival pill. */
+  announcedIds: string[];
   /** Published by screens at runtime; the only non-derived source. */
   runtimeItems: InboxItem[];
   subscription: SubscriptionSnapshot | null;
@@ -105,6 +124,13 @@ interface NotificationCenterState {
   markRead: (id: string) => void;
   markAllRead: () => void;
   dismiss: (id: string) => void;
+  /**
+   * Files every currently-unread item as "already announced", collapsing the
+   * bell's arrival pill. Called when the owner taps the bell. Items arriving
+   * afterwards are unannounced by definition, so the pill returns for them and
+   * only for them.
+   */
+  acknowledgeAnnouncements: () => void;
   /** Wipes everything for the signed-out user. Named to match clearPet / clearStreak / clearContext. */
   clearCenter: () => void;
 }
@@ -298,6 +324,7 @@ export const useNotificationCenterStore = create<NotificationCenterState>((set, 
   items: [],
   readIds: [],
   dismissedIds: [],
+  announcedIds: [],
   runtimeItems: [],
   subscription: null,
   hydrated: false,
@@ -315,18 +342,21 @@ export const useNotificationCenterStore = create<NotificationCenterState>((set, 
   hydrate: async (userId) => {
     if (get().hydrated && get().userId === userId) return;
     try {
-      const [rawRead, rawDismissed] = await Promise.all([
+      const [rawRead, rawDismissed, rawAnnounced] = await Promise.all([
         AsyncStorage.getItem(readKey(userId)),
         AsyncStorage.getItem(dismissedKey(userId)),
+        AsyncStorage.getItem(announcedKey(userId)),
       ]);
       const now = new Date();
-      // Sweep ids whose day has passed. Without this both lists grow forever,
+      // Sweep ids whose day has passed. Without this the lists grow forever,
       // and a day-scoped nudge read yesterday would never come back.
       const readIds = (safeParse(rawRead) ?? []).filter(id => !isStaleDayScoped(id, now));
       const dismissedIds = (safeParse(rawDismissed) ?? []).filter(id => !isStaleDayScoped(id, now));
-      set({ readIds, dismissedIds, hydrated: true, userId });
+      const announcedIds = (safeParse(rawAnnounced) ?? []).filter(id => !isStaleDayScoped(id, now));
+      set({ readIds, dismissedIds, announcedIds, hydrated: true, userId });
       void persist(readKey(userId), readIds);
       void persist(dismissedKey(userId), dismissedIds);
+      void persist(announcedKey(userId), announcedIds);
     } catch {
       set({ hydrated: true, userId });
     }
@@ -347,6 +377,7 @@ export const useNotificationCenterStore = create<NotificationCenterState>((set, 
       runtimeItems: [],
       readIds: [],
       dismissedIds: [],
+      announcedIds: [],
       subscription: null,
       hydrated: false,
       userId: null,
@@ -442,6 +473,22 @@ export const useNotificationCenterStore = create<NotificationCenterState>((set, 
     if (item?.dedupeKey) void markRemoteRead(item.dedupeKey);
   },
 
+  /**
+   * Collapses the arrival pill without touching read state.
+   *
+   * Files *every* current item rather than only the unread ones. An item the
+   * owner had already read was never going to raise the pill anyway, and
+   * including it means the list has one entry per item instead of gaining a
+   * second one if that item is somehow unread again later.
+   */
+  acknowledgeAnnouncements: () => {
+    const ids = get().items.map(i => i.id);
+    const announcedIds = Array.from(new Set([...get().announcedIds, ...ids]));
+    if (announcedIds.length === get().announcedIds.length) return;
+    set({ announcedIds });
+    void persist(announcedKey(get().userId), announcedIds);
+  },
+
   markAllRead: () => {
     const items = get().items;
     // Clinical items are never bulk-cleared. "Mark all read" is a tidying
@@ -496,17 +543,11 @@ export function useInboxEntries(): InboxEntry[] {
 }
 
 /**
- * Read state, from whichever source knows about it.
- *
- * Locally derived items only ever have the AsyncStorage list. Pushes also carry
- * the server's `read_at`, and that is what makes the center survive a reinstall
- * or a second device: without consulting it, a notification read on a phone
- * would come back unread on a tablet, and every historical push would arrive
- * bold on a fresh install.
+ * Read state lives in lib/notificationCenter/announce.ts, next to the
+ * announcement rule that shares its definition of "unread". Aliased here
+ * because every selector below reads better with the short name.
  */
-function isRead(item: InboxItem, readIds: Set<string>): boolean {
-  return readIds.has(item.id) || item.meta?.server_read === true;
-}
+const isRead = isItemRead;
 
 /**
  * The two below stay plain selectors safely: they return primitives, which
@@ -527,6 +568,43 @@ export function selectUnreadCount(state: NotificationCenterState): number {
 export function selectHasUrgentUnread(state: NotificationCenterState): boolean {
   const read = new Set(state.readIds);
   return state.items.some(item => !isRead(item, read) && isUrgentTone(item.tone));
+}
+
+/**
+ * True when something unread has not yet had its turn in the arrival pill —
+ * what makes "dismiss on tap, come back only for something new" work. The rule
+ * itself, and why it counts ids rather than items, is in
+ * lib/notificationCenter/announce.ts.
+ *
+ * A plain selector is safe here because it returns a boolean, which
+ * `useSyncExternalStore` compares with Object.is.
+ */
+export function selectHasNewAnnouncement(state: NotificationCenterState): boolean {
+  return hasNewAnnouncement(state.items, state.readIds, state.announcedIds);
+}
+
+/**
+ * Unread split by lane, for the bell's segmented pill.
+ *
+ * A hook with a `useMemo`, for exactly the reason `useInboxEntries` above is:
+ * this returns an object, and a plain selector building one inline would hand
+ * `useSyncExternalStore` a new identity on every call and loop to the
+ * update-depth limit. Selecting the two stable slices and deriving in a memo is
+ * the pattern this store already established — do not "simplify" it back into a
+ * plain selector.
+ */
+export function useUnreadSegments(): SegmentCounts {
+  const items = useNotificationCenterStore(s => s.items);
+  const readIds = useNotificationCenterStore(s => s.readIds);
+  return useMemo(() => {
+    const read = new Set(readIds);
+    const counts: SegmentCounts = { ...EMPTY_SEGMENT_COUNTS };
+    for (const item of items) {
+      if (isRead(item, read)) continue;
+      counts[segmentForItem(item)] += 1;
+    }
+    return counts;
+  }, [items, readIds]);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

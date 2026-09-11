@@ -101,9 +101,11 @@ import { requestPushPermission } from '../../lib/notifications/pushRegistration'
 import { homeMark, homeTraceReset } from '../../lib/perf/homeTrace';
 import { NotificationBell } from '../../components/notifications/NotificationBell';
 import {
+  selectHasNewAnnouncement,
   selectHasUrgentUnread,
   selectUnreadCount,
   useNotificationCenterStore,
+  useUnreadSegments,
 } from '../../store/useNotificationCenterStore';
 import { NotificationPrimer } from '../../components/NotificationPrimer';
 import { FirstWalkIntroVideo } from '../../components/FirstWalkIntroVideo';
@@ -842,6 +844,13 @@ export default function HomeScreen() {
   // above, so this is the first moment the answer can have changed.
   const unreadCount = useNotificationCenterStore(selectUnreadCount);
   const urgentUnread = useNotificationCenterStore(selectHasUrgentUnread);
+  // Split of the same unread set, for the bell's segmented pill. A hook rather
+  // than a selector on purpose — see the note on it in the store.
+  const unreadSegments = useUnreadSegments();
+  // Whether anything unread still owes an announcement. Goes false when the
+  // bell is tapped and true again only for items that have never been shown.
+  const hasNewAnnouncement = useNotificationCenterStore(selectHasNewAnnouncement);
+  const acknowledgeAnnouncements = useNotificationCenterStore(s => s.acknowledgeAnnouncements);
   const rebuildNotifications = useNotificationCenterStore(s => s.rebuild);
   const hydrateNotifications = useNotificationCenterStore(s => s.hydrate);
   const setSubscriptionSnapshot = useNotificationCenterStore(s => s.setSubscriptionSnapshot);
@@ -1128,6 +1137,10 @@ export default function HomeScreen() {
       state: notifPermission.status,
       unread: unreadCount,
     });
+    // The tap is the acknowledgement, whichever branch it takes below — even
+    // the permission ones. The owner has looked at the bell either way, and a
+    // pill that survived the trip to system settings would be nagging.
+    acknowledgeAnnouncements();
     if (notificationsUnreachable) {
       if (notifPermission.isBlocked) notifPermission.openSystemSettings();
       else if (notifPermission.canAsk) setHomePrimerVisible(true);
@@ -1166,6 +1179,8 @@ export default function HomeScreen() {
       urgent={urgentUnread}
       unreachable={notificationsUnreachable}
       isBlocked={notifPermission.isBlocked}
+      segments={unreadSegments}
+      announce={hasNewAnnouncement}
       onPress={handleNotificationBellPress}
     />
   );
