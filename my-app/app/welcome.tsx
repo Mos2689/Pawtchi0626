@@ -17,13 +17,10 @@ import { useAuth } from '../providers/AuthProvider';
 import { track } from '../lib/analytics';
 import { BreathingPaw } from '../components/BreathingPaw';
 
-// Streamed from the same Supabase public-assets bucket used for pet avatars.
-// Swap by replacing the file in the bucket — no app release needed.
-const INTRO_VIDEO_URL =
-  'https://mbvpjbwukhypvmgeuyyw.supabase.co/storage/v1/object/public/public-assets/introscreen-optimized.mp4';
-
-// If the video hasn't shown a frame in this long, fall back to typography only.
-const VIDEO_FALLBACK_MS = 1500;
+// Local bundled asset — resolved at build time by Metro and packaged into the
+// app binary, so the video is always available offline / on slow connections
+// and starts on the first frame without a network round-trip.
+const INTRO_VIDEO_SOURCE = require('../assets/introscreen-optimized.mp4');
 
 // CTA breathing: starts after an idle beat, one slow inhale/exhale cycle.
 // No motion token exists at this timescale — these two are welcome-only.
@@ -48,30 +45,18 @@ export default function WelcomeScreen() {
     track('welcome_screen_viewed', {});
   }, []);
 
-  const player = useVideoPlayer(INTRO_VIDEO_URL, (p) => {
+  const player = useVideoPlayer(INTRO_VIDEO_SOURCE, (p) => {
     try {
       p.muted = true;
       p.loop = true;
+      p.play();
     } catch {}
   });
 
-  // Reactive status from expo-video. useEvent owns the subscription lifecycle —
-  // safe under React 18 Strict Mode double-mount, unlike a manual addListener.
+  // Reactive status from expo-video
   const statusEvent = useEvent(player, 'statusChange', { status: player.status });
   const playerStatus = statusEvent?.status ?? player.status ?? 'idle';
-  const videoReady = playerStatus === 'readyToPlay';
   const videoErrored = playerStatus === 'error';
-
-  // Drop to the typography fallback if nothing has rendered within
-  // VIDEO_FALLBACK_MS — keeps the hero feeling intentional offline / on slow nets.
-  const [slowConnection, setSlowConnection] = useState(false);
-  useEffect(() => {
-    if (videoReady || videoErrored) return;
-    const id = setTimeout(() => setSlowConnection(true), VIDEO_FALLBACK_MS);
-    return () => clearTimeout(id);
-  }, [videoReady, videoErrored]);
-
-  const videoFailed = videoErrored || (slowConnection && !videoReady);
 
   // Second tagline word settles from loose to resting tracking as it lands.
   const trackingSettle = useSharedValue(3);
@@ -100,8 +85,6 @@ export default function WelcomeScreen() {
   const breathStyle = useAnimatedStyle(() => ({ transform: [{ scale: breath.value }] }));
 
   // Play on focus, pause on blur so we don't burn CPU while elsewhere in the app.
-  // Try/catch is defensive in case the player has already been released by the
-  // time the cleanup runs during fast unmounts.
   useFocusEffect(
     useCallback(() => {
       try { player.play(); } catch {}
@@ -110,6 +93,10 @@ export default function WelcomeScreen() {
       };
     }, [player]),
   );
+
+  useEffect(() => {
+    try { player.play(); } catch {}
+  }, [player]);
 
   // Navigation for authed users is owned by the centralized auth gate in
   // app/_layout.tsx — this screen never redirects on `session` itself. We only
@@ -131,28 +118,20 @@ export default function WelcomeScreen() {
     );
   }
 
-  const showVideo = videoReady && !videoFailed;
-
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      {/* ── Layer 1: video, full-bleed ──
-          Mounted only once the player reports readyToPlay. An unbuffered
-          VideoView paints its native surface BLACK while loading, which would
-          cover the navy container — so during load we show nothing here and let
-          the navy ground + scrim (Layer 2) carry the frame. Fading in on first
-          ready gives a clean handoff instead of a hard cut. */}
-      {showVideo && (
-        <Animated.View entering={FadeIn.duration(motion.duration.slow)} style={StyleSheet.absoluteFill}>
-          <VideoView
-            player={player}
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-            nativeControls={false}
-            allowsPictureInPicture={false}
-          />
-        </Animated.View>
+      {/* ── Layer 1: video, full-bleed ── */}
+      {!videoErrored && (
+        <VideoView
+          player={player}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          nativeControls={false}
+          allowsPictureInPicture={false}
+          allowsFullscreen={false}
+        />
       )}
 
       {/* ── Layer 2: scrim — ONLY in the no-video fallback ──
@@ -160,7 +139,7 @@ export default function WelcomeScreen() {
           vivid, not dull; legibility comes from the per-glyph navy text shadows
           below. In fallback there's no footage to protect, so a richer navy
           curtain gives the typography depth on the solid navy ground. */}
-      {!showVideo && (
+      {videoErrored && (
         <LinearGradient
           colors={['rgba(7,32,42,0.92)', 'rgba(7,32,42,0.88)', 'rgba(7,32,42,0.98)']}
           locations={[0, 0.45, 1]}

@@ -29,9 +29,12 @@ import { errorCopy, reportError, toAppError } from '../../lib/appError';
 import { haptic } from '../../lib/haptics';
 import Svg, { Rect, Path, Circle, Ellipse } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useFocusEffect } from '@react-navigation/native';
 import { AUTH_HERO_MAX, authHeroHeight, authHeroOverlay } from '../../lib/ui/authHeroHeight';
 
 const HERO_IMAGE = require('../../assets/images/auth-hero.png');
+const HERO_VIDEO = require('../../assets/signUpscreen.mp4');
 
 /**
  * Every layout difference on this screen is Android-only and gated on this.
@@ -59,6 +62,29 @@ export default function LoginScreen() {
   React.useEffect(() => {
     track('auth_screen_viewed', { mode: mode === 'signup' ? 'signup' : 'signin' });
   }, [mode]);
+
+  // Video hero: local bundled asset, muted loop autoplay.
+  // Pause on blur / play on focus to save battery and CPU when navigating away.
+  const player = useVideoPlayer(HERO_VIDEO, (p) => {
+    try {
+      p.muted = true;
+      p.loop = true;
+      p.play();
+    } catch {}
+  });
+
+  useFocusEffect(
+    React.useCallback(() => {
+      try { player.play(); } catch {}
+      return () => {
+        try { player.pause(); } catch {}
+      };
+    }, [player]),
+  );
+
+  React.useEffect(() => {
+    try { player.play(); } catch {}
+  }, [player]);
 
   // ── Android fit ───────────────────────────────────────────────────────────
   //
@@ -259,7 +285,7 @@ export default function LoginScreen() {
           // the devices small enough to still scroll. Android only.
           showsVerticalScrollIndicator={!IS_ANDROID}
         >
-          {/* ── HERO IMAGE ── */}
+          {/* ── HERO IMAGE & VIDEO ── */}
           <View
             style={[
               styles.hero,
@@ -268,6 +294,14 @@ export default function LoginScreen() {
             ]}
           >
             <Image source={HERO_IMAGE} style={styles.heroImage} />
+            <VideoView
+              player={player}
+              style={styles.heroVideo}
+              contentFit="cover"
+              nativeControls={false}
+              allowsPictureInPicture={false}
+              allowsFullscreen={false}
+            />
 
             {/* Top darkening gradient for status bar legibility */}
             <LinearGradient
@@ -533,6 +567,15 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     resizeMode: 'cover',
+  },
+  heroVideo: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
   },
   heroTopGradient: {
     position: 'absolute',
