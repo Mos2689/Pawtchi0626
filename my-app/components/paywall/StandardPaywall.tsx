@@ -770,22 +770,31 @@ export function StandardPaywall() {
                     ))}
                 </View>
 
+                {/* The one entry point that matters. This is the screen a
+                    creator's audience lands on the moment they hit anything
+                    gated, so it is where someone holding a code is actually
+                    looking — no new navigation and no onboarding step.
+
+                    On its own line as a pill rather than inside the footer
+                    row below: at 11px grey it was indistinguishable from
+                    Privacy and Terms, so an action read as fine print. The
+                    outline matches the error state's retry button, which keeps
+                    it visibly a control and visibly subordinate to the yellow
+                    CTA — the purchase still owns the only filled button on the
+                    screen. "Creator code", never "promo code": the latter is
+                    the App Store's own feature name. */}
+                <TouchableOpacity
+                    style={styles.creatorPill}
+                    onPress={() => router.push('/redeem' as never)}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                >
+                    <MaterialIcons name="confirmation-number" size={16} color={NAVY} />
+                    <Text style={styles.creatorPillLabel}>Have a creator code?</Text>
+                </TouchableOpacity>
+
                 {/* Footer links */}
                 <View style={styles.footerLinks}>
-                    {/* The one entry point that matters. This is the screen a
-                        creator's audience lands on the moment they hit anything
-                        gated, so it is where someone holding a code is actually
-                        looking — no new navigation, no onboarding step, and no
-                        prominence taken from the purchase this screen exists
-                        for. "Creator code", never "promo code": the latter is
-                        the App Store's own feature name. */}
-                    <TouchableOpacity
-                        onPress={() => router.push('/redeem' as never)}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                        <Text style={styles.footerLink}>Have a creator code?</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.footerDot}>·</Text>
                     <TouchableOpacity onPress={handleRestore} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                         <Text style={styles.footerLink}>Restore purchase</Text>
                     </TouchableOpacity>
@@ -1160,12 +1169,33 @@ const styles = StyleSheet.create({
         textAlign: 'center',
     },
 
+    // Creator code entry point. Sized so the tap target clears the 44pt
+    // minimum on its own rather than leaning on hitSlop the way the footer
+    // links below it do.
+    creatorPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        alignSelf: 'center',
+        gap: 7,
+        borderWidth: 1,
+        borderColor: NAVY,
+        borderRadius: 999,
+        paddingVertical: 12,
+        paddingHorizontal: 18,
+        marginTop: 16,
+    },
+    creatorPillLabel: {
+        fontFamily: BODY_SEMI,
+        fontSize: 13,
+        color: NAVY,
+    },
+
     // Footer links
     footerLinks: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        marginTop: 16,
+        marginTop: 14,
     },
     footerLink: {
         fontFamily: BODY_MED,

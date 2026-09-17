@@ -201,6 +201,58 @@ export function creatorCompLine(until: Date): string {
 
 export const CREATOR_INACTIVE_NOTE = 'This code is paused. Get in touch before you share it.';
 
+// ── What the creator earns ──────────────────────────────────────────────────
+
+/**
+ * Australian dollars per redemption. One number, one place.
+ *
+ * A rate in a component is a rate that gets copied into the next screen and
+ * then disagrees with this one — and two different answers to "what do I earn"
+ * is the kind of discrepancy a creator screenshots.
+ */
+export const CREATOR_RATE_AUD = 1;
+
+/**
+ * Money on this screen is the one exception to the no-prices rule at the top of
+ * this file, and it is a different thing entirely.
+ *
+ * That rule exists because a hardcoded PRICE of Pawtchi Plus, shown to someone
+ * who might buy it, contradicts the RevenueCat-driven paywall and re-opens a
+ * store-compliance hole. This is not a price and this reader is not a buyer:
+ * it is what we owe a creator for work they have already done. The copy test
+ * carves this out by name rather than by pattern, so the rule still holds
+ * everywhere else.
+ *
+ * Formatted as A$ rather than a bare $ because creators are not all in
+ * Australia, and "$12" to someone in Toronto is a different promise than the
+ * one we are making.
+ */
+export function formatAud(amount: number): string {
+  return `A$${Math.max(0, Math.round(amount))}`;
+}
+
+/** Earnings follow redemptions exactly — comps are not redemptions. */
+export function creatorEarningsAud(redemptions: number): number {
+  return Math.max(0, Math.floor(redemptions)) * CREATOR_RATE_AUD;
+}
+
+export const CREATOR_EARNINGS_LABEL = 'Earned so far';
+
+export const CREATOR_EARNINGS_RATE = `${formatAud(CREATOR_RATE_AUD)} for every person who uses your code.`;
+
+/**
+ * Nothing is paid out until the balance reaches this.
+ *
+ * Shown from the first redemption rather than revealed when someone asks to be
+ * paid — the same rule met and discovered are very different experiences.
+ */
+export const CREATOR_PAYOUT_THRESHOLD_AUD = 100;
+
+export const CREATOR_PAYOUT_NOTE = `Paid once you reach ${formatAud(CREATOR_PAYOUT_THRESHOLD_AUD)}.`;
+
+/** Both sentences, always — the rate is meaningless without the threshold. */
+export const CREATOR_EARNINGS_NOTE = `${CREATOR_EARNINGS_RATE} ${CREATOR_PAYOUT_NOTE}`;
+
 /**
  * The message the share sheet sends.
  *

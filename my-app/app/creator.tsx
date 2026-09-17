@@ -12,11 +12,19 @@
  *
  * ── What is deliberately not here ───────────────────────────────────────────
  *
- * No chart, no target, no earnings, no leaderboard. A plain count is a fact; a
- * chart implies a trend that a handful of redemptions cannot support, and a
- * target invents a number for someone to fall short of. If a creator wants to
- * talk about performance, that is a conversation with a person, and the numbers
- * on this screen are there so they arrive at it already informed.
+ * No chart, no target, no leaderboard. A plain count is a fact; a chart implies
+ * a trend that a handful of redemptions cannot support, and a target invents a
+ * number for someone to fall short of. If a creator wants to talk about
+ * performance, that is a conversation with a person, and the numbers on this
+ * screen are there so they arrive at it already informed.
+ *
+ * Earnings used to be on that list and are now on the screen. The reasoning
+ * that excluded them was about not inventing performance pressure, which a
+ * balance owed does not create — a creator who is being paid per redemption
+ * should not have to ask us what they are owed, and a number they can see is
+ * the thing that makes the arrangement feel real rather than vague. It stays a
+ * plain total for the same reason the count is: no goal, no projection, no
+ * "you could earn".
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -33,6 +41,8 @@ import { BreathingPaw } from '../components/BreathingPaw';
 import { track } from '../lib/analytics';
 import { loadMyCreatorCode, type MyCreatorCode } from '../lib/creatorCode/client';
 import {
+  CREATOR_EARNINGS_LABEL,
+  CREATOR_EARNINGS_NOTE,
   CREATOR_EYEBROW,
   CREATOR_HEADLINE,
   CREATOR_HOLD_TO_COPY,
@@ -40,8 +50,10 @@ import {
   CREATOR_SHARE_ACTION,
   CREATOR_SUBCOPY,
   creatorCompLine,
+  creatorEarningsAud,
   creatorRedemptionLine,
   creatorShareMessage,
+  formatAud,
 } from '../lib/creatorCode/copy';
 import { PAWTCHI_INVITE_URL } from '../lib/referral';
 
@@ -51,6 +63,8 @@ export default function CreatorScreen() {
 
   const [row, setRow] = useState<MyCreatorCode | null>(null);
   const [loaded, setLoaded] = useState(false);
+
+  const earned = creatorEarningsAud(row?.redemptionsGranted ?? 0);
 
   // Guarded for the same reason as the redeem screen's impression: a bare
   // mount effect fired twice in a real dev build, and `alive` only suppresses
@@ -146,6 +160,22 @@ export default function CreatorScreen() {
               <Text style={styles.hint}>{creatorCompLine(row.compExpiresAt)}</Text>
             )}
             {!row.isActive && <Text style={styles.paused}>{CREATOR_INACTIVE_NOTE}</Text>}
+          </Animated.View>
+
+          {/* The balance sits below the count because it is derived from it —
+              one redemption, one dollar — and reading them in that order is
+              what makes the arithmetic obvious without a line explaining it.
+              Cream rather than yellow: the code is still the subject of this
+              screen, and two yellow focal points is one too many. */}
+          <Animated.View entering={FadeInDown.duration(520).delay(300)} style={styles.earnings}>
+            <Text style={styles.earningsLabel}>{CREATOR_EARNINGS_LABEL}</Text>
+            <Text
+              style={styles.earningsAmount}
+              accessibilityLabel={`${CREATOR_EARNINGS_LABEL}, ${earned} Australian dollars`}
+            >
+              {formatAud(earned)}
+            </Text>
+            <Text style={styles.earningsNote}>{CREATOR_EARNINGS_NOTE}</Text>
           </Animated.View>
         </View>
       )}
@@ -246,6 +276,36 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
     color: color.cream,
+    textAlign: 'center',
+  },
+  earnings: {
+    marginTop: space.xxl,
+    paddingVertical: space.xl,
+    paddingHorizontal: space.xl,
+    borderRadius: radius.xl,
+    backgroundColor: color.navyRaised,
+    alignItems: 'center',
+  },
+  earningsLabel: {
+    fontFamily: font.bold,
+    fontSize: 11,
+    letterSpacing: 1.6,
+    textTransform: 'uppercase',
+    color: color.creamFaint,
+  },
+  earningsAmount: {
+    marginTop: space.sm,
+    fontFamily: font.extrabold,
+    fontSize: 34,
+    lineHeight: 42,
+    color: color.cream,
+  },
+  earningsNote: {
+    marginTop: space.sm,
+    fontFamily: font.regular,
+    fontSize: 13,
+    lineHeight: 20,
+    color: color.creamDim,
     textAlign: 'center',
   },
   paused: {

@@ -1,8 +1,14 @@
 import {
+  CREATOR_EARNINGS_LABEL,
+  CREATOR_EARNINGS_RATE,
   CREATOR_EYEBROW,
   CREATOR_HEADLINE,
   CREATOR_HOLD_TO_COPY,
+  CREATOR_EARNINGS_NOTE,
   CREATOR_INACTIVE_NOTE,
+  CREATOR_PAYOUT_NOTE,
+  CREATOR_PAYOUT_THRESHOLD_AUD,
+  CREATOR_RATE_AUD,
   CREATOR_SHARE_ACTION,
   CREATOR_SUBCOPY,
   PROMO_PLAN_LABEL,
@@ -23,8 +29,10 @@ import {
   REDEEM_WORKING_BODY,
   REDEEM_WORKING_TITLE,
   creatorCompLine,
+  creatorEarningsAud,
   creatorRedemptionLine,
   creatorShareMessage,
+  formatAud,
   formatUntilDate,
   promoAccessDetail,
   promoPaywallBody,
@@ -86,6 +94,23 @@ const BANNED_MECHANISM_WORDS = [
 
 /** No prices on any of these screens — see the header note in copy.ts. */
 const PRICE_SHAPED = /[$£€]\s?\d|\d+\.\d{2}\s?(?:usd|aud|gbp|eur)/i;
+
+/**
+ * The creator's earnings strings are the one place money is allowed, and they
+ * are checked by `creator earnings` below instead of here.
+ *
+ * The no-prices rule protects the paywall: a hardcoded price of Pawtchi Plus
+ * shown to a prospective buyer contradicts the RevenueCat-driven paywall. These
+ * strings are neither — they are what we owe a creator, shown only to that
+ * creator. Carved out by name so the pattern keeps its teeth everywhere else;
+ * if someone adds a price to a redeem string, this list will not save them.
+ */
+const EARNINGS_STRINGS = [
+  CREATOR_EARNINGS_LABEL,
+  CREATOR_EARNINGS_RATE,
+  CREATOR_PAYOUT_NOTE,
+  CREATOR_EARNINGS_NOTE,
+];
 
 function sentenceCount(text: string): number {
   const matches = text.match(/[.?]+/g);
@@ -226,6 +251,49 @@ describe('creatorRedemptionLine', () => {
     expect(creatorRedemptionLine(0)).toBe('Nobody has used it yet.');
     expect(creatorRedemptionLine(1)).toBe('One person has used it.');
     expect(creatorRedemptionLine(42)).toBe('42 people have used it.');
+  });
+});
+
+describe('creator earnings', () => {
+  test('the strings keep the brand voice, prices aside', () => {
+    for (const text of EARNINGS_STRINGS) {
+      expect(text).not.toContain('!');
+      for (const word of [...BANNED_WORDS, ...BANNED_SALES_WORDS, ...BANNED_MECHANISM_WORDS]) {
+        expect(text.toLowerCase()).not.toContain(word);
+      }
+      expect(sentenceCount(text)).toBeLessThanOrEqual(3);
+    }
+  });
+
+  test('the currency is named, not assumed', () => {
+    // "$1" to a creator in Toronto is a different promise than the one we are
+    // making. The A is the whole point of the string.
+    expect(formatAud(1)).toBe('A$1');
+    expect(CREATOR_EARNINGS_RATE).toContain('A$');
+  });
+
+  test('one redemption is one dollar', () => {
+    expect(CREATOR_RATE_AUD).toBe(1);
+    expect(creatorEarningsAud(0)).toBe(0);
+    expect(creatorEarningsAud(1)).toBe(1);
+    expect(creatorEarningsAud(42)).toBe(42);
+  });
+
+  test('a nonsense count cannot produce a balance we would owe', () => {
+    // redemptions_granted comes off an RPC and is only as trustworthy as the
+    // row behind it. A negative or fractional balance on a payout screen is
+    // worse than a wrong one — it reads as broken accounting.
+    expect(creatorEarningsAud(-3)).toBe(0);
+    expect(creatorEarningsAud(2.7)).toBe(2);
+    expect(formatAud(-5)).toBe('A$0');
+  });
+
+  test('the note carries both the rate and the threshold', () => {
+    // The regression this guards is a creator who shares for months, asks to be
+    // paid, and only then learns about the floor. The rule is the same either
+    // way; meeting it and discovering it are not.
+    expect(CREATOR_PAYOUT_THRESHOLD_AUD).toBe(100);
+    expect(CREATOR_EARNINGS_NOTE).toBe('A$1 for every person who uses your code. Paid once you reach A$100.');
   });
 });
 
