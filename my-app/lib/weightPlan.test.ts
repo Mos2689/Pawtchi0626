@@ -104,7 +104,11 @@ describe('evaluateWeightPlan', () => {
       planStatus: 'active',
       weightAssessedAt: '2026-07-25T08:00:00Z',
     });
-    expect(evaluateWeightPlan(pet).status).toBe('active');
+    // `now` is pinned, not defaulted. Without it this reads the real clock, and
+    // the fixture silently ages past BCS_STALE_DAYS — the assertion then flips
+    // to 'needs_reassessment' on a date nobody chose, 56 days after it was
+    // written, for a reason that has nothing to do with what it tests.
+    expect(evaluateWeightPlan(pet, [], new Date('2026-07-27T09:00:00Z')).status).toBe('active');
   });
 
   test('crossing a stage target requests assessment instead of advancing it', () => {
@@ -140,6 +144,9 @@ describe('evaluateWeightPlan', () => {
           planStatus: 'active',
           weightAssessedAt: '2026-07-25T08:00:00Z',
         }),
+        [],
+        // Pinned for the same reason as above.
+        new Date('2026-07-27T09:00:00Z'),
       ).status,
     ).toBe('active');
   });

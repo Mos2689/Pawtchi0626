@@ -14,7 +14,8 @@
     "notifications:sync": "node scripts/sync-notification-shared.js",
     "notifications:check": "node scripts/sync-notification-shared.js --check",
     "schema:check": "node scripts/check-schema-drift.js",
-    "schema:write": "node scripts/check-schema-drift.js --write"
+    "schema:write": "node scripts/check-schema-drift.js --write",
+    "rollback:check": "node scripts/check-rollback-coverage.js"
   },
   "dependencies": {
     "@bacons/apple-targets": "5.0.0",

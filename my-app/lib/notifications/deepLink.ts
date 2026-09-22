@@ -43,6 +43,24 @@ export interface NotificationPayload {
   activityId?: unknown;
 }
 
+/**
+ * Web slugs the app answers that no email ever sends.
+ *
+ * Kept apart from `WEB_PATH_TO_ROUTE` on purpose, and a test enforces the
+ * separation: that table is the email CTA allowlist, and every key in it must
+ * be a destination an email can name. A trail invitation is pasted into a chat
+ * by a host, never sent by the email engine — folding it in there would have
+ * created a CTA target no campaign can use, which is the exact drift that test
+ * exists to catch.
+ *
+ * `carry` is a tiny allow-list of query parameters that survive into the
+ * in-app route. Most parameters on these links are tracking and belong nowhere
+ * near a route; an invitation is nothing without its code.
+ */
+const EXTRA_WEB_ROUTES: Record<string, { route: string; carry: readonly string[] }> = {
+  'community-invite': { route: '/community-invite', carry: ['code'] },
+};
+
 /** Where each campaign lands. Every campaign must have an entry. */
 export const CAMPAIGN_ROUTE: Record<CampaignKey, string> = {
   onboarding_incomplete: '/onboarding/identity',
@@ -211,14 +229,27 @@ export function routeForUrl(url: string | null | undefined): string | null {
   }
 
   const slug = segments[1] ?? '';
-  const route = WEB_PATH_TO_ROUTE[slug];
+  const extra = EXTRA_WEB_ROUTES[slug];
+  const route = extra?.route ?? WEB_PATH_TO_ROUTE[slug];
   if (!route) return null;
 
   // `/app/letters/<id>` and friends: keep the identifier so the tap lands on
   // the specific letter rather than the list, which is the whole point of the
   // notification that sent them here.
   const entityId = segments[2];
-  return entityId ? `${route}/${entityId}` : route;
+  const withEntity = entityId ? `${route}/${entityId}` : route;
+
+  // An invitation's code rides along; tracking parameters do not. See
+  // EXTRA_WEB_ROUTES for why this is an allow-list rather than the whole query.
+  const carried = extra?.carry ?? [];
+  const kept = carried
+    .map(key => [key, parsed.searchParams.get(key)] as const)
+    .filter((pair): pair is readonly [string, string] => !!pair[1]);
+  if (!kept.length) return withEntity;
+  const query = kept
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&');
+  return `${withEntity}?${query}`;
 }
 
 /**

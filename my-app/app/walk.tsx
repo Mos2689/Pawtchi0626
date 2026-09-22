@@ -84,10 +84,12 @@ import { useWalkRoute } from '../hooks/useWalkRoute';
 import {
   disarmWalkStart,
   isWalkStartArmed,
+  takeCommunityWalkContext,
   takeWalkDestination,
+  type CommunityWalkContext,
   type WalkDestination,
 } from '../lib/walk/walkStartIntent';
-import { haversineMeters } from '../lib/walk/geo';
+import { haversineMeters, simplifyRoute } from '../lib/walk/geo';
 import {
   clearActiveDestination,
   readActiveDestination,
@@ -103,7 +105,7 @@ import {
 } from '../lib/walk/locationDisclosure';
 import { useWalkEnabled } from '../hooks/useWalkEnabled';
 import { useWalkKeepsakes, type PendingCapture } from '../hooks/useWalkKeepsakes';
-import { WalkCamera } from '../components/walk/WalkCamera';
+import { WalkCamera, type WalkCaptureResult } from '../components/walk/WalkCamera';
 import { KeepsakePrompt } from '../components/walk/KeepsakePrompt';
 import {
   KeepsakeMapOverlay,
@@ -121,6 +123,13 @@ import { createWalkStorySnapshot } from '../lib/walkStorySnapshot';
 import { discardWalk } from '../lib/walk/discardWalk';
 import { getLocalYMD } from '../lib/dateUtils';
 import { reportError, toAppError } from '../lib/appError';
+import {
+  finishCommunityParticipation,
+  linkPersonalWalk,
+  publishLiveLocation,
+} from '../lib/communityWalks';
+import { publishCommunityCaptures } from '../lib/communityMedia';
+import { publishRecorderHandle, updateRecorderHandle, type LiveCapture } from '../lib/walk/recorderHandle';
 
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -173,6 +182,13 @@ function WalkScreenInner() {
   const [destination, setDestination] = useState<WalkDestination | null>(() =>
     readActiveDestination(marker?.id),
   );
+  const [communityWalk, setCommunityWalk] = useState<CommunityWalkContext | null>(null);
+  const [shareCommunityPhotos, setShareCommunityPhotos] = useState(true);
+  const sharedCaptureTimesRef = useRef<Set<number>>(new Set());
+  /** Guards the one-time handoff to the shared map below. */
+  const handedToLiveRef = useRef(false);
+  const linkedCommunityResultRef = useRef<string | null>(null);
+  const lastCommunityLocationRef = useRef(0);
 
   /**
    * Moments captured on this walk.
@@ -192,8 +208,37 @@ function WalkScreenInner() {
     walkSessionId: lastResult?.walkSessionId ?? null,
   });
 
+  // The shutter's Shared/Personal state is read HERE, at the moment it is
+  // pressed, and remembered per capture. Toggling the camera afterwards must
+  // not retroactively publish a photo taken while it said Personal.
+  const { onCaptured } = keepsakes;
+  const handleCapture = useCallback((capture: WalkCaptureResult) => {
+    if (communityWalk && shareCommunityPhotos) {
+      sharedCaptureTimesRef.current.add(capture.capturedAt);
+    }
+    onCaptured(capture);
+  }, [communityWalk, onCaptured, shareCommunityPhotos]);
+
   /** The most recent moment, for the capture button's face. */
   const lastCaptureUri = keepsakes.captures.at(-1)?.uri ?? null;
+
+  /**
+   * This walk's photos in the shape the shared map pins them with.
+   *
+   * Recomputed when a capture lands rather than on the clock, so the once-a-
+   * second handle update does not hand the map a new array of the same photos
+   * and make it re-place every pin.
+   */
+  const liveCaptures = useMemo<LiveCapture[]>(
+    () => keepsakes.captures.map(capture => ({
+      id: capture.capturedAt,
+      uri: capture.uri,
+      lat: capture.lat,
+      lng: capture.lng,
+      shared: sharedCaptureTimesRef.current.has(capture.capturedAt),
+    })),
+    [keepsakes.captures],
+  );
 
   /**
    * The destination as a map pin. Ink, because it is the one place that matters.
@@ -270,6 +315,7 @@ function WalkScreenInner() {
         // Taken in the same breath as the disarm: the destination belongs to
         // THIS start, and leaving it behind would let the next walk inherit it.
         setDestination(takeWalkDestination());
+        setCommunityWalk(takeCommunityWalkContext());
         disarmWalkStart();
         // Google Play requires a prominent in-app disclosure BEFORE the runtime
         // location request whenever location is collected in the background,
@@ -286,6 +332,39 @@ function WalkScreenInner() {
       router.replace('/(tabs)/activity');
     }
   }, [phase, lastResult, activePet, user?.id, startWalk, router, beginTracking]);
+
+  /**
+   * A community walk opens on the shared map, not on this screen.
+   *
+   * The recorder still has to mount first: starting tracking and clearing the
+   * Google Play location disclosure both happen here, and neither can be
+   * skipped. So this screen does its job and then hands over the moment
+   * tracking is actually running.
+   *
+   * `push`, never `replace`. This screen stays underneath, which is what makes
+   * "Finish your walk" on the shared map land back here on the summary — and
+   * the summary is where the walk becomes a memory.
+   */
+  useEffect(() => {
+    if (handedToLiveRef.current) return;
+    if (phase !== 'tracking' || !communityWalk) return;
+    handedToLiveRef.current = true;
+    router.push(`/community/walk/${communityWalk.walkId}/live` as never);
+  }, [phase, communityWalk, router]);
+
+  // Community location is a best-effort side channel around the personal walk.
+  // A failed update never touches the recorder and never interrupts the walker.
+  useEffect(() => {
+    const point = session?.lastAccepted;
+    if (
+      phase !== 'tracking' ||
+      !communityWalk?.shareLocation ||
+      !point ||
+      point.timestamp - lastCommunityLocationRef.current < 12_000
+    ) return;
+    lastCommunityLocationRef.current = point.timestamp;
+    void publishLiveLocation(communityWalk.walkId, point, simplifyRoute(session?.path ?? [], 160)).catch(() => {});
+  }, [communityWalk, phase, session?.lastAccepted, session?.path]);
 
   // 1s clock for the timer; the store's auto-stop poll rides every 5th beat.
   useEffect(() => {
@@ -330,6 +409,38 @@ function WalkScreenInner() {
     }
   }, [peaked, phase, lastResult, revealSignal]);
 
+  // Attach the completed personal walk to the outing once, then publish only
+  // captures that were in Shared mode when the shutter was pressed. All three
+  // calls are deliberately non-blocking; a pack outage cannot block saving a
+  // personal walk or reaching its summary.
+  useEffect(() => {
+    if (
+      phase !== 'summary' ||
+      !lastResult ||
+      !communityWalk ||
+      !activePet?.id ||
+      !user?.id ||
+      linkedCommunityResultRef.current === lastResult.walkSessionId
+    ) return;
+    linkedCommunityResultRef.current = lastResult.walkSessionId;
+    void Promise.allSettled([
+      linkPersonalWalk({
+        communityWalkId: communityWalk.walkId,
+        personalWalkId: lastResult.walkSessionId,
+        petId: activePet.id,
+      }),
+      finishCommunityParticipation(communityWalk.walkId),
+      publishCommunityCaptures({
+        communityWalkId: communityWalk.walkId,
+        personalWalkId: lastResult.walkSessionId,
+        contributorId: user.id,
+        dogId: activePet.id,
+        captures: keepsakes.captures,
+        sharedCaptureTimes: sharedCaptureTimesRef.current,
+      }),
+    ]);
+  }, [activePet?.id, communityWalk, keepsakes.captures, lastResult, phase, user?.id]);
+
   // Auto-stop walks (stationary / home / time cap) get the whip too — the
   // moment is just as much a success, only the press-freeze is dropped. The
   // sawTracking guard keeps the launch-time `recovered` finalize (phase ===
@@ -359,7 +470,11 @@ function WalkScreenInner() {
 
   const handleDone = () => {
     dismissSummary();
-    router.back();
+    if (communityWalk) {
+      router.replace(`/community/walk/${communityWalk.walkId}/memory` as never);
+    } else {
+      router.back();
+    }
   };
 
   // While the tail is wiping, the store has already moved on (endWalk nulls
@@ -398,6 +513,53 @@ function WalkScreenInner() {
   const currentPosition = liveSession?.lastAccepted
     ? { lat: liveSession.lastAccepted.lat, lng: liveSession.lastAccepted.lng }
     : null;
+
+  /**
+   * Lend this walk's capture pipeline to the shared map.
+   *
+   * Only while a Trail walk is actually recording. A solo walk has its camera
+   * right here and nothing outside should be able to reach into it; publishing
+   * the handle unconditionally would leave a live pipeline pointing at a walk
+   * that had already ended. See lib/walk/recorderHandle.ts for why the camera
+   * is rendered by the visible screen rather than opened from under it.
+   */
+  useEffect(() => {
+    if (!WALK_CAMERA_ENABLED || !communityWalk || phase !== 'tracking') return;
+    return publishRecorderHandle({
+      onCaptured: handleCapture,
+      context: { distanceLabel: null, elapsedLabel: null, placeLabel: null },
+      captures: [],
+      sharing: {
+        packName: communityWalk.packName,
+        enabled: shareCommunityPhotos,
+        onChange: setShareCommunityPhotos,
+      },
+    });
+    // Lifetime only. Everything that ticks is merged in below, because a
+    // re-publish here would tear the handle down and back up each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [communityWalk, phase]);
+
+  useEffect(() => {
+    if (!WALK_CAMERA_ENABLED || !communityWalk || phase !== 'tracking') return;
+    updateRecorderHandle({
+      onCaptured: handleCapture,
+      context: {
+        distanceLabel: km > 0 ? `${km.toFixed(2)} km` : null,
+        elapsedLabel: elapsed > 0 ? formatElapsed(elapsed) : null,
+        placeLabel: destination?.name ?? null,
+      },
+      // The drafts, as the shared map needs them. `shared` is read from the
+      // set the shutter wrote into, not from the toggle's current position —
+      // the toggle is the state NOW, that set is what was true THEN.
+      captures: liveCaptures,
+      sharing: {
+        packName: communityWalk.packName,
+        enabled: shareCommunityPhotos,
+        onChange: setShareCommunityPhotos,
+      },
+    });
+  }, [communityWalk, destination?.name, elapsed, handleCapture, km, liveCaptures, phase, shareCommunityPhotos]);
 
   // A spot coordinate often marks a park's middle rather than its gate.
   const ARRIVED_M = 120;
@@ -556,10 +718,29 @@ function WalkScreenInner() {
 
       {/* Floating top header */}
       <View style={[styles.headerOverlay, { top: insets.top + space.sm }]} pointerEvents="box-none">
-        <View style={styles.headerChip}>
-          <Text style={styles.eyebrow}>TRACKED WALK</Text>
-          <Text style={styles.petName} numberOfLines={1}>{petName}</Text>
-        </View>
+        {communityWalk ? (
+          <View style={styles.communityHeaderCard}>
+            <View style={styles.communityHeaderCopy}>
+              <Text style={styles.communityHeaderTitle} numberOfLines={1}>{communityWalk.packName}</Text>
+              <Text style={styles.communityHeaderMeta} numberOfLines={1}>{petName}’s path · shared during this walk</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.packChip}
+              onPress={() => router.push(`/community/walk/${communityWalk.walkId}/live` as never)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${communityWalk.packName} shared map`}
+            >
+              <Text style={styles.packChipText}>Live together</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.headerRow}>
+            <View style={styles.headerChip}>
+              <Text style={styles.eyebrow}>TRACKED WALK</Text>
+              <Text style={styles.petName} numberOfLines={1}>{petName}</Text>
+            </View>
+          </View>
+        )}
       </View>
 
       {/* Where they said they were heading.
@@ -669,7 +850,9 @@ function WalkScreenInner() {
         <View style={styles.statusLine}>
           <BreathingPaw size={14} workingColor={color.navy} />
           <Text style={styles.statusLineText}>
-            {acquiring
+            {communityWalk && !acquiring
+              ? `Walking with ${communityWalk.packName}`
+              : acquiring
               ? WALK_STATUS_COPY.acquiring
               : paused
                 ? WALK_STATUS_COPY.sniffing
@@ -718,7 +901,7 @@ function WalkScreenInner() {
           }}
         >
           <MaterialIcons name="flag" size={18} color={color.navy} />
-          <Text style={styles.finishBtnText}>Finish walk</Text>
+          <Text style={styles.finishBtnText}>{communityWalk ? 'Finish your walk' : 'Finish walk'}</Text>
         </AnimatedPressable>
         <TouchableOpacity style={styles.minimizeBtn} onPress={() => router.back()}>
           <Text style={styles.minimizeBtnText}>Keep tracking in the background</Text>
@@ -779,12 +962,17 @@ function WalkScreenInner() {
         <WalkCamera
           visible={keepsakes.cameraOpen}
           onClose={keepsakes.closeCamera}
-          onCaptured={keepsakes.onCaptured}
+          onCaptured={handleCapture}
           context={{
             distanceLabel: km > 0 ? `${km.toFixed(2)} km` : null,
             elapsedLabel: elapsed > 0 ? formatElapsed(elapsed) : null,
             placeLabel: destination?.name ?? null,
           }}
+          sharing={communityWalk ? {
+            packName: communityWalk.packName,
+            enabled: shareCommunityPhotos,
+            onChange: setShareCommunityPhotos,
+          } : undefined}
         />
       )}
     </View>
@@ -1764,6 +1952,12 @@ const styles = StyleSheet.create({
     left: space.xl,
     right: space.xl,
   },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: space.sm,
+  },
   headerChip: {
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(255,255,255,0.92)',
@@ -1772,6 +1966,49 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     gap: 2,
     ...shadow.card,
+  },
+  communityHeaderCard: {
+    minHeight: 64,
+    width: '100%',
+    paddingLeft: space.lg,
+    paddingRight: space.sm,
+    paddingVertical: space.sm,
+    borderRadius: radius.xl,
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    ...shadow.card,
+  },
+  communityHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  communityHeaderTitle: {
+    ...type.heading,
+    color: color.navy,
+  },
+  communityHeaderMeta: {
+    fontFamily: font.medium,
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: color.slateMuted,
+    marginTop: 2,
+  },
+  packChip: {
+    minHeight: 48,
+    maxWidth: '44%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.navy,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+  },
+  packChipText: {
+    ...type.label,
+    color: color.cream,
+    flexShrink: 1,
   },
   eyebrow: {
     ...type.caption,

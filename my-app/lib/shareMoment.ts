@@ -61,7 +61,8 @@ export interface ShareMomentContext {
     | 'walk_gallery'
     | 'template_unlock'
     | 'walk_story'
-    | 'walksign';
+    | 'walksign'
+    | 'community_memory';
   /** Which ground the card was shared with (map / paper / photo). */
   ground?: string;
   /** Which earned template rendered the card (fieldbook / gallery / …). */

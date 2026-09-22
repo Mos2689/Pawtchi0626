@@ -5,17 +5,32 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../providers/AuthProvider';
 import { PawtchiButton } from '../components/PawtchiButton';
 import { Header } from '../components/Header';
+import { UsernameEditor } from '../components/community/UsernameEditor';
+import { getMyUsername } from '../lib/communityWalks';
 import { color, font, radius, shadow, space } from '../constants/design';
 
 export default function OwnerProfileScreen() {
     const insets = useSafeAreaInsets();
     const { user } = useAuth();
+    /**
+     * `undefined` while it is being read, so the card shows nothing rather
+     * than an empty field that looks like a username nobody has set.
+     */
+    const [username, setUsername] = React.useState<string | null | undefined>(undefined);
+
+    React.useEffect(() => {
+        let cancelled = false;
+        void getMyUsername()
+            .then(name => { if (!cancelled) setUsername(name); })
+            .catch(() => { if (!cancelled) setUsername(null); });
+        return () => { cancelled = true; };
+    }, []);
 
     return (
         <View style={[styles.container, { paddingTop: insets.top }]}>
             <Header title="Owner Profile" />
 
-            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 <View style={styles.infoCard}>
                     <View style={styles.avatar}>
                         <MaterialIcons name="person" size={48} color={color.ink} />
@@ -40,6 +55,27 @@ export default function OwnerProfileScreen() {
                         onPress={() => {}}
                         style={{ width: '100%' }}
                     />
+                </View>
+
+                {/* ── Username ──
+                    On the owner's profile rather than the pet's, because it
+                    identifies the person: a household with two dogs has one
+                    handle. It is also the only field on this screen anybody can
+                    change, which is why it sits in its own card rather than in
+                    the read-only details box above. */}
+                <View style={styles.usernameCard}>
+                    <Text style={styles.usernameTitle}>Your username</Text>
+                    <Text style={styles.usernameBody}>
+                        Friends type this exactly to invite you to a trail. Pawtchi has no people
+                        search and never lists you anywhere.
+                    </Text>
+                    {username !== undefined ? (
+                        <UsernameEditor
+                            initial={username}
+                            onSaved={setUsername}
+                            saveLabel={username ? 'Change username' : 'Save username'}
+                        />
+                    ) : null}
                 </View>
             </ScrollView>
         </View>
@@ -107,5 +143,27 @@ const styles = StyleSheet.create({
         fontFamily: font.bold,
         fontSize: 14,
         color: color.ink,
+    },
+    usernameCard: {
+        backgroundColor: color.surface,
+        borderRadius: radius.xl,
+        padding: space.xl,
+        marginTop: space.xl,
+        borderWidth: 1,
+        borderColor: color.hairline,
+        ...shadow.card,
+    },
+    usernameTitle: {
+        fontFamily: font.bold,
+        fontSize: 16,
+        color: color.ink,
+    },
+    usernameBody: {
+        fontFamily: font.regular,
+        fontSize: 13,
+        lineHeight: 19,
+        color: color.slateMuted,
+        marginTop: 4,
+        marginBottom: space.lg,
     },
 });

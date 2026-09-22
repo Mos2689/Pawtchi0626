@@ -27,6 +27,11 @@ import {
 } from '../../components/onboarding/OnboardingFormScaffold';
 
 import { supabase } from '../../lib/supabase';
+import { WALK_TRACKING_ENABLED } from '../../constants/features';
+import { isValidUsername, normalizeUsername, saveMyUsername } from '../../lib/communityWalks';
+import { useUsernameAvailability } from '../../hooks/useUsernameAvailability';
+import { blocksSave, statusMessage, statusTone } from '../../lib/community/usernameStatus';
+import { UsernameMark } from '../../components/community/UsernameMark';
 import { errorCopy, reportError, toAppError } from '../../lib/appError';
 import { track } from '../../lib/analytics';
 import {
@@ -87,6 +92,40 @@ export default function IdentityScreen() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [breedModalVisible, setBreedModalVisible] = useState(false);
   const [ageModalVisible, setAgeModalVisible] = useState(false);
+
+  /**
+   * The owner's handle — deliberately local state, not the pet store.
+   *
+   * Everything else on this screen describes the pet and ends up on the pet
+   * row. This one belongs to the person and lands on `profiles`, so it has no
+   * business in a store whose whole job is building one animal's profile.
+   */
+  const [username, setUsername] = useState('');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+
+  /**
+   * Shown under exactly the gate Together itself uses — the release flag and a
+   * dog. A cat owner cannot reach a single Trail surface, so asking them to
+   * pick a handle would be collecting a field for a screen they will never see.
+   *
+   * `useWalkEnabled()` is the usual way to ask this, but it reads the ACTIVE
+   * pet, and on this screen the pet does not exist yet. The species in the form
+   * is the same answer, one step earlier.
+   */
+  const showUsername = WALK_TRACKING_ENABLED && species === 'dog';
+
+  /**
+   * Checked while they type, so a clash is found before the button is pressed.
+   *
+   * The hook is called unconditionally — hooks always are — and simply sits at
+   * `idle` for a cat owner, whose field is never rendered and whose `username`
+   * therefore never leaves ''.
+   */
+  const usernameStatus = useUsernameAvailability(username);
+  // The typed-in error takes the field; otherwise the live check speaks. One
+  // line, never two: a stack of contradictory hints under a field is noise.
+  const usernameNote = usernameError ?? statusMessage(usernameStatus, username);
+  const usernameBad = !!usernameError || statusTone(usernameStatus) === 'bad';
 
   const trimmedName = name.trim();
   const canContinue = trimmedName.length > 0;
@@ -160,14 +199,35 @@ export default function IdentityScreen() {
       haptic.warning();
       return;
     }
+    // Checked before anything is emitted or written: the format rule is
+    // synchronous, so a typo should cost a keystroke, never a half-built
+    // profile. An empty field is a valid answer — this one is optional.
+    const wantedUsername = showUsername ? normalizeUsername(username) : '';
+    if (wantedUsername && !isValidUsername(wantedUsername)) {
+      setUsernameError('Use 3–24 lowercase letters, numbers or underscores.');
+      haptic.warning();
+      return;
+    }
+    // A name we already know is taken never reaches the network. Note what
+    // does NOT stop here: a check still in flight, and a check that failed.
+    // Availability is reassurance, not permission — the unique index decides,
+    // and blocking on our own inability to ask would trap them on this screen.
+    if (wantedUsername && blocksSave(usernameStatus)) {
+      setUsernameError('Taken. Try another, or clear it and choose later.');
+      haptic.warning();
+      return;
+    }
+
     if (!imageUri) trackFieldSkipped('identity', 'photo');
     if (species === 'dog' && firstDog === null) trackFieldSkipped('identity', 'first_dog');
     if (species === 'dog' && householdWalkers === null) {
       trackFieldSkipped('identity', 'household_walkers');
     }
+    if (showUsername && !wantedUsername) trackFieldSkipped('identity', 'username');
     trackStepCompleted('identity', {
       has_photo: !!imageUri,
       household_walkers_answered: householdWalkers !== null,
+      has_username: !!wantedUsername,
     });
 
     // ── Cats keep the health-first flow ───────────────────────────────────
@@ -187,6 +247,27 @@ export default function IdentityScreen() {
     // straight to the map.
     setSaving(true);
     setSaveError(null);
+
+    // ── The username is claimed first, before the pet row exists ───────────
+    // It is the one thing on this screen somebody else could already be
+    // holding, so it is the one thing that can fail for a reason the owner has
+    // to act on. Failing here leaves nothing behind to clean up. Failing after
+    // the pet was created would strand them on a screen they have finished,
+    // where pressing Continue again would try to create a second dog.
+    if (wantedUsername) {
+      try {
+        await saveMyUsername(wantedUsername);
+      } catch (cause) {
+        setSaving(false);
+        const reason = cause instanceof Error ? cause.message : 'That username could not be saved.';
+        // The way out is stated, because there has to be one. A taken name —
+        // or no signal — must never become a dead end in front of a field
+        // that was optional in the first place.
+        setUsernameError(`${reason} Pick another, or clear it and choose later.`);
+        haptic.warning();
+        return;
+      }
+    }
 
     const { data } = await supabase.auth.getUser();
     const userId = data.user?.id;
@@ -505,6 +586,66 @@ export default function IdentityScreen() {
             </Animated.View>
           )}
 
+          {/* ── Group three: you ─────────────────────────────────────────────
+              The only question on the screen that is not about the dog, which
+              is why it gets its own panel instead of sitting under "about your
+              walks". Last, because it is the one thing here that matters later
+              rather than now.
+
+              The purpose line has to carry the whole explanation, because a
+              username is a strange thing to ask a stranger for. It is not an
+              account name, it is not shown to anyone, and it does nothing at
+              all until somebody they know types it. Skipping is free: the
+              Together screen asks once, later, if this is still empty. */}
+          {showUsername && (
+            <Animated.View entering={FadeInDown.duration(420).delay(165)} style={styles.group}>
+              <Text style={styles.groupEyebrow}>ABOUT YOU</Text>
+              <Text style={styles.groupPurpose}>
+                Optional — a username is how a friend invites you on a walk. Pawtchi has no people
+                search, so nobody can find you without being told it.
+              </Text>
+
+              <Text style={styles.label}>Username</Text>
+              <ScaffoldField id="username" label="Username">
+                {({ onFocus, onBlur }) => (
+                  <TextField
+                    error={usernameBad}
+                    // White, like the selects above it — the group panel is
+                    // already the tinted surface this field defaults to.
+                    containerStyle={styles.groupField}
+                    leading={<Text style={styles.atPrefix}>@</Text>}
+                    trailing={<UsernameMark status={usernameStatus} />}
+                    placeholder="bella_and_sam"
+                    value={username}
+                    // Normalised as they type rather than on submit, so what
+                    // is on screen is what gets claimed. Typing a capital and
+                    // being told later it was lowercased is a small lie.
+                    onChangeText={(v) => {
+                      if (usernameError) setUsernameError(null);
+                      setUsername(normalizeUsername(v));
+                    }}
+                    onFocus={onFocus}
+                    onBlur={onBlur}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="off"
+                    maxLength={24}
+                    returnKeyType="done"
+                  />
+                )}
+              </ScaffoldField>
+              <Text
+                style={[
+                  styles.fieldHint,
+                  usernameBad && styles.fieldHintBad,
+                  statusTone(usernameStatus) === 'good' && !usernameError && styles.fieldHintGood,
+                ]}
+              >
+                {usernameNote ?? '3–24 lowercase letters, numbers or underscores.'}
+              </Text>
+            </Animated.View>
+          )}
+
       </OnboardingFormScaffold>
       <BreedPickerModal
         visible={breedModalVisible}
@@ -681,6 +822,28 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 10,
   },
+  // Same reason as groupSelect: TextField defaults to surfaceSubtle, which is
+  // the panel's own colour, so inside a group it has to invert to white.
+  groupField: { backgroundColor: color.surface },
+  // Matches the identical field on Together and on the owner's profile, which
+  // carry the community surfaces' electric accent. It is the same question in
+  // three places and it should not change colour between them.
+  atPrefix: {
+    fontFamily: font.bold,
+    fontSize: 17,
+    color: color.electric,
+  },
+  fieldHint: {
+    fontFamily: font.regular,
+    fontSize: 11.5,
+    lineHeight: 16,
+    color: color.slateFaint,
+    marginTop: 6,
+  },
+  // Colour only — the line keeps its size and position in every state, so a
+  // check landing never nudges the CTA under the reader's thumb.
+  fieldHintBad: { color: color.error },
+  fieldHintGood: { color: color.success },
 
   // ── Age sheet ─────────────────────────────────────────────────────────────
   sheetOverlay: {

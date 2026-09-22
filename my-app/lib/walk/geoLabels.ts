@@ -61,6 +61,33 @@ export async function reverseGeocodeLabel(point: GeoPoint | null): Promise<strin
 }
 
 /**
+ * Turn a typed place into a coordinate, the other direction from above.
+ *
+ * Used for a Trail's meeting point, which owners write as a description rather
+ * than an address — "Centennial Park, by the gates". The OS resolves what it
+ * can and returns nothing for the rest, and nothing is a perfectly good answer:
+ * the caller draws a plain map instead of a pinned one. Never blocks the thing
+ * it decorates.
+ *
+ * No location permission is needed for forward geocoding, so this must never be
+ * the reason a permission prompt appears.
+ */
+export async function geocodePlaceLabel(label: string): Promise<GeoPoint | null> {
+  const query = label.trim();
+  if (query.length < 3) return null;
+  try {
+    const results = await Location.geocodeAsync(query);
+    const first = results?.[0];
+    if (!first || !Number.isFinite(first.latitude) || !Number.isFinite(first.longitude)) {
+      return null;
+    }
+    return { lat: first.latitude, lng: first.longitude };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * True when the walk was a loop back to where it began — either the
  * finalizer already labelled it `auto_home`, OR the end is within the home
  * geofence radius after having pushed at least minExcursionM away.

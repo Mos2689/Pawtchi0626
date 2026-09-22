@@ -16,6 +16,7 @@ import { SplitTabBar } from '../../components/navigation/SplitTabBar';
 import { ProfileTabIcon } from '../../components/navigation/ProfileTabIcon';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
 import { reconcilePersistedWeightPlan } from '../../lib/weightPlanService';
+import { takeCommunityInviteCode } from '../../lib/communityInviteIntent';
 
 // The boot gate's escape hatch: shown when the first pet/streak load times
 // out or errors. Without it, a hung or failed fetch stranded users on the
@@ -133,6 +134,16 @@ export default function TabLayout() {
       fetchContext(activePet.id);
     }
   }, [activePet?.id]);
+
+  // An external pack invitation may have crossed an install/sign-in boundary.
+  // Its code lives on-device until the normal auth + pet boot gates finish,
+  // then returns to the confirmation screen exactly once.
+  useEffect(() => {
+    if (!session?.user?.id || !activePet?.id) return;
+    void takeCommunityInviteCode().then(code => {
+      if (code) router.push({ pathname: '/community-invite', params: { code } } as never);
+    });
+  }, [activePet?.id, router, session?.user?.id]);
 
   // Repair an interrupted/offline weight-plan reconciliation at boot and each
   // time the app returns to the foreground.

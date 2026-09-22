@@ -13,12 +13,19 @@
 
 import type { DogAccessStatus, SpotCategory } from './types';
 
-/** Singular labels, used as the name of an unnamed place. */
+/**
+ * Singular labels, used as the name of an unnamed place.
+ *
+ * `walking_trail` reads as "path", not "trail", and deliberately so: a Trail is
+ * the shared walk event on Home's Together chip. Two chips apart, one word can
+ * only mean one thing — and a place you could walk to is not an arrangement to
+ * walk it with someone.
+ */
 export const CATEGORY_LABEL: Record<SpotCategory, string> = {
   off_leash_park: 'Off-leash dog park',
   dog_friendly_park: 'Park',
   dog_friendly_beach: 'Beach',
-  walking_trail: 'Walking trail',
+  walking_trail: 'Walking path',
   veterinary: 'Veterinary clinic',
   pet_store: 'Pet store',
   drinking_water: 'Drinking water',
@@ -29,7 +36,7 @@ export const CATEGORY_SHORT: Record<SpotCategory, string> = {
   off_leash_park: 'Off-leash',
   dog_friendly_park: 'Park',
   dog_friendly_beach: 'Beach',
-  walking_trail: 'Trail',
+  walking_trail: 'Path',
   veterinary: 'Vet',
   pet_store: 'Pet store',
   drinking_water: 'Water',

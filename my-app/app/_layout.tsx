@@ -338,12 +338,12 @@ function RootLayoutNav() {
   useEffect(() => {
     // Wait until auth is resolved AND the root navigator is mounted.
     if (authLoading || !navState?.key) return;
-    const first = segments[0];
+    const first = segments[0] as string | undefined;
     // The privacy policy sits outside the gate entirely — neither redirect
     // applies. APP 5 / IPP 3 require the collection notice to be readable
     // BEFORE an account exists, and Profile links to the same screen after,
     // so bouncing it in either direction breaks one of the two.
-    if (first === 'privacy') return;
+    if (first === 'privacy' || first === 'community-invite') return;
     const inPublic = first === 'welcome' || first === '(auth)';
     if (!session && !inPublic) {
       // Logged out while on an authed screen → welcome. Uses the explicit
@@ -401,6 +401,7 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
+        <Stack.Screen name="community-invite" options={{ presentation: 'card', headerShown: false }} />
         {/* fullScreenModal, NOT card, and this is the whole reason it works.
             The paywall is presentation: 'modal'. A 'card' pushed while a modal
             is presented lands in the stack UNDERNEATH it — the screen opens

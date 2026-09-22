@@ -50,6 +50,36 @@ describe('routeForUrl', () => {
     expect(routeForUrl('https://pawtchi.com/app/nonsense')).toBeNull();
   });
 
+  describe('a shared trail invitation', () => {
+    it('routes to the invite screen and keeps its code', () => {
+      // The whole link: without the code the screen opens asking the invitee to
+      // type in the thing they just tapped.
+      expect(routeForUrl('https://pawtchi.com/app/community-invite?code=abc-123'))
+        .toBe('/community-invite?code=abc-123');
+    });
+
+    it('drops tracking parameters while keeping the code', () => {
+      expect(routeForUrl('https://pawtchi.com/app/community-invite?utm_source=wa&code=abc-123'))
+        .toBe('/community-invite?code=abc-123');
+    });
+
+    it('still routes when the link has lost its code', () => {
+      // A truncated paste. The screen can still ask for the code by hand, which
+      // is strictly better than landing on the home tab.
+      expect(routeForUrl('https://pawtchi.com/app/community-invite'))
+        .toBe('/community-invite');
+    });
+
+    it('escapes a code that would otherwise break the query', () => {
+      expect(routeForUrl('https://pawtchi.com/app/community-invite?code=a%26b'))
+        .toBe('/community-invite?code=a%26b');
+    });
+
+    it('carries no query for routes that do not ask for one', () => {
+      expect(routeForUrl('https://pawtchi.com/app/health?code=abc')).toBe('/(tabs)/health');
+    });
+  });
+
   // There is no expo-updates in this project, so every JS change is a store
   // release. Without this escape hatch, adding one email destination would mean
   // shipping to two stores purely to teach the app a new string.

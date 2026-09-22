@@ -8,6 +8,7 @@ import {
   buildWalkTitle,
   formatDuration,
   formatDwell,
+  trailWhen,
   walkFeedLoadingCopy,
   type RailWalkSource,
 } from './homeRail';
@@ -264,5 +265,33 @@ describe('walkFeedLoadingCopy', () => {
   test('has something to cycle through', () => {
     // LoadingCard rotates these on a timer; a single line reads as frozen.
     expect(walkFeedLoadingCopy.lines.length).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * A Trail's card has one line for "when", and it is the line people act on.
+ * Each branch is a different real state, and the two that are not a timestamp
+ * are the ones that would otherwise render as an empty card.
+ */
+describe('trailWhen', () => {
+  test('a trail with no walk on it says so', () => {
+    expect(trailWhen(null, false)).toBe('No walk planned');
+    expect(trailWhen('2026-09-20T08:00:00.000Z', false)).toBe('No walk planned');
+  });
+
+  test('a walk with no date agreed yet is a real state, not a blank', () => {
+    expect(trailWhen(null, true)).toBe('Date to be confirmed');
+    expect(trailWhen(undefined, true)).toBe('Date to be confirmed');
+  });
+
+  test('an unreadable date degrades to undecided rather than "Invalid Date"', () => {
+    expect(trailWhen('not a date', true)).toBe('Date to be confirmed');
+  });
+
+  test('a settled date is rendered, not swallowed', () => {
+    const when = trailWhen('2026-09-20T08:00:00.000Z', true);
+    expect(when).not.toBe('Date to be confirmed');
+    expect(when).not.toBe('No walk planned');
+    expect(when).toMatch(/\d/);
   });
 });

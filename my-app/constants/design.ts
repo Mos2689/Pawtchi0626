@@ -422,7 +422,11 @@ export const motion = {
 //   { ...type.title, color: color.ink }
 export const type = {
   display: { fontFamily: font.display, fontSize: 40, lineHeight: 40, letterSpacing: 1 },
-  displayLg: { fontFamily: font.display, fontSize: 52, lineHeight: 50, letterSpacing: 1 },
+  // lineHeight must never fall below fontSize: RN clips the glyph to the line
+  // box instead of letting it overflow the way CSS does, which takes the tops
+  // off a display face. This preset shipped at 50/52 and was never used, so
+  // nobody had hit it yet. lib/textClipping.test.ts now enforces the rule.
+  displayLg: { fontFamily: font.display, fontSize: 52, lineHeight: 54, letterSpacing: 1 },
   title: { fontFamily: font.bold, fontSize: 22, lineHeight: 28, letterSpacing: -0.3 },
   heading: { fontFamily: font.bold, fontSize: 17, lineHeight: 22, letterSpacing: -0.2 },
   body: { fontFamily: font.regular, fontSize: 15, lineHeight: 22 },

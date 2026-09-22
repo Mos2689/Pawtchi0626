@@ -136,6 +136,12 @@ interface WalkCameraProps {
   onClose: () => void;
   onCaptured: (result: WalkCaptureResult) => void;
   context: WalkCameraContext | null;
+  /** Present only for a private pack outing. The choice is per capture. */
+  sharing?: {
+    packName: string;
+    enabled: boolean;
+    onChange: (enabled: boolean) => void;
+  };
 }
 
 /** Long enough to read a short sentence, short enough not to follow you home. */
@@ -192,7 +198,7 @@ function zoomSteps(lenses: readonly string[]): { label: string; lens: string }[]
   ];
 }
 
-export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCameraProps) {
+export function WalkCamera({ visible, onClose, onCaptured, context, sharing }: WalkCameraProps) {
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -477,6 +483,25 @@ export function WalkCamera({ visible, onClose, onCaptured, context }: WalkCamera
           )}
         </View>
 
+        {sharing ? (
+          <TouchableOpacity
+            style={[styles.shareChoice, { top: insets.top + 82 }, !sharing.enabled && styles.shareChoicePersonal]}
+            onPress={() => sharing.onChange(!sharing.enabled)}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: sharing.enabled }}
+            accessibilityLabel={sharing.enabled ? `Shared with ${sharing.packName}` : 'Personal only'}
+          >
+            <MaterialIcons
+              name={sharing.enabled ? 'group' : 'lock'}
+              size={15}
+              color={sharing.enabled ? color.navy : color.cream}
+            />
+            <Text style={[styles.shareChoiceText, !sharing.enabled && styles.shareChoiceTextPersonal]} numberOfLines={1}>
+              {sharing.enabled ? `Shared with ${sharing.packName}` : 'Personal only'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+
         {/* Never an Alert. A dog does not wait for a dialog. */}
         {failed ? (
           <Reanimated.View
@@ -651,6 +676,22 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: space.lg,
   },
+  shareChoice: {
+    position: 'absolute',
+    alignSelf: 'center',
+    minHeight: 38,
+    maxWidth: '84%',
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
+    paddingHorizontal: space.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+  },
+  shareChoicePersonal: { backgroundColor: GLASS_STRONG },
+  shareChoiceText: { fontFamily: font.bold, fontSize: 12, color: color.navy },
+  shareChoiceTextPersonal: { color: color.cream },
   /** A pill, not a bare glyph: a cream X over a bright sky is invisible. */
   closeBtn: {
     width: 40,

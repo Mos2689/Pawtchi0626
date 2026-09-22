@@ -1504,6 +1504,10 @@ function ActivityScreenContent() {
         {/* START WALK lives in the docked tab-bar button (WalkTabDock),
              rendered by the tab layout above the Activity tab. */}
 
+        {/* Walking with friends moved to Home's "Together" chip. It belongs
+             beside Walk and Nearby — all three answer "where are we going" —
+             rather than in a list of this dog's own scheduled activities. */}
+
         {/* ════ UP NEXT — the single highest-priority action. Keyed by the
              pending activity's id so completing one plays a proper hand-off
              (old card fades out, next card slides in) instead of the text
@@ -1960,6 +1964,7 @@ function ActivityScreenContent() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.surfaceSubtle },
   scrollContent: { flexGrow: 1, paddingHorizontal: space.xxl, paddingTop: space.lg, paddingBottom: 180 + TAB_BAR_CLEARANCE },
+
 
   // ════ Status strip ════
   statusStrip: {

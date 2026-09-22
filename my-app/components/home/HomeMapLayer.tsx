@@ -112,6 +112,20 @@ interface HomeMapLayerProps {
   center: GeoPoint | null;
   markers: HomeMapMarker[];
   /**
+   * Coloured lines drawn under everything else, one per Trail.
+   *
+   * Passed straight through to WalkMap, which already knows how to case and
+   * colour them — this is the same prop the shared live map uses. Home draws
+   * each trail's most recent recorded route so the Together map shows where
+   * these packs have actually been rather than three dots on empty streets.
+   */
+  communityRoutes?: readonly {
+    id: string;
+    path: readonly GeoPoint[];
+    color: string;
+    dashed?: boolean;
+  }[];
+  /**
    * Photographs taken on the drawn walk, pinned where they happened.
    *
    * Kept separate from `markers` rather than folded into them: those are flat
@@ -162,6 +176,7 @@ export function HomeMapLayer({
   frameTopInset = 0,
   center,
   markers,
+  communityRoutes,
   keepsakePins = EMPTY_KEEPSAKE_PINS,
   keepsakeContext,
   resolving = false,
@@ -301,6 +316,7 @@ export function HomeMapLayer({
         <WalkMap
           mode="summary"
           path={path}
+          communityRoutes={communityRoutes}
           center={center}
           camera={camera}
           onCameraChange={handleCameraChange}

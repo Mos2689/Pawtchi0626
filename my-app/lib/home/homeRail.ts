@@ -50,10 +50,13 @@ const TONES: WalkMapSpotTone[] = ['pink', 'mint', 'butter', 'sky'];
 const NOTABLE_DWELL_S = 45;
 
 /**
- * `spots` is listed here because the segmented control needs one type, but this
- * module never builds anything for it — see the header note.
+ * `spots` and `together` are listed here because the segmented control needs
+ * one type, but this module never builds anything for either — see the header
+ * note. `together` is shared walk events (Trails), which live in
+ * lib/communityWalks and are someone else's arrangement rather than this dog's
+ * recorded history.
  */
-export type RailSegment = 'walks' | 'spots';
+export type RailSegment = 'walks' | 'spots' | 'together';
 
 export interface RailWalkSource {
   id: string;
@@ -272,6 +275,27 @@ export function formatDuration(seconds: number): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/**
+ * When the next walk on a Trail is, short enough for a 190px card.
+ *
+ * Three honest states and no invented fourth: a settled time, a walk whose date
+ * nobody has agreed yet, and a Trail with nothing on it at all. The middle one
+ * is real and common — a host can raise a Trail and invite people before
+ * committing to a day — so it is said out loud rather than shown as a blank.
+ */
+export function trailWhen(
+  scheduledFor: string | null | undefined,
+  hasWalk: boolean,
+): string {
+  if (!hasWalk) return 'No walk planned';
+  if (!scheduledFor) return 'Date to be confirmed';
+  const at = new Date(scheduledFor);
+  if (Number.isNaN(at.getTime())) return 'Date to be confirmed';
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  }).format(at);
 }
 
 /** "40s" for the short dwells a sniff card leads with. */

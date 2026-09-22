@@ -118,6 +118,7 @@ const QUIET_PROPERTIES = {
 
 export default function WalkMap({
   path,
+  communityRoutes = [],
   currentPosition,
   center,
   mode,
@@ -184,6 +185,18 @@ export default function WalkMap({
       }
     }
 
+    // Shared routes use the same white casing as the preview composition.
+    // expo-maps does not currently expose per-polyline dash patterns on iOS,
+    // so the labelled portrait markers carry the second identity cue there.
+    for (const route of communityRoutes) {
+      if (route.path.length < 2) continue;
+      const coordinates = route.path.map(p => ({ latitude: p.lat, longitude: p.lng }));
+      lines.push(
+        { coordinates, color: color.surface, width: 9 },
+        { coordinates, color: route.color, width: 5 },
+      );
+    }
+
     if (suggestedRoute && suggestedRoute.length >= 2) {
       const coordinates = suggestedRoute.map(p => ({ latitude: p.lat, longitude: p.lng }));
       // MapKit exposes no dash pattern. A pale casing keeps the blue route
@@ -203,7 +216,7 @@ export default function WalkMap({
     }
 
     return lines;
-  }, [path, suggestedRoute, trails]);
+  }, [communityRoutes, path, suggestedRoute, trails]);
 
   // Yellow start dot — reads as the "you began here" spark against the navy
   // trace — plus any spots the caller dropped.

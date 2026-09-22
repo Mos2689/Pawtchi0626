@@ -16,7 +16,7 @@
  */
 
 import React, { useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -42,6 +42,29 @@ import {
   WALK_CAMERA_ENABLED,
   WALK_STORY_ENABLED,
 } from '../../constants/features';
+import { cacheKey, readSnapshot } from '../../lib/communityCache';
+import { pickUpNext } from '../../lib/community/upNext';
+import { WaitingPill } from '../../components/home/together/WaitingPill';
+import { WaitingSheet } from '../../components/home/together/WaitingSheet';
+import { UsernamePrompt } from '../../components/community/UsernamePrompt';
+import { PawTrailFlourish } from '../../components/home/together/PawTrailFlourish';
+import { partyColors } from '../../components/community/CommunityUI';
+import {
+  approveExternalInvite,
+  listExternalInviteClaims,
+  getMyUsername,
+  listInvitations,
+  listPacks,
+  listTrailRoutes,
+  listWalkInvitations,
+  respondToInvitation,
+  setAttendance,
+  type CommunityInvitation,
+  type CommunityPack,
+  type ExternalInviteClaim,
+  type WalkInvitation,
+} from '../../lib/communityWalks';
+import { communityMediaUrls } from '../../lib/communityMedia';
 import { useKeepsakePins } from '../../hooks/useKeepsakePins';
 import { useNearbySpots } from '../../hooks/useNearbySpots';
 import { applyFilter, availableFilters, type SpotFilter } from '../../lib/spots/filters';
@@ -69,6 +92,7 @@ import { TemplateUnlockCelebration } from '../../components/moments/TemplateUnlo
 import { HomeMapLayer } from '../../components/home/HomeMapLayer';
 import { HomeTopBar } from '../../components/home/HomeTopBar';
 import { HomeRail, type RailEntry } from '../../components/home/HomeRail';
+import { TogetherPanel } from '../../components/home/TogetherPanel';
 import { MapControls } from '../../components/home/MapControls';
 import { MapLocationPrompt } from '../../components/home/MapLocationPrompt';
 import { SpotArrivalPrompt } from '../../components/home/SpotArrivalPrompt';
@@ -293,6 +317,44 @@ export default function HomeScreen() {
   // hook is disabled, the segment does not render, and Home is byte-for-byte
   // what it was before this feature.
   const spotsEnabled = SPOTS_OSM_MVP_ENABLED && walkEnabled;
+
+  // ── Together: Trails, not this dog's own history ─────────────────────────
+  // A Trail is someone's standing arrangement to walk with people they know.
+  // Same gate as every other walk surface — the flag AND a dog — so a cat
+  // profile never sees the chip, let alone its contents.
+  const togetherEnabled = walkEnabled;
+  const [trails, setTrails] = React.useState<CommunityPack[]>(
+    () => readSnapshot<CommunityPack[]>(cacheKey.packs()) ?? [],
+  );
+  const [trailsLoading, setTrailsLoading] = React.useState(false);
+  const [trailCovers, setTrailCovers] = React.useState<Record<string, string>>({});
+  const [trailInvites, setTrailInvites] = React.useState<CommunityInvitation[]>([]);
+  /** People waiting to be let into a trail this owner hosts. */
+  const [trailClaims, setTrailClaims] = React.useState<ExternalInviteClaim[]>([]);
+  /** Walks this owner has been asked to but has not answered. */
+  const [walkInvites, setWalkInvites] = React.useState<WalkInvitation[]>([]);
+  /**
+   * How much of the screen the Trails sheet is covering.
+   *
+   * Fed to the map's camera so meeting-point pins frame ABOVE the sheet rather
+   * than underneath it — `fitCamera` knows nothing about chrome, so without
+   * this it centres the pins in the full viewport and the sheet then covers
+   * exactly what it just framed.
+   */
+  const [sheetHeight, setSheetHeight] = React.useState(0);
+  /** Each trail's last recorded route, for the map lines and the row thumbs. */
+  const [trailRoutes, setTrailRoutes] = React.useState<Record<string, GeoPoint[]>>({});
+  /**
+   * A trail's identity colour, stable for as long as the list order is.
+   *
+   * The same colour paints its line on the map and its thumbnail in the list,
+   * which is the only thing tying the two together — without it the map is
+   * three anonymous squiggles.
+   */
+  const tintForTrail = React.useCallback((packId: string) => {
+    const index = trails.findIndex(pack => pack.id === packId);
+    return partyColors[(index < 0 ? 0 : index) % partyColors.length];
+  }, [trails]);
   const [spotFilter, setSpotFilter] = React.useState<SpotFilter>('all');
   const [openSpot, setOpenSpot] = React.useState<PawtchiSpot | null>(null);
 
@@ -347,6 +409,177 @@ export default function HomeScreen() {
     center: spotsCenter,
     canAskLocation,
   });
+
+  /**
+   * Trails, fetched only while Together is on screen.
+   *
+   * Same discipline as Spots above: someone who never opens the chip never
+   * pays for it. Refetched on every entry rather than cached, because a Trail's
+   * whole point is the next date — and a stale one is worse than a brief wait.
+   */
+  const loadTrails = React.useCallback(async () => {
+    // Invitations ride along with the trails: this panel is the only place
+    // either is shown now, and an invitation nobody can find is the same as an
+    // invitation that was never sent.
+    try {
+      // Both kinds of "somebody is waiting on you" that are addressed to this
+      // owner, fetched together — one pill counts them, so one failure should
+      // not leave it counting half.
+      const [invites, walks] = await Promise.all([
+        listInvitations(),
+        listWalkInvitations().catch(() => [] as WalkInvitation[]),
+      ]);
+      setTrailInvites(invites);
+      setWalkInvites(walks);
+    } catch {
+      // Leave whatever was last known; the trails below still load.
+    }
+  }, []);
+
+  /**
+   * Join requests across every trail this owner hosts, gathered for the sheet.
+   *
+   * Someone who followed an invitation link is stuck until a host approves
+   * them, and until now the only place that approval existed was inside the
+   * trail's own screen — so the request was invisible unless you happened to
+   * open the right trail. It belongs where you land.
+   */
+  const loadClaims = React.useCallback(async (packs: CommunityPack[], viewerId: string | null) => {
+    if (!viewerId) { setTrailClaims([]); return; }
+    const mine = packs.filter(pack => pack.owner_id === viewerId);
+    if (!mine.length) { setTrailClaims([]); return; }
+    try {
+      const lists = await Promise.all(
+        mine.map(pack => listExternalInviteClaims(pack.id).catch(() => [] as ExternalInviteClaim[])),
+      );
+      setTrailClaims(lists.flat());
+    } catch {
+      // A missing request list is quieter than a wrong one.
+    }
+  }, []);
+
+  /**
+   * On focus, not on mount, and that difference is the whole fix.
+   *
+   * This was a `useEffect` keyed on the segment. Home never unmounts, and the
+   * segment is still `together` when you come back from creating a trail — so
+   * nothing re-ran, and the host landed on a list that did not contain the
+   * trail they had just made. From their side the app had simply lost it.
+   *
+   * Focus covers every way back: the invite screen, the trail, the tab bar.
+   */
+  useFocusEffect(React.useCallback(() => {
+    if (!togetherEnabled || segment !== 'together') return;
+    let cancelled = false;
+    // Anything already known — including a trail created seconds ago and
+    // remembered by `rememberNewPack` — goes up before the network is asked.
+    const known = readSnapshot<CommunityPack[]>(cacheKey.packs());
+    if (known?.length) setTrails(known);
+    setTrailsLoading(true);
+    void loadTrails();
+    listPacks()
+      .then(async next => {
+        if (cancelled) return;
+        setTrails(next);
+        void loadClaims(next, user?.id ?? null);
+        // Asked once per focus, and only answered once: `getMyUsername` is a
+        // single indexed read and the prompt below keys off its answer.
+        void getMyUsername()
+          .then(name => { if (!cancelled) setUsername(name); })
+          .catch(() => {});
+        // Decoration, and never awaited: the list is already on screen and a
+        // line under a map is not worth delaying it for.
+        listTrailRoutes(next.map(pack => pack.id))
+          .then(found => { if (!cancelled) setTrailRoutes(found); })
+          .catch(() => {});
+        // Covers live in a private bucket, so the card needs signed URLs. One
+        // batch for the whole list, and a failure here only costs the photo —
+        // the card falls back to its map.
+        const paths = next.flatMap(pack => (pack.coverPath ? [pack.coverPath] : []));
+        if (paths.length === 0) return;
+        try {
+          const urls = await communityMediaUrls(paths);
+          if (!cancelled) setTrailCovers(urls);
+        } catch {
+          // Keep whatever covers were already resolved.
+        }
+      })
+      // A failed load leaves the last good list rather than emptying the rail.
+      // "No trails yet" is a claim about this owner, not about the network.
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setTrailsLoading(false); });
+    return () => { cancelled = true; };
+  }, [togetherEnabled, segment, loadTrails, loadClaims, user?.id]));
+
+  // Stable identities, because TogetherPanel's cards are memoised and an inline
+  // arrow here would hand every one of them a new prop on every Home render —
+  // which is every second while a walk is being recorded.
+  const openTrail = React.useCallback(
+    (pack: CommunityPack) => router.push(`/community/${pack.id}` as never),
+    [router],
+  );
+  const createTrail = React.useCallback(() => router.push('/community/create' as never), [router]);
+  /** Straight into the walk itself — only offered while one is actually live. */
+  const openTrailWalk = React.useCallback((pack: CommunityPack) => {
+    const walkId = pack.nextWalk?.id;
+    if (!walkId) { router.push(`/community/${pack.id}` as never); return; }
+    router.push(`/community/walk/${walkId}` as never);
+  }, [router]);
+  const onSheetStopChange = React.useCallback((_stop: 'collapsed' | 'expanded', height: number) => {
+    setSheetHeight(height);
+  }, []);
+  const [waitingOpen, setWaitingOpen] = React.useState(false);
+  /**
+   * The handle friends type to find this owner.
+   *
+   * `undefined` means "not asked yet", `null` means "asked, and there isn't
+   * one". The difference matters: prompting on `undefined` would flash a sheet
+   * at somebody who already has a username, every time Home mounts.
+   */
+  const [username, setUsername] = React.useState<string | null | undefined>(undefined);
+  /**
+   * Closed by hand this session. Not persisted — the prompt should come back
+   * on a later visit if there is still no username, but never twice in one
+   * sitting.
+   */
+  const [usernameDismissed, setUsernameDismissed] = React.useState(false);
+  const { width: windowWidth } = useWindowDimensions();
+
+  /**
+   * Answering a walk you were asked to.
+   *
+   * Removed from the pill the moment it is answered rather than after the
+   * write lands: an RSVP is the one thing on this sheet whose outcome is
+   * certain, and leaving the row there while the network thinks about it
+   * invites a second tap on a question already answered.
+   */
+  const onRespondWalk = React.useCallback(async (walkId: string, coming: boolean) => {
+    setWalkInvites(current => current.filter(invite => invite.walkId !== walkId));
+    try {
+      await setAttendance(walkId, coming ? 'coming' : 'cant_make_it');
+      void loadTrails();
+    } catch {
+      // Put it back rather than letting a failed answer look like a sent one.
+      void loadTrails();
+    }
+  }, [loadTrails]);
+
+  const onRespondClaim = React.useCallback(async (invitationId: string, approve: boolean) => {
+    setTrailClaims(current => current.filter(claim => claim.invitation_id !== invitationId));
+    try {
+      await approveExternalInvite(invitationId, approve);
+    } catch {
+      // Put it back rather than letting a failed approval look like a done one.
+      void loadClaims(trails, user?.id ?? null);
+    }
+  }, [loadClaims, trails, user?.id]);
+
+  /** Answering an invitation refreshes both lists — accepting makes a trail. */
+  const onRespondInvite = React.useCallback(async (invitationId: string, accept: boolean) => {
+    await respondToInvitation(invitationId, accept);
+    setTrailInvites(current => current.filter(invite => invite.id !== invitationId));
+    if (accept) setTrails(await listPacks());
+  }, []);
 
   /**
    * Re-answer "is the map far enough away to be worth a new search?".
@@ -501,6 +734,8 @@ export default function HomeScreen() {
 
   const entries: RailEntry[] = useMemo(() => {
     if (!walkEnabled) return [];
+    // Together renders its own surface (TogetherPanel) instead of the rail.
+    if (segment === 'together') return [];
     if (segment === 'spots') {
       return buildSpotEntries({
         spots,
@@ -647,6 +882,11 @@ export default function HomeScreen() {
           source_screen: 'rail',
         });
       }
+      // A Trail is deliberately absent. It has no geography to point the camera
+      // at — `community_walks.meeting_lat/lng` is never written, only labelled —
+      // so settling on one leaves the map exactly where it was, the same way the
+      // bookend cards do. When meeting points gain coordinates this is where the
+      // selection goes.
     },
     [],
   );
@@ -752,6 +992,30 @@ export default function HomeScreen() {
   // label — a map with every pin shouting its place name is a legend, not a
   // picture, and the rail already says what the others are.
   const markers = useMemo(() => {
+    /**
+     * One pin per trail, where it meets.
+     *
+     * This is what earns the map back on this segment. Only walks whose host
+     * actually chose a coordinate appear — a trail whose meeting point is a
+     * description with no pin is simply not on the map, rather than dropped at
+     * a guess. The soonest one is labelled and in ink; the rest are quiet dots,
+     * for the same reason the walk pins are: a map where every pin shouts its
+     * name is a legend, not a picture.
+     */
+    if (segment === 'together') {
+      const pinned = trails.filter(
+        pack => pack.nextWalk?.meeting_lat != null && pack.nextWalk?.meeting_lng != null,
+      );
+      const leadId = pickUpNext(trails, Date.now()).candidate?.pack.id ?? null;
+      return pinned.map(pack => ({
+        id: pack.id,
+        lat: pack.nextWalk!.meeting_lat!,
+        lng: pack.nextWalk!.meeting_lng!,
+        tone: pack.id === leadId ? ('ink' as const) : ('mint' as const),
+        icon: null,
+        label: pack.id === leadId ? pack.nextWalk!.meeting_label : null,
+      }));
+    }
     // Spot pins are built from a different source and carry a category glyph
     // and a category colour, so they do not go through buildMapPins at all.
     if (segment === 'spots') {
@@ -812,7 +1076,40 @@ export default function HomeScreen() {
 
     // Sniffs last so they draw ON the route rather than under a walk-start pin.
     return [...walkPins, ...sniffPins];
-  }, [segment, walkItems, walkSniffs, openSniffId, spots, activeId, mapCenter, spotPreview.route]);
+  }, [segment, walkItems, walkSniffs, openSniffId, spots, activeId, mapCenter, spotPreview.route, trails]);
+
+  /** One coloured line per trail, drawn under the pins. */
+  const trailLines = useMemo(() => {
+    if (segment !== 'together') return undefined;
+    return trails
+      .filter(pack => (trailRoutes[pack.id]?.length ?? 0) > 1)
+      .map((pack, index) => ({
+        id: pack.id,
+        path: trailRoutes[pack.id],
+        color: tintForTrail(pack.id),
+        dashed: index % 2 === 1,
+      }));
+  }, [segment, tintForTrail, trailRoutes, trails]);
+
+  /**
+   * Whether the map has a single real line to draw.
+   *
+   * False on a brand-new account and on any account whose trails have been
+   * planned but not yet walked — which is most of them, most of the time. See
+   * PawTrailFlourish for what goes there instead and why it is made of paw
+   * prints rather than the pretty curve it is tempting to draw.
+   */
+  const hasAnyTrailLine = (trailLines?.length ?? 0) > 0;
+
+  /** Invitations to answer plus hosts' join requests — everything owed a reply. */
+  const waitingCount = trailInvites.length + walkInvites.length + trailClaims.length;
+  const waitingDogs = useMemo(
+    () => [
+      ...trailClaims.flatMap(claim => claim.dogs ?? []),
+      ...trailInvites.flatMap(invite => invite.dogs ?? []),
+    ].slice(0, 3),
+    [trailClaims, trailInvites],
+  );
 
   const [locationPromptDismissed, setLocationPromptDismissed] = React.useState(false);
   const showLocationPrompt =
@@ -1258,10 +1555,11 @@ export default function HomeScreen() {
       {/* Layer 1 — the map, edge to edge, never covered. */}
       <HomeMapLayer
         route={selectedRoute}
-        frameBottomInset={previewSheetInset}
+        frameBottomInset={segment === 'together' ? sheetHeight : previewSheetInset}
         frameTopInset={previewTopInset}
         center={mapCenter}
         markers={markers}
+        communityRoutes={trailLines}
         keepsakePins={keepsakePins}
         keepsakeContext={keepsakeContext}
         resolving={mapResolving}
@@ -1277,6 +1575,11 @@ export default function HomeScreen() {
         onViewCameraChange={segment === 'spots' ? onViewCameraChange : undefined}
       />
 
+      {/* Layer 1a — Together's ground.
+          Painted across the entire screen rather than inside the panel, because
+          a panel can only cover the box it is given: with the chrome column's
+          own top and bottom padding, that left a strip of live map above the
+          chips and another below the last card. This covers both. */}
       {/* Layer 2 — the floating chrome. `box-none` throughout so every gap in
           it falls through to the map rather than swallowing the touch. */}
       <View
@@ -1284,8 +1587,10 @@ export default function HomeScreen() {
           styles.chrome,
           {
             paddingTop: insets.top + space.sm,
-            // Clears the floating bar, which now overlaps this screen.
-            paddingBottom: TAB_BAR_CLEARANCE + insets.bottom,
+            // Clears the floating bar, which now overlaps this screen. Together
+            // opts out and pays it inside its own ScrollView instead, so its
+            // cards scroll behind the bar rather than stopping above it.
+            paddingBottom: segment === 'together' ? 0 : TAB_BAR_CLEARANCE + insets.bottom,
           },
         ]}
         pointerEvents="box-none"
@@ -1293,7 +1598,6 @@ export default function HomeScreen() {
         <Reanimated.View entering={entrance(0)} pointerEvents="box-none">
           <HomeTopBar
             petName={activePet?.name}
-            walksign={activePet?.walksign}
             avatarUri={
               activePet?.current_avatar_url ||
               resolvePetImage(activePet?.image_url, activePet?.species, 200)
@@ -1304,9 +1608,34 @@ export default function HomeScreen() {
             segment={segment}
             onSegmentChange={onSegmentChange}
             spotsEnabled={spotsEnabled}
+            togetherEnabled={togetherEnabled}
             trailing={trailing}
           />
         </Reanimated.View>
+
+        {/* The empty state for the map itself. Sits in the band left visible
+            above the collapsed sheet, and never where a real line would be —
+            because when there IS a real line, this is not rendered at all. */}
+        {segment === 'together' && !hasAnyTrailLine ? (
+          <View
+            style={[styles.flourishSlot, { bottom: sheetHeight + space.md }]}
+            pointerEvents="none"
+          >
+            <PawTrailFlourish width={windowWidth} height={132} />
+          </View>
+        ) : null}
+
+        {/* On the map, under the chips: the only floating chrome on this
+            segment that is asking for something rather than offering it. */}
+        {segment === 'together' ? (
+          <View style={styles.waitingSlot} pointerEvents="box-none">
+            <WaitingPill
+              count={waitingCount}
+              dogs={waitingDogs}
+              onPress={() => setWaitingOpen(true)}
+            />
+          </View>
+        ) : null}
 
         {/* Category chips, only in Spots. Filtering runs on the data already
             fetched and never triggers a request — see lib/spots/filters.ts. */}
@@ -1347,6 +1676,12 @@ export default function HomeScreen() {
           />
         )}
 
+        {/* Together shows the map now, with its meeting points pinned on it,
+            and puts a sheet over the lower half. The rail, the map controls and
+            the spacer belong to the other two segments, so none of them render
+            here — the sheet is this segment's whole lower surface. */}
+        {segment === 'together' ? null : (
+        <>
         <View style={{ flex: 1 }} pointerEvents="none" />
 
         {/* The cabinet: map controls sit directly above the rail, and the record
@@ -1382,7 +1717,54 @@ export default function HomeScreen() {
               an open sheet: the cabinet is bottom-anchored, so a margin on its
               last child moves every sibling above it. */}
         </View>
+        </>
+        )}
       </View>
+
+      {/* Outside the chrome column on purpose: the sheet is anchored to the
+          bottom of the screen and owns its own height, so it must not inherit
+          the column's padding or be squeezed by anything above it. */}
+      {/* Offered on Together and nowhere else, because Together is the only
+          place a username does anything. Never while the waiting sheet is up —
+          two sheets over each other is a stack nobody asked for. */}
+      <UsernamePrompt
+        visible={
+          segment === 'together'
+          && togetherEnabled
+          && username === null
+          && !usernameDismissed
+          && !waitingOpen
+        }
+        onClose={() => setUsernameDismissed(true)}
+        onSaved={name => { setUsername(name); setUsernameDismissed(true); }}
+      />
+
+      <WaitingSheet
+        visible={waitingOpen && segment === 'together'}
+        invitations={trailInvites}
+        walkInvites={walkInvites}
+        claims={trailClaims}
+        onClose={() => setWaitingOpen(false)}
+        onRespondInvite={onRespondInvite}
+        onRespondWalk={onRespondWalk}
+        onRespondClaim={onRespondClaim}
+      />
+
+      {segment === 'together' ? (
+        <TogetherPanel
+          trails={trails}
+          loading={trailsLoading}
+          coverUrls={trailCovers}
+          routes={trailRoutes}
+          tintFor={tintForTrail}
+          viewerId={user?.id ?? null}
+          onOpenTrail={openTrail}
+          onOpenWalk={openTrailWalk}
+          onCreate={createTrail}
+          onStopChange={onSheetStopChange}
+          bottomInset={TAB_BAR_CLEARANCE + insets.bottom}
+        />
+      ) : null}
 
       {/* ── ODbL, floating ──
           The spot data is OSM-derived on both platforms, and on iOS the
@@ -1447,6 +1829,12 @@ const styles = StyleSheet.create({
     // style object.
     gap: space.md,
   },
+  waitingSlot: { paddingHorizontal: space.md, paddingTop: space.sm },
+  // Anchored to the top of the sheet, not to a percentage of the screen: the
+  // sheet's resting height is a number that has already changed twice, and a
+  // fixed offset here means the placeholder quietly slides behind it the next
+  // time it moves.
+  flourishSlot: { position: 'absolute', left: 0, right: 0 },
   cabinet: {
     // Tighter than the screen's general rhythm: the rail and the CTA are one
     // object, and spacing them like unrelated sections broke that reading.

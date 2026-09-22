@@ -55,7 +55,9 @@ const FIELD_GAP = 14;
  * Constant on purpose. Animating it to match the bar would reflow the form
  * every time the keyboard moved, which is the layout jump we are removing.
  * It only has to be tall enough that the last field can scroll clear of the
- * tallest bar we ever show.
+ * tallest bar we ever show. Clearing the KEYBOARD is a separate job and
+ * belongs to the trailing spacer at the end of the scroll content — see the
+ * note there for why this constant cannot do both.
  */
 const CONTENT_CLEARANCE = 168;
 
@@ -196,6 +198,24 @@ export function OnboardingFormScaffold({
           {...scrollViewProps}
         >
           {children}
+
+          {/* Scroll range for the keyboard, and nothing else.
+
+              CONTENT_CLEARANCE is sized for the BAR, which is all the last
+              field needed back when every step's last field sat near the top.
+              It is not enough for a field at the bottom of the form: scrolling
+              it clear of the keyboard needs the keyboard's own height of
+              scrollable content underneath it, and once the form is at max
+              scroll there is nowhere left to go. The field then sits behind
+              the keys with the accessory bar floating over it, which is
+              exactly what the username field at the end of the identity step
+              does without this.
+
+              A trailing spacer is the cheap fix precisely because it is last:
+              growing it moves nothing above it, it only extends how far the
+              form can travel. Zero on Android, where `adjustResize` already
+              shortened the window and the range came with it. */}
+          <View style={{ height: lift }} />
         </ScrollView>
 
         {/* The two bars swap; they are never both up. Entering-only, with no

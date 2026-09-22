@@ -12,6 +12,8 @@ import { useWalkStoryStore } from '../store/useWalkStoryStore';
 import { usePawPrintStore } from '../store/usePawPrintStore';
 import { usePetStore } from '../store/usePetStore';
 import { invalidateAskCache } from '../lib/askVet';
+import { clearCommunityCache } from '../lib/communityCache';
+import { resetSessionUser } from '../lib/sessionUser';
 import { clearProOfferCache } from '../lib/proOffer/client';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
 
@@ -50,6 +52,11 @@ function clearAllUserState(): void {
   try { usePetStore.getState().resetForm(); } catch {}
   // Module-level 60 s cache of ask-vet monthly usage.
   try { invalidateAskCache(); } catch {}
+  // Trails, packs and walk rosters held in memory so screens open filled in.
+  // Another owner's private pack is exactly the leak this function exists to
+  // close, and the memoised user id below is what would make it look current.
+  try { clearCommunityCache(); } catch {}
+  try { resetSessionUser(); } catch {}
   // Cached win-back grants, keyed per user on disk. Left behind, the next
   // account on this device could be shown a discount belonging to the previous
   // one — the runtimeItems leak above, with a price attached. Async and

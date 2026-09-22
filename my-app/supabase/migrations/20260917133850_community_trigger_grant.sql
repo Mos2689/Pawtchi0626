@@ -1,0 +1,23 @@
+-- The last community function that still reads as callable.
+--
+-- 20260917133459 took the direct anon/authenticated grants off
+-- on_community_walk_changed, and it was still reachable afterwards. Its ACL
+-- explains why:
+--
+--   =X/postgres              ← an empty grantee is PUBLIC
+--   postgres=X/postgres
+--   service_role=X/postgres
+--
+-- Postgres grants EXECUTE to PUBLIC on every new function, and
+-- 20260917000000_community_walks revokes PUBLIC on eighteen of its nineteen
+-- functions — the trigger function is the one it skips. Removing a role's
+-- direct grant does nothing while PUBLIC still holds the privilege, so
+-- has_function_privilege() kept answering true for every role.
+--
+-- Nothing was exposed by this. The function returns `trigger`, and Postgres
+-- refuses to invoke a trigger function through an ordinary call, so the worst
+-- a caller could get is error 0A000. It is corrected because a function that
+-- cannot be called should not report that it can — the next person to audit
+-- these grants should not have to re-derive that this one is harmless.
+
+REVOKE EXECUTE ON FUNCTION public.on_community_walk_changed() FROM PUBLIC;

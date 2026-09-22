@@ -38,8 +38,21 @@ export interface WalkDestination {
   origin?: { lat: number; lng: number };
 }
 
+/**
+ * The private outing around an otherwise ordinary personal recording.
+ * Kept in the same one-shot handoff as the start intent so opening /walk by
+ * itself can never begin sharing or attach a later solo walk to an old pack.
+ */
+export interface CommunityWalkContext {
+  walkId: string;
+  packId: string;
+  packName: string;
+  shareLocation: boolean;
+}
+
 let armed = false;
 let destination: WalkDestination | null = null;
+let communityContext: CommunityWalkContext | null = null;
 
 /**
  * Call right before navigating to `/walk` to begin a walk.
@@ -56,6 +69,14 @@ let destination: WalkDestination | null = null;
 export function armWalkStart(to: WalkDestination | null = null): void {
   armed = true;
   destination = to;
+  communityContext = null;
+}
+
+/** Arm a personal recording that is explicitly participating in one outing. */
+export function armCommunityWalkStart(context: CommunityWalkContext): void {
+  armed = true;
+  destination = null;
+  communityContext = context;
 }
 
 /**
@@ -70,6 +91,13 @@ export function armWalkStart(to: WalkDestination | null = null): void {
 export function takeWalkDestination(): WalkDestination | null {
   const taken = destination;
   destination = null;
+  return taken;
+}
+
+/** Read the private-outing handoff once and forget it. */
+export function takeCommunityWalkContext(): CommunityWalkContext | null {
+  const taken = communityContext;
+  communityContext = null;
   return taken;
 }
 

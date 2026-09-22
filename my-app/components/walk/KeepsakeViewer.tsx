@@ -89,7 +89,7 @@ import Reanimated, {
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { MaterialIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { color, font, radius, space } from '../../constants/design';
 import { haptic } from '../../lib/haptics';
 import { useKeepsakeImage } from '../../hooks/useKeepsakeImage';
@@ -130,6 +130,44 @@ export interface KeepsakeWalkContext {
   durationS?: number | null;
 }
 
+/**
+ * The card a Trail's shared memory shows instead of the walk's own.
+ *
+ * ── Why the viewer has two cards rather than two viewers ───────────────────
+ *
+ * The photograph half is identical and hard-won: full bleed, paging, the peek
+ * gesture, the crop reasoning below. Forking it for Trails would have meant
+ * maintaining that twice and letting the two drift.
+ *
+ * The card half should NOT be identical. A personal walk's card is a page from
+ * one dog's biography — distance, weather, how many times they have been here.
+ * None of that is the point of a shared moment, where the interesting facts are
+ * who took it and how far into the walk together it happened, and where the
+ * stat columns would be answering questions nobody asked.
+ *
+ * So: same viewer, slimmer card. Three lines and no columns.
+ */
+export interface SharedMomentCaption {
+  /** The small line above the title — "23 MIN IN · ARAMBOL BEACH". */
+  dateline: string;
+  /** Who took it, as the headline. */
+  headline: string;
+  /** One quiet line under it, or null. */
+  detail?: string | null;
+  /**
+   * The two things a shared moment supports, and the reason the card can stay
+   * thin: a heart anyone in the pack can give, and a way for the person who
+   * took the photo to take it back out. Omitting `onRemove` is what marks a
+   * photo as somebody else's.
+   */
+  actions?: {
+    hearted: boolean;
+    heartCount: number;
+    onHeart: () => void;
+    onRemove?: () => void;
+  };
+}
+
 interface Props {
   /** The moments to page through, in the order they happened. */
   pins: KeepsakeMapPin[] | null;
@@ -137,6 +175,11 @@ interface Props {
   initialIndex?: number;
   /** Everything needed to caption the photo. Absent means image only. */
   context?: KeepsakeWalkContext;
+  /**
+   * A Trail's slim card. When present it replaces the walk's card entirely —
+   * `context` is then only used for the photograph, not for the words.
+   */
+  sharedCaption?: (pin: KeepsakeMapPin) => SharedMomentCaption | null;
   onClose: () => void;
 }
 
@@ -421,7 +464,7 @@ function timeOfDayLabel(capturedAt: number): string {
   });
 }
 
-export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Props) {
+export function KeepsakeViewer({ pins, initialIndex = 0, context, sharedCaption, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const reduced = useReducedMotion();
@@ -556,9 +599,12 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
    * animation replays, and that still only changes between walks.
    */
   const capturedAt = current?.keepsake?.capturedAt ?? null;
-  const eyebrowDate = capturedAt != null ? dateLabel(capturedAt) : null;
-  const eyebrowTime = capturedAt != null ? timeOfDayLabel(capturedAt).toUpperCase() : null;
-  const eyebrowPlace = caption ? placeName(caption.facts)?.toUpperCase() ?? null : null;
+  /** A Trail's card, when the caller supplied one for the photo on screen. */
+  const slim = current && sharedCaption ? sharedCaption(current) : null;
+
+  const eyebrowDate = slim ? slim.dateline : capturedAt != null ? dateLabel(capturedAt) : null;
+  const eyebrowTime = slim ? null : capturedAt != null ? timeOfDayLabel(capturedAt).toUpperCase() : null;
+  const eyebrowPlace = slim ? null : caption ? placeName(caption.facts)?.toUpperCase() ?? null : null;
 
   const durationLabel = useMemo(() => {
     const seconds = context?.durationS;
@@ -699,16 +745,19 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
           )}
         </View>
 
-        {!!caption && (
+        {/* A Trail supplies its own card and no walk context, so the gate is
+            either source of words rather than the walk's alone. */}
+        {(!!caption || !!slim) && (
           <Reanimated.View
             onLayout={onCardLayout}
             entering={reduced ? undefined : FadeIn.duration(220)}
             style={[
               styles.card,
+              slim && styles.cardSlim,
               // Enough clearance that the card's own bottom edge is off-screen
               // once it has travelled: a rounded corner floating mid-photo is
               // the tell that a sheet is "hidden" rather than lowered.
-              { paddingBottom: insets.bottom + space.lg },
+              { paddingBottom: insets.bottom + (slim ? space.sm : space.lg) },
               cardStyle,
             ]}
           >
@@ -725,7 +774,7 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
               accessibilityRole={peeked ? 'button' : undefined}
               accessibilityLabel={peeked ? 'Show the details for this moment' : undefined}
             >
-              <View style={styles.grabber} />
+              <View style={[styles.grabber, slim && styles.grabberSlim]} />
 
               {/* ── The constant half ──
                   Keyed on the words themselves. One walk yields one headline for
@@ -735,7 +784,7 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
                   Measured, too: what is left showing when the card is down is
                   exactly this block. */}
               <Reanimated.View
-                key={caption.headline}
+                key={slim ? slim.headline : caption?.headline}
                 onLayout={onTitleLayout}
                 entering={reduced ? undefined : FadeInDown.duration(360)}
               >
@@ -753,7 +802,7 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
                   The place keeps its electric blue: the one thing on this card
                   the dog found rather than something the walk measured. */}
               <Text
-                style={styles.dateLine}
+                style={[styles.dateLine, slim && styles.dateLineSlim]}
                 numberOfLines={1}
                 adjustsFontSizeToFit
                 minimumFontScale={0.85}
@@ -764,15 +813,64 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
                   <Text style={styles.dateLinePlace}>{` · ${eyebrowPlace}`}</Text>
                 )}
               </Text>
-              <Text style={styles.headline} numberOfLines={2}>
-                {caption.headline}
-                {/* The one spot of brand colour in the type — a full stop that
-                    says this is a Pawtchi page without a logo having to. */}
-                <Text style={styles.headlineStop}>.</Text>
-              </Text>
+              {slim ? (
+                /* ── A Trail's card is a bar, not a page ──
+                   The walk's card is a listing header: a 28px display title
+                   centred under an eyebrow with air around it, because it is
+                   presenting one dog's day. A shared moment has a name and two
+                   actions, and setting a username at display size over a
+                   photograph produced a white slab a quarter of the screen tall
+                   with one word in it. Name left, actions right, one row. */
+                <View style={styles.slimRow}>
+                  <Text style={styles.slimHeadline} numberOfLines={1}>
+                    {slim.headline}
+                    <Text style={styles.slimStop}>.</Text>
+                  </Text>
+                  {!!slim.actions && (
+                    <View style={styles.slimActions}>
+                      <Pressable
+                        onPress={slim.actions.onHeart}
+                        hitSlop={10}
+                        style={styles.slimHeart}
+                        accessibilityRole="button"
+                        accessibilityLabel={slim.actions.hearted ? 'Remove heart' : 'Heart this moment'}
+                      >
+                        <Ionicons
+                          name={slim.actions.hearted ? 'heart' : 'heart-outline'}
+                          size={19}
+                          color={slim.actions.hearted ? color.error : color.slateMuted}
+                        />
+                        {slim.actions.heartCount > 0 && (
+                          <Text style={styles.slimHeartCount}>{slim.actions.heartCount}</Text>
+                        )}
+                      </Pressable>
+                      {slim.actions.onRemove && (
+                        <Pressable
+                          onPress={slim.actions.onRemove}
+                          hitSlop={10}
+                          accessibilityRole="button"
+                          accessibilityLabel="Remove this photo from the shared memory"
+                        >
+                          <Ionicons name="trash-outline" size={18} color={color.slateFaint} />
+                        </Pressable>
+                      )}
+                    </View>
+                  )}
+                </View>
+              ) : (
+                <Text style={styles.headline} numberOfLines={2}>
+                  {caption?.headline ?? ''}
+                  {/* The one spot of brand colour in the type — a full stop that
+                      says this is a Pawtchi page without a logo having to. */}
+                  <Text style={styles.headlineStop}>.</Text>
+                </Text>
+              )}
               </Reanimated.View>
 
-              {!!current && (
+              {/* A Trail's card stops here: the dateline and the headline are
+                  the whole of it. The walk's stat columns below are about one
+                  dog's history and have nothing to say about a shared moment. */}
+              {!!current && !slim && !!caption && (
                 <ChangingFacts
                   pin={current}
                   caption={caption}
@@ -781,6 +879,9 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
                   durationLabel={durationLabel}
                   onJump={jumpTo}
                 />
+              )}
+              {!!slim?.detail && (
+                <Text style={styles.slimDetail} numberOfLines={1}>{slim.detail}</Text>
               )}
             </Pressable>
           </Reanimated.View>
@@ -792,6 +893,31 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, onClose }: Pro
 
 const styles = StyleSheet.create({
   canvas: { flex: 1, backgroundColor: '#0B0F14' },
+  /** Half the walk card's padding, and no room left over. */
+  cardSlim: { paddingHorizontal: space.lg, paddingTop: space.sm },
+  grabberSlim: { marginBottom: space.sm },
+  dateLineSlim: { fontSize: 9.5, letterSpacing: 1.4, textAlign: 'left' },
+  slimRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: 3 },
+  slimHeadline: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: font.memoryBold,
+    fontSize: 19,
+    lineHeight: 24,
+    letterSpacing: -0.3,
+    color: color.ink,
+  },
+  slimStop: { fontFamily: font.memoryBold, fontSize: 19, color: color.yellow },
+  slimDetail: {
+    fontFamily: font.medium,
+    fontSize: 12,
+    lineHeight: 17,
+    color: color.slateMuted,
+    marginTop: 3,
+  },
+  slimActions: { flexDirection: 'row', alignItems: 'center', gap: space.lg, flexShrink: 0 },
+  slimHeart: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  slimHeartCount: { fontFamily: font.bold, fontSize: 12.5, color: color.slateMuted },
 
   photo: { flex: 1 },
   missing: {

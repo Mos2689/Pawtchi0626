@@ -86,6 +86,20 @@ interface SupportReplyPush {
   quiet_hours_end: string | null;
 }
 
+interface CommunityNotificationCandidate {
+  event_id: string;
+  user_id: string;
+  event_type: 'community_invite' | 'community_walk_change' | 'community_memory_ready';
+  title: string;
+  body: string;
+  route: string;
+  dedupe_key: string;
+  timezone: string | null;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  tokens: string[];
+}
+
 /**
  * One row of get_walk_insight_candidates(): a valid walk that ended recently
  * and has not been notified. All the history arithmetic is done in SQL — the
@@ -327,7 +341,7 @@ serve(async (req: Request) => {
     interface Plan {
       userId: string;
       petId: string | null;
-      campaign: CampaignKey;
+      campaign: CampaignKey | CommunityNotificationCandidate['event_type'];
       dedupeKey: string;
       message: ExpoMessage;
       /** Set only on vet_checkin, consumed after a successful claim. */
@@ -550,6 +564,45 @@ serve(async (req: Request) => {
             dedupeKey,
             route,
             entityId: r.ticket_id,
+            variant: 'a',
+          },
+        },
+      });
+    }
+
+    // ── Private pack events ──────────────────────────────────────────────────
+    // Invitations, material plan changes and a newly ready memory are direct
+    // consequences of actions inside a private pack. Pack muting and the global
+    // push switch are applied in SQL; quiet hours are held here like replies.
+    const { data: communityRows, error: communityError } =
+      await admin.rpc('get_community_notification_candidates');
+    if (communityError) {
+      console.error('[notify-dispatch] get_community_notification_candidates:', communityError.message);
+    }
+    for (const event of (communityRows ?? []) as CommunityNotificationCandidate[]) {
+      if (!event.tokens?.length) continue;
+      const clock = localClock(event.timezone);
+      if (fallsInQuietWindow(clock.minutes, event.quiet_hours_start, event.quiet_hours_end)) {
+        note('quiet_hours_held');
+        continue;
+      }
+      planned.push({
+        userId: event.user_id,
+        petId: null,
+        campaign: event.event_type,
+        dedupeKey: event.dedupe_key,
+        message: {
+          to: event.tokens[0],
+          title: event.title,
+          body: event.body,
+          sound: 'default',
+          channelId: 'default',
+          data: {
+            type: event.event_type,
+            campaignKey: event.event_type,
+            dedupeKey: event.dedupe_key,
+            entityId: event.event_id,
+            route: event.route,
             variant: 'a',
           },
         },

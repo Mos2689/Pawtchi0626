@@ -17,6 +17,17 @@ import type { MapCamera } from '../../lib/walk/mapCamera';
 
 export type WalkMapProps = {
   path: GeoPoint[];
+  /**
+   * Simultaneous phone-measured routes for a community walk. Each route owns
+   * its colour and optional line pattern; callers must still provide another
+   * cue (the labelled portrait markers) so colour is never the only identity.
+   */
+  communityRoutes?: readonly {
+    id: string;
+    path: readonly GeoPoint[];
+    color: string;
+    dashed?: boolean;
+  }[];
   currentPosition?: GeoPoint | null;
   /**
    * Where to point the camera when `path` is too short to frame — a walk with

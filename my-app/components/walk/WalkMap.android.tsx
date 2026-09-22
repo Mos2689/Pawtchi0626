@@ -102,6 +102,7 @@ const BACKDROP_PADDING = 190;
 
 export default function WalkMap({
   path,
+  communityRoutes = [],
   currentPosition,
   center,
   mode,
@@ -387,6 +388,47 @@ export default function WalkMap({
             />
           </ShapeSource>
         )}
+
+        {/* A shared outing keeps each phone's measured route visually
+            independent. White casing preserves the line over roads and park
+            fills; alternating dash patterns make the parties distinguishable
+            without relying on colour alone. */}
+        {communityRoutes.map((route, index) => {
+          if (route.path.length < 2) return null;
+          const shape = {
+            type: 'Feature' as const,
+            properties: {},
+            geometry: {
+              type: 'LineString' as const,
+              coordinates: route.path.map(point => [point.lng, point.lat]),
+            },
+          };
+          return (
+            <ShapeSource key={route.id} id={`community-route-${index}`} shape={shape as any}>
+              <LineLayer
+                id={`community-route-casing-${index}`}
+                style={{
+                  lineColor: color.surface,
+                  lineWidth: 9,
+                  lineOpacity: 0.96,
+                  lineJoin: 'round',
+                  lineCap: 'round',
+                }}
+              />
+              <LineLayer
+                id={`community-route-line-${index}`}
+                style={{
+                  lineColor: route.color,
+                  lineWidth: 5,
+                  lineOpacity: 1,
+                  lineDasharray: route.dashed ? [2.2, 1.5] : undefined,
+                  lineJoin: 'round',
+                  lineCap: 'round',
+                }}
+              />
+            </ShapeSource>
+          );
+        })}
 
         {/* The suggested way, drawn BEFORE the walk so it sits underneath.
             Dashed electric blue so it cannot be mistaken for the yellow trace:
