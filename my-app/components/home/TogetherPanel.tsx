@@ -58,9 +58,11 @@ import Animated, {
 import { Ionicons } from '@expo/vector-icons';
 
 import { color, font, makeShadow, space, type } from '../../constants/design';
+import { formatDate } from '../../lib/dateFormats';
 import { pickUpNext, upNextEyebrow, upNextSubtitle } from '../../lib/community/upNext';
+import { connectView, type ConnectStatus } from '../../lib/community/connectStatus';
 import type { CommunityPack } from '../../lib/communityWalks';
-import { UpNextCard } from './together/UpNextCard';
+import { UpNextCard, UpNextSkeleton } from './together/UpNextCard';
 import { TrailRow, type TrailBadge } from './together/TrailRow';
 import { BreathingPaw } from '../BreathingPaw';
 
@@ -87,7 +89,14 @@ const SheetRoot = Animated.createAnimatedComponent(GestureHandlerRootView);
 
 interface TogetherPanelProps {
   trails: CommunityPack[];
-  loading: boolean;
+  /**
+   * Where the request for `trails` stands — see lib/community/connectStatus.
+   * `trails` may be an earlier answer (restored on a cold start); this is what
+   * says whether it has been confirmed, and it alone may unlock "nothing".
+   */
+  status: ConnectStatus;
+  /** Ask again, from the error card or the "couldn't refresh" line. */
+  onRetry: () => void;
   coverUrls: Record<string, string>;
   /** Each trail's last recorded route, keyed by pack id. Decoration only. */
   routes: Record<string, { lat: number; lng: number }[]>;
@@ -102,20 +111,20 @@ interface TogetherPanelProps {
   bottomInset: number;
 }
 
+// Formatter built once, not once per trail row per render. See lib/dateFormats
+// — constructing an Intl.DateTimeFormat measured 44× the cost of using one.
 function relativeDay(iso: string | null): string {
-  if (!iso) return 'Date to be confirmed';
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return 'Date to be confirmed';
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: 'short',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(at);
+  return formatDate(
+    iso,
+    { weekday: 'short', hour: 'numeric', minute: '2-digit' },
+    'Date to be confirmed',
+  );
 }
 
 export function TogetherPanel({
   trails,
-  loading,
+  status,
+  onRetry,
   coverUrls,
   routes,
   tintFor,
@@ -180,6 +189,7 @@ export function TogetherPanel({
 
   const now = Date.now();
   const upNext = React.useMemo(() => pickUpNext(trails, now), [trails, now]);
+  const view = connectView(status, trails.length > 0);
 
   const badgeFor = React.useCallback((pack: CommunityPack): TrailBadge => {
     if (viewerId && pack.owner_id === viewerId) return 'hosting';
@@ -206,7 +216,7 @@ export function TogetherPanel({
             onPress={toggle}
             hitSlop={12}
             accessibilityRole="button"
-            accessibilityLabel={stop === 'collapsed' ? 'Show all your trails' : 'Show the map'}
+            accessibilityLabel={stop === 'collapsed' ? 'Show all your meetups' : 'Show the map'}
           >
             <View style={styles.handle} />
           </Pressable>
@@ -218,52 +228,76 @@ export function TogetherPanel({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.upNextWrap}>
-          <UpNextCard
-            state={upNext.state}
-            eyebrow={upNextEyebrow(upNext, now)}
-            title={upNext.candidate?.walk.title ?? 'Start a trail this weekend'}
-            subtitle={
-              upNext.candidate
-                ? upNextSubtitle(
-                    upNext.candidate.walk,
-                    upNext.candidate.pack.hostName ?? null,
-                    !!viewerId && upNext.candidate.walk.organizer_id === viewerId,
-                  )
-                : 'You have no walks booked'
-            }
-            dogs={upNext.candidate?.pack.dogs}
-            footnote={
-              upNext.candidate
-                ? goingLine(upNext.candidate.pack)
-                : 'Walk with people you already know'
-            }
-            actionLabel={
-              upNext.state === 'live' ? 'Open' : upNext.state === 'empty' ? 'Host' : 'Details'
-            }
-            onAction={() => {
-              if (!upNext.candidate) { onCreate(); return; }
-              if (upNext.state === 'live') { onOpenWalk(upNext.candidate.pack); return; }
-              onOpenTrail(upNext.candidate.pack);
-            }}
-          />
+          {view.lead === 'skeleton' ? (
+            <UpNextSkeleton />
+          ) : view.lead === 'error' ? (
+            // We asked and could not find out — which is not "nothing booked".
+            <UpNextCard
+              state="undated"
+              eyebrow="COULDN’T CHECK"
+              title="We couldn’t reach your meetups"
+              subtitle="Check your connection, then try again."
+              footnote="Nothing on your side has changed"
+              actionLabel="Try again"
+              onAction={onRetry}
+            />
+          ) : (
+            <UpNextCard
+              state={upNext.state}
+              eyebrow={upNextEyebrow(upNext, now)}
+              title={upNext.candidate?.walk.title ?? 'Plan a meetup this weekend'}
+              subtitle={
+                upNext.candidate
+                  ? upNextSubtitle(
+                      upNext.candidate.walk,
+                      upNext.candidate.pack.hostName ?? null,
+                      !!viewerId && upNext.candidate.walk.organizer_id === viewerId,
+                    )
+                  : 'You have no walks booked'
+              }
+              dogs={upNext.candidate?.pack.dogs}
+              footnote={
+                upNext.candidate
+                  ? goingLine(upNext.candidate.pack)
+                  : 'Walk with people you already know'
+              }
+              actionLabel={
+                upNext.state === 'live' ? 'Open' : upNext.state === 'empty' ? 'Host' : 'Details'
+              }
+              onAction={() => {
+                if (!upNext.candidate) { onCreate(); return; }
+                if (upNext.state === 'live') { onOpenWalk(upNext.candidate.pack); return; }
+                onOpenTrail(upNext.candidate.pack);
+              }}
+            />
+          )}
+
+          {/* What is on screen is an earlier answer — restored from the phone
+              on a cold start — and the check is in the air. Quiet on purpose:
+              the content is almost always still right, and the note is only
+              there so a meetup that changed meanwhile is not taken as final. */}
+          {view.showUpdating ? (
+            <View style={styles.statusLine} accessibilityLiveRegion="polite">
+              <BreathingPaw size={13} workingColor={color.slateMuted} />
+              <Text style={styles.statusText}>Updating</Text>
+            </View>
+          ) : null}
+          {view.showRefreshFailed ? (
+            <Pressable onPress={onRetry} style={styles.statusLine} accessibilityRole="button" hitSlop={8}>
+              <Text style={styles.statusText}>Couldn’t refresh · </Text>
+              <Text style={styles.statusAction}>Try again</Text>
+            </Pressable>
+          ) : null}
         </View>
 
-
-        {loading && trails.length === 0 ? (
-          <View style={styles.waiting}>
-            <BreathingPaw size={30} />
-            <Text style={styles.waitingText}>Finding your trails</Text>
-          </View>
-        ) : null}
-
-        {!loading && trails.length === 0 ? (
+        {view.showEmptyCta ? (
           <Pressable
             onPress={onCreate}
             style={({ pressed }) => [styles.emptyCta, pressed && styles.pressed]}
             accessibilityRole="button"
           >
             <Ionicons name="add" size={19} color={color.navy} />
-            <Text style={styles.emptyCtaText}>Start a trail</Text>
+            <Text style={styles.emptyCtaText}>Plan a meetup</Text>
           </Pressable>
         ) : null}
 
@@ -275,14 +309,14 @@ export function TogetherPanel({
                 action that makes a new one. */}
             <View style={styles.sectionHead}>
               <Text style={styles.sectionLabel}>
-                YOUR TRAILS · {trails.length}
+                YOUR MEETUPS · {trails.length}
               </Text>
               <Pressable
                 onPress={onCreate}
                 style={({ pressed }) => [styles.add, pressed && styles.pressed]}
                 hitSlop={8}
                 accessibilityRole="button"
-                accessibilityLabel="Start a trail"
+                accessibilityLabel="Plan a meetup"
               >
                 <Ionicons name="add" size={19} color={color.navy} />
               </Pressable>
@@ -365,6 +399,13 @@ const styles = StyleSheet.create({
   requestWrap: { marginTop: space.md },
   list: { marginTop: space.lg },
 
-  waiting: { alignItems: 'center', paddingTop: space.xxl, gap: space.md },
-  waitingText: { ...type.body, color: color.slateMuted },
+  statusLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingTop: space.sm,
+    paddingHorizontal: 4,
+  },
+  statusText: { ...type.caption, fontSize: 11, letterSpacing: 0.2, color: color.slateMuted },
+  statusAction: { ...type.caption, fontSize: 11, letterSpacing: 0.2, color: color.electric },
 });

@@ -231,14 +231,14 @@ CREATE TABLE food_scans (
   ai_estimated_fats_g REAL,
   -- Which pantry item this meal counted against. Present in production since
   -- early on but absent from this file and from every migration until
-  -- 20260831000001 — the exact drift that motivated schema:check.
+  -- 20260831142028 — the exact drift that motivated schema:check.
   pantry_item_id UUID REFERENCES food_pantry(id) ON DELETE SET NULL,
   health_score SMALLINT CHECK (health_score BETWEEN 1 AND 10),
   ingredients JSONB DEFAULT '[]'::jsonb,
   food_analysis JSONB,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
   -- Provenance columns (log_date, portion_mode, meal_grams, nutrition_snapshot,
-  -- kcal_basis, revision, quality, …) are added by 20260831000001.
+  -- kcal_basis, revision, quality, …) are added by 20260831142028.
 );
 
 CREATE INDEX food_scans_pet_treat_created_idx

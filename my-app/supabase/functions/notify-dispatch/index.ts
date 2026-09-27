@@ -89,7 +89,23 @@ interface SupportReplyPush {
 interface CommunityNotificationCandidate {
   event_id: string;
   user_id: string;
-  event_type: 'community_invite' | 'community_walk_change' | 'community_memory_ready';
+  /**
+   * Mirrors the CHECK on `community_notification_events.event_type`.
+   *
+   * The dispatcher relays these rather than deciding them — title, body and
+   * route all arrive resolved from SQL, which is why a new kind needs no code
+   * here beyond widening this union. Keep it in step with the constraint: a
+   * type the database accepts and this rejects is a notification that enqueues
+   * and then never leaves.
+   */
+  event_type:
+    | 'community_invite'
+    | 'community_walk_change'
+    | 'community_memory_ready'
+    // Added 20260922000000.
+    | 'community_rsvp'
+    | 'community_moment'
+    | 'community_walk_soon';
   title: string;
   body: string;
   route: string;
@@ -329,8 +345,49 @@ serve(async (req: Request) => {
   const skipped: Record<string, number> = {};
   const note = (reason: string) => { skipped[reason] = (skipped[reason] ?? 0) + 1; };
 
+  /**
+   * `{"mode":"community"}` — the fast lane.
+   *
+   * ── Why a mode rather than a second function ────────────────────────────
+   *
+   * Trail events are somebody else's action waiting on you: an invitation, a
+   * walk starting in half an hour, a photo landing. Fifteen minutes is the
+   * wrong latency for all three — a "starts soon" reminder can arrive after
+   * the walk has started. But the rule-driven pass CANNOT simply run every
+   * minute: it gates on the owner's local hour and rations itself with
+   * intensity and frequency caps, and running it sixty times more often would
+   * be sixty times the candidate scans to reach the same daily cap.
+   *
+   * One dispatcher, one copy source, one claim-and-send path — which is the
+   * rule this project has about notifications, and the reason this is a branch
+   * rather than a new function.
+   *
+   * WHO SENDS THIS MODE, as of 22 Sep 2026: nothing on a schedule. It was a
+   * cron at one-minute intervals, and on a t4g.nano that took production down —
+   * runs stacked faster than they finished until the connection pool was gone.
+   * The trigger on community_notification_events now posts this body the
+   * moment an event is enqueued, so the load is proportional to real activity
+   * and zero when nobody is using Together. The cron on every 15 minutes stays
+   * as the reaper for anything the trigger missed.
+   *
+   * Do not reintroduce a fast cron here. The queue is already event-driven;
+   * polling it was only ever a way of noticing, and the trigger notices better.
+   *
+   * Fails OPEN to the full run: an unreadable body means a normal invocation,
+   * never a silently reduced one.
+   */
+  let communityOnly = false;
   try {
-    const { data: candidates, error } = await admin.rpc('get_notification_candidates');
+    const body = await req.json();
+    communityOnly = body?.mode === 'community';
+  } catch {
+    // No body, or not JSON. The */15 cron posts `{}`; either way, full run.
+  }
+
+  try {
+    const { data: candidates, error } = communityOnly
+      ? { data: [], error: null }
+      : await admin.rpc('get_notification_candidates');
     if (error) throw error;
 
     const rows = (candidates ?? []) as Candidate[];
@@ -475,7 +532,13 @@ serve(async (req: Request) => {
     // frequency caps: those exist to ration nudges we initiate, and this is not
     // one. Quiet hours still apply, and hold rather than drop, because the row
     // stays unsent in the database until the window closes.
-    const { data: replyRows, error: replyError } = await admin.rpc('get_founder_reply_pushes');
+    // Skipped in the fast lane — see `communityOnly`. Each of these passes
+    // no-ops on an empty array rather than being wrapped in a branch, so the
+    // fast lane costs nothing extra and the full run is byte-for-byte what it
+    // has always been.
+    const { data: replyRows, error: replyError } = communityOnly
+      ? { data: [], error: null }
+      : await admin.rpc('get_founder_reply_pushes');
     if (replyError) {
       // A failure here must not take the whole dispatch run down with it.
       console.error('[notify-dispatch] get_founder_reply_pushes:', replyError.message);
@@ -527,7 +590,7 @@ serve(async (req: Request) => {
     // nowhere near rule-eligible, and rationing this would be rationing the
     // thing they are actually waiting for.
     const { data: supportRows, error: supportError } =
-      await admin.rpc('get_support_reply_pushes');
+      communityOnly ? { data: [], error: null } : await admin.rpc('get_support_reply_pushes');
     if (supportError) {
       console.error('[notify-dispatch] get_support_reply_pushes:', supportError.message);
     }
@@ -623,7 +686,7 @@ serve(async (req: Request) => {
     // decision, which belongs to the mirrored engine so the app and the server
     // can never disagree about what counts as interesting.
     const { data: walkRows, error: walkError } =
-      await admin.rpc('get_walk_insight_candidates');
+      communityOnly ? { data: [], error: null } : await admin.rpc('get_walk_insight_candidates');
     if (walkError) {
       console.error('[notify-dispatch] get_walk_insight_candidates:', walkError.message);
     }
@@ -711,10 +774,17 @@ serve(async (req: Request) => {
     // Runs before the early return below, because an inbox digest must go out
     // even on a run where nothing is owed a push. This is the one pass whose
     // failure a person is waiting on at the other end.
+    //
+    // Not in the fast lane. These are team digests on a human cadence, and
+    // running them every minute would be sixty times the queries and sixty
+    // chances an hour to send the same digest twice — the exact cost the mode
+    // exists to avoid.
     const cronSecret = req.headers.get(CRON_SECRET_HEADER);
-    await notifySupportInbox(admin, cronSecret, note);
-    await notifyLetterInbox(admin, cronSecret, note);
-    await notifyCalorieIntegrity(admin, cronSecret, note);
+    if (!communityOnly) {
+      await notifySupportInbox(admin, cronSecret, note);
+      await notifyLetterInbox(admin, cronSecret, note);
+      await notifyCalorieIntegrity(admin, cronSecret, note);
+    }
 
     if (planned.length === 0) {
       return json({ ok: true, candidates: rows.length, planned: 0, sent: 0, skipped });

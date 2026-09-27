@@ -1,4 +1,4 @@
--- Teardown for 20260919000000_walk_invitations.
+-- Teardown for 20260919145701_walk_invitations.
 --
 -- ⚠ NOT A MIGRATION. Lives outside supabase/migrations/ so `supabase db push`
 -- can never pick it up. Run it deliberately.

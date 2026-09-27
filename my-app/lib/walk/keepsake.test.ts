@@ -230,6 +230,36 @@ describe('buildKeepsakeInsert', () => {
     expect(buildKeepsakeInsert(base).captured_at).toBe('2026-08-20T07:15:00.000Z');
   });
 
+  /**
+   * The row id, and why it is worth four tests on a one-line spread.
+   *
+   * A Trail photo is published to the pack at the shutter, under an id chosen
+   * on the device, because its `walk_media` row cannot exist yet — that table
+   * needs a `walk_session_id` and there is no session until the walk ends. If
+   * this row is later written under a DIFFERENT id, the two never meet: the
+   * trail keeps a photo nothing points at, and nothing errors.
+   */
+  it('takes the id the capture was given', () => {
+    expect(buildKeepsakeInsert({ ...base, mediaId: 'abc-123' }).id).toBe('abc-123');
+  });
+
+  it('omits the key entirely when there is no id', () => {
+    const row = buildKeepsakeInsert(base);
+    // Not `id: undefined` — PostgREST serialises that as an explicit null and
+    // the insert then fails against a NOT NULL primary key. Absent, not empty.
+    expect('id' in row).toBe(false);
+  });
+
+  it('omits the key for a null id too', () => {
+    // The outbox passes `mediaId: entry.mediaId ?? null` for entries queued by
+    // a build that predates the field.
+    expect('id' in buildKeepsakeInsert({ ...base, mediaId: null })).toBe(false);
+  });
+
+  it('does not let an empty string through as an id', () => {
+    expect('id' in buildKeepsakeInsert({ ...base, mediaId: '' })).toBe(false);
+  });
+
   it('keeps a real coordinate and its place key', () => {
     const row = buildKeepsakeInsert({
       ...base,

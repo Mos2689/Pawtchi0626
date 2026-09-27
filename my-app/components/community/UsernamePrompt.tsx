@@ -30,7 +30,16 @@
  */
 
 import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -48,58 +57,90 @@ export function UsernamePrompt({
 }) {
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.scrim} onPress={onClose} accessibilityLabel="Close" />
-      <SafeAreaView style={styles.sheet} edges={['bottom']}>
-        <View style={styles.grip} />
+      {/*
+        The sheet is a flex child of a flex-end overlay, NOT `position:
+        absolute`, and that is the whole fix. An absolutely positioned sheet is
+        pinned to the bottom of the window, so KeyboardAvoidingView has nothing
+        to lift — its padding changes the height of a box the sheet is not
+        laid out by, and the keyboard opens straight over the field. This is
+        the same structure RoutineSheet and PantryLabelEditor already use.
+      */}
+      <KeyboardAvoidingView
+        style={styles.overlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <Pressable style={styles.scrim} onPress={onClose} accessibilityLabel="Close" />
+        <SafeAreaView style={styles.sheet} edges={['bottom']}>
+          <View style={styles.grip} />
 
-        <View style={styles.head}>
-          <View style={styles.mark}><Text style={styles.markAt}>@</Text></View>
-          <Pressable
-            onPress={onClose}
-            style={styles.close}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Not now"
+          <View style={styles.head}>
+            <View style={styles.mark}><Text style={styles.markAt}>@</Text></View>
+            <Pressable
+              onPress={onClose}
+              style={styles.close}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Not now"
+            >
+              <Ionicons name="close" size={20} color={color.navy} />
+            </Pressable>
+          </View>
+
+          <Text style={styles.title}>Pick how friends find you</Text>
+
+          {/*
+            Scrolls because the margin is thin, not because the content is
+            long: sheet plus keyboard is roughly 414 + 336 on a 844pt phone and
+            fits, but an SE is 667pt with a ~260pt keyboard and the same
+            content does not. Without this the Save button is the part that
+            falls off, on the smallest screens, where it is hardest to notice.
+            `keyboardShouldPersistTaps` keeps Save tappable on the first press
+            while the field still holds focus.
+          */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
           >
-            <Ionicons name="close" size={20} color={color.navy} />
-          </Pressable>
-        </View>
+            <Text style={styles.body}>
+              Someone who already knows you types your exact username to invite you. Pawtchi has no
+              people search and never lists you anywhere.
+            </Text>
 
-        <Text style={styles.title}>Pick how friends find you</Text>
-        <Text style={styles.body}>
-          Someone who already knows you types your exact username to invite you. Pawtchi has no
-          people search and never lists you anywhere.
-        </Text>
+            <UsernameEditor
+              onSaved={onSaved}
+              saveLabel="Save and continue"
+              // The person opened this sheet's one field on purpose, which is the
+              // only case the app allows a keyboard to appear on its own.
+              autoFocus
+            />
 
-        <UsernameEditor
-          onSaved={onSaved}
-          saveLabel="Save and continue"
-          // The person opened this sheet's one field on purpose, which is the
-          // only case the app allows a keyboard to appear on its own.
-          autoFocus
-        />
-
-        <Pressable onPress={onClose} style={styles.later} accessibilityRole="button">
-          <Text style={styles.laterText}>Not now</Text>
-        </Pressable>
-      </SafeAreaView>
+            <Pressable onPress={onClose} style={styles.later} accessibilityRole="button">
+              <Text style={styles.laterText}>Not now</Text>
+            </Pressable>
+          </ScrollView>
+        </SafeAreaView>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  overlay: { flex: 1, justifyContent: 'flex-end' },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(7,32,42,0.38)' },
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     backgroundColor: color.surfaceSubtle,
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     paddingHorizontal: space.xl,
     paddingBottom: space.lg,
+    // Never taller than the space left above the keyboard on a small phone.
+    maxHeight: '88%',
   },
+  scroll: { flexGrow: 0 },
+  scrollContent: { paddingBottom: 2 },
   grip: {
     width: 44,
     height: 4,

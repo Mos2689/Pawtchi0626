@@ -13,7 +13,7 @@
 -- caught it, but it has never been executed — there is no branch database to
 -- run it against. A test that exists and does not run is not a test.
 --
--- 20260831000003 is corrected in place for fresh environments; this migration
+-- 20260831150847 is corrected in place for fresh environments; this migration
 -- carries the same fix to environments that already applied it.
 
 CREATE OR REPLACE FUNCTION public.log_meal(

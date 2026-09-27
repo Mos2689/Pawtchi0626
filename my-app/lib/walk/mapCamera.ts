@@ -292,6 +292,37 @@ export function toRegionZoom(
   return camera.zoom + Math.log2(TILE / fitExtentPx(width, height, camera.center.lat));
 }
 
+/**
+ * The size of a MapLibre GL world tile, in logical pixels (dp on Android).
+ *
+ * MapLibre, like every GL descendant of Mapbox, defines zoom `z` as a world
+ * `512 · 2^z` logical pixels wide. This projector uses the classic 256 px tile.
+ * Both are plain Web Mercator; only the reference tile differs.
+ */
+const MAPLIBRE_TILE = 512;
+
+/**
+ * Web Mercator zoom (this module's 256 px convention) → MapLibre's zoom.
+ *
+ * Exactly one level lower: a 256 px world at zoom `z` is the same size as a
+ * 512 px world at `z − 1`. Written from the tile sizes rather than as a bare
+ * `- 1` so the reason travels with the number.
+ *
+ * ── Why Android frames with this and not with bounds ──────────────────────
+ *
+ * The Android map used to hand MapLibre corner BOUNDS, precisely to avoid
+ * naming a zoom convention. But MapLibre's native camera turns bounds into a
+ * camera with `getCameraForLatLngBounds`, which works from the view's CURRENT
+ * pixel size. Applied before the native surface has been sized, that is a zero
+ * size, and the answer is the whole world. A screen whose camera is set once —
+ * the shared walk memory — therefore showed the globe on Android, while our own
+ * photo overlay, projected against the camera we had asked for, sat correctly
+ * in the middle of it. A centre and a zoom need no view size at all.
+ */
+export function toMapLibreZoom(zoom: number): number {
+  return zoom + Math.log2(TILE / MAPLIBRE_TILE);
+}
+
 /** A reported `log2(360 / visible longitude span)` → Web Mercator zoom. */
 export function fromViewportZoom(reportedZoom: number, width: number): number {
   return reportedZoom + Math.log2(Math.max(1, width) / TILE);

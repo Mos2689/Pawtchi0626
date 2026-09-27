@@ -23,6 +23,7 @@ import {
   type CommunityPack,
   type PackMember,
 } from '../../../lib/communityWalks';
+import { cacheKey, invalidate } from '../../../lib/communityCache';
 import { useAuth } from '../../../providers/AuthProvider';
 
 export default function PackSettingsScreen() {
@@ -43,8 +44,7 @@ export default function PackSettingsScreen() {
       setMembers(data.members);
       setMuted(data.members.find(member => member.user_id === user?.id)?.notifications_muted ?? false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Trail settings could not load.');
-    } finally {
+      setError(cause instanceof Error ? cause.message : 'Meetup settings could not load.');
     }
   }, [packId, user?.id]);
 
@@ -54,7 +54,10 @@ export default function PackSettingsScreen() {
   const updateMute = async (value: boolean) => {
     if (!packId) return;
     setMuted(value);
-    try { await setPackMuted(packId, value); }
+    // Unlike the mutations below, this one does not reload — so the snapshot the
+    // trail screen paints from still holds the old preference. Removing and
+    // transferring both call `load()`, which refetches and leaves it correct.
+    try { await setPackMuted(packId, value); invalidate(cacheKey.pack(packId)); }
     catch (cause) { setMuted(!value); setError(cause instanceof Error ? cause.message : 'That preference could not be saved.'); }
   };
 
@@ -85,19 +88,21 @@ export default function PackSettingsScreen() {
   };
 
   const confirmLeave = () => {
-    Alert.alert(`Leave ${pack?.name ?? 'this trail'}?`, 'You lose access to its archive and future plans immediately.', [
+    Alert.alert(`Leave ${pack?.name ?? 'this meetup'}?`, 'You lose access to its archive and future plans immediately.', [
       { text: 'Stay', style: 'cancel' },
       { text: 'Leave', style: 'destructive', onPress: async () => {
         setBusy(true);
-        try { await leavePack(packId!); router.replace('/(tabs)/community' as never); }
-        catch (cause) { setError(cause instanceof Error ? cause.message : 'You could not leave this trail.'); setBusy(false); }
+        // The trail is gone from every list that shows it, and Home is one
+        // back-press away with a snapshot that still has it.
+        try { await leavePack(packId!); invalidate(cacheKey.packs()); router.replace('/(tabs)/community' as never); }
+        catch (cause) { setError(cause instanceof Error ? cause.message : 'You could not leave this meetup.'); setBusy(false); }
       } },
     ]);
   };
 
   const confirmBlock = (member: PackMember) => {
     const name = member.person?.full_name || member.person?.username || 'this person';
-    const consequence = isOwner ? 'They will also be removed from this trail.' : 'You will also leave this trail so neither of you keeps shared access.';
+    const consequence = isOwner ? 'They will also be removed from this meetup.' : 'You will also leave this meetup so neither of you keeps shared access.';
     Alert.alert(`Block and report ${name}?`, consequence, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Block & report', style: 'destructive', onPress: async () => {
@@ -120,12 +125,12 @@ export default function PackSettingsScreen() {
 
   return (
     <SafeAreaView style={communityScreenStyles.screen}>
-      <CommunityHeader eyebrow="Private trail" title="Trail settings" subtitle={pack?.name} onBack={() => router.back()} />
+      <CommunityHeader eyebrow="Private meetup" title="Meetup settings" subtitle={pack?.name} onBack={() => router.back()} />
       <ScrollView contentContainerStyle={communityScreenStyles.scroll}>
         <CommunityCard style={styles.preference}>
           <View style={styles.preferenceIcon}><Ionicons name="notifications-off-outline" size={21} color={color.electric} /></View>
           <View style={styles.flex}>
-            <Text style={styles.preferenceTitle}>Mute this trail</Text>
+            <Text style={styles.preferenceTitle}>Mute this meetup</Text>
             <Text style={styles.preferenceBody}>Keep access without outing reminders or media updates. Invitations and essential account notices still arrive.</Text>
           </View>
           <Switch value={muted} onValueChange={value => void updateMute(value)} trackColor={{ false: color.track, true: color.electric }} thumbColor={color.surface} />

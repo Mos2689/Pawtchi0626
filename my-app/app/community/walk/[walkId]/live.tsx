@@ -1,5 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert, AppState, Pressable, StyleSheet, Text, View,
+  type AppStateStatus, type LayoutChangeEvent, type StyleProp, type TextStyle,
+} from 'react-native';
 import { useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -23,7 +26,7 @@ import WalkMap from '../../../../components/walk/WalkMap';
 import { DogAvatar, DogStack, partyColors } from '../../../../components/community/CommunityUI';
 import { haversineMeters } from '../../../../lib/walk/geo';
 import { color, font, makeShadow, radius, space, type } from '../../../../constants/design';
-import { cacheKey, readSnapshot } from '../../../../lib/communityCache';
+import { cacheKey, invalidate, readSnapshot } from '../../../../lib/communityCache';
 import {
   closeOuting,
   listLiveParties,
@@ -31,12 +34,20 @@ import {
   type CommunityPack,
   type CommunityWalk,
   type LiveParty,
+  isTrailHost,
   type OutingSnapshot,
   type WalkAttendance,
 } from '../../../../lib/communityWalks';
 import { WalkCamera } from '../../../../components/walk/WalkCamera';
 import { KeepsakeMapOverlay, type KeepsakeMapPin } from '../../../../components/walk/KeepsakeMapOverlay';
-import { liveMomentCount, momentPinsFrom } from '../../../../lib/community/liveMoments';
+import {
+  liveMomentCount,
+  momentPinsFrom,
+  publishedPinsFrom,
+  type PublishedMoment,
+} from '../../../../lib/community/liveMoments';
+import { spreadMarkers } from '../../../../lib/community/spreadMarkers';
+import { communityMediaUrls } from '../../../../lib/communityMedia';
 import { WALK_CAMERA_ENABLED } from '../../../../constants/features';
 import { useRecorderHandle } from '../../../../lib/walk/recorderHandle';
 import { fitCamera, projectPoint, type MapCamera } from '../../../../lib/walk/mapCamera';
@@ -45,6 +56,35 @@ import { useWalkStore } from '../../../../store/useWalkStore';
 import { useAuth } from '../../../../providers/AuthProvider';
 
 const LIVE_FOR_MS = 2 * 60_000;
+
+/**
+ * How long realtime events are gathered before the screen reloads.
+ *
+ * Long enough that a pack setting off together — everyone's attendance moving
+ * to `walking` within a second or two — costs one reload instead of one each.
+ * Short enough that a photo somebody just shared is on the map before they have
+ * finished putting their phone away.
+ */
+const REALTIME_COALESCE_MS = 500;
+
+/**
+ * A ceiling on other people's photos.
+ *
+ * The map can meaningfully show a few dozen pins; past that they overlap into a
+ * smear, and each one costs a signed URL and a thumbnail. Newest first, because
+ * a pin that appeared thirty seconds ago is the one somebody is looking for.
+ * The full set is always in the shared memory afterwards.
+ */
+const LIVE_MOMENT_LIMIT = 60;
+
+/**
+ * How far apart two walkers' markers must sit on screen, in px.
+ *
+ * Sized for the label, not the avatar: the 50 px faces clear each other well
+ * before their name chips do, and two chips overlapping read as one garbled
+ * name. 84 px clears a typical "Name · 1m" chip either side.
+ */
+const MARKER_SEPARATION = 84;
 
 /** How tall the foldable block is when open. Fixed content, so a fixed number. */
 const FOLD_HEIGHT = 100;
@@ -94,6 +134,29 @@ function freshness(iso: string, now: number): { label: string; stale: boolean } 
   return { label: `${minutes}m ago`, stale: age > LIVE_FOR_MS };
 }
 
+/**
+ * The one thing on this screen that has to move every second.
+ *
+ * Its own component, with its own interval, so the 1 Hz re-render is confined
+ * to this Text and cannot reach the map. The parent used to hold that timer
+ * and re-rendered everything it owns to advance these characters.
+ *
+ * `startedAt` is a string rather than a computed elapsed value on purpose:
+ * passing the number down would put the tick back in the parent, which is the
+ * whole thing being avoided.
+ */
+function ElapsedClock({
+  startedAt,
+  style,
+}: { startedAt: string | null; style: StyleProp<TextStyle> }) {
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <Text style={style}>{elapsedSince(startedAt, tick)}</Text>;
+}
+
 function elapsedSince(value: string | null, now: number): string {
   if (!value) return '00:00';
   const seconds = Math.max(0, Math.floor((now - Date.parse(value)) / 1000));
@@ -129,7 +192,13 @@ export default function CommunityLiveScreen() {
   const [pack, setPack] = useState<CommunityPack | null>(cached?.pack ?? null);
   const [attendance, setAttendance] = useState<WalkAttendance[]>(cached?.attendance ?? []);
   const [parties, setParties] = useState<LiveParty[]>([]);
-  const [momentCount, setMomentCount] = useState(0);
+  /**
+   * Photos the REST of the pack has shared on this walk, already published.
+   *
+   * Only theirs — this phone's own are read from the recorder's drafts, which
+   * exist from the instant the shutter fires rather than after an upload.
+   */
+  const [othersMoments, setOthersMoments] = useState<PublishedMoment[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapSize, setMapSize] = useState({ width: 0, height: 0 });
   const [reportedCamera, setReportedCamera] = useState<MapCamera | null>(null);
@@ -152,31 +221,78 @@ export default function CommunityLiveScreen() {
   const fold = useSharedValue(FOLD_HEIGHT);
   const foldAtGrab = useSharedValue(FOLD_HEIGHT);
 
+  /** One row of the others' shared-media read, as the query selects it. */
+  type OthersRow = {
+    id: string;
+    display_path: string | null;
+    capture_lat: number | null;
+    capture_lng: number | null;
+  };
+
+  /**
+   * Turn those rows into pins, minting signed URLs for the ones with an image.
+   *
+   * The URLs are fetched in one batch and the rows are set regardless of
+   * whether that succeeds: a pin with no thumbnail still says a moment
+   * happened there, and a private bucket that is slow to sign should not make
+   * other people's photos vanish from the map.
+   */
+  const applyOthersMoments = useCallback(async (rows: OthersRow[]) => {
+    const paths = rows.flatMap(row => (row.display_path ? [row.display_path] : []));
+    let urls: Record<string, string> = {};
+    if (paths.length) {
+      try {
+        urls = await communityMediaUrls(paths);
+      } catch {
+        // Pins without pictures, rather than no pins.
+      }
+    }
+    setOthersMoments(rows.map(row => ({
+      id: row.id,
+      lat: row.capture_lat,
+      lng: row.capture_lng,
+      uri: row.display_path ? urls[row.display_path] ?? null : null,
+    })));
+  }, []);
+
   const load = useCallback(async () => {
     if (!walkId) return;
     try {
+      // Other people's photos — the rows, not just a count, because they are
+      // pinned on the map now that a photo reaches the pack as it is taken.
+      //
+      // `neq(contributor_id)` is load-bearing: this phone's own photos are in
+      // this table WHILE its drafts are still in the recorder, so counting
+      // both would count each of them twice and the number would climb as the
+      // uploads landed. Mine come from the drafts, which are instant anyway.
       const [outing, live, moments] = await Promise.all([
         loadOuting(walkId),
         listLiveParties(walkId),
         supabase
           .from('community_shared_media')
-          .select('id', { count: 'exact', head: true })
+          .select('id, display_path, capture_lat, capture_lng')
           .eq('walk_id', walkId)
-          .is('removed_at', null),
+          .is('removed_at', null)
+          .neq('contributor_id', user?.id ?? '')
+          // Newest first so the cap keeps the most recent pins, then reversed
+          // below so the map draws them in the order they happened.
+          .order('captured_at', { ascending: false })
+          .limit(LIVE_MOMENT_LIMIT),
       ]);
       if (moments.error) throw new Error(moments.error.message);
       setWalk(outing.walk);
       setPack(outing.pack);
       setAttendance(outing.attendance);
       setParties(live);
-      setMomentCount(moments.count ?? 0);
+      await applyOthersMoments(((moments.data ?? []) as OthersRow[]).slice().reverse());
       setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The shared map could not update.');
-    } finally {
     }
-  }, [user?.id, walkId]);
+    // `applyOthersMoments` is a `useCallback(…, [])`, so naming it here costs
+    // nothing and keeps this list honest.
+  }, [applyOthersMoments, user?.id, walkId]);
 
   /**
    * Just the moving dots. Deliberately not `load()`.
@@ -188,21 +304,145 @@ export default function CommunityLiveScreen() {
    * entire roster query, profiles and pets included, roughly once a second: the
    * map stuttered because it was rebuilding the guest list to move a dot.
    */
+  /**
+   * One position read at a time, plus at most one trailing read.
+   *
+   * Every walker's ping arrives as its own event, and each used to start its
+   * own read with nothing stopping them overlapping. On a slow connection two
+   * could be in flight at once and land out of order, briefly putting a dot
+   * back where it was. Now a ping that arrives mid-read only marks the read as
+   * stale; when it finishes, exactly one more read runs and picks up everything
+   * that changed meanwhile. Reads never overlap, so they cannot land out of
+   * order, and a burst of pings costs two reads rather than one each.
+   */
+  const partiesInFlight = useRef(false);
+  const partiesStale = useRef(false);
   const refreshParties = useCallback(async () => {
     if (!walkId) return;
+    if (partiesInFlight.current) {
+      partiesStale.current = true;
+      return;
+    }
+    partiesInFlight.current = true;
     try {
-      const live = await listLiveParties(walkId);
-      setParties(live);
-      setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
-    } catch {
-      // The existing positions stay on the map and age out on their own.
+      do {
+        partiesStale.current = false;
+        try {
+          const live = await listLiveParties(walkId);
+          setParties(live);
+          setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
+        } catch {
+          // The existing positions stay on the map and age out on their own.
+        }
+      } while (partiesStale.current);
+    } finally {
+      partiesInFlight.current = false;
     }
   }, [user?.id, walkId]);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
+  /**
+   * The subscriptions' door into `load`, with a window on it.
+   *
+   * ── The multiplication this stops ─────────────────────────────────────────
+   *
+   * Three of the four subscriptions below used to call `load()` the moment an
+   * event arrived. Attendance rows move through join → checked_in → walking →
+   * finished, so a six-person walk produces roughly two dozen of those plus one
+   * per shared photo — and every event is broadcast to every phone watching.
+   * Six people generating fifty events is three hundred full reloads across the
+   * pack, and they arrive in bursts, because a pack sets off together.
+   *
+   * `load` is three queries and, before the URL cache, a re-sign of every
+   * photo on the map. It is not something to run on each row that changes.
+   *
+   * ── Why a leading schedule rather than a true debounce ────────────────────
+   *
+   * A debounce that resets its timer on every event can starve: while the pack
+   * is setting off, events land continuously and the reload keeps being pushed
+   * into the future. This schedules on the FIRST event and absorbs the rest, so
+   * a burst always resolves within the window and never later than it.
+   *
+   * `refreshParties` deliberately does NOT go through here. It is one small
+   * query, it is what moves the dots, and delaying it would be visible.
+   */
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReload = useCallback(() => {
+    if (reloadTimer.current) return;
+    reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = null;
+      // Through the ref, so a reload scheduled just before the pet or walk
+      // changed does not fire the closure that belonged to the old one.
+      void loadRef.current();
+    }, REALTIME_COALESCE_MS);
+  }, []);
+  useEffect(() => () => {
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
+  }, []);
+
+  /**
+   * Catch up on anything missed while the app was in the background.
+   *
+   * ── The gap this closes ──────────────────────────────────────────────────
+   *
+   * This screen learns what changed on the walk — photos, the roster, the
+   * walk's own state — from realtime events. But Supabase Realtime does not
+   * replay events that arrive while the socket is down, and a pocketed phone is
+   * exactly when it goes down. Nor does `useFocusEffect` help: coming back to
+   * the app does not change navigation focus, because this screen never lost it.
+   *
+   * So a phone that had been in a pocket came back to a stale screen: photos
+   * shared in the meantime missing, the roster out of date. (Following the
+   * host's close has its own foreground check, in TrailRecording.)
+   *
+   * On return to the foreground this goes through the same door as a realtime
+   * event: `scheduleReload`, and therefore the same debounce. If the socket
+   * reconnects and replays nothing, this is the only thing that notices; if
+   * events do arrive at the same moment, the window collapses them into one load.
+   *
+   * Fires on any return to `active` from `background` or `inactive`. That
+   * includes brief interruptions — pulling down the notification shade on iOS
+   * passes through `inactive` — which cost one debounced reload each. Cheap, and
+   * not worth distinguishing: a brief `inactive` can still drop the socket. The
+   * `previous` check only stops repeated `active` events from reloading again.
+   * `scheduleReload` is stable, so this subscribes exactly once per mount.
+   */
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    let previous: AppStateStatus = AppState.currentState;
+    const subscription = AppState.addEventListener('change', next => {
+      if (next === 'active' && previous !== 'active') scheduleReload();
+      previous = next;
+    });
+    return () => subscription.remove();
+  }, [scheduleReload]);
+
+  // Following the host's close — finishing this phone's leg and opening the
+  // memory — lives in TrailRecording now, so it works from any screen, not
+  // only while this one is open. See components/walk/TrailRecording.tsx.
+
+  /**
+   * The coarse clock. Fifteen seconds, not one.
+   *
+   * It used to tick every second, and every tick re-rendered this entire
+   * screen — the map, the roster, the stats shelf, the sheet — to advance one
+   * line of text. `staleClock` below already bucketed the expensive
+   * consequence (a new `parties` identity rebuilt every native polyline), but
+   * the render itself still happened sixty times a minute while somebody was
+   * trying to look at a map.
+   *
+   * Everything reading `now` at this cadence is a judgement in tens of
+   * seconds: who has gone quiet (two minutes), and a freshness label whose
+   * finest grain is "now" for anything under thirty seconds. Fifteen seconds
+   * resolves all of it.
+   *
+   * The one thing that genuinely needs a second is the elapsed timer, and it
+   * now owns its own interval — see ElapsedClock.
+   */
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 15_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -213,11 +453,17 @@ export default function CommunityLiveScreen() {
       // Positions move; rosters do not. Only the other two tables change
       // anything this screen would have to re-derive.
       .on('postgres_changes', { event: '*', schema: 'public', table: 'community_live_locations', filter: `walk_id=eq.${walkId}` }, () => { void refreshParties(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_walk_attendance', filter: `walk_id=eq.${walkId}` }, () => { void load(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_shared_media', filter: `walk_id=eq.${walkId}` }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_walk_attendance', filter: `walk_id=eq.${walkId}` }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_shared_media', filter: `walk_id=eq.${walkId}` }, scheduleReload)
+      // The walk itself. Added when the host became the only person who can
+      // end it: without this a member's phone never learned the walk was over
+      // and kept recording into a trail that had closed.
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'community_walks', filter: `id=eq.${walkId}` }, scheduleReload)
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [load, refreshParties, walkId]);
+    // `scheduleReload` is stable where `load` was not, so the channel is no
+    // longer torn down and re-subscribed every time `load`'s identity changes.
+  }, [refreshParties, scheduleReload, walkId]);
 
   /**
    * A coarse clock, for deciding who has gone quiet.
@@ -362,13 +608,29 @@ export default function CommunityLiveScreen() {
   const viewCamera = reportedCamera ?? fittedCamera;
   const placedParties = useMemo(() => {
     if (!viewCamera || !mapSize.width || !mapSize.height) return [];
-    return mappedParties.map(party => {
-      const person = attendance.find(row => row.user_id === party.user_id);
-      return {
-        party,
-        person,
-        at: projectPoint({ lat: party.lat, lng: party.lng }, viewCamera, mapSize.width, mapSize.height),
-      };
+    const projected = mappedParties.map(party => ({
+      party,
+      person: attendance.find(row => row.user_id === party.user_id),
+      at: projectPoint({ lat: party.lat, lng: party.lng }, viewCamera, mapSize.width, mapSize.height),
+    }));
+    // People walking together are a metre or two apart — far closer than a
+    // marker is wide at any zoom a street map can show — so without this they
+    // render as one stacked face. Overlapping markers are fanned out around
+    // where they really are; `anchor` keeps that true spot for the small dot
+    // drawn under each moved avatar. See lib/community/spreadMarkers.ts.
+    const spread = spreadMarkers(
+      projected.map(item => ({ id: item.party.user_id, x: item.at.x, y: item.at.y })),
+      MARKER_SEPARATION,
+    );
+    const byId = new Map(spread.map(point => [point.id, point]));
+    return projected.flatMap(item => {
+      const placed = byId.get(item.party.user_id);
+      if (!placed) return [];
+      return [{
+        ...item,
+        at: { x: placed.x, y: placed.y },
+        anchor: placed.displaced ? placed.anchor : null,
+      }];
     });
   }, [attendance, mapSize.height, mapSize.width, mappedParties, viewCamera]);
 
@@ -440,19 +702,26 @@ export default function CommunityLiveScreen() {
    * the map, and a personal-only photo is not a moment this pack is part of.
    */
   const momentPins = useMemo<KeepsakeMapPin[]>(
-    () => momentPinsFrom(recorder?.captures ?? []),
-    [recorder?.captures],
+    () => [
+      // Everyone else's, already published — they now arrive during the walk
+      // rather than after it, which is the whole point of pinning them here.
+      ...publishedPinsFrom(othersMoments),
+      // Mine, straight from the recorder's drafts: on the map the instant the
+      // shutter fires, without waiting for an upload to come back.
+      ...momentPinsFrom(recorder?.captures ?? []),
+    ],
+    [othersMoments, recorder?.captures],
   );
 
   /**
-   * What the sheet counts.
+   * What the sheet counts: the pack's photos plus this phone's.
    *
-   * The published rows plus this phone's un-uploaded ones. During a walk the
-   * first number is nearly always zero — `community_shared_media` is written at
-   * the end — so without the second the counter sat on nought no matter how
-   * many photos were taken.
+   * The two halves are kept separate deliberately — see `liveMomentCount`.
+   * Now that a photo publishes as it is taken, this phone's own appear in BOTH
+   * the table and the drafts, and counting the table wholesale would count
+   * every one of them twice.
    */
-  const momentTotal = liveMomentCount(momentCount, recorder?.captures ?? []);
+  const momentTotal = liveMomentCount(othersMoments.length, recorder?.captures ?? []);
 
   /**
    * How wide the unrolled detail is.
@@ -467,7 +736,8 @@ export default function CommunityLiveScreen() {
     ? `${walking.length} walking · ${dogCount} ${dogCount === 1 ? 'dog' : 'dogs'}`
     : `Just you · ${dogCount} ${dogCount === 1 ? 'dog' : 'dogs'}`;
 
-  const isHost = !!walk && walk.organizer_id === user?.id;
+  // The trail's owner, not this walk's organiser — see isTrailHost.
+  const isHost = isTrailHost(pack, user?.id);
 
   /**
    * Capture a moment without leaving the walk.
@@ -492,22 +762,41 @@ export default function CommunityLiveScreen() {
     );
   };
 
-  /** Ends this phone's recording. Never anyone else's. */
+  /** Ends this phone's recording, and — for the host only — the walk itself. */
   const finishMine = async (alsoCloseShared: boolean) => {
     setFinishing(true);
     try {
       if (alsoCloseShared && walkId) {
-        // Closing the shared walk does not stop anybody's recorder — it marks
-        // the outing over so the memory can be built. Whoever is still out
-        // keeps walking and finishes in their own time.
+        // Closing the shared walk now DOES end everyone's: each member's phone
+        // sees the state change and finishes its own recording, saving and
+        // linking it exactly as a manual finish would. Nobody loses a metre of
+        // what they walked; they lose the choice of when to stop.
         try {
           await closeOuting(walkId);
+          // The walk screen skips its refetch inside the freshness window, and
+          // its snapshot still says `active`. Without this, a host who ends a
+          // walk and steps back within that window is offered "Join the walk"
+          // on a walk they just closed.
+          invalidate(cacheKey.outing(walkId));
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : 'The walk could not be closed for everyone.');
         }
       }
       if (walkPhase === 'tracking' || walkPhase === 'starting') await endWalk('manual');
-      router.back();
+      /**
+       * A finished walk ends on its memory, never on the trail's list.
+       *
+       * This was `router.back()`, and it broke when the solo recorder stopped
+       * mounting underneath: `/walk` used to be the screen behind this one, so
+       * going back landed on its summary, which then forwarded to the memory.
+       * With that screen gone, "back" meant the trail page — the walk simply
+       * ended and dropped you on a list, with nothing to show for it.
+       *
+       * `replace`, so the live map is not still on the stack behind a walk that
+       * is over. `finished=1` tells the memory screen this is the first time
+       * anyone has seen it, which is the moment worth marking.
+       */
+      router.replace(`/community/walk/${walkId}/memory?finished=1` as never);
     } finally {
       setFinishing(false);
     }
@@ -515,7 +804,13 @@ export default function CommunityLiveScreen() {
 
   const finish = () => {
     if (finishing) return;
+    // Nothing recording on this phone: they are looking at somebody else's
+    // walk, or their own already-finished one. Leaving is just leaving.
     if (walkPhase !== 'tracking' && walkPhase !== 'starting') {
+      if (walk?.state === 'completed' && walkId) {
+        router.replace(`/community/walk/${walkId}/memory` as never);
+        return;
+      }
       router.back();
       return;
     }
@@ -524,7 +819,7 @@ export default function CommunityLiveScreen() {
     if (isHost) {
       Alert.alert(
         'Finish your walk?',
-        'You can end just your own recording, or close the walk for the whole pack. Closing it does not stop anyone else’s recording.',
+        'You can end just your own recording, or close the walk for the whole pack. Closing it finishes everyone’s recording and saves what they walked.',
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Just mine', onPress: () => { void finishMine(false); } },
@@ -556,7 +851,12 @@ export default function CommunityLiveScreen() {
         quiet
         interactive
         camera={viewCamera}
-        onCameraChange={setReportedCamera}
+        // Only a PERSON moving the map may take the camera over. MapLibre also
+        // reports its own startup position and every move we make; letting
+        // those through made the map's default view shadow the fitted one for
+        // good on Android. `info` is absent on iOS, which only ever reports
+        // gestures, so absent counts as a person.
+        onCameraChange={(next, info) => { if (info?.user !== false) setReportedCamera(next); }}
         style={StyleSheet.absoluteFillObject as any}
       />
 
@@ -601,15 +901,20 @@ export default function CommunityLiveScreen() {
               <Text style={styles.packTitle} numberOfLines={1}>{pack?.name ?? 'Shared walk'}</Text>
               <Text style={styles.packMeta} numberOfLines={1}>{partyLine}</Text>
             </View>
-            <Pressable
-              onPress={() => pack && router.push(`/community/${pack.id}/invite` as never)}
-              disabled={!pack}
-              style={({ pressed }) => [styles.inviteButton, pressed && styles.pressed, !pack && styles.disabled]}
-              accessibilityRole="button"
-              accessibilityLabel="Invite someone to this trail"
-            >
-              <Text style={styles.inviteButtonText}>Invite</Text>
-            </Pressable>
+            {/* Host only. Bringing someone into a trail is the host's call,
+                and a button that opens a screen the database will refuse is
+                worse than no button. */}
+            {isHost ? (
+              <Pressable
+                onPress={() => pack && router.push(`/community/${pack.id}/invite` as never)}
+                disabled={!pack}
+                style={({ pressed }) => [styles.inviteButton, pressed && styles.pressed, !pack && styles.disabled]}
+                accessibilityRole="button"
+                accessibilityLabel="Invite someone to this meetup"
+              >
+                <Text style={styles.inviteButtonText}>Invite</Text>
+              </Pressable>
+            ) : null}
           </Animated.View>
         ) : null}
       </Animated.View>
@@ -625,6 +930,16 @@ export default function CommunityLiveScreen() {
       />
 
       <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        {/* Where fanned-out walkers really are. Drawn first so the avatars sit
+            above them. Small, in the walker's own colour, so the map stays
+            truthful about position even when a face has been moved aside. */}
+        {placedParties.map(({ party, anchor }) => (anchor ? (
+          <View
+            key={`anchor-${party.user_id}`}
+            pointerEvents="none"
+            style={[styles.partyAnchor, { left: anchor.x - 4, top: anchor.y - 4, backgroundColor: colorFor(party.user_id) }]}
+          />
+        ) : null))}
         {placedParties.map(({ party, person, at }) => {
           const dog = person?.dogs?.[0] ?? {
             id: party.user_id,
@@ -657,6 +972,7 @@ export default function CommunityLiveScreen() {
       </View>
 
       {error ? <View style={[styles.errorChip, { top: insets.top + 190 }]}><Text style={styles.errorText}>{error}</Text></View> : null}
+
 
       {/* ── The sheet ────────────────────────────────────────────────────────
           Collapsible, and the split is what makes it worth collapsing: the
@@ -703,7 +1019,7 @@ export default function CommunityLiveScreen() {
 
           <View style={styles.statsRow}>
             <View style={styles.statCell}>
-              <Text style={styles.statValue}>{elapsedSince(walk?.started_at ?? null, now)}</Text>
+              <ElapsedClock startedAt={walk?.started_at ?? null} style={styles.statValue} />
               <Text style={styles.statLabel}>TOGETHER</Text>
             </View>
             <View style={[styles.statCell, styles.statCellRuled]}>
@@ -738,7 +1054,10 @@ export default function CommunityLiveScreen() {
             <Ionicons name="camera-outline" size={20} color={color.cream} />
           </Pressable>
           <Pressable
-            onPress={() => setReportedCamera(fittedCamera)}
+            // Clearing, not copying: `fittedCamera` re-fits around everyone as
+            // they move, and handing control back to it resumes following the
+            // group. Copying it in froze the view at this one moment instead.
+            onPress={() => setReportedCamera(null)}
             disabled={!fittedCamera}
             style={({ pressed }) => [styles.squareButton, pressed && styles.pressed, !fittedCamera && styles.disabled]}
             accessibilityRole="button"
@@ -810,11 +1129,14 @@ const styles = StyleSheet.create({
   },
   inviteButtonText: { fontFamily: font.bold, fontSize: 12.5, color: color.navy },
   partyMarker: { position: 'absolute', zIndex: 6, width: 50, height: 50, alignItems: 'center' },
+  partyAnchor: { position: 'absolute', zIndex: 5, width: 8, height: 8, borderRadius: 4, borderWidth: 1.5, borderColor: color.surface },
   markerLabel: { position: 'absolute', top: 42, maxWidth: 132, paddingHorizontal: 8, minHeight: 22, borderRadius: radius.pill, backgroundColor: color.navy, alignItems: 'center', justifyContent: 'center' },
   markerLabelSelected: { backgroundColor: '#031A22' },
   markerLabelText: { fontFamily: font.bold, fontSize: 8.5, color: color.surface },
   errorChip: { position: 'absolute', zIndex: 9, left: space.xl, right: space.xl, padding: space.sm, borderRadius: radius.md, backgroundColor: color.errorSoft },
   errorText: { ...type.label, color: color.error, textAlign: 'center' },
+  // Same geometry as the error chip, deliberately not the same colour: a walk
+  // that ended exactly as designed must not be painted in the error tone.
   // Edge to edge and anchored to the bottom, so the sheet reads as the floor
   // of the screen rather than as a card floating above it.
   controls: {

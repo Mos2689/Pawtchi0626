@@ -13,6 +13,9 @@ import { usePawPrintStore } from '../store/usePawPrintStore';
 import { usePetStore } from '../store/usePetStore';
 import { invalidateAskCache } from '../lib/askVet';
 import { clearCommunityCache } from '../lib/communityCache';
+import { clearConnectSnapshot } from '../lib/community/connectSnapshot';
+import { clearCommunityMediaUrls } from '../lib/communityMedia';
+import { resetKnownUsername } from '../lib/communityWalks';
 import { resetSessionUser } from '../lib/sessionUser';
 import { clearProOfferCache } from '../lib/proOffer/client';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
@@ -56,7 +59,17 @@ function clearAllUserState(): void {
   // Another owner's private pack is exactly the leak this function exists to
   // close, and the memoised user id below is what would make it look current.
   try { clearCommunityCache(); } catch {}
+  // …and the copy of it kept on the phone for cold starts. Disk this time, so
+  // it would otherwise survive into the next account's first frame.
+  try { clearConnectSnapshot(); } catch {}
+  // Signed URLs to another owner's pack photos, held so `expo-image` stops
+  // re-downloading them. Scoped to one object each and short-lived, but they
+  // point at a previous account's pictures and belong with its other state.
+  try { clearCommunityMediaUrls(); } catch {}
   try { resetSessionUser(); } catch {}
+  // The viewer's own handle is memoised beside the trails list. Left behind it
+  // would answer for the NEXT person to sign in on this device.
+  try { resetKnownUsername(); } catch {}
   // Cached win-back grants, keyed per user on disk. Left behind, the next
   // account on this device could be shown a discount belonging to the previous
   // one — the runtimeItems leak above, with a price attached. Async and

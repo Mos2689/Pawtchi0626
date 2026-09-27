@@ -40,7 +40,7 @@ export function WaitingPill({
       onPress={onPress}
       style={({ pressed }) => [styles.pill, pressed && styles.pressed]}
       accessibilityRole="button"
-      accessibilityLabel={`${count} ${count === 1 ? 'thing is' : 'things are'} waiting on you. Open your trails.`}
+      accessibilityLabel={`${count} ${count === 1 ? 'thing is' : 'things are'} waiting on you. Open your meetups.`}
     >
       <Ionicons name="notifications-outline" size={16} color={color.yellow} />
       <Text style={styles.text} numberOfLines={1}>

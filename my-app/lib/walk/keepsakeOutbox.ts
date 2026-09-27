@@ -65,6 +65,20 @@ export const OUTBOX_MAX_ENTRIES = 100;
 export interface KeepsakeOutboxEntry {
   /** Client-side id. Dedupes a re-enqueue of an entry already in the queue. */
   id: string;
+  /**
+   * The id the `walk_media` ROW will take — distinct from `id` above, which
+   * names this queue entry.
+   *
+   * Two different things that both look like ids, so: `id` exists only while
+   * the entry is queued and is a local string, not a UUID. `mediaId` is the
+   * database row's primary key, chosen at the shutter because a Trail photo is
+   * published to the pack before this row can be written at all.
+   *
+   * Optional, because entries written by an earlier build do not have one.
+   * Those fall back to the server default, exactly as they did before — see
+   * the drain below.
+   */
+  mediaId?: string;
   ownerId: string;
   petId: string;
   walkSessionId: string;
@@ -214,6 +228,11 @@ export async function drainOutbox(ports: OutboxPorts): Promise<DrainResult> {
 
   for (const entry of queued) {
     const stored = await insert({
+      // Absent on entries queued by a build that predates this field. The
+      // insert then falls back to the server default, which is what those
+      // entries always expected — a retry must never fail because it was
+      // written by yesterday's app.
+      mediaId: entry.mediaId ?? null,
       ownerId: entry.ownerId,
       petId: entry.petId,
       walkSessionId: entry.walkSessionId,

@@ -37,15 +37,30 @@ import { routeTransform } from './routeSvg';
 import type { WalkSessionState } from './walkSession';
 import {
   ENDS_AT_HOME,
-  LIVE_EYEBROW,
   SEE_THE_MAP,
+  SEE_THE_TRAIL,
   WALK_STATUS_COPY,
   WAITING_FOR_SIGNAL,
   finishedEyebrow,
   finishedSummary,
   finishedTitle,
+  liveEyebrow,
   startingTitle,
 } from './liveCopy';
+import { APP_SCHEME } from '../email/links';
+
+/**
+ * `pawtchi://` — the scheme Expo Router resolves natively, and the same one the
+ * emailed click endpoint redirects to.
+ *
+ * Route builders below append a LEADING SLASH to this, giving
+ * `pawtchi:///community/walk/…`. The third slash is load-bearing: it makes the
+ * route a path rather than a host. `pawtchi://community/walk/…` parses with
+ * "community" as the hostname, which `routeForUrl` in notifications/deepLink.ts
+ * then has to detect and undo. The legacy `pawtchi://walk-story?id=` below is
+ * the host form and is left alone — trays and cards already carry it.
+ */
+const APP_URL_PREFIX = `${APP_SCHEME}://`;
 
 /**
  * Points kept for the widget's trace. The route well is 104×88pt; past a few
@@ -184,10 +199,25 @@ function project(
   return { route, head: head ? toUnit(head) : null, sniffs };
 }
 
+/**
+ * The Trail a live card belongs to, when it belongs to one.
+ *
+ * Structurally the subset of `ActiveWalkTrail` the card actually renders — the
+ * name to show and the walk to open. Not imported from walkTracker on purpose:
+ * this module is pure and knows nothing about AsyncStorage or the OS, which is
+ * what lets its whole surface be tested from synthetic sessions.
+ */
+export interface LiveTrail {
+  walkId: string;
+  packName: string;
+}
+
 export interface BuildInput {
   petName: string;
   startedAt: number;
   session: WalkSessionState | null;
+  /** Present ⇒ a Trail walk: the card names the pack and opens the shared map. */
+  trail?: LiveTrail | null;
   /** For the lost-signal check. Defaults to now. */
   now?: number;
 }
@@ -197,6 +227,7 @@ export function buildLiveWalkContent({
   petName,
   startedAt,
   session,
+  trail,
   now = Date.now(),
 }: BuildInput): LiveWalkContent {
   // Same bar the walk screen uses for its "Finding GPS" state.
@@ -226,7 +257,7 @@ export function buildLiveWalkContent({
       : { route: [], head: null, sniffs: [] };
 
   return {
-    eyebrow: LIVE_EYEBROW[state],
+    eyebrow: liveEyebrow(state, trail?.packName),
     title: state === 'starting' ? startingTitle(petName) : petName,
     subtitle: state === 'starting' ? WALK_STATUS_COPY.acquiring : '',
     startedAt,
@@ -238,9 +269,28 @@ export function buildLiveWalkContent({
     state,
     ...geometry,
     ctaLabel: '',
-    ctaUrl: '',
+    // ── Where tapping the card goes, while the walk is still running ───────
+    //
+    // Empty for a solo walk, which is what sends the Swift fallback to
+    // `pawtchi://walk` — the recorder, correctly.
+    //
+    // A Trail walk has to override that, and this is the whole of the "it
+    // routes to the individual walk screen" bug: the shared map IS the walk,
+    // and landing on the solo recorder underneath it shows a walker their own
+    // line with the pack missing.
+    ctaUrl: trail ? liveTrailUrl(trail.walkId) : '',
     staleAfterMs: STALE_AFTER_MS,
   };
+}
+
+/** The shared map for a Trail walk in progress. */
+export function liveTrailUrl(communityWalkId: string): string {
+  return `${APP_URL_PREFIX}/community/walk/${communityWalkId}/live`;
+}
+
+/** That Trail's shared memory, once the walk is over. */
+export function trailMemoryUrl(communityWalkId: string): string {
+  return `${APP_URL_PREFIX}/community/walk/${communityWalkId}/memory`;
 }
 
 export interface FinalInput {
@@ -263,6 +313,16 @@ export interface FinalInput {
   saved: boolean;
   /** Walk session id, for the "See the map" deep link. */
   walkSessionId: string;
+  /**
+   * Present ⇒ the wrap-up opens the Trail's shared memory instead.
+   *
+   * Deliberately NOT gated on `saved`, unlike the solo link. That flag means
+   * "this device's walk reached the server", and the shared memory exists
+   * regardless — everyone else's traces are already on it. A walker whose own
+   * upload is still queued should still be able to go and look at the walk
+   * they were just on.
+   */
+  trail?: LiveTrail | null;
 }
 
 /**
@@ -281,13 +341,14 @@ export function finalContent({
   durationMs,
   saved,
   walkSessionId,
+  trail,
 }: FinalInput): LiveWalkContent {
   const km = distanceKm !== undefined ? round(distanceKm) : previous.distanceKm;
   const sniffs = sniffCount !== undefined ? sniffCount : previous.sniffCount;
 
   return {
     ...previous,
-    eyebrow: finishedEyebrow(saved),
+    eyebrow: finishedEyebrow(saved, trail?.packName),
     title: finishedTitle(durationMs ?? endedAt - previous.startedAt),
     subtitle: finishedSummary(km, sniffs),
     endedAt,
@@ -296,10 +357,16 @@ export function finalContent({
     endsAtHomeLabel: '',
     signalLostLabel: '',
     state: 'finished',
-    ctaLabel: SEE_THE_MAP,
-    // The saved walk's own map. Only offered once the row exists — a CTA that
-    // opens an empty screen is worse than no CTA.
-    ctaUrl: saved ? `pawtchi://walk-story?id=${walkSessionId}` : '',
+    ctaLabel: trail ? SEE_THE_TRAIL : SEE_THE_MAP,
+    // A Trail's shared memory exists whether or not THIS device finished
+    // uploading, so it is offered unconditionally. The solo walk's own map is
+    // not: it is only offered once the row exists, because a CTA that opens an
+    // empty screen is worse than no CTA.
+    ctaUrl: trail
+      ? trailMemoryUrl(trail.walkId)
+      : saved
+        ? `${APP_URL_PREFIX}walk-story?id=${walkSessionId}`
+        : '',
     staleAfterMs: STALE_AFTER_MS,
   };
 }

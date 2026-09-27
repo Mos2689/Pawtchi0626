@@ -30,7 +30,7 @@ export interface PantryItem {
     expiry_date?: string | null;
     is_favorite?: boolean;
 
-    // ── Provenance (migration 20260831000001) ──
+    // ── Provenance (migration 20260831142028) ──
     /**
      * The manufacturer's serving weight, for ANY unit — a pouch, can or cup
      * prints one just as a gram-measured food does. Authoritative when present,

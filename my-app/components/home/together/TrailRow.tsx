@@ -120,7 +120,11 @@ export const TrailRow = React.memo(function TrailRow({
           </Svg>
         ) : coverUrl ? (
           <Image
-            source={{ uri: coverUrl }}
+            // Keyed by the storage PATH, not the signed URL. Every signing mints
+            // a new URL for the same unchanging photo (paths are per media id),
+            // so keyed by URL the disk cache missed on every cold start and the
+            // cover re-downloaded. Keyed by path, a fresh signature is a hit.
+            source={{ uri: coverUrl, cacheKey: pack.coverPath ?? undefined }}
             style={styles.thumbFill}
             contentFit="cover"
             cachePolicy={TILE_CACHE}

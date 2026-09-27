@@ -12,6 +12,8 @@ import {
   ENDS_AT_HOME,
   LIVE_EYEBROW,
   SEE_THE_MAP,
+  SEE_THE_TRAIL,
+  TRAIL_NAME_CAP,
   WALK_STATUS_COPY,
   WAITING_FOR_SIGNAL,
 } from './liveCopy';
@@ -272,5 +274,153 @@ describe('shouldPushUpdate', () => {
   it('heartbeats so staleDate stays ahead of the clock when GPS goes quiet', () => {
     expect(shouldPushUpdate(base, base, START, START + HEARTBEAT_MS - 1)).toBe(false);
     expect(shouldPushUpdate(base, base, START, START + HEARTBEAT_MS)).toBe(true);
+  });
+});
+
+// ── Trail walks ────────────────────────────────────────────────────────────
+//
+// The separation the whole Trail/solo split rests on. Every assertion here has
+// a solo counterpart on purpose: the interesting property is not that a Trail
+// card says something, it is that a solo card still says the OLD thing.
+
+describe('a Trail walk', () => {
+  const trail = { walkId: 'outing-7', packName: 'Sunday run club' };
+
+  it('opens the shared map, not the solo recorder', () => {
+    const content = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+      trail,
+    });
+    expect(content.ctaUrl).toBe('pawtchi:///community/walk/outing-7/live');
+  });
+
+  it('leaves a solo walk with no url, so Swift falls back to the recorder', () => {
+    const content = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+    });
+    expect(content.ctaUrl).toBe('');
+  });
+
+  it('uses a path, never a host — three slashes', () => {
+    const content = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+      trail,
+    });
+    // `pawtchi://community/...` would parse "community" as the hostname and
+    // routeForUrl would have to unpick it. Assert the shape, not just the tail.
+    expect(content.ctaUrl.startsWith('pawtchi:///')).toBe(true);
+  });
+
+  it('names the pack in the eyebrow without losing the state', () => {
+    const content = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+      trail,
+    });
+    expect(content.eyebrow).toBe('WALKING · SUNDAY RUN CLUB');
+    // The state stays FIRST: it is the part that changes, and the part someone
+    // glancing at a Lock Screen is actually checking.
+    expect(content.eyebrow.startsWith(LIVE_EYEBROW.walking)).toBe(true);
+  });
+
+  it('still says only WALKING for a solo walk', () => {
+    const content = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+    });
+    expect(content.eyebrow).toBe(LIVE_EYEBROW.walking);
+  });
+
+  it('clips a long pack name rather than letting it push the state off', () => {
+    const content = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+      trail: { walkId: 'o', packName: 'Thursday morning beach crew' },
+    });
+    expect(content.eyebrow.length).toBeLessThanOrEqual(
+      LIVE_EYEBROW.walking.length + 3 + TRAIL_NAME_CAP + 1,
+    );
+    expect(content.eyebrow).toContain('…');
+    expect(content.eyebrow.startsWith('WALKING · THURSDAY')).toBe(true);
+  });
+
+  it('offers the shared memory even when this phone has not synced', () => {
+    const previous = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+      trail,
+    });
+    const final = finalContent({
+      previous,
+      endedAt: START + 900_000,
+      // The walk is sitting in the offline queue. The shared memory still
+      // exists — everyone else's traces are already on it.
+      saved: false,
+      walkSessionId: 'session-1',
+      trail,
+    });
+    expect(final.ctaUrl).toBe('pawtchi:///community/walk/outing-7/memory');
+    expect(final.ctaLabel).toBe(SEE_THE_TRAIL);
+  });
+
+  it('still withholds a solo walk\u2019s map until the row exists', () => {
+    const previous = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+    });
+    const queued = finalContent({
+      previous,
+      endedAt: START + 900_000,
+      saved: false,
+      walkSessionId: 'session-1',
+    });
+    expect(queued.ctaUrl).toBe('');
+    expect(queued.ctaLabel).toBe(SEE_THE_MAP);
+  });
+
+  it('does not claim a Trail walk ended at home', () => {
+    const previous = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+      trail,
+    });
+    const final = finalContent({
+      previous,
+      endedAt: START + 900_000,
+      saved: true,
+      walkSessionId: 'session-1',
+      trail,
+    });
+    // A pack walk did not necessarily end at anyone's home, so "HOME" would be
+    // the one untrue word on the card.
+    expect(final.eyebrow).not.toContain('HOME');
+    expect(final.eyebrow).toBe('SUNDAY RUN CLUB · WALK SAVED');
+  });
+
+  it('keeps HOME for a solo walk', () => {
+    const previous = buildLiveWalkContent({
+      petName: 'Momo',
+      startedAt: START,
+      session: walkedSession(20),
+    });
+    const final = finalContent({
+      previous,
+      endedAt: START + 900_000,
+      saved: true,
+      walkSessionId: 'session-1',
+    });
+    expect(final.eyebrow).toBe('HOME · WALK SAVED');
   });
 });

@@ -5,6 +5,7 @@ import {
   fromViewportZoom,
   isOnScreen,
   projectPoint,
+  toMapLibreZoom,
   toRegionZoom,
   type MapCamera,
 } from './mapCamera';
@@ -304,5 +305,38 @@ describe('toRegionZoom / fromViewportZoom', () => {
     const { ne, sw } = cameraBounds(camera, VIEW.width, VIEW.height);
     const reported = Math.log2(360 / (ne.lng - sw.lng));
     expect(fromViewportZoom(reported, VIEW.width)).toBeCloseTo(camera.zoom, 8);
+  });
+});
+
+/**
+ * The Android map now frames by centre + zoom instead of by bounds, because
+ * MapLibre derives a bounds camera from the native view's size and framed the
+ * whole world when that size was still zero. That puts all the correctness on
+ * this one conversion: get it wrong and every overlay pin is off by 2x, silently.
+ */
+describe('toMapLibreZoom', () => {
+  it('is one level lower — a 256 px world at z is a 512 px world at z - 1', () => {
+    expect(toMapLibreZoom(17)).toBeCloseTo(16, 10);
+    expect(toMapLibreZoom(0)).toBeCloseTo(-1, 10);
+  });
+
+  it('describes the same world width in both conventions', () => {
+    for (const zoom of [3, 12.5, 16, 19.25]) {
+      const ours = 256 * 2 ** zoom;
+      const maplibre = 512 * 2 ** toMapLibreZoom(zoom);
+      expect(maplibre).toBeCloseTo(ours, 6);
+    }
+  });
+
+  it('matches the scale projectPoint draws overlays at', () => {
+    // Two points a known pixel distance apart under our projector must be the
+    // same distance apart in a 512 px world at the converted zoom.
+    const camera: MapCamera = { center: { lat: 15.55, lng: 73.76 }, zoom: 17 };
+    const a = projectPoint({ lat: 15.55, lng: 73.76 }, camera, 390, 800);
+    const b = projectPoint({ lat: 15.55, lng: 73.761 }, camera, 390, 800);
+    const oursPx = b.x - a.x;
+    const maplibreWorld = 512 * 2 ** toMapLibreZoom(camera.zoom);
+    const maplibrePx = (0.001 / 360) * maplibreWorld;
+    expect(oursPx).toBeCloseTo(maplibrePx, 6);
   });
 });

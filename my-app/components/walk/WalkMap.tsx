@@ -121,9 +121,42 @@ export type WalkMapProps = {
    * converts from whatever units its SDK reports, so what arrives here is
    * always directly usable by `projectPoint`.
    */
-  onCameraChange?: (camera: MapCamera) => void;
+  onCameraChange?: (camera: MapCamera, info?: CameraChangeInfo) => void;
+  /**
+   * `camera` is framing the caller authored, never a reported camera fed back.
+   *
+   * Lets Android remount its camera on each new framing, which a late framing
+   * needs to take reliably (see WalkMap.android). Unsafe for a caller that
+   * echoes `onCameraChange` into `camera` — the live walk does — because that
+   * would remount mid-drag. Defaults to true only when there is no listener,
+   * since without one there is nothing to echo.
+   */
+  cameraIsFraming?: boolean;
   style?: import('react-native').ViewStyle;
 };
+
+/**
+ * Where a camera report came from.
+ *
+ * ── Why callers need to know ───────────────────────────────────────────────
+ *
+ * The two SDKs report very differently. MapKit reports only when a GESTURE ends.
+ * MapLibre reports every region change — its own startup position and every
+ * move WE asked for included. A caller that feeds the reported camera back in
+ * as the next requested one (`reported ?? fitted`) is therefore safe on iOS and
+ * a feedback loop on Android: the map's default start position is reported,
+ * becomes the camera, and shadows the fitted one for good. That is exactly how
+ * the live walk ended up pinned to the wrong place on Android.
+ *
+ * `user` is `true` when a person moved the map, `false` when the map moved
+ * itself or was moved by us. Absent means the platform only ever reports
+ * gestures (iOS), so absent should be read as `true`.
+ *
+ * An optional second argument rather than a behaviour change, on purpose:
+ * other maps (the meeting-point picker among them) may rely on the map's own
+ * reports, so only a caller that asks is affected.
+ */
+export type CameraChangeInfo = { user: boolean };
 
 /**
  * Whether this platform reports camera movement CONTINUOUSLY during a gesture,

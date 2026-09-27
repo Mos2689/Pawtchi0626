@@ -69,7 +69,7 @@ function Paw({ size, opacity }: { size: number; opacity: number }) {
 export function PawTrailFlourish({
   width,
   height,
-  caption = 'Walk together and your trail draws itself here',
+  caption = 'Meet up and your walks draw themselves here',
 }: {
   width: number;
   height: number;

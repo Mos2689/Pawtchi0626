@@ -33,6 +33,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { track } from '../analytics';
 import type { RawGpsPoint } from './walkSession';
 import type { DogWalkProfile } from './dogCalibration';
+import { trackingNotification } from './liveCopy';
 import { BRAND_YELLOW } from '../../constants/design';
 
 export const WALK_TASK = 'pawtchi-walk-location';
@@ -43,6 +44,40 @@ const BUFFER_CAP = 8000;
 
 export type WalkPermission = 'granted' | 'denied' | 'services_off';
 
+/**
+ * The Trail a recording belongs to, when it belongs to one.
+ *
+ * ── Why this lives in the durable record ───────────────────────────────────
+ *
+ * It used to live only in `app/walk.tsx` React state, seeded once from the
+ * one-shot `takeCommunityWalkContext()` handoff. That works right up until
+ * background tracking does its job: the OS suspends or cold-relaunches the app,
+ * `recoverOrphanedWalk` restores the walk from THIS record, and the trail is
+ * simply gone. What went with it was not cosmetic —
+ *
+ *   - `linkPersonalWalk` never ran, so the walk never joined the trail's
+ *     memory or its traces;
+ *   - `finishCommunityParticipation` never ran, so attendance stayed on
+ *     `walking` for good;
+ *   - the live-location broadcast stopped, so the pack lost sight of them;
+ *   - the finish landed on the solo summary instead of the shared memory.
+ *
+ * Every one of those is a silent failure, which is the worst kind: the walk
+ * looks fine, it is simply no longer part of the thing it was part of.
+ *
+ * The record is the sole authority for "a walk is happening", so it is also the
+ * only correct home for "and it is this kind of walk".
+ */
+export interface ActiveWalkTrail {
+  /** `community_walks.id` — the outing this recording is one leg of. */
+  walkId: string;
+  packId: string;
+  /** Resolved at arm time so no OS surface ever has to fetch to draw a name. */
+  packName: string;
+  /** Whether this walker agreed to broadcast their position to the pack. */
+  shareLocation: boolean;
+}
+
 /** The durable "a walk is happening" record — everything finalize needs. */
 export interface ActiveWalkDescriptor {
   id: string;
@@ -51,6 +86,14 @@ export interface ActiveWalkDescriptor {
   ownerId: string;
   startedAt: number;
   profile: DogWalkProfile;
+  /**
+   * Present ⇒ this recording is a leg of a Trail. Absent ⇒ a solo walk.
+   *
+   * Optional rather than a separate boolean on purpose: there is exactly one
+   * fact here, and its absence IS "solo". A flag beside it could disagree with
+   * it, and the two kinds of walk would start to drift apart.
+   */
+  trail?: ActiveWalkTrail;
 }
 
 // ── The durable record: the SOLE authority for "a walk is happening" ──
@@ -204,6 +247,11 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
 async function doStart(descriptor: ActiveWalkDescriptor): Promise<void> {
   // Record FIRST: the task is only ever authorized by the record's existence.
   await writeActiveWalk(descriptor);
+  const notification = trackingNotification({
+    petName: descriptor.petName,
+    packName: descriptor.trail?.packName,
+    sharingLocation: descriptor.trail?.shareLocation,
+  });
   await Location.startLocationUpdatesAsync(WALK_TASK, {
     accuracy: Location.Accuracy.BestForNavigation,
     // 5m OR 3s, whichever the platform honors — one fix per few meters at
@@ -213,9 +261,14 @@ async function doStart(descriptor: ActiveWalkDescriptor): Promise<void> {
     activityType: Location.ActivityType.Fitness,
     pausesUpdatesAutomatically: false, // sniff stops must not kill the stream
     showsBackgroundLocationIndicator: true,
+    // Trail-aware, because this notification is the whole of what an owner
+    // sees while the phone is in their pocket. A shared walk describing itself
+    // as a solo one is the same separation failure as the Live Activity's, just
+    // on the surface that is up for longer. Copy lives in liveCopy.ts with the
+    // rest — a sentence the OS shows is still a sentence the brand rules cover.
     foregroundService: {
-      notificationTitle: `${descriptor.petName}'s walk is being tracked`,
-      notificationBody: 'Pawtchi is measuring the route. The walk ends on its own when you get home.',
+      notificationTitle: notification.title,
+      notificationBody: notification.body,
       notificationColor: BRAND_YELLOW,
       killServiceOnDestroy: false,
     },

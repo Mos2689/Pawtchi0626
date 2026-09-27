@@ -32,6 +32,7 @@
  */
 
 import type { CommunityPack, CommunityWalk } from '../communityWalks';
+import { dateFormat } from '../dateFormats';
 
 export type UpNextState = 'live' | 'planned' | 'undated' | 'empty';
 
@@ -139,7 +140,9 @@ export function upNextEyebrow(up: UpNext, now: number): string {
   if (minutes < 60) return `STARTS IN ${minutes} MIN`;
   const hours = Math.round(delta / 3_600_000);
   if (hours < 24) return `STARTS IN ${hours} ${hours === 1 ? 'HOUR' : 'HOURS'}`;
-  return `NEXT — ${new Intl.DateTimeFormat(undefined, {
+  // Cached formatter: this runs on every render of the Up Next card, and the
+  // card re-renders whenever Home does — which is once a second during a walk.
+  return `NEXT — ${dateFormat({
     weekday: 'short',
     hour: 'numeric',
     minute: '2-digit',

@@ -24,35 +24,106 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
-import { FadeIn, useReducedMotion } from 'react-native-reanimated';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
+import Animated, { FadeIn, FadeOut, useReducedMotion } from 'react-native-reanimated';
+import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import WalkMap from '../../../../components/walk/WalkMap';
+import { LassoWorkingContent } from '../../../../components/LassoLoader';
 
 import {
   CommunityButton,
   CommunityCard,
-  PackRouteArtwork,
   partyColors,
 } from '../../../../components/community/CommunityUI';
+import { PackStoryCard, type StoryPhoto, type StoryWalkerLines } from '../../../../components/community/PackStoryCard';
+import {
+  dogsLine,
+  minutesTogether,
+  orderWalkers,
+  pickStoryPhotos,
+  storyDateChip,
+  storyDogNames,
+  storyHeadline,
+  storyLineColor,
+  storySubline,
+  type StoryWalker,
+} from '../../../../lib/community/packStory';
 import { color, font, makeShadow, radius, space, type } from '../../../../constants/design';
 import { KeepsakeMapOverlay, type KeepsakeMapPin } from '../../../../components/walk/KeepsakeMapOverlay';
-import { KeepsakeViewer } from '../../../../components/walk/KeepsakeViewer';
+import { TrailReel, type ReelMoment } from '../../../../components/community/TrailReel';
 import { PackTraceSheet, type PackTraceRow } from '../../../../components/community/PackTraceSheet';
-import { rankTraces, togetherSeconds } from '../../../../lib/community/memoryTraces';
+import {
+  distanceLabel,
+  durationLabel,
+  rankTraces,
+  togetherSeconds,
+} from '../../../../lib/community/memoryTraces';
 import { fitCamera, type MapCamera } from '../../../../lib/walk/mapCamera';
+import { longestRoute, momentProgress, reelTracePoints } from '../../../../lib/community/reelTrace';
 import { communityMediaUrls } from '../../../../lib/communityMedia';
 import { loadMemory, removeSharedMoment, setMomentHeart, type CommunityMemory, type SharedMoment } from '../../../../lib/communityWalks';
+import { timed } from '../../../../lib/community/perf';
+import { TOGETHER_READ_TIMEOUT_MS } from '../../../../lib/communityCache';
+import { withTimeout } from '../../../../lib/withTimeout';
+import { useLiveMapCamera } from '../../../../hooks/useLiveMapCamera';
+import { legSettled } from '../../../../lib/community/legSettle';
+import { memoryReadiness, memoryWaitingLine } from '../../../../lib/community/memoryReadiness';
+import { withHeart } from '../../../../lib/community/momentHeart';
 import { shareMoment } from '../../../../lib/shareMoment';
 import { useActivePetStore } from '../../../../store/useActivePetStore';
 import { useAuth } from '../../../../providers/AuthProvider';
+import { dateFormat } from '../../../../lib/dateFormats';
+
+/**
+ * The reel's trace strip. Wide and short — it sits above a row of buttons.
+ *
+ * Fixed rather than measured: it is drawn once per walk and handed to every
+ * page, so measuring would mean a layout pass per page for a shape that never
+ * changes. The width is comfortably inside the narrowest phone this app runs
+ * on, minus the card's own padding.
+ */
+const TRACE_W = 260;
+const TRACE_H = 24;
+
+/**
+ * The longest the loader waits for this phone's own leg to reach the memory.
+ *
+ * The attach is one or two round trips once the walk has saved; this is the
+ * bound for when it is not coming. Past it the memory opens with what it has,
+ * and a later focus fills in the rest.
+ */
+const LEG_SETTLE_TIMEOUT_MS = 12_000;
+
+/**
+ * The loader never flashes. Arriving straight off a walk, a beat of "saving"
+ * that is gone before it can be read looks like a glitch rather than care —
+ * the same reasoning as the creator-code screen's MIN_WORKING_MS.
+ */
+const MIN_FINISH_LOADER_MS = 900;
+
+/**
+ * Opened from a list, the loader appears only if the load is slow enough to
+ * notice. Most take a few hundred milliseconds and never show it at all.
+ */
+const LIST_LOADER_DELAY_MS = 350;
+
+/**
+ * How often an unfinished memory re-reads itself while the pack's walks arrive.
+ *
+ * Only while it is waiting, and never past the readiness grace (a minute after
+ * the walk ended), so it is at most ~20 reads of one RPC per viewer, once.
+ */
+const MEMORY_SETTLE_POLL_MS = 3_000;
+
+const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 function dayLabel(value: string | null): string {
   const date = value ? new Date(value) : new Date();
-  return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date);
+  return dateFormat({ weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date);
 }
 
 /**
@@ -72,12 +143,38 @@ function momentDateline(moment: SharedMoment, startedAt: string | null): string 
 }
 
 function momentTime(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value));
+  return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(new Date(value));
 }
 
 export default function CommunityMemoryScreen() {
   const router = useRouter();
-  const { walkId } = useLocalSearchParams<{ walkId: string }>();
+  const { walkId, finished, by } = useLocalSearchParams<{ walkId: string; finished?: string; by?: string }>();
+  /** The host closed the walk, rather than this person pressing Finish. */
+  const closedByHost = by === 'host';
+  /**
+   * Arrived here straight off the end of the walk, rather than from a list.
+   *
+   * The completion beat used to live on the solo recorder's summary, which a
+   * Trail walk passed through on its way here. It does not any more, and
+   * without this the walk simply stopped and the map appeared — no moment, no
+   * numbers, nothing that said the thing you just did was finished.
+   *
+   * State rather than the param read directly, so dismissing it sticks: the
+   * param stays in the URL for as long as the screen is mounted.
+   */
+  const [justFinished, setJustFinished] = useState(finished === '1');
+  /**
+   * Arrived off a walk whose leg on this phone may not be in the memory yet.
+   *
+   * When the host closes the walk a member is brought here at once, while
+   * their own walk is still saving — load now and their route is missing from
+   * the walk they just did. So the screen holds its loader until TrailRecording
+   * says the leg is attached (lib/community/legSettle), bounded, then loads.
+   * From a list there is nothing in flight and this starts false.
+   */
+  const [awaitingLeg, setAwaitingLeg] = useState(finished === '1');
+  const awaitingLegRef = useRef(awaitingLeg);
+  awaitingLegRef.current = awaitingLeg;
   const activePet = useActivePetStore(state => state.activePet);
   const { user } = useAuth();
   const [memory, setMemory] = useState<CommunityMemory | null>(null);
@@ -176,7 +273,7 @@ export default function CommunityMemoryScreen() {
    * Recomputed when the focus changes so choosing one walker zooms to their
    * walk — which is most of the payoff of choosing one.
    */
-  const camera = useMemo<MapCamera | null>(() => {
+  const framing = useMemo<MapCamera | null>(() => {
     if (!stage.width || !stage.height) return null;
     const source = focusId ? traces.filter(t => t.userId === focusId) : traces;
     const points = source.flatMap(trace => trace.routes.flat());
@@ -192,7 +289,36 @@ export default function CommunityMemoryScreen() {
     });
   }, [focusId, momentPins, stage.height, stage.width, traces]);
 
+  /**
+   * The framing COMMANDS the map; the photos are projected against where the
+   * map REPORTS it is. They used to be projected against the framing, so the
+   * first pinch left every photo floating over the street it was not taken on.
+   * Same contract as Home's canopy — see useLiveMapCamera for the three ways
+   * getting this by hand goes wrong.
+   */
+  const { camera, viewCamera, pinsHidden, handleCameraChange, touchHandlers } =
+    useLiveMapCamera(framing);
+
   const mapCentre = traces[0]?.routes[0]?.[0] ?? (momentPins[0] ? { lat: momentPins[0].lat, lng: momentPins[0].lng } : null);
+
+  /**
+   * Android waits for the framing before the map exists at all.
+   *
+   * MapLibre sat on the whole world here, on every open, while every Android
+   * map that mounts WITH its camera — Home's canopy, the walk summary — framed
+   * correctly. This screen was the odd one out: it created an empty map at
+   * once and added the camera in a later commit, and on Android that later
+   * camera did not take. Home gates on its camera for the same reason
+   * (HomeMapLayer's `canMap`), so this follows the pattern that is known to
+   * work on devices rather than one more theory about why the other does not.
+   *
+   * A memory with nothing to place (no routes, no located photos) has no
+   * framing to wait for, so it gets its map straight away. iOS is unaffected —
+   * MapKit takes a late region without complaint, and it keeps its instant map.
+   */
+  const mapMountable = Platform.OS !== 'android'
+    || camera !== null
+    || (memory != null && mapCentre === null && stage.width > 0);
 
   const packRows = useMemo<PackTraceRow[]>(
     () => traces.map(trace => ({
@@ -204,31 +330,293 @@ export default function CommunityMemoryScreen() {
     [memory?.attendance, memory?.moments, tintFor, traces],
   );
 
+  /**
+   * This walker's own trace, for the completion beat.
+   *
+   * Theirs and nobody else's: three phones measure three different distances
+   * on the same walk, and none of them is "the walk's". Null is a real answer
+   * — somebody who joined but never recorded still finished the walk, and the
+   * card says so without inventing a number for them.
+   */
+  const mine = useMemo(
+    () => traces.find(trace => trace.userId === user?.id) ?? null,
+    [traces, user?.id],
+  );
+
+  /**
+   * Every shared moment, in the order the walk happened, shaped for the reel.
+   *
+   * Sorted by capture time rather than by contributor: the reel's whole claim
+   * is that this is one afternoon rather than several people's albums, and
+   * grouping by author would make it the second thing.
+   */
+  const reelMoments = useMemo<ReelMoment[]>(
+    () => [...(memory?.moments ?? [])]
+      .sort((a, b) => Date.parse(a.captured_at) - Date.parse(b.captured_at))
+      .map(moment => {
+        const who = memory?.attendance.find(row => row.user_id === moment.contributor_id);
+        return {
+          id: moment.id,
+          uri: moment.display_path ? urls[moment.display_path] ?? null : null,
+          dateline: momentDateline(moment, memory?.walk.started_at ?? null),
+          author: who?.person?.full_name?.trim().split(/\s+/)[0]
+            || (who?.person?.username ? `@${who.person.username}` : 'Someone on the walk'),
+          authorDogs: who?.dogs ?? [],
+          detail: moment.caption
+            || (who?.dogs?.length ? `Walking with ${who.dogs.map(dog => dog.name).join(' & ')}` : null),
+          hearted: !!moment.heartedByMe,
+          heartCount: moment.heartCount ?? 0,
+          progress: momentProgress(
+            moment.captured_at,
+            memory?.walk.started_at ?? null,
+            memory?.walk.ended_at ?? null,
+          ),
+          canRemove: moment.contributor_id === user?.id,
+        };
+      }),
+    [memory?.moments, memory?.attendance, memory?.walk, urls, user?.id],
+  );
+
+  /**
+   * The line under every page — one recording, not everyone's.
+   *
+   * Three overlapping squiggles behind a photograph is texture, not
+   * information. See lib/community/reelTrace.ts for why the lit portion is
+   * elapsed time rather than a position on the route.
+   */
+  const tracePoints = useMemo(
+    () => reelTracePoints(longestRoute(memory?.routes ?? []), TRACE_W, TRACE_H),
+    [memory?.routes],
+  );
+
   const memoryDay = memory?.walk.ended_at ?? memory?.walk.scheduled_for ?? null;
   const shareCardRef = useRef<View>(null);
 
+  /**
+   * A heart, answered at once.
+   *
+   * It used to write, then reload the ENTIRE memory — every moment, every route
+   * — to learn one number. The tap felt slow, and the fresh traces made the
+   * map's lines draw themselves in again, as if the walk had reloaded. Now the
+   * one moment flips locally, the write goes out, and a failure flips it back.
+   * `memory.traces` keeps its identity through the patch, so nothing redraws.
+   * A second tap on the same photo while its first is in flight is ignored,
+   * so fast double taps cannot race each other to the server.
+   */
+  const heartsInFlight = useRef<Set<string>>(new Set());
+  const toggleHeart = useCallback((id: string) => {
+    if (heartsInFlight.current.has(id)) return;
+    const moment = memory?.moments.find(m => m.id === id);
+    if (!moment) return;
+    const hearted = !moment.heartedByMe;
+    const patch = (value: boolean) => setMemory(current => (current
+      ? { ...current, moments: withHeart(current.moments, id, value) }
+      : current));
+    heartsInFlight.current.add(id);
+    patch(hearted);
+    setMomentHeart(id, hearted)
+      .catch(() => patch(!hearted))
+      .finally(() => heartsInFlight.current.delete(id));
+  }, [memory?.moments]);
+
+  /**
+   * Loads in the air. The settling poll below skips a tick while one is
+   * running, so a slow network never stacks reads — each can take up to its
+   * 12 s timeout, far longer than the 3 s poll (external audit, 2026-09-26).
+   * Direct callers (focus, a heart, a removal) still load: they follow a change
+   * and need the answer after it.
+   */
+  const loadsInFlight = useRef(0);
   const load = useCallback(async () => {
     if (!walkId) return;
+    loadsInFlight.current += 1;
     setError(null);
     try {
-      const next = await loadMemory(walkId);
+      // Both awaits are bounded. `finally` below only runs once the whole `try`
+      // completes, so a stall in EITHER call would leave `loaded` false for good.
+      const next = await withTimeout(
+        timed('loadMemory', 1, () => loadMemory(walkId)),
+        TOGETHER_READ_TIMEOUT_MS,
+        'loadMemory',
+      );
       setMemory(next);
-      setUrls(await communityMediaUrls(next.moments.flatMap(moment => moment.display_path ? [moment.display_path] : [])));
+      // Routes, people and numbers are usable now. The loader used to stay up
+      // until the photo URLs were signed as well — up to twelve more seconds on
+      // a slow signing call, with the whole walk already sitting underneath it.
+      setLoaded(true);
+
+      // Signed in the background; pins and the reel fill in when it lands.
+      // Timed separately from the memory itself: since the URL cache went in,
+      // this is the number that should read ~0 ms on a revisit.
+      //
+      // A stalled signing must not fail the screen, nor BLANK the photos: on a
+      // refocus the previous URLs are still on screen. So a timeout leaves
+      // `urls` untouched, and a success MERGES rather than replaces — two loads
+      // in flight (the settling poll) cannot drop each other's photos.
+      void withTimeout(
+        timed('memoryUrls', 1, () =>
+          communityMediaUrls(next.moments.flatMap(moment => moment.display_path ? [moment.display_path] : []))),
+        TOGETHER_READ_TIMEOUT_MS,
+        'memoryUrls',
+      )
+        .then(signed => setUrls(current => ({ ...current, ...signed })))
+        .catch(() => {});
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This memory could not load.');
+      // `walk_not_attended` is not a failure. A walk's memory belongs to the
+      // people who were on it (migration 20260923000000), and somebody in the
+      // pack who did not come is in an ordinary, expected state — so they get a
+      // sentence explaining it, not a raw Postgres error string.
+      const raw = cause instanceof Error ? cause.message : '';
+      setError(
+        raw.includes('walk_not_attended')
+          ? 'This walk’s memory is kept for the people who walked it. You can see the plan and who came on the walk itself.'
+          : raw || 'This memory could not load.',
+      );
     } finally {
+      loadsInFlight.current -= 1;
       setLoaded(true);
     }
   }, [walkId]);
 
-  useFocusEffect(useCallback(() => { void load(); }, [load]));
+  /**
+   * Deliberately NOT freshness-gated, unlike the trail and walk screens.
+   *
+   * Those paint from a snapshot before they fetch, so skipping the fetch still
+   * leaves something on screen. This one does not: there is no `readSnapshot`
+   * here, and the only cache key `loadMemory` writes is `cacheKey.outing`,
+   * which belongs to the walk screen and holds a different shape entirely.
+   * Gating on it would mean arriving from a walk — which has just made that key
+   * fresh — and skipping the load that fills this screen, leaving it empty.
+   *
+   * Giving the memory its own key and snapshot would make it gateable. That is
+   * worth doing and is not worth doing here, in a pass that is meant to leave
+   * working things alone. The URL cache already removed the expensive half of
+   * this reload.
+   */
+  useFocusEffect(useCallback(() => {
+    // The first load of a just-finished walk belongs to the wait below —
+    // loading now as well would fetch a memory without this person's route.
+    if (awaitingLegRef.current) return;
+    void load();
+  }, [load]));
+
+  useEffect(() => {
+    if (!awaitingLeg || !walkId) return;
+    let alive = true;
+    void Promise.all([
+      withTimeout(legSettled(walkId), LEG_SETTLE_TIMEOUT_MS, 'legSettled').catch(() => {}),
+      wait(MIN_FINISH_LOADER_MS),
+    ])
+      .then(() => (alive ? load() : undefined))
+      .finally(() => { if (alive) setAwaitingLeg(false); });
+    return () => { alive = false; };
+    // Once per arrival: the wait is for the leg that was finishing when this
+    // screen opened, not for anything that happens after.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Nothing honest to draw yet — no memory, or not this person's part of it.
+   *
+   * The creator-code loader, not a blank map: a blank map right after a walk
+   * reads as "your walk is gone", which is the one thing this screen exists to
+   * disprove.
+   */
+  /**
+   * Everyone who walked, in the memory? See lib/community/memoryReadiness —
+   * this is what stops the memory opening with half the pack's lines on it.
+   */
+  const [clock, setClock] = useState(() => Date.now());
+  const readiness = useMemo(
+    () => memoryReadiness({
+      attendance: memory?.attendance ?? [],
+      traceUserIds: traces.map(trace => trace.userId),
+      walkState: memory?.walk.state,
+      endedAt: memory?.walk.ended_at,
+      now: clock,
+    }),
+    [clock, memory?.attendance, memory?.walk.ended_at, memory?.walk.state, traces],
+  );
+  const settling = !!memory && !readiness.ready;
+  useEffect(() => {
+    if (!settling) return;
+    const poll = setInterval(() => {
+      setClock(Date.now());
+      if (loadsInFlight.current === 0) void load();
+    }, MEMORY_SETTLE_POLL_MS);
+    return () => clearInterval(poll);
+  }, [settling, load]);
+
+  const showLoader = awaitingLeg || !loaded || settling;
+  const loaderCopy = closedByHost
+    ? {
+        title: 'Walk finished',
+        body: 'The host finished the walk for everyone. Saving yours and gathering the pack’s photos.',
+      }
+    : finished === '1'
+      ? { title: 'Finishing up', body: 'Saving your walk and gathering the pack’s photos.' }
+      : { title: 'One moment', body: 'Gathering the pack’s routes and photos.' };
+
+  /**
+   * The pack story's content — see lib/community/packStory for the rules.
+   *
+   * Everyone who walked, the viewer first so their dog leads and their line is
+   * the yellow one; each walker's dogs by name; the viewer's OWN photos only,
+   * spread across the walk; and each walker's recorded segments for the lines.
+   */
+  const { width: windowWidth } = useWindowDimensions();
+  const storyWidth = Math.min(windowWidth - space.xl * 2, 340);
+  const story = useMemo(() => {
+    const walkerIds: string[] = [];
+    for (const trace of traces) if (!walkerIds.includes(trace.userId)) walkerIds.push(trace.userId);
+    for (const row of memory?.attendance ?? []) {
+      if ((row.status === 'walking' || row.status === 'finished') && !walkerIds.includes(row.user_id)) {
+        walkerIds.push(row.user_id);
+      }
+    }
+    const walkers: StoryWalker[] = walkerIds.map(userId => {
+      const row = memory?.attendance.find(entry => entry.user_id === userId);
+      const names = (row?.dogs ?? []).map(dog => dog.name);
+      if (!names.length && userId === user?.id && activePet?.name) names.push(activePet.name);
+      return { userId, dogNames: names };
+    });
+    const ordered = orderWalkers(walkers, user?.id ?? null);
+    const names = storyDogNames(ordered);
+    const lines: StoryWalkerLines[] = ordered.map((walker, index) => ({
+      color: storyLineColor(index),
+      routes: traces.find(trace => trace.userId === walker.userId)?.routes ?? [],
+    }));
+    const photos: StoryPhoto[] = pickStoryPhotos(
+      (memory?.moments ?? [])
+        .filter(moment => moment.contributor_id === user?.id && moment.display_path && urls[moment.display_path])
+        .map(moment => ({
+          id: moment.id,
+          uri: urls[moment.display_path as string],
+          cacheKey: moment.display_path as string,
+          capturedAt: Date.parse(moment.captured_at) || 0,
+        })),
+    );
+    const whenIso = memory?.walk.started_at ?? memory?.walk.ended_at ?? memory?.walk.scheduled_for ?? null;
+    const at = whenIso ? new Date(whenIso) : null;
+    const seconds = memory ? togetherSeconds(memory.walk) : null;
+    return {
+      headline: storyHeadline({ dogNames: names, at, fallbackTitle: memory?.walk.title ?? 'A walk together' }),
+      subline: storySubline({ at, seconds, moments: memory?.moments.length ?? 0 }),
+      dateChip: storyDateChip(at),
+      dogsLine: dogsLine(names),
+      dogDots: lines.map(line => line.color),
+      minutes: minutesTogether(seconds),
+      lines,
+      photos,
+    };
+  }, [activePet?.name, memory, traces, urls, user?.id]);
 
   const share = async () => {
     setSharing(true);
     const outcome = await shareMoment(shareCardRef, {
       source: 'community_memory',
       ground: includeRoute ? 'route_artwork' : 'paper',
-      template: 'pack_keepsake',
+      template: 'pack_story',
     });
     setSharing(false);
     if (outcome === 'shared') setShareOpen(false);
@@ -239,24 +627,33 @@ export default function CommunityMemoryScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.stage} onLayout={onStage}>
-        <WalkMap
-          mode="summary"
-          path={[]}
-          communityRoutes={mapRoutes}
-          center={mapCentre}
-          camera={camera}
-          quiet
-          interactive
-          style={StyleSheet.absoluteFillObject as any}
-        />
+      <View style={styles.stage} onLayout={onStage} {...touchHandlers}>
+        {mapMountable && (
+          <WalkMap
+            mode="summary"
+            path={[]}
+            communityRoutes={mapRoutes}
+            center={mapCentre}
+            camera={camera}
+            onCameraChange={handleCameraChange}
+            // The framing above is authored, never the reported camera fed
+            // back, so the map may remount its camera on each new framing.
+            cameraIsFraming
+            quiet
+            interactive
+            style={StyleSheet.absoluteFillObject as any}
+          />
+        )}
 
         {/* Photos where they happened. Dimmed rather than removed when a
             walker is focused: they are still part of the walk, they are just
             not part of the answer to "show me theirs". */}
+        {/* Hidden, not left behind, while a map that cannot report mid-drag
+            (iOS) is being dragged — see useLiveMapCamera. */}
+        {!pinsHidden && (
         <KeepsakeMapOverlay
           pins={momentPins}
-          camera={camera}
+          camera={viewCamera}
           width={stage.width}
           height={stage.height}
           size={46}
@@ -272,6 +669,7 @@ export default function CommunityMemoryScreen() {
           // "this one" — they were all taken within a few metres.
           onPress={group => setOpenMoment(group[0]?.id ?? null)}
         />
+        )}
 
         {/* Floating chrome, not a header band. The map runs under it edge to
             edge — a memory of a walk that reaches only halfway up the screen is
@@ -317,6 +715,43 @@ export default function CommunityMemoryScreen() {
         ) : null}
       </View>
 
+      {/* ── The completion beat ──────────────────────────────────────────
+          Shown once, on arrival straight from the walk, and only after the
+          memory has actually loaded — announcing "saved" over an empty screen
+          would be a claim we cannot yet back up.
+
+          It sits over the sheet rather than replacing it, so the map and the
+          traces are already behind it: the walk is the subject, this is the
+          full stop. Numbers are the walker's OWN, because there is no such
+          thing as a shared distance — see lib/community/memoryTraces.ts. */}
+      {justFinished && loaded && !awaitingLeg && !settling ? (
+        <Pressable
+          style={[styles.finishedScrim, { paddingBottom: insets.bottom + space.xl }]}
+          onPress={() => setJustFinished(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+        >
+          <View style={styles.finishedCard}>
+            <Ionicons name="checkmark-circle" size={34} color={color.success} />
+            <Text style={styles.finishedTitle}>
+              {closedByHost ? 'The host finished the walk' : 'Walk saved'}
+            </Text>
+            <Text style={styles.finishedBody}>
+              {mine
+                ? `${distanceLabel(mine.distanceM)} · ${durationLabel(mine.durationS)}${
+                    mine.sniffs > 0
+                      ? ` · ${mine.sniffs} ${mine.sniffs === 1 ? 'sniff' : 'sniffs'}`
+                      : ''
+                  }`
+                : closedByHost
+                  ? 'Yours is saved and in the meetup.'
+                  : 'It is in the meetup now.'}
+            </Text>
+            <Text style={styles.finishedHint}>Tap anywhere to see the walk</Text>
+          </View>
+        </Pressable>
+      ) : null}
+
       <PackTraceSheet
         rows={packRows}
         walkSeconds={togetherSeconds(memory?.walk ?? { started_at: null, ended_at: null })}
@@ -326,43 +761,59 @@ export default function CommunityMemoryScreen() {
         bottomInset={insets.bottom}
       />
 
-      {/* The walk's own viewer — full bleed, paging, the peek gesture — with a
-          Trail's card instead of the walk's. See SharedMomentCaption for why
-          the photograph half is shared and the words half is not. */}
+      {/* ── The reel ─────────────────────────────────────────────────────
+          Vertical, full bleed, everyone's moments in the order the afternoon
+          happened. This used to be the solo walk's KeepsakeViewer with a Trail
+          card bolted on; that viewer pages sideways through YOUR archive, and
+          reading a shared afternoon sideways made it a folder.
+
+          EVERY moment is here, not only the ones with a coordinate. The map
+          behind can pin only located photos — there is no honest place to put
+          the others — but a photo whose GPS had not settled is still part of
+          the walk, and dropping it from the reel is how a moment silently
+          disappears from the thing it belonged to. */}
       {openMoment ? (
-        <KeepsakeViewer
-          pins={momentPins}
-          initialIndex={Math.max(0, momentPins.findIndex(pin => pin.id === openMoment))}
-          sharedCaption={pin => {
-            const moment = (memory?.moments ?? []).find(m => m.id === pin.id);
-            if (!moment) return null;
-            const who = memory?.attendance.find(row => row.user_id === moment.contributor_id);
-            return {
-              dateline: momentDateline(moment, memory?.walk.started_at ?? null),
-              headline: who?.person?.full_name?.trim().split(/\s+/)[0]
-                || (who?.person?.username ? `@${who.person.username}` : 'Someone on the walk'),
-              detail: moment.caption
-                || (who?.dogs?.length ? `Walking with ${who.dogs.map(dog => dog.name).join(' & ')}` : null),
-              // Kept from the card this replaced: a heart anyone can give, and
-              // a way out for the person whose photo it is. Losing either would
-              // have made the new viewer a downgrade dressed as a redesign.
-              actions: {
-                hearted: !!moment.heartedByMe,
-                heartCount: moment.heartCount ?? 0,
-                onHeart: () => {
-                  void setMomentHeart(moment.id, !moment.heartedByMe).then(load).catch(() => {});
-                },
-                onRemove: moment.contributor_id === user?.id
-                  ? () => {
-                      setOpenMoment(null);
-                      void removeSharedMoment(moment.id).then(load).catch(() => {});
-                    }
-                  : undefined,
-              },
-            };
+        <TrailReel
+          moments={reelMoments}
+          initialIndex={Math.max(0, reelMoments.findIndex(moment => moment.id === openMoment))}
+          tracePoints={tracePoints}
+          traceWidth={TRACE_W}
+          traceHeight={TRACE_H}
+          onHeart={toggleHeart}
+          onRemove={id => {
+            setOpenMoment(null);
+            void removeSharedMoment(id).then(load).catch(() => {});
           }}
           onClose={() => setOpenMoment(null)}
         />
+      ) : null}
+
+      {showLoader ? (
+        <Animated.View
+          style={[styles.loader, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+          entering={reducedMotion
+            ? undefined
+            : finished === '1'
+              ? FadeIn.duration(180)
+              : FadeIn.delay(LIST_LOADER_DELAY_MS).duration(220)}
+          exiting={reducedMotion ? undefined : FadeOut.duration(260)}
+        >
+          <StatusBar style="light" />
+          <Pressable
+            onPress={() => router.back()}
+            style={styles.loaderBack}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            hitSlop={8}
+          >
+            <Ionicons name="arrow-back" size={22} color={color.cream} />
+          </Pressable>
+          <LassoWorkingContent
+            title={loaderCopy.title}
+            body={settling ? `${loaderCopy.body} ${memoryWaitingLine(readiness)}` : loaderCopy.body}
+            status={settling ? 'Putting the memory together…' : 'Opening the memory…'}
+          />
+        </Animated.View>
       ) : null}
 
       <Modal visible={shareOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShareOpen(false)}>
@@ -377,27 +828,31 @@ export default function CommunityMemoryScreen() {
             </Pressable>
           </View>
           <ScrollView contentContainerStyle={styles.modalBody}>
-            <View ref={shareCardRef} collapsable={false} style={styles.shareCard}>
-              {includeRoute ? <PackRouteArtwork compact routes={memory?.routes} /> : <View style={styles.routeFree}><Ionicons name="paw" size={34} color={color.electric} /></View>}
-              <View style={styles.shareCopy}>
-                <Text style={styles.shareBrand}>PAWTCHI · PACK MEMORY</Text>
-                <Text style={styles.shareTitle}>{memory?.walk.title ?? 'A walk together'}</Text>
-                <Text style={styles.shareDate}>{dayLabel(memory?.walk.ended_at ?? memory?.walk.scheduled_for ?? null)}</Text>
-                {activePet ? <Text style={styles.shareDog}>{activePet.name} walked with the pack.</Text> : null}
-                <Text style={styles.shareFoot}>Make memories with your own pack · pawtchi.com</Text>
-              </View>
-            </View>
+            {/* The story itself is the image — captured pixel for pixel. */}
+            <PackStoryCard
+              ref={shareCardRef}
+              width={storyWidth}
+              headline={story.headline}
+              subline={story.subline}
+              dateChip={story.dateChip}
+              dogsLine={story.dogsLine}
+              dogDots={story.dogDots}
+              minutes={story.minutes}
+              walkers={story.lines}
+              photos={story.photos}
+              showLines={includeRoute}
+            />
 
             <Pressable onPress={() => setIncludeRoute(value => !value)} style={styles.routeOption} accessibilityRole="checkbox" accessibilityState={{ checked: includeRoute }}>
               <Ionicons name={includeRoute ? 'checkbox' : 'square-outline'} size={24} color={includeRoute ? color.electric : color.slateMuted} />
               <View style={styles.flex}>
-                <Text style={styles.optionTitle}>Include transformed route artwork</Text>
-                <Text style={styles.optionBody}>Map-free geometry only. No streets, labels, coordinates, or precise endpoints.</Text>
+                <Text style={styles.optionTitle}>Include everyone’s lines</Text>
+                <Text style={styles.optionBody}>Map-free shapes only. No streets, labels, coordinates, or start and end points.</Text>
               </View>
             </Pressable>
             <CommunityCard style={styles.approvalNote}>
               <Ionicons name="shield-checkmark-outline" size={22} color={color.success} />
-              <Text style={styles.approvalText}>This preview uses your dog’s identity and no one else’s photos. Other contributions stay private unless their contributor approves them for export. Once someone downloads an export, Pawtchi cannot recall that copy.</Text>
+              <Text style={styles.approvalText}>This story uses your own photos and the names of the dogs who walked. Everyone else’s photos stay private. Once someone downloads a shared story, Pawtchi cannot recall that copy.</Text>
             </CommunityCard>
             <CommunityButton label={sharing ? 'Preparing…' : 'Share this keepsake'} icon="share-outline" onPress={() => void share()} disabled={sharing} style={styles.shareButton} />
           </ScrollView>
@@ -410,6 +865,17 @@ export default function CommunityMemoryScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   screen: { flex: 1, backgroundColor: color.surfaceSubtle },
+  // Elevation as well as zIndex: on Android an elevated sibling (the sheet)
+  // draws over a higher zIndex that has none.
+  loader: { ...StyleSheet.absoluteFillObject, zIndex: 30, elevation: 30, backgroundColor: color.navy },
+  loaderBack: {
+    marginTop: space.sm,
+    marginLeft: space.md,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   navRow: {
     position: 'absolute',
     left: space.md,
@@ -444,6 +910,28 @@ const styles = StyleSheet.create({
   navSub: { ...type.caption, fontSize: 9.5, letterSpacing: 0.6, color: color.slateFaint, marginTop: 1 },
   /** The map, which is the screen. Everything else floats on it. */
   stage: { flex: 1, backgroundColor: color.surfaceSubtle },
+  // The completion beat. A scrim rather than a screen: the walk is already
+  // drawn behind it, and dismissing it reveals the thing it is about.
+  finishedScrim: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 30,
+    backgroundColor: 'rgba(7,32,42,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: space.xl,
+  },
+  finishedCard: {
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.xxl,
+    paddingHorizontal: space.xl,
+    borderRadius: radius.xxl,
+    backgroundColor: color.surface,
+    alignSelf: 'stretch',
+  },
+  finishedTitle: { ...type.heading, fontSize: 22, color: color.navy },
+  finishedBody: { ...type.body, fontSize: 14, color: color.slate, textAlign: 'center' },
+  finishedHint: { ...type.caption, fontSize: 11, color: color.slateFaint, marginTop: space.xs },
   quiet: {
     position: 'absolute',
     left: space.xl,
@@ -529,14 +1017,6 @@ const styles = StyleSheet.create({
   modalTitle: { ...type.title, color: color.navy, marginTop: 2 },
   closeIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: color.surface, alignItems: 'center', justifyContent: 'center' },
   modalBody: { paddingHorizontal: space.xl, paddingBottom: space.xxxl },
-  shareCard: { backgroundColor: color.surface, borderRadius: radius.xxl, overflow: 'hidden', borderWidth: 1, borderColor: color.hairline },
-  routeFree: { height: 128, alignItems: 'center', justifyContent: 'center', backgroundColor: color.electricSoft },
-  shareCopy: { padding: space.xl },
-  shareBrand: { ...type.caption, color: color.electric },
-  shareTitle: { fontFamily: font.memoryTitle, fontSize: 31, lineHeight: 38, color: color.navy, marginTop: space.sm },
-  shareDate: { ...type.body, color: color.slateMuted, marginTop: 4 },
-  shareDog: { ...type.heading, color: color.navy, marginTop: space.xl },
-  shareFoot: { ...type.caption, color: color.slateFaint, marginTop: space.xxl },
   routeOption: { minHeight: 72, flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.lg },
   optionTitle: { ...type.label, color: color.navy },
   optionBody: { ...type.body, color: color.slateMuted, marginTop: 2 },

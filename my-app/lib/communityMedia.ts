@@ -24,24 +24,29 @@ async function displayCopy(capture: PendingCapture): Promise<string | null> {
   }
 }
 
-async function readMediaRows(walkSessionId: string): Promise<any[]> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const { data } = await supabase
-      .from('walk_media')
-      .select('id, captured_at, lat, lng')
-      .eq('walk_session_id', walkSessionId);
-    if (data?.length) return data;
-    await new Promise(resolve => setTimeout(resolve, 450 * (attempt + 1)));
-  }
-  return [];
-}
-
 /**
- * How far apart the device's shutter time and the server's stored time may be
- * and still describe the same photo. Generous enough for clock skew and the
- * upload round trip, tight enough that two shots cannot claim each other.
+ * ── What used to be here, and the bug it was ───────────────────────────────
+ *
+ * `readMediaRows` polled `walk_media` for rows the outbox was writing, then
+ * `matchMediaRow` paired each capture to a row by timestamp within 1500 ms.
+ * Both are gone, and so is the failure they caused.
+ *
+ * The poll returned the instant the FIRST row landed:
+ *
+ *     if (data?.length) return data;
+ *
+ * The outbox writes those rows one at a time — each is an upload — so the poll
+ * almost always came back holding exactly one. Every later capture then found
+ * no row within tolerance, hit `continue`, and was dropped without a word.
+ *
+ * It was not a race. Measured across every trail walk in production — 8 walks,
+ * 14 photos — the first shot published every single time and the second and
+ * third never did. 2→1, 2→1, 3→1.
+ *
+ * Nothing here waits on `walk_media` any more: a capture arrives already
+ * knowing its own row id (see PendingCapture.mediaId), so there is nothing to
+ * look up and nothing to match.
  */
-export const CAPTURE_MATCH_TOLERANCE_MS = 1500;
 
 /**
  * The captures a walk is allowed to publish: the ones whose shutter was pressed
@@ -57,55 +62,65 @@ export function selectSharedCaptures<T extends { capturedAt: number }>(
 }
 
 /**
- * Pair a local capture with the walk_media row the outbox wrote for it. Nothing
- * is invented: with no row within tolerance the moment is simply not published,
- * which keeps authorship attached to a real, persisted photo.
+ * What the finish-time sweep still has to publish: shared at the shutter, and
+ * not already CONFIRMED on the server.
+ *
+ * The sweep used to run over every shared capture again, on the premise that
+ * the upsert made repeats free. The upsert makes them harmless, not free: each
+ * repeat re-resized the photo, re-uploaded it (~180 KB) and re-wrote its row —
+ * N uploads, at the moment the phone is busiest (external audit, 2026-09-26).
+ *
+ * Only a confirmed success is skipped. Anything that failed, or never started,
+ * is still swept — the sweep is the only retry for a photo taken without signal.
  */
-export function matchMediaRow<T extends { captured_at: string }>(
-  rows: readonly T[],
-  capturedAt: number,
-): T | null {
-  let best: T | null = null;
-  let bestDistance = CAPTURE_MATCH_TOLERANCE_MS;
-  for (const row of rows) {
-    const serverMs = Date.parse(row.captured_at);
-    if (!Number.isFinite(serverMs)) continue;
-    const distance = Math.abs(serverMs - capturedAt);
-    if (distance < bestDistance) {
-      best = row;
-      bestDistance = distance;
-    }
-  }
-  return best;
+export function capturesToSweep<T extends { capturedAt: number; mediaId?: string }>(
+  captures: readonly T[],
+  sharedCaptureTimes: ReadonlySet<number>,
+  alreadyPublished: ReadonlySet<string> = new Set(),
+): T[] {
+  return selectSharedCaptures(captures, sharedCaptureTimes)
+    .filter(capture => !capture.mediaId || !alreadyPublished.has(capture.mediaId));
+}
+
+export interface PublishTarget {
+  communityWalkId: string;
+  contributorId: string;
+  dogId: string;
 }
 
 /**
- * Publish only captures that were explicitly in Shared mode at shutter time.
- * This is best-effort: failure never changes or removes the personal keepsake.
+ * Put one photo on the trail, now.
+ *
+ * Called as the shutter fires, so the pack sees each other's photos during the
+ * walk rather than all at once when it ends. Idempotent by construction: the
+ * row is keyed on the capture's own `mediaId`, and `onConflict` makes a repeat
+ * a no-op rather than a duplicate — which is what lets the end-of-walk sweep
+ * below re-run over everything without checking what already landed.
+ *
+ * Returns whether the row reached the server. Never throws: a photo that could
+ * not be shared is still a photo, still on this phone, and still the owner's
+ * own keepsake. The caller's job is to leave the draft alone and let the sweep
+ * try again.
  */
-export async function publishCommunityCaptures(input: {
-  communityWalkId: string;
-  personalWalkId: string;
-  contributorId: string;
-  dogId: string;
-  captures: PendingCapture[];
-  sharedCaptureTimes: Set<number>;
-}): Promise<void> {
-  const wanted = selectSharedCaptures(input.captures, input.sharedCaptureTimes);
-  if (!wanted.length) return;
-  const mediaRows = await readMediaRows(input.personalWalkId);
+export async function publishOneCapture(
+  capture: PendingCapture,
+  target: PublishTarget,
+): Promise<boolean> {
+  try {
+    const mediaId = capture.mediaId;
+    if (!mediaId) return false;
 
-  for (const capture of wanted) {
-    const row = matchMediaRow(mediaRows, capture.capturedAt);
-    if (!row) continue;
-
-    const path = `${input.communityWalkId}/${input.contributorId}/${row.id}.jpg`;
+    // Uploaded before the row is written, so a row never promises an image
+    // that is not there. A failed upload still publishes the moment — where
+    // and when it happened is true either way, and the display copy can be
+    // filled in by a later sweep.
+    const path = `${target.communityWalkId}/${target.contributorId}/${mediaId}.jpg`;
     const uri = await displayCopy(capture);
     let uploadedPath: string | null = null;
     if (uri) {
       try {
         const form = new FormData();
-        form.append('file', { uri, name: `${row.id}.jpg`, type: 'image/jpeg' } as unknown as Blob);
+        form.append('file', { uri, name: `${mediaId}.jpg`, type: 'image/jpeg' } as unknown as Blob);
         const { error } = await supabase.storage
           .from(COMMUNITY_MEDIA_BUCKET)
           .upload(path, form, { contentType: 'image/jpeg', upsert: true });
@@ -115,18 +130,64 @@ export async function publishCommunityCaptures(input: {
       }
     }
 
-    await supabase.from('community_shared_media').upsert({
-      walk_id: input.communityWalkId,
-      contributor_id: input.contributorId,
-      walk_media_id: row.id,
-      dog_ids: [input.dogId],
+    const { error } = await supabase.from('community_shared_media').upsert({
+      walk_id: target.communityWalkId,
+      contributor_id: target.contributorId,
+      walk_media_id: mediaId,
+      dog_ids: [target.dogId],
       display_path: uploadedPath,
       captured_at: new Date(capture.capturedAt).toISOString(),
       capture_lat: capture.lat,
       capture_lng: capture.lng,
       external_share_allowed: false,
     }, { onConflict: 'walk_media_id' });
+    if (error) return false;
+    // The row alone is not "published" when the picture did not go up with it.
+    // Reporting success here marked the photo done, so nothing ever retried
+    // the upload and it sat as "This photo is still arriving" for good. False
+    // sends it back round: the live publisher and the finish-time sweep both
+    // retry, and the upsert makes a second row impossible. A capture we could
+    // not make a display copy of has no picture to send, so that stays done.
+    return uri === null || uploadedPath !== null;
+  } catch {
+    return false;
   }
+}
+
+/**
+ * The sweep at the end of the walk — a backstop, no longer the main path.
+ *
+ * Every shared capture is published as it is taken. This runs over the whole
+ * set once more when the walk saves, which costs nothing for photos that
+ * already landed (the upsert is keyed on an id that has not changed) and
+ * rescues the ones that did not: the shot taken in a tunnel, or on the walk
+ * where the signal went at minute three.
+ *
+ * Publishes only captures that were explicitly in Shared mode at shutter time.
+ * Best-effort throughout: failure never changes or removes the personal
+ * keepsake, which is the owner's regardless of what the pack ever sees.
+ */
+export async function publishCommunityCaptures(input: {
+  communityWalkId: string;
+  contributorId: string;
+  dogId: string;
+  captures: PendingCapture[];
+  sharedCaptureTimes: Set<number>;
+  /** Media ids the live publisher has already confirmed — see capturesToSweep. */
+  alreadyPublished?: ReadonlySet<string>;
+}): Promise<void> {
+  const wanted = capturesToSweep(input.captures, input.sharedCaptureTimes, input.alreadyPublished);
+  if (!wanted.length) return;
+
+  const target: PublishTarget = {
+    communityWalkId: input.communityWalkId,
+    contributorId: input.contributorId,
+    dogId: input.dogId,
+  };
+  // Sequential, not Promise.all: this runs while a walk is finishing and the
+  // summary is being written, and firing every upload at once is how the one
+  // moment the owner is watching gets slower.
+  for (const capture of wanted) await publishOneCapture(capture, target);
 }
 
 /**
@@ -148,12 +209,78 @@ export async function publishCommunityCaptures(input: {
  */
 const SIGNED_URL_TTL_S = 60 * 60;
 
+/**
+ * Signed URLs already minted, by storage path.
+ *
+ * ── Why the STRING has to be stable, not just valid ────────────────────────
+ *
+ * Every call to `createSignedUrls` returns a different string for the same
+ * object — a fresh token and a fresh expiry. `expo-image` keys its cache on the
+ * URL, so a new string is a new image: the photo is downloaded again, decoded
+ * again, and the one already on screen is replaced by an identical one.
+ *
+ * That made re-signing far more expensive than the round trip it cost. The
+ * memory reel re-signed every moment on each focus; the live map re-signed on
+ * EVERY realtime event, which is every attendance change and every photo anyone
+ * on the walk shares. A six-person walk could re-download the same set of
+ * pictures dozens of times over.
+ *
+ * Holding the URLs makes the string stable, so the second load hands `expo-image`
+ * exactly what it already has and nothing moves.
+ *
+ * ── In memory, and that is the right lifetime ──────────────────────────────
+ *
+ * Not persisted: a signature that outlives the process would be restored after
+ * it had expired, and the point of this is to avoid 403s rendering as blank
+ * rectangles. Cleared on sign-out with the rest of the previous account's state,
+ * for the same reason the snapshot cache is.
+ */
+const signedUrls = new Map<string, { url: string; expiresAt: number }>();
+
+/**
+ * Re-sign with ten minutes to spare.
+ *
+ * A URL handed out at 59 minutes is valid when it is returned and expired by the
+ * time somebody scrolls to it, which is the exact failure the hour-long TTL was
+ * raised to fix. The margin has to exceed how long a screen may sit open after
+ * its last fetch.
+ */
+const RESIGN_MARGIN_MS = 10 * 60_000;
+
 export async function communityMediaUrls(paths: string[]): Promise<Record<string, string>> {
   const unique = [...new Set(paths.filter(Boolean))];
   if (!unique.length) return {};
+
+  const now = Date.now();
+  const out: Record<string, string> = {};
+  const misses: string[] = [];
+  for (const path of unique) {
+    const held = signedUrls.get(path);
+    if (held && held.expiresAt - RESIGN_MARGIN_MS > now) out[path] = held.url;
+    else misses.push(path);
+  }
+  // Every path already held: no Storage round trip at all, which is the common
+  // case for a reload of a screen that has not gained a photo.
+  if (!misses.length) return out;
+
   const { data, error } = await supabase.storage
     .from(COMMUNITY_MEDIA_BUCKET)
-    .createSignedUrls(unique, SIGNED_URL_TTL_S);
-  if (error || !data) return {};
-  return Object.fromEntries(data.flatMap(row => row.path && row.signedUrl ? [[row.path, row.signedUrl]] : []));
+    .createSignedUrls(misses, SIGNED_URL_TTL_S);
+  // A failed signing still returns what was already held. Some pictures beats
+  // none, and it matches what this did before: never throw, just answer with
+  // whatever could be resolved.
+  if (error || !data) return out;
+
+  const expiresAt = now + SIGNED_URL_TTL_S * 1000;
+  for (const row of data) {
+    if (!row.path || !row.signedUrl) continue;
+    signedUrls.set(row.path, { url: row.signedUrl, expiresAt });
+    out[row.path] = row.signedUrl;
+  }
+  return out;
+}
+
+/** Dropped on sign-out, with the rest of the previous account's state. */
+export function clearCommunityMediaUrls(): void {
+  signedUrls.clear();
 }

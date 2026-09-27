@@ -12,24 +12,31 @@ import {
 } from '../../../../components/community/CommunityUI';
 import { color, font, makeShadow, radius, space, type } from '../../../../constants/design';
 import { useWalkEnabled } from '../../../../hooks/useWalkEnabled';
-import { cacheKey, readSnapshot } from '../../../../lib/communityCache';
+import { TOGETHER_READ_TIMEOUT_MS, cacheKey, readSnapshot } from '../../../../lib/communityCache';
+import { timed } from '../../../../lib/community/perf';
+import { withTimeout } from '../../../../lib/withTimeout';
 import {
   inviteToWalk,
   joinOuting,
   listMyDogs,
   loadOuting,
   setAttendance,
-  startOuting,
+  isTrailHost,
   type CommunityDog,
   type CommunityPack,
   type CommunityWalk,
   type OutingSnapshot,
   type WalkAttendance,
 } from '../../../../lib/communityWalks';
-import { armCommunityWalkStart } from '../../../../lib/walk/walkStartIntent';
+import {
+  acknowledgeLocationDisclosure,
+  hasAcknowledgedLocationDisclosure,
+} from '../../../../lib/walk/locationDisclosure';
+import { LocationDisclosure } from '../../../../components/walk/LocationDisclosure';
 import { useActivePetStore } from '../../../../store/useActivePetStore';
 import { useWalkStore } from '../../../../store/useWalkStore';
 import { useAuth } from '../../../../providers/AuthProvider';
+import { dateFormat } from '../../../../lib/dateFormats';
 
 type DateDetails = {
   /** The chip's two lines. Month above, day below. */
@@ -56,10 +63,10 @@ function dateDetails(value: string | null, known = true): DateDetails {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return undated;
   return {
-    month: new Intl.DateTimeFormat(undefined, { month: 'short' }).format(date).toUpperCase(),
-    day: new Intl.DateTimeFormat(undefined, { day: 'numeric' }).format(date),
-    when: `${new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(date)}, ${
-      new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(date)
+    month: dateFormat({ month: 'short' }).format(date).toUpperCase(),
+    day: dateFormat({ day: 'numeric' }).format(date),
+    when: `${dateFormat({ weekday: 'long' }).format(date)}, ${
+      dateFormat({ hour: 'numeric', minute: '2-digit' }).format(date)
     }`,
   };
 }
@@ -116,6 +123,7 @@ export default function OutingScreen() {
   const { user } = useAuth();
   const activePet = useActivePetStore(state => state.activePet);
   const trackingPhase = useWalkStore(state => state.phase);
+  const startWalk = useWalkStore(state => state.startWalk);
   const walkEnabled = useWalkEnabled();
   /**
    * The plan, as the trail already knew it, read before the first paint.
@@ -157,12 +165,20 @@ export default function OutingScreen() {
   const [loading, setLoading] = useState(!cached || !!cached.partial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The Play-policy disclosure stands between joining and tracking. */
+  const [pendingStart, setPendingStart] = useState(false);
 
   const load = useCallback(async () => {
     if (!walkId) return;
     setError(null);
     try {
-      const [outing, dogs] = await Promise.all([loadOuting(walkId), listMyDogs()]);
+      // Bounded so `loading` always resolves and the button can never sit on a
+      // request that will not answer. The catch below keeps the painted snapshot.
+      const [outing, dogs] = await withTimeout(
+        timed('loadOuting+dogs', 1, () => Promise.all([loadOuting(walkId), listMyDogs()])),
+        TOGETHER_READ_TIMEOUT_MS,
+        'loadOuting',
+      );
       setWalk(outing.walk);
       setPack(outing.pack);
       setAttendanceRows(outing.attendance);
@@ -182,13 +198,24 @@ export default function OutingScreen() {
     }
   }, [activePet, walkId]);
 
+  /**
+   * Refetched on every focus, behind the snapshot painted at the top of this
+   * file. There is no freshness gate — see the note on the trail screen for why
+   * it was removed. In short: this screen paints instantly from cache anyway, so
+   * the gate saved a request but no visible time, and it made every mutation
+   * elsewhere responsible for invalidating this key. This screen is where that
+   * went wrong most visibly: a primed stand-in counted as fresh, the roster never
+   * loaded, and "Start the walk" was disabled on every planned walk.
+   */
   useFocusEffect(useCallback(() => {
     if (!walkEnabled) return;
     void load();
   }, [load, walkEnabled]));
 
   const mine = attendance.find(row => row.user_id === user?.id);
-  const isOrganizer = walk?.organizer_id === user?.id;
+  // The trail's host, not this walk's organiser. Starting, editing and
+  // inviting all belong to them now — see isTrailHost.
+  const isOrganizer = isTrailHost(pack, user?.id);
   const date = useMemo(() => dateDetails(walk?.scheduled_for ?? null, !!walk), [walk]);
   /** Only shown when the host actually named this walk something of its own. */
   const named = distinctTitle(walk?.title, pack?.name);
@@ -197,8 +224,8 @@ export default function OutingScreen() {
   /**
    * Ask one more person, after the walk already exists.
    *
-   * Organiser only, because the RPC is — a walk's guest list belongs to whoever
-   * is running it. The row moves straight up into the roster on reload.
+   * Host only, because the RPC is — a walk's guest list belongs to the person
+   * running the trail. The row moves straight up into the roster on reload.
    */
   const invite = async (userId: string) => {
     if (!walkId) return;
@@ -253,20 +280,78 @@ export default function OutingScreen() {
     }
   };
 
+  /**
+   * Start recording, and go straight to the shared map.
+   *
+   * ── What this used to do, and the flash it caused ─────────────────────────
+   *
+   * It armed a one-shot intent and pushed `/walk`, the SOLO recorder, which
+   * then mounted, cleared the disclosure, started tracking, and pushed the
+   * shared map over itself — and stayed underneath for the whole walk. That
+   * middle step was visible: a blink of the personal walk screen on the way to
+   * a walk that is not personal.
+   *
+   * Nothing about it was necessary. Tracking starts from the store, the
+   * disclosure gate is a two-line check, and the recording work now belongs to
+   * `components/walk/TrailRecording.tsx` at the app root. So this screen does
+   * the whole start itself and replaces — never pushes — to the shared map.
+   *
+   * `replace`, so there is nothing to go "back" to: this screen's job is done
+   * the moment the walk is running, and leaving it on the stack is what made
+   * finishing land somewhere nobody asked for.
+   */
   const beginPersonalWalk = async (startSharedOuting: boolean) => {
-    if (!walkId || !walk || !pack || !activePet || selectedDogIds.length === 0) return;
+    if (!walkId || !walk || !pack || !activePet || !user?.id || selectedDogIds.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      if (startSharedOuting) await startOuting(walkId);
-      await joinOuting(walkId, selectedDogIds, shareLocation);
-      armCommunityWalkStart({ walkId, packId: walk.pack_id, packName: pack.name, shareLocation });
-      router.push('/walk' as never);
+      // One transaction — starting (host) and joining together. See joinOuting.
+      await joinOuting(walkId, selectedDogIds, shareLocation, { start: startSharedOuting });
+
+      // Google Play requires a prominent in-app disclosure BEFORE the runtime
+      // location request whenever location is collected in the background,
+      // which a tracked walk does on both platforms. Asked once per account,
+      // and the same acknowledgement the solo walk uses — one consent, not two.
+      if (!(await hasAcknowledgedLocationDisclosure(user.id))) {
+        setBusy(false);
+        setPendingStart(true);
+        return;
+      }
+      await launchTracking();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The walk could not start.');
       setBusy(false);
     }
   };
+
+  /**
+   * The tracking half, separated so the disclosure gate can call it later.
+   *
+   * The trail goes into `startWalk` and from there into walkTracker's durable
+   * record, which is what makes it survive a background relaunch — and what
+   * `TrailRecording` reads to know it should be awake. See
+   * [[trail-vs-solo-walk-separation]].
+   */
+  const launchTracking = useCallback(async () => {
+    if (!walkId || !walk || !pack || !activePet || !user?.id) return;
+    const result = await startWalk(activePet, user.id, {
+      walkId,
+      packId: walk.pack_id,
+      packName: pack.name,
+      shareLocation,
+    });
+    if (result === 'denied') {
+      setError('Location access is off, so this walk can’t be measured.');
+      setBusy(false);
+      return;
+    }
+    if (result === 'services_off') {
+      setError('Location services are turned off on this phone.');
+      setBusy(false);
+      return;
+    }
+    router.replace(`/community/walk/${walkId}/live` as never);
+  }, [walkId, walk, pack, activePet, user?.id, shareLocation, startWalk, router]);
 
   /**
    * Said once, at the only moment it is true, and before anything is written.
@@ -277,8 +362,14 @@ export default function OutingScreen() {
    */
   const confirmAndBegin = (startSharedOuting: boolean) => {
     Alert.alert(
-      'The pack will see where you are',
-      'While this walk is on, everyone walking it can see your live position. It stops the moment your walk finishes. Your way to the meeting point and home again is never shared.',
+      'This walk is shared with the pack',
+      // Two things happen, and the second used to go unsaid. The live position
+      // is temporary and the old copy covered it well. The RECORDED route is
+      // not temporary: it joins the shared memory through
+      // community_members_read_linked_personal_walks and stays there, readable
+      // by everyone on the walk, along with the pace and the stops. Consent to
+      // the first is not consent to the second.
+      'Everyone walking can see your live position while it is on, and that stops when your walk finishes. The route you record joins this walk’s shared memory and stays there. Your way to the meeting point and home again is never shared.',
       [
         { text: 'Not now', style: 'cancel' },
         { text: 'Start walking', onPress: () => { void beginPersonalWalk(startSharedOuting); } },
@@ -328,18 +419,57 @@ export default function OutingScreen() {
    */
   const waiting = !!walk && walk.state === 'planned' && !isOrganizer;
 
+  /**
+   * A finished walk is a thing you look at, not a thing you join.
+   *
+   * Opening its memory needs no dog and no pet profile — the walk already
+   * happened, and whatever was brought to it is recorded. Without this, a
+   * member whose dog was not selected found "Open shared memory" greyed out on
+   * the one screen the rules now leave them: once the host ends a walk, the
+   * memory IS the walk as far as they are concerned.
+   */
+  const previewOnly = walk?.state === 'completed';
+
   const primaryDisabled = busy
     || !walk
-    || !activePet
-    || selectedDogIds.length === 0
-    || (walk?.state === 'planned' && !isOrganizer)
-    || walk?.state === 'cancelled';
+    || walk.state === 'cancelled'
+    || (!previewOnly && (!activePet || selectedDogIds.length === 0))
+    || (walk.state === 'planned' && !isOrganizer);
 
   if (!walkEnabled) {
     return (
       <SafeAreaView style={communityScreenStyles.screen}>
         <CommunityDogsOnly petName={activePet?.name} onBack={() => router.back()} />
       </SafeAreaView>
+    );
+  }
+
+  /**
+   * The disclosure, before the OS prompt and before any tracking.
+   *
+   * Reached only on this account's first walk — after that the acknowledgement
+   * is on file and `beginPersonalWalk` goes straight through. "Not now" leaves
+   * them here rather than navigating away: they have already joined the walk,
+   * and the only thing they declined is starting to record it.
+   */
+  if (pendingStart) {
+    return (
+      <LocationDisclosure
+        // The trail variant, and it is not cosmetic. The solo copy tells the
+        // reader "only you can see it", which is true of a solo walk and false
+        // here — this walk's route joins the shared memory. Shipping the solo
+        // text on this screen meant the app's stated consent for sharing was a
+        // sentence promising the opposite.
+        variant="trail"
+        onReadMore={() => router.push('/trail-safety' as never)}
+        onContinue={() => {
+          acknowledgeLocationDisclosure(user?.id);
+          setPendingStart(false);
+          setBusy(true);
+          void launchTracking();
+        }}
+        onCancel={() => setPendingStart(false)}
+      />
     );
   }
 

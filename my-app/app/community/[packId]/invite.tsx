@@ -15,9 +15,17 @@
  * no suggestions, because the absence of those IS the feature: a private trail
  * that could be browsed into is not private. The confirmation card below the
  * field exists so the host can see they have the right person before sending.
+ *
+ * ── "Invited before" is not a suggestion list ──────────────────────────────
+ *
+ * A host sees the people THEY have invited before, and can tick several at
+ * once. That does not break the rule above: nobody can be on it whom this host
+ * did not already reach by exact username or by approving their link. It is
+ * their own history, and the server derives it and re-checks every id on send
+ * (migration 20260924000000_previous_invitees). Members never see it.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -25,10 +33,13 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { DogAvatar, communityScreenStyles } from '../../../components/community/CommunityUI';
 import { color, font, space, type } from '../../../constants/design';
-import { cacheKey, readSnapshot } from '../../../lib/communityCache';
+import { cacheKey, invalidate, readSnapshot } from '../../../lib/communityCache';
 import {
   createExternalInvite,
+  invitePreviousInvitees,
   inviteUsername,
+  isTrailHost,
+  listPreviousInvitees,
   loadPack,
   lookupUsername,
   normalizeUsername,
@@ -43,7 +54,17 @@ import {
   inviteFirstName,
   inviteShareTitle,
 } from '../../../lib/community/inviteMessage';
+import {
+  MAX_PREVIOUS_INVITE_BATCH,
+  inviteSelectedLabel,
+  inviteeSubtitle,
+  inviteeTitle,
+  previousInviteError,
+  type PreviousInvitee,
+} from '../../../lib/community/previousInvitees';
+import { haptic } from '../../../lib/haptics';
 import { useAuth } from '../../../providers/AuthProvider';
+import { dateFormat } from '../../../lib/dateFormats';
 
 export default function InviteToPackScreen() {
   const router = useRouter();
@@ -109,6 +130,76 @@ export default function InviteToPackScreen() {
    */
   const externalCode = React.useRef<string | null>(null);
 
+  /**
+   * People this host has invited before — see the header. Empty for members,
+   * for a host who has never invited anyone, and on a database that does not
+   * have the function yet; in every one of those the section simply is not
+   * drawn, so there is no error to show for a feature that is not there.
+   */
+  const isHost = isTrailHost(pack, user?.id);
+  const [previous, setPrevious] = useState<PreviousInvitee[]>([]);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [sendingPrevious, setSendingPrevious] = useState(false);
+  const [previousError, setPreviousError] = useState<string | null>(null);
+
+  const loadPrevious = useCallback(async () => {
+    if (!packId || !isHost) return;
+    try {
+      const people = await listPreviousInvitees(packId);
+      setPrevious(people);
+      // Anyone who stopped being eligible drops out of the selection too.
+      setSelected(current => new Set(
+        [...current].filter(id => people.some(person => person.id === id && !person.pendingHere)),
+      ));
+    } catch {
+      setPrevious([]);
+    }
+  }, [packId, isHost]);
+  useEffect(() => { void loadPrevious(); }, [loadPrevious]);
+
+  const selectable = previous.filter(person => !person.pendingHere);
+  const allSelected = selectable.length > 0 && selectable.every(person => selected.has(person.id));
+
+  const toggle = (id: string) => {
+    setPreviousError(null);
+    setSelected(current => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < MAX_PREVIOUS_INVITE_BATCH) next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setPreviousError(null);
+    setSelected(allSelected
+      ? new Set()
+      : new Set(selectable.slice(0, MAX_PREVIOUS_INVITE_BATCH).map(person => person.id)));
+  };
+
+  const sendPrevious = async () => {
+    const ids = [...selected];
+    if (!packId || ids.length === 0) return;
+    setSendingPrevious(true);
+    setPreviousError(null);
+    try {
+      await invitePreviousInvitees(packId, ids);
+      haptic.tap();
+      // Same reason as the username path: the meetup screen would otherwise
+      // show a roster without the people just invited.
+      invalidate(cacheKey.pack(packId));
+      setPrevious(list => list.map(person => (ids.includes(person.id) ? { ...person, pendingHere: true } : person)));
+      setSelected(new Set());
+      setSent(true);
+    } catch (cause) {
+      const raw = cause instanceof Error ? cause.message : '';
+      setPreviousError(previousInviteError(raw));
+      if (raw.includes('not_a_previous_invitee')) void loadPrevious();
+    } finally {
+      setSendingPrevious(false);
+    }
+  };
+
   useEffect(() => {
     if (!packId) return;
     loadPack(packId)
@@ -146,6 +237,10 @@ export default function InviteToPackScreen() {
     setError(null);
     try {
       await inviteUsername(packId, match.username ?? query);
+      // The trail screen skips its refetch inside the freshness window, and
+      // going back there takes a couple of seconds. Without this the person
+      // just invited would be missing from the roster they were added to.
+      invalidate(cacheKey.pack(packId));
       setSent(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The invitation could not be sent.');
@@ -182,14 +277,14 @@ export default function InviteToPackScreen() {
       }
       const code = externalCode.current;
       const link = `https://pawtchi.com/app/community-invite?code=${code}`;
-      const trailName = pack?.name ?? 'our trail';
+      const trailName = pack?.name ?? 'our meetup';
       await Share.share({
         title: inviteShareTitle(hostName, trailName),
         message: buildInviteMessage({
           hostName,
           trailName,
           when: nextWalk?.scheduled_for
-            ? new Intl.DateTimeFormat(undefined, {
+            ? dateFormat({
                 weekday: 'long', hour: 'numeric', minute: '2-digit',
               }).format(new Date(nextWalk.scheduled_for))
             : null,
@@ -209,17 +304,17 @@ export default function InviteToPackScreen() {
     <SafeAreaView style={communityScreenStyles.screen}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.navRow}>
-          <Pressable onPress={() => (finishingCreation ? done() : router.back())} style={styles.back} accessibilityRole="button" accessibilityLabel={finishingCreation ? 'Finish and see your trails' : 'Go back'}>
+          <Pressable onPress={() => (finishingCreation ? done() : router.back())} style={styles.back} accessibilityRole="button" accessibilityLabel={finishingCreation ? 'Finish and see your meetups' : 'Go back'}>
             <Ionicons name="chevron-back" size={24} color={color.navy} />
           </Pressable>
-          <Text style={styles.navTitle} numberOfLines={1}>{pack?.name ?? 'Your trail'}</Text>
+          <Text style={styles.navTitle} numberOfLines={1}>{pack?.name ?? 'Your meetup'}</Text>
           {finishingCreation ? (
             <Pressable
               onPress={done}
               style={styles.doneAction}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Finish and see your trails"
+              accessibilityLabel="Finish and see your meetups"
             >
               <Text style={styles.doneText}>Done</Text>
             </Pressable>
@@ -228,7 +323,7 @@ export default function InviteToPackScreen() {
               onPress={() => router.push(`/community/${packId}/settings` as never)}
               style={styles.circleAction}
               accessibilityRole="button"
-              accessibilityLabel="Trail settings"
+              accessibilityLabel="Meetup settings"
             >
               <Ionicons name="ellipsis-horizontal" size={19} color={color.navy} />
             </Pressable>
@@ -236,7 +331,86 @@ export default function InviteToPackScreen() {
         </View>
 
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <Text style={styles.display}>WHO SHOULD WALK WITH US?</Text>
+          <Text style={styles.display}>WHO ARE WE MEETING?</Text>
+
+          {/* ── Invited before ─────────────────────────────────────────────
+              First when it exists, because a host who has invited people
+              before almost always wants the same people again, and ticking
+              them beats retyping five usernames. A first-time host has no
+              list, and the share link below leads exactly as it did. */}
+          {isHost && previous.length > 0 ? (
+            <View style={styles.previousCard}>
+              <View style={styles.previousHead}>
+                <View style={styles.flex}>
+                  <Text style={styles.previousTitle}>Invited before</Text>
+                  <Text style={styles.previousBody}>People you have asked to your meetups. Only you see this.</Text>
+                </View>
+                {selectable.length > 1 ? (
+                  <Pressable onPress={toggleAll} hitSlop={8} accessibilityRole="button">
+                    <Text style={styles.previousAll}>{allSelected ? 'Clear' : 'Select all'}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+
+              {previous.map(person => {
+                const chosen = selected.has(person.id);
+                const dog = person.dogs[0] ?? {
+                  id: person.id,
+                  name: person.full_name ?? 'Friend',
+                  image_url: person.avatar_url,
+                };
+                return (
+                  <Pressable
+                    key={person.id}
+                    onPress={() => toggle(person.id)}
+                    disabled={person.pendingHere || sendingPrevious}
+                    style={({ pressed }) => [styles.previousRow, pressed && styles.pressed]}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: chosen || person.pendingHere, disabled: person.pendingHere }}
+                    accessibilityLabel={`${inviteeTitle(person)}, ${inviteeSubtitle(person)}`}
+                  >
+                    <DogAvatar dog={dog} size={40} />
+                    <View style={styles.flex}>
+                      <Text style={styles.memberName} numberOfLines={1}>{inviteeTitle(person)}</Text>
+                      <Text style={styles.memberHandle} numberOfLines={1}>{inviteeSubtitle(person)}</Text>
+                    </View>
+                    {person.pendingHere ? (
+                      <View style={styles.sentPill}>
+                        <Ionicons name="checkmark" size={14} color={color.navy} />
+                        <Text style={styles.sentText}>Invited</Text>
+                      </View>
+                    ) : (
+                      <Ionicons
+                        name={chosen ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={26}
+                        color={chosen ? color.navy : color.slateFaint}
+                      />
+                    )}
+                  </Pressable>
+                );
+              })}
+
+              {selected.size >= MAX_PREVIOUS_INVITE_BATCH ? (
+                <Text style={styles.hint}>Twelve at a time. Send these, then choose the rest.</Text>
+              ) : null}
+              {previousError ? <Text style={communityScreenStyles.error}>{previousError}</Text> : null}
+
+              {selectable.length > 0 ? (
+                <Pressable
+                  onPress={() => void sendPrevious()}
+                  disabled={selected.size === 0 || sendingPrevious}
+                  style={({ pressed }) => [
+                    styles.previousSend,
+                    (selected.size === 0 || sendingPrevious) && styles.previousSendIdle,
+                    pressed && styles.pressed,
+                  ]}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.previousSendText}>{inviteSelectedLabel(selected.size, sendingPrevious)}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           {/* ── First, because it is the one that works on anybody ─────────
               The username path needs the other person to already have Pawtchi
               AND to have chosen a handle AND to have told you what it is. The
@@ -306,7 +480,7 @@ export default function InviteToPackScreen() {
                 <Ionicons name="arrow-forward" size={20} color={color.cream} />
               </Pressable>
             </View>
-            <Text style={styles.hint}>Usernames are exact so private trails stay private.</Text>
+            <Text style={styles.hint}>Usernames are exact so private meetups stay private.</Text>
 
             {match ? (
               <View style={styles.result}>
@@ -400,7 +574,7 @@ export default function InviteToPackScreen() {
               accessibilityRole="button"
             >
               <Text style={styles.finishText}>
-                {sent ? 'Done — see my trails' : 'Skip for now'}
+                {sent ? 'Done — see my meetups' : 'Skip for now'}
               </Text>
             </Pressable>
           ) : null}
@@ -571,6 +745,35 @@ const styles = StyleSheet.create({
   shareTitle: { ...type.bodyMedium, fontSize: 14.5, color: color.surface },
   shareBody: { ...type.caption, fontSize: 10.5, lineHeight: 15, letterSpacing: 0, color: color.creamDim, marginTop: 3 },
   shareNote: { ...type.caption, fontSize: 10, lineHeight: 15, letterSpacing: 0, color: color.slateFaint, marginTop: space.md, paddingHorizontal: 4 },
+
+  previousCard: {
+    marginTop: 22,
+    padding: 16,
+    borderRadius: 24,
+    backgroundColor: color.surfaceSubtle,
+  },
+  previousHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 4 },
+  previousTitle: { ...type.heading, fontSize: 16, color: color.navy },
+  previousBody: { ...type.caption, fontSize: 10.5, lineHeight: 15, letterSpacing: 0, color: color.slateMuted, marginTop: 3 },
+  previousAll: { fontFamily: font.bold, fontSize: 12.5, color: color.electric, paddingTop: 2 },
+  previousRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: color.hairline,
+  },
+  previousSend: {
+    minHeight: 50,
+    marginTop: 14,
+    borderRadius: 16,
+    backgroundColor: color.yellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previousSendIdle: { opacity: 0.45 },
+  previousSendText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
 
   pressed: { opacity: 0.88 },
   doneAction: { minHeight: 42, paddingHorizontal: 10, justifyContent: 'center' },

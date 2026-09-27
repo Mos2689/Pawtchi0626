@@ -2,7 +2,7 @@
  * Creator code normalisation.
  *
  * Mirrors public.normalize_creator_code() in
- * supabase/migrations/20260906000000_creator_codes.sql. Postgres is
+ * supabase/migrations/20260906112122_creator_codes.sql. Postgres is
  * authoritative — its version is what a lookup actually matches on — so a
  * disagreement between the two can only ever produce a miss, never a wrong hit.
  * This copy exists so the field can show the canonical form as the user types,

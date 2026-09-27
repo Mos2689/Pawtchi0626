@@ -23,6 +23,7 @@
 import type { GeoPoint } from '../walk/geo';
 import { resolveSniffStops } from '../momentCard';
 import { getLocalYMD } from '../dateUtils';
+import { dateFormat } from '../dateFormats';
 import type { WalkMapSpotTone } from '../walk/mapSpot';
 
 /**
@@ -293,7 +294,7 @@ export function trailWhen(
   if (!scheduledFor) return 'Date to be confirmed';
   const at = new Date(scheduledFor);
   if (Number.isNaN(at.getTime())) return 'Date to be confirmed';
-  return new Intl.DateTimeFormat(undefined, {
+  return dateFormat({
     weekday: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   }).format(at);
 }

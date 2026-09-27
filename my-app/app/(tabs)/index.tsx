@@ -16,7 +16,7 @@
  */
 
 import React, { useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions, InteractionManager } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -42,7 +42,16 @@ import {
   WALK_CAMERA_ENABLED,
   WALK_STORY_ENABLED,
 } from '../../constants/features';
-import { cacheKey, readSnapshot } from '../../lib/communityCache';
+import { TOGETHER_READ_TIMEOUT_MS, cacheKey, invalidate, isFresh, readSnapshot, share, writeOptimistic } from '../../lib/communityCache';
+import {
+  loadConnectSnapshot,
+  restoreConnectSnapshot,
+  saveConnectPacks,
+  saveConnectRoutes,
+} from '../../lib/community/connectSnapshot';
+import type { ConnectStatus } from '../../lib/community/connectStatus';
+import { withTimeout } from '../../lib/withTimeout';
+import { skipped as perfSkipped, timed } from '../../lib/community/perf';
 import { pickUpNext } from '../../lib/community/upNext';
 import { WaitingPill } from '../../components/home/together/WaitingPill';
 import { WaitingSheet } from '../../components/home/together/WaitingSheet';
@@ -51,7 +60,7 @@ import { PawTrailFlourish } from '../../components/home/together/PawTrailFlouris
 import { partyColors } from '../../components/community/CommunityUI';
 import {
   approveExternalInvite,
-  listExternalInviteClaims,
+  listClaimsForPacks,
   getMyUsername,
   listInvitations,
   listPacks,
@@ -323,10 +332,23 @@ export default function HomeScreen() {
   // Same gate as every other walk surface — the flag AND a dog — so a cat
   // profile never sees the chip, let alone its contents.
   const togetherEnabled = walkEnabled;
+  // ── Connect's first frame ───────────────────────────────────────────────
+  //
+  // In-process snapshot first (a warm return), then the copy kept on the phone
+  // (a cold start — lib/community/connectSnapshot). Either is an EARLIER answer:
+  // it is painted at once and checked behind, and `connectStatus` is what says
+  // whether it has been confirmed. The status starts `unknown`, never "not
+  // loading": an empty list with nothing in flight used to be read as "you have
+  // no meetups", which is how a cold start said NOTHING PLANNED to someone with
+  // a walk on Sunday.
   const [trails, setTrails] = React.useState<CommunityPack[]>(
-    () => readSnapshot<CommunityPack[]>(cacheKey.packs()) ?? [],
+    () => readSnapshot<CommunityPack[]>(cacheKey.packs())
+      ?? restoreConnectSnapshot(user?.id)?.packs
+      ?? [],
   );
-  const [trailsLoading, setTrailsLoading] = React.useState(false);
+  const [connectStatus, setConnectStatus] = React.useState<ConnectStatus>(
+    () => (isFresh(cacheKey.packs()) ? 'ready' : 'unknown'),
+  );
   const [trailCovers, setTrailCovers] = React.useState<Record<string, string>>({});
   const [trailInvites, setTrailInvites] = React.useState<CommunityInvitation[]>([]);
   /** People waiting to be let into a trail this owner hosts. */
@@ -343,7 +365,17 @@ export default function HomeScreen() {
    */
   const [sheetHeight, setSheetHeight] = React.useState(0);
   /** Each trail's last recorded route, for the map lines and the row thumbs. */
-  const [trailRoutes, setTrailRoutes] = React.useState<Record<string, GeoPoint[]>>({});
+  const [trailRoutes, setTrailRoutes] = React.useState<Record<string, GeoPoint[]>>(
+    () => restoreConnectSnapshot(user?.id)?.routes ?? {},
+  );
+  /**
+   * Whether we know what the lines on the map are, as opposed to not having
+   * asked yet. The "your walks draw themselves here" flourish is an empty state
+   * for the map, so it waits for this rather than flashing before the lines.
+   */
+  const [trailRoutesKnown, setTrailRoutesKnown] = React.useState(
+    () => !!restoreConnectSnapshot(user?.id),
+  );
   /**
    * A trail's identity colour, stable for as long as the list order is.
    *
@@ -449,14 +481,85 @@ export default function HomeScreen() {
     const mine = packs.filter(pack => pack.owner_id === viewerId);
     if (!mine.length) { setTrailClaims([]); return; }
     try {
-      const lists = await Promise.all(
-        mine.map(pack => listExternalInviteClaims(pack.id).catch(() => [] as ExternalInviteClaim[])),
-      );
-      setTrailClaims(lists.flat());
+      // One call for every trail, not one per trail. This was the worst of the
+      // N+1s on this screen: a host with eight trails opened eight concurrent
+      // round trips to draw a single number on a single pill, and they queued
+      // behind the four-or-so sockets RN allows per host — delaying the list
+      // those requests were sitting in front of.
+      setTrailClaims(await listClaimsForPacks(mine.map(pack => pack.id)));
     } catch {
       // A missing request list is quieter than a wrong one.
     }
   }, []);
+
+  /**
+   * Ask the server for the trails, and everything that decorates them.
+   *
+   * ── Why a generation, not a `cancelled` flag ──────────────────────────────
+   *
+   * This used to live inside the focus effect with a `cancelled` flag, and
+   * leaving Connect before the answer landed set it — which skipped the
+   * `finally` too, so the spinner stayed up and the next focus (inside the
+   * freshness window) returned early and never loaded covers or routes. Home
+   * never unmounts, so there is nothing to protect by dropping an answer. What
+   * does need protecting is ORDER: only the newest request may set the status.
+   *
+   * Every answer is also saved to the phone, so the next cold start opens on it.
+   */
+  const connectGen = React.useRef(0);
+  /** A server answer has landed this session; a late disk restore must not overwrite it. */
+  const connectAnswered = React.useRef(false);
+  const refreshConnect = React.useCallback(() => {
+    const gen = ++connectGen.current;
+    const askedAt = Date.now();
+    const viewerId = user?.id ?? null;
+    setConnectStatus('loading');
+    void loadTrails();
+    // `share` collapses overlapping asks into one request. The timeout sits
+    // INSIDE the runner so the promise `share` stores is the one that settles;
+    // outside it, a stalled request would hand every later ask the same promise
+    // that never resolves.
+    share(cacheKey.packs(), () =>
+      withTimeout(timed('listPacks', 1, listPacks), TOGETHER_READ_TIMEOUT_MS, 'listPacks'))
+      .then(async next => {
+        connectAnswered.current = true;
+        if (viewerId) saveConnectPacks(viewerId, next, askedAt);
+        if (gen !== connectGen.current) return; // a newer ask will apply its own
+        setTrails(next);
+        setConnectStatus('ready');
+        void loadClaims(next, viewerId);
+        // No longer a round trip: `community_trails_for_me` returns this
+        // column, and `getMyUsername` reads what that call already stored.
+        void getMyUsername()
+          .then(name => setUsername(name))
+          .catch(() => {});
+        // Decoration, and never awaited: the list is already on screen and a
+        // line under a map is not worth delaying it for.
+        listTrailRoutes(next.map(pack => pack.id))
+          .then(found => {
+            if (viewerId) saveConnectRoutes(viewerId, found, askedAt);
+            if (gen !== connectGen.current) return;
+            setTrailRoutes(found);
+            setTrailRoutesKnown(true);
+          })
+          .catch(() => {});
+        // Covers live in a private bucket, so the card needs signed URLs. One
+        // batch for the whole list, and a failure here only costs the photo —
+        // the card falls back to its map.
+        const paths = next.flatMap(pack => (pack.coverPath ? [pack.coverPath] : []));
+        if (paths.length === 0) return;
+        try {
+          const urls = await communityMediaUrls(paths);
+          if (gen === connectGen.current) setTrailCovers(urls);
+        } catch {
+          // Keep whatever covers were already resolved.
+        }
+      })
+      // A failed load keeps the last good list rather than emptying the rail —
+      // "No meetups yet" is a claim about this owner, not about the network.
+      // The status says we could not check, and the sheet offers to try again.
+      .catch(() => { if (gen === connectGen.current) setConnectStatus('error'); });
+  }, [loadTrails, loadClaims, user?.id]);
 
   /**
    * On focus, not on mount, and that difference is the whole fix.
@@ -470,46 +573,69 @@ export default function HomeScreen() {
    */
   useFocusEffect(React.useCallback(() => {
     if (!togetherEnabled || segment !== 'together') return;
-    let cancelled = false;
     // Anything already known — including a trail created seconds ago and
     // remembered by `rememberNewPack` — goes up before the network is asked.
     const known = readSnapshot<CommunityPack[]>(cacheKey.packs());
+
+    // ── The refetch this screen used to do unconditionally ────────────────
+    //
+    // Toggling Walk → Connect → Walk → Connect fired the whole load four times
+    // in a couple of seconds. Inside the freshness window the answer we already
+    // painted IS the answer — including an empty one, which the server gave.
+    if (isFresh(cacheKey.packs())) {
+      if (known) setTrails(known);
+      setConnectStatus('ready');
+      perfSkipped('together:focus', 'fresh');
+      return;
+    }
     if (known?.length) setTrails(known);
-    setTrailsLoading(true);
-    void loadTrails();
-    listPacks()
-      .then(async next => {
-        if (cancelled) return;
-        setTrails(next);
-        void loadClaims(next, user?.id ?? null);
-        // Asked once per focus, and only answered once: `getMyUsername` is a
-        // single indexed read and the prompt below keys off its answer.
-        void getMyUsername()
-          .then(name => { if (!cancelled) setUsername(name); })
-          .catch(() => {});
-        // Decoration, and never awaited: the list is already on screen and a
-        // line under a map is not worth delaying it for.
-        listTrailRoutes(next.map(pack => pack.id))
-          .then(found => { if (!cancelled) setTrailRoutes(found); })
-          .catch(() => {});
-        // Covers live in a private bucket, so the card needs signed URLs. One
-        // batch for the whole list, and a failure here only costs the photo —
-        // the card falls back to its map.
-        const paths = next.flatMap(pack => (pack.coverPath ? [pack.coverPath] : []));
-        if (paths.length === 0) return;
-        try {
-          const urls = await communityMediaUrls(paths);
-          if (!cancelled) setTrailCovers(urls);
-        } catch {
-          // Keep whatever covers were already resolved.
-        }
-      })
-      // A failed load leaves the last good list rather than emptying the rail.
-      // "No trails yet" is a claim about this owner, not about the network.
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setTrailsLoading(false); });
-    return () => { cancelled = true; };
-  }, [togetherEnabled, segment, loadTrails, loadClaims, user?.id]));
+    refreshConnect();
+  }, [togetherEnabled, segment, refreshConnect]));
+
+  /**
+   * The phone's copy, for the rare launch where Home mounted before it was read.
+   *
+   * The read starts at bundle load (app/_layout.tsx) and normally lands long
+   * before the pet gate lets Home mount, so the `useState` initialisers above
+   * already have it. This covers the case where it had not — and never
+   * overwrites a server answer that arrived first.
+   */
+  React.useEffect(() => {
+    if (!togetherEnabled || !user?.id) return;
+    const userId = user.id;
+    let alive = true;
+    void loadConnectSnapshot().then(() => {
+      if (!alive || connectAnswered.current) return;
+      const restored = restoreConnectSnapshot(userId);
+      if (!restored) return;
+      setTrails(current => (current.length ? current : restored.packs));
+      setTrailRoutes(current => (Object.keys(current).length ? current : restored.routes));
+      setTrailRoutesKnown(true);
+      // Painted, deliberately not fresh: the refresh still happens.
+      if (!readSnapshot(cacheKey.packs())) writeOptimistic(cacheKey.packs(), restored.packs);
+    });
+    return () => { alive = false; };
+  }, [togetherEnabled, user?.id]);
+
+  /**
+   * Check the meetups in the background at launch — for someone who has them.
+   *
+   * Connect used to ask only once it was tapped, so the whole round trip (auth,
+   * then the RPC, cross-region) started at the moment someone wanted the
+   * answer. For an owner the phone already knows has meetups, the check runs
+   * once Home has settled, so the tap finds a confirmed list. Someone with none
+   * pays nothing here: their first look still asks, behind a skeleton.
+   */
+  const warmedConnect = React.useRef(false);
+  React.useEffect(() => {
+    if (!togetherEnabled || !user?.id || trails.length === 0 || warmedConnect.current) return;
+    const handle = InteractionManager.runAfterInteractions(() => {
+      if (warmedConnect.current || isFresh(cacheKey.packs())) return;
+      warmedConnect.current = true;
+      refreshConnect();
+    });
+    return () => handle.cancel();
+  }, [togetherEnabled, user?.id, trails.length, refreshConnect]);
 
   // Stable identities, because TogetherPanel's cards are memoised and an inline
   // arrow here would hand every one of them a new prop on every Home render —
@@ -557,6 +683,10 @@ export default function HomeScreen() {
     setWalkInvites(current => current.filter(invite => invite.walkId !== walkId));
     try {
       await setAttendance(walkId, coming ? 'coming' : 'cant_make_it');
+      // Answered from Home, but the walk's own screen holds a separate snapshot
+      // and skips its refetch inside the freshness window — so opening the walk
+      // straight after answering would show the question again.
+      invalidate(cacheKey.outing(walkId));
       void loadTrails();
     } catch {
       // Put it back rather than letting a failed answer look like a sent one.
@@ -578,8 +708,11 @@ export default function HomeScreen() {
   const onRespondInvite = React.useCallback(async (invitationId: string, accept: boolean) => {
     await respondToInvitation(invitationId, accept);
     setTrailInvites(current => current.filter(invite => invite.id !== invitationId));
-    if (accept) setTrails(await listPacks());
-  }, []);
+    // Through the same door as every other ask, so the answer is saved and the
+    // status stays honest. A failure here keeps the list rather than throwing
+    // out of an invitation that has already been accepted.
+    if (accept) refreshConnect();
+  }, [refreshConnect]);
 
   /**
    * Re-answer "is the map far enough away to be worth a new search?".
@@ -1616,7 +1749,7 @@ export default function HomeScreen() {
         {/* The empty state for the map itself. Sits in the band left visible
             above the collapsed sheet, and never where a real line would be —
             because when there IS a real line, this is not rendered at all. */}
-        {segment === 'together' && !hasAnyTrailLine ? (
+        {segment === 'together' && trailRoutesKnown && !hasAnyTrailLine ? (
           <View
             style={[styles.flourishSlot, { bottom: sheetHeight + space.md }]}
             pointerEvents="none"
@@ -1748,12 +1881,17 @@ export default function HomeScreen() {
         onRespondInvite={onRespondInvite}
         onRespondWalk={onRespondWalk}
         onRespondClaim={onRespondClaim}
+        onOpenWalk={walkId => {
+          setWaitingOpen(false);
+          router.push(`/community/walk/${walkId}` as never);
+        }}
       />
 
       {segment === 'together' ? (
         <TogetherPanel
           trails={trails}
-          loading={trailsLoading}
+          status={connectStatus}
+          onRetry={refreshConnect}
           coverUrls={trailCovers}
           routes={trailRoutes}
           tintFor={tintForTrail}

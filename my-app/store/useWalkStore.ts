@@ -44,7 +44,14 @@ import {
 } from '../lib/walk/walkSync';
 import { collectWalkLabels, WalkLabels } from '../lib/walk/geoLabels';
 import {
+  FIRST_WALK_DEADLINE_MS,
+  LABELS_DEADLINE_MS,
+  NO_LABELS,
+  orFallback,
+} from '../lib/walk/finishDeadlines';
+import {
   ActiveWalkDescriptor,
+  ActiveWalkTrail,
   clearPoints,
   isRunning,
   readActiveWalk,
@@ -133,7 +140,19 @@ interface WalkState {
   capReached: boolean;
   lastResult: WalkResult | null;
 
-  startWalk: (pet: Pet, ownerId: string) => Promise<'started' | WalkPermission>;
+  /**
+   * `trail` is what makes this a leg of a Trail rather than a solo walk.
+   *
+   * Passed in at start rather than set afterwards because it goes into the
+   * durable record, and the record is written before the OS task begins. A
+   * trail attached a moment later would be missing from exactly the walks that
+   * need it most — the ones the OS relaunches from cold.
+   */
+  startWalk: (
+    pet: Pet,
+    ownerId: string,
+    trail?: ActiveWalkTrail,
+  ) => Promise<'started' | WalkPermission>;
   /** Internal — point batches arriving from the tracker's live listener. */
   _ingest: (points: RawGpsPoint[]) => void;
   endWalk: (reason: EndReason) => Promise<void>;
@@ -169,7 +188,7 @@ export const useWalkStore = create<WalkState>((set, get) => ({
   capReached: false,
   lastResult: null,
 
-  startWalk: async (pet: Pet, ownerId: string) => {
+  startWalk: async (pet: Pet, ownerId: string, trail?: ActiveWalkTrail) => {
     if (get().phase === 'tracking' || get().phase === 'starting') return 'started';
     set({ phase: 'starting', lastResult: null, capReached: false });
 
@@ -194,6 +213,10 @@ export const useWalkStore = create<WalkState>((set, get) => ({
       ownerId,
       startedAt: Date.now(),
       profile,
+      // Spread rather than `trail` so a solo walk's record has no key at all.
+      // `{ trail: undefined }` survives JSON.stringify as an absent key anyway,
+      // but being explicit keeps the two shapes obviously different on disk.
+      ...(trail ? { trail } : {}),
     };
 
     await clearPoints();
@@ -315,18 +338,29 @@ export const useWalkStore = create<WalkState>((set, get) => ({
     // Reverse-geocode start/end/farthest before persistence so the labels ride
     // with the same upsert as the row. Best-effort — offline finalize persists
     // nulls; the pills stay hidden until a later job (if any) fills them.
-    const labels = await collectWalkLabels({
-      startPoint: summary.startPoint,
-      endPoint: summary.endPoint,
-      farthestPoint: summary.farthestPoint,
-      endReason: summary.endReason,
-      maxExcursionM: summary.maxExcursionM,
-    });
+    // Bounded: a slow geocoder takes the offline path rather than holding the
+    // Finish button (see lib/walk/finishDeadlines).
+    const labels = await orFallback(
+      collectWalkLabels({
+        startPoint: summary.startPoint,
+        endPoint: summary.endPoint,
+        farthestPoint: summary.farthestPoint,
+        endReason: summary.endReason,
+        maxExcursionM: summary.maxExcursionM,
+      }),
+      LABELS_DEADLINE_MS,
+      NO_LABELS,
+    );
 
     // Asked before the sync writes this walk's own row (see the helper).
+    // Bounded like the labels; "unknown" is "no", as the helper already fails.
     const wasFirstValidWalk =
       verdict.verdict === 'valid' &&
-      (await isFirstValidWalkForOwner(activeMarker.ownerId, activeMarker.id));
+      (await orFallback(
+        isFirstValidWalkForOwner(activeMarker.ownerId, activeMarker.id),
+        FIRST_WALK_DEADLINE_MS,
+        false,
+      ));
 
     const sync = await finalizeAndSyncWalk({
       walkSessionId: activeMarker.id,

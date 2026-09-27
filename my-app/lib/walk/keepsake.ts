@@ -298,6 +298,17 @@ export function sortKeepsakes(keepsakes: readonly Keepsake[]): Keepsake[] {
 
 /** The `walk_media` row shape, as written. */
 export interface KeepsakeInsert {
+  /**
+   * The row's own id, decided on the device at capture time.
+   *
+   * Omitted for an ordinary solo keepsake, where the server default is fine.
+   * Present for a photo that is being shared with a Trail, because that photo
+   * is published to `community_shared_media` the moment it is taken — long
+   * before this row can exist, since `walk_media` needs a `walk_session_id`
+   * and there is no session until the walk ends. Both rows have to agree on
+   * one identity, so the identity is chosen first.
+   */
+  id?: string;
   owner_id: string;
   pet_id: string;
   walk_session_id: string;
@@ -316,6 +327,8 @@ export interface KeepsakeInsert {
 }
 
 export interface KeepsakeInsertInput {
+  /** See `KeepsakeInsert.id`. Absent ⇒ let the server name the row. */
+  mediaId?: string | null;
   ownerId: string;
   petId: string;
   walkSessionId: string;
@@ -349,6 +362,10 @@ export function buildKeepsakeInsert(input: KeepsakeInsertInput): KeepsakeInsert 
     lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
 
   return {
+    // Spread, so an absent id leaves no key at all rather than an explicit
+    // `undefined` — PostgREST would send `"id": null` for the latter and
+    // reject the row against a NOT NULL primary key.
+    ...(input.mediaId ? { id: input.mediaId } : {}),
     owner_id: input.ownerId,
     pet_id: input.petId,
     walk_session_id: input.walkSessionId,

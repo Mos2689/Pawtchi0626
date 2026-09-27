@@ -1,4 +1,4 @@
--- Teardown for 20260917999998_pack_invitation_roster.
+-- Teardown for 20260917171343_pack_invitation_roster.
 --
 -- ⚠ NOT A MIGRATION. Lives outside supabase/migrations/ so `supabase db push`
 -- can never pick it up. Run it deliberately.

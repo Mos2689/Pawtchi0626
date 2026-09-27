@@ -55,19 +55,32 @@ import { evaluatePawPrints } from '../pawPrintsSync';
 import { setPendingWalkStory } from '../walkStorySync';
 import { fetchWalkWeather } from './weather';
 import { WALK_STORY_ENABLED } from '../../constants/features';
+import { withTimeout } from '../withTimeout';
+
+/**
+ * How long finishing a walk waits for the queue to reach the server.
+ *
+ * The walk is already durably queued before this wait starts; the wait is only
+ * for the chance to report "saved" instead of "queued". It used to be unbounded
+ * — and it drains OLDER queued walks too — so on a network that had gone quiet
+ * the Finish button could sit on "Finishing…" indefinitely (external audit,
+ * 2026-09-26). Past this the flush carries on in the background and this walk
+ * reports 'queued', the outcome the offline path already handles.
+ */
+export const FINISH_FLUSH_MS = 8_000;
 
 const QUEUE_KEY = 'walk:sync_queue';
 const MAX_ATTEMPTS = 50;
 
-/** RFC-4122-shaped v4 id. Client-side PK for retry-safe inserts — collision
- *  resistance matters here, cryptographic strength does not. */
-export function generateWalkSessionId(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
+/**
+ * RFC-4122-shaped v4 id. Client-side PK for retry-safe inserts.
+ *
+ * Re-exported rather than moved outright: this name is imported in several
+ * places and reads correctly at every one of them. The implementation lives in
+ * `clientId.ts` now because walk MEDIA needs the same trick for a different
+ * reason — see the note there.
+ */
+export { newClientId as generateWalkSessionId } from './clientId';
 
 export type WalkSyncOutcome =
   | 'matched'          // claimed a scheduled walk
@@ -191,7 +204,10 @@ export async function finalizeAndSyncWalk(args: FinalizeWalkArgs): Promise<WalkS
   queue.push(item);
   await writeQueue(queue);
 
-  await flushWalkQueue(args.ownerId);
+  await withTimeout(flushWalkQueue(args.ownerId), FINISH_FLUSH_MS, 'finishFlush').catch(() => {
+    // Timed out (or failed): the walk is safe in the queue, and the flush that
+    // is still running — or the next launch's — will deliver it.
+  });
 
   const after = await readQueue();
   const mine = after.find(q => q.walkSessionId === args.walkSessionId);

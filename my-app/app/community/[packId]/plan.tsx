@@ -21,8 +21,8 @@ import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { WhenPicker } from '../../../components/community/WhenPicker';
 
 import {
   CommunityButton,
@@ -44,6 +44,7 @@ import {
   type CommunityPack,
   type PackMember,
 } from '../../../lib/communityWalks';
+import { cacheKey, invalidate } from '../../../lib/communityCache';
 import {
   EMPTY_MEETING_POINT,
   isMeetingPointReady,
@@ -52,6 +53,7 @@ import {
 } from '../../../lib/communityMeetingPoint';
 import { useAuth } from '../../../providers/AuthProvider';
 import { useActivePetStore } from '../../../store/useActivePetStore';
+import { dateFormat } from '../../../lib/dateFormats';
 
 export default function PlanWalkScreen() {
   const router = useRouter();
@@ -163,6 +165,16 @@ export default function PlanWalkScreen() {
           // The walk stands; nobody was notified.
         }
       }
+      // Both screens that display this walk skip their refetch inside the
+      // freshness window, and both are a back-press away. The trail lists the
+      // walk; Home's row leads with the soonest one, so a plan made for
+      // tomorrow can change what it says.
+      invalidate(cacheKey.pack(packId));
+      invalidate(cacheKey.packs());
+      // Editing an existing walk also changes that walk's OWN screen, which has
+      // its own snapshot and its own freshness gate. Without this, changing the
+      // time and opening the walk shows the old one.
+      if (editing && walkId) invalidate(cacheKey.outing(walkId));
       // Back to the trail, where the walk is now listed. Deliberately NOT the
       // walk's own screen: landing there put "Start the walk" in front of
       // someone who had just planned one for next week.
@@ -252,7 +264,7 @@ export default function PlanWalkScreen() {
               />
               <Text style={[styles.dateText, !hasDate && styles.dateTextMuted]} numberOfLines={1}>
                 {hasDate
-                  ? new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' }).format(date)
+                  ? dateFormat({ weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' }).format(date)
                   : 'Decide the date later'}
               </Text>
               <Ionicons
@@ -264,29 +276,7 @@ export default function PlanWalkScreen() {
           </Pressable>
 
           {hasDate ? (
-            <View style={styles.pickers}>
-              <DateTimePicker
-                value={date}
-                mode="date"
-                minimumDate={new Date()}
-                display={Platform.OS === 'ios' ? 'compact' : 'default'}
-                onChange={(_, value) => value && setDate(current => {
-                  const next = new Date(value);
-                  next.setHours(current.getHours(), current.getMinutes(), 0, 0);
-                  return next;
-                })}
-              />
-              <DateTimePicker
-                value={date}
-                mode="time"
-                display={Platform.OS === 'ios' ? 'compact' : 'default'}
-                onChange={(_, value) => value && setDate(current => {
-                  const next = new Date(current);
-                  next.setHours(value.getHours(), value.getMinutes(), 0, 0);
-                  return next;
-                })}
-              />
-            </View>
+            <WhenPicker value={date} onChange={setDate} minimumDate={new Date()} style={styles.pickers} />
           ) : null}
 
           <TextInput
@@ -360,7 +350,7 @@ export default function PlanWalkScreen() {
 
               <Text style={styles.inviteNote}>
                 {invitees.length === 0
-                  ? 'Nobody will be notified. The walk still appears on the trail for everyone.'
+                  ? 'Nobody will be notified. The walk still appears in the meetup for everyone.'
                   : 'Anyone in the pack can still join, asked or not.'}
               </Text>
             </View>

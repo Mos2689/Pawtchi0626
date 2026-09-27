@@ -48,7 +48,7 @@ export default function CommunityInviteScreen() {
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <CommunityHeader
           eyebrow="Private invitation"
-          title={result === 'waiting' ? 'The host will confirm you' : 'Join a Pawtchi trail'}
+          title={result === 'waiting' ? 'The host will confirm you' : 'Join a Pawtchi meetup'}
           subtitle={result === 'waiting'
             ? 'Your request is waiting in the pack. This extra step means a forwarded link can’t admit an unknown account.'
             : 'Paste the recoverable code from your invitation. Signing in never admits you automatically.'}
@@ -67,7 +67,7 @@ export default function CommunityInviteScreen() {
               <Ionicons name="hourglass-outline" size={34} color={color.electric} />
               <Text style={styles.resultTitle}>Request sent</Text>
               <Text style={styles.resultBody}>You’ll see the pack after its owner confirms that you’re the intended person.</Text>
-              <CommunityButton label="Go to my trails" onPress={() => router.replace('/(tabs)/community' as never)} style={styles.resultButton} />
+              <CommunityButton label="Go to my meetups" onPress={() => router.replace('/(tabs)/community' as never)} style={styles.resultButton} />
             </CommunityCard>
           ) : (
             <>

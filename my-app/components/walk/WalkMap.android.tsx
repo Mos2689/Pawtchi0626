@@ -17,7 +17,7 @@ import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Constants from 'expo-constants';
 import { color, radius, space, type as typeTokens } from '../../constants/design';
 import type { GeoPoint } from '../../lib/walk/geo';
-import { cameraBounds, cameraFromBounds } from '../../lib/walk/mapCamera';
+import { cameraFromBounds, toMapLibreZoom } from '../../lib/walk/mapCamera';
 import { OSM_ATTRIBUTION, OSM_STYLE } from '../../lib/walk/osmStyle';
 import type { WalkMapProps } from './WalkMap';
 
@@ -115,6 +115,7 @@ export default function WalkMap({
   liveBottomInset = 0,
   camera,
   onCameraChange,
+  cameraIsFraming = !onCameraChange,
 }: WalkMapProps) {
   /**
    * The map's own pixel size, measured rather than assumed — the bounds handed
@@ -221,32 +222,21 @@ export default function WalkMap({
     // An explicit camera wins outright — the caller is drawing its own overlay
     // against these exact numbers, so the map must not second-guess them.
     //
-    // Framed by BOUNDS rather than by a zoom number, deliberately. "Zoom level"
-    // is not one thing: Web Mercator counts against a 256px world tile and
-    // MapLibre against a 512px one, so the same number means two different
-    // scales and picking wrong misplaces every pin by a factor of two. The
-    // corners of the viewport are unambiguous — `cameraBounds` derives exactly
-    // the rectangle `projectPoint` is about to draw against, so the map and the
-    // overlay agree without either side naming a convention.
-    if (camera && size) {
-      const { ne, sw } = cameraBounds(camera, size.width, size.height);
-      return {
-        bounds: {
-          ne: [ne.lng, ne.lat] as [number, number],
-          sw: [sw.lng, sw.lat] as [number, number],
-          paddingLeft: 0,
-          paddingRight: 0,
-          paddingTop: 0,
-          paddingBottom: 0,
-        },
-        animationDuration: 0,
-      };
-    }
-    // Before the first layout there is no viewport to derive corners from.
+    // Sent as a centre and a zoom, converted to MapLibre's 512 px convention.
+    // It used to be sent as corner BOUNDS to sidestep the zoom-unit question,
+    // but MapLibre's native camera turns bounds into a zoom using the view's
+    // current pixel size — and before the native surface is sized that is zero,
+    // which frames the whole world. The shared walk memory, whose camera is set
+    // once and never changes, sat on the globe on Android because of it. A
+    // centre and a zoom need no view size, so they are right on the first try.
+    // The unit difference is exact and lives in `toMapLibreZoom`.
+    //
+    // (The old pre-layout fallback also sent `camera.zoom` UNCONVERTED, one
+    // level too close. That branch is gone with this.)
     if (camera) {
       return {
         centerCoordinate: [camera.center.lng, camera.center.lat] as [number, number],
-        zoomLevel: camera.zoom,
+        zoomLevel: toMapLibreZoom(camera.zoom),
         animationDuration: 0,
       };
     }
@@ -309,10 +299,23 @@ export default function WalkMap({
     center,
     quiet,
     camera,
-    size,
     suggestedRoute,
     liveBottomInset,
   ]);
+
+  /**
+   * Remount key for a caller-authored camera — see the <Camera> below.
+   *
+   * Only for authored framing (`cameraIsFraming`). A caller may hand the map's
+   * own reported position straight back as `camera` at gesture rate (the live
+   * walk does), and remounting on every one of those would fight the finger.
+   * Authored framing — the shared memory's, changed only when someone picks a
+   * walker — changes rarely, so a remount per change costs nothing. Rounded so a re-render carrying the
+   * same framing (the memory's photo URLs arriving, say) keeps the same key.
+   */
+  const framingKey = camera && cameraIsFraming
+    ? `${camera.center.lat.toFixed(6)},${camera.center.lng.toFixed(6)},${camera.zoom.toFixed(3)}`
+    : null;
 
   /**
    * The region MapLibre is showing, translated back into projector units.
@@ -324,7 +327,7 @@ export default function WalkMap({
    */
   const handleRegion = useCallback(
     (payload: {
-      properties?: { visibleBounds?: [number[], number[]] };
+      properties?: { visibleBounds?: [number[], number[]]; isUserInteraction?: boolean };
     }) => {
       if (!onCameraChange || !size) return;
       const bounds = payload?.properties?.visibleBounds;
@@ -336,10 +339,14 @@ export default function WalkMap({
         { lat: sw[1], lng: sw[0] },
         size.width,
       );
-      if (next) onCameraChange(next);
+      // Passed through so a caller can tell a person panning from the map
+      // settling where WE put it. MapLibre reports both; MapKit only the first.
+      // See CameraChangeInfo in ./WalkMap for the loop this prevents.
+      if (next) onCameraChange(next, { user: !!payload?.properties?.isUserInteraction });
     },
     [onCameraChange, size],
   );
+
 
   if (!MapLibre) {
     return <MapFallback style={style} />;
@@ -367,7 +374,25 @@ export default function WalkMap({
         scrollEnabled={interactive}
         zoomEnabled={interactive}
       >
-        {cameraStop && <Camera {...cameraStop} />}
+        {/* MapLibre's <Camera> delivers its stop through `setNativeProps` from
+            an effect. Under the new architecture that is a side commit React
+            does not know about: the next React commit touching the map puts
+            the camera's shadow node back to React's own props, which carry no
+            stop, and if that lands before the UI thread mounts the side commit
+            the stop is never applied. Screens that keep re-sending (live, Home,
+            the walk summary) get a later stop through; the shared memory sets
+            its framing once, lost it, and sat on the whole world.
+
+            So authored framing also goes in as `defaultSettings` — an ordinary
+            React prop, which no commit can revert — and is keyed, so a new
+            framing mounts a new camera and MapLibre applies it on attach. */}
+        {cameraStop && (
+          <Camera
+            key={framingKey ?? 'camera'}
+            defaultSettings={framingKey ? cameraStop : undefined}
+            {...cameraStop}
+          />
+        )}
 
         {/* The archive web, first of all so everything draws over it. A single
             muted stroke, never the cased yellow: that pairing marks the walk
@@ -421,7 +446,13 @@ export default function WalkMap({
                   lineColor: route.color,
                   lineWidth: 5,
                   lineOpacity: 1,
-                  lineDasharray: route.dashed ? [2.2, 1.5] : undefined,
+                  // OMITTED when not dashed — never set to `undefined`. MapLibre
+                  // turns every key in a layer style into a native BridgeValue,
+                  // and a present-but-undefined key crashes the render on
+                  // Android ("BridgeValue must be a primitive/array/object").
+                  // Walker one is never dashed and the memory draws every route
+                  // solid, so this took down every shared map on Android.
+                  ...(route.dashed ? { lineDasharray: [2.2, 1.5] } : {}),
                   lineJoin: 'round',
                   lineCap: 'round',
                 }}

@@ -1,7 +1,7 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments, useRootNavigationState, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import 'react-native-reanimated';
 import Purchases, { LOG_LEVEL, type PurchasesConfiguration } from 'react-native-purchases';
@@ -63,8 +63,10 @@ import { WRITE_TO_FOUNDER_LABEL } from '@/lib/founderLetters';
 import { supabase } from '@/lib/supabase';
 import { WALK_TRACKING_ENABLED } from '@/constants/features';
 import { WalkLiveActivityBridge } from '@/components/WalkLiveActivityBridge';
+import { TrailRecording } from '@/components/walk/TrailRecording';
 import { initFirebaseAnalytics, setFirebaseUserId } from '@/lib/firebaseAnalytics';
 import { installBreadcrumbs } from '@/lib/support/breadcrumbs';
+import { loadConnectSnapshot } from '@/lib/community/connectSnapshot';
 // Side-effect import: defines the walk-tracking background task at bundle
 // load so the OS can deliver GPS fixes without any walk screen mounted, and so
 // a stale OS registration self-stops on the first delivery (the task reads the
@@ -78,6 +80,12 @@ import '@/lib/walk/walkTracker';
 // before any component mounts. Idempotent, and it stores event NAMES only:
 // see lib/support/breadcrumbs.ts for why props are deliberately excluded.
 installBreadcrumbs();
+
+// Read Connect's last answer off the phone now, beside the zustand stores'
+// own reads, so it is in memory long before the pet gate lets Home mount and
+// Connect's first frame can show the meetups instead of a blank or "NOTHING
+// PLANNED". One small AsyncStorage read; see lib/community/connectSnapshot.ts.
+void loadConnectSnapshot();
 
 const INFORMATIONAL_ENTITLEMENT_VERIFICATION =
   'INFORMATIONAL' as NonNullable<PurchasesConfiguration['entitlementVerificationMode']>;
@@ -256,14 +264,48 @@ function RootLayoutNav() {
   // leftover session. It NEVER starts tracking; a stale OS registration is also
   // self-stopped by the task itself on its first delivery. No reconciler or
   // AppState janitor needed — the record is the single authority.
+  const [resumedTrailWalk, setResumedTrailWalk] = useState<string | null>(null);
   useEffect(() => {
     const { useWalkStore } = require('@/store/useWalkStore');
     const store = useWalkStore.getState();
     const operation = WALK_TRACKING_ENABLED
       ? store.recoverOrphanedWalk()
       : store.hardStopTracking();
-    operation.catch(() => {});
+    operation
+      .then(() => {
+        // Only RECORDS the destination — see the effect below for why the
+        // navigation itself cannot happen here.
+        //
+        // Gated on `phase === 'tracking'` so this is only ever a walk the
+        // reconcile decided is genuinely still running. A walk it finalized
+        // instead must be left alone: that owner is owed the summary, not the
+        // live map of a walk that has already ended.
+        const resumed = useWalkStore.getState();
+        const trail = resumed.marker?.trail;
+        if (trail && resumed.phase === 'tracking') setResumedTrailWalk(trail.walkId);
+      })
+      .catch(() => {});
   }, []);
+
+  // ── Landing a resumed Trail walk on the Trail ───────────────────────────
+  //
+  // Android's foreground-service notification carries no deep link —
+  // expo-location offers none, so tapping it just opens the app. iOS gets this
+  // right through the Live Activity's widgetURL; without this, the same tap on
+  // Android drops the walker wherever the app happened to restore, which for a
+  // Trail walk is the solo recorder underneath it.
+  //
+  // Separate from the reconcile because of two things it has to wait for that
+  // the reconcile must not: the root navigator existing (navigating before
+  // `navState.key` is a no-op that fails silently), and the auth gate having
+  // resolved (it does its own redirect, and two replaces racing is how you land
+  // on the wrong screen intermittently). Keeping the reconcile on `[]` means
+  // neither of those can re-run it.
+  useEffect(() => {
+    if (!resumedTrailWalk || !navState?.key || authLoading || !session) return;
+    setResumedTrailWalk(null);
+    router.replace(`/community/walk/${resumedTrailWalk}/live` as never);
+  }, [resumedTrailWalk, navState?.key, authLoading, session, router]);
 
   // Initialize Meta (Facebook) SDK + ATT consent on mount.
   // The FBSDK package executes NativeEventEmitter in its global scope, which
@@ -395,6 +437,11 @@ function RootLayoutNav() {
           Not gated on a session: it only ever acts on a walk in progress, and a
           walk cannot exist without one. */}
       <WalkLiveActivityBridge />
+      {/* Records a Trail walk — the camera pipeline, the pack's live positions,
+          and the work that attaches the finished walk to the outing. Headless,
+          and awake only while the durable walk record says this phone is on a
+          Trail. At the root because a walk outlives any one screen. */}
+      <TrailRecording />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="welcome" options={{ headerShown: false, animation: 'none' }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
@@ -402,6 +449,10 @@ function RootLayoutNav() {
         <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="invite" options={{ presentation: 'card', headerShown: false }} />
         <Stack.Screen name="community-invite" options={{ presentation: 'card', headerShown: false }} />
+        {/* Read from the host declaration and the join notice. A card rather
+            than a modal so it stacks over whichever flow opened it and comes
+            back to exactly that flow, mid-decision. */}
+        <Stack.Screen name="trail-safety" options={{ presentation: 'card', headerShown: false }} />
         {/* fullScreenModal, NOT card, and this is the whole reason it works.
             The paywall is presentation: 'modal'. A 'card' pushed while a modal
             is presented lands in the stack UNDERNEATH it — the screen opens

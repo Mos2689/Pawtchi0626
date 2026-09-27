@@ -27,7 +27,7 @@ interface FoodScanDetails {
     created_at: string;
     image_url?: string;
     food_analysis?: (FoodAnalysis & { verdict?: string; verdict_category?: string }) | null;
-    // Provenance (migration 20260831000001). Absent on pre-provenance rows,
+    // Provenance (migration 20260831142028). Absent on pre-provenance rows,
     // which is why both are optional and every read of them is defensive.
     portion_quantity?: number | null;
     revision?: number | null;

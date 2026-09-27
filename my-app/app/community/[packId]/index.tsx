@@ -13,7 +13,9 @@ import {
   communityScreenStyles,
 } from '../../../components/community/CommunityUI';
 import { color, font, space, type } from '../../../constants/design';
-import { cacheKey, readSnapshot } from '../../../lib/communityCache';
+import { TOGETHER_READ_TIMEOUT_MS, cacheKey, readSnapshot } from '../../../lib/communityCache';
+import { timed } from '../../../lib/community/perf';
+import { withTimeout } from '../../../lib/withTimeout';
 import {
   approveExternalInvite,
   listExternalInviteClaims,
@@ -27,10 +29,11 @@ import {
   type PendingInvite,
 } from '../../../lib/communityWalks';
 import { useAuth } from '../../../providers/AuthProvider';
+import { dateFormat } from '../../../lib/dateFormats';
 
 function dateLabel(value: string | null): string {
   if (!value) return 'Date to be confirmed';
-  return new Intl.DateTimeFormat(undefined, {
+  return dateFormat({
     weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   }).format(new Date(value));
 }
@@ -48,7 +51,14 @@ export default function PackHomeScreen() {
     () => (packId ? readSnapshot<PackSnapshot>(cacheKey.pack(packId)) : null),
     [packId],
   );
-  const [pack, setPack] = useState<CommunityPack | null>(cached?.pack ?? null);
+  // No snapshot of this meetup yet (a cold start), but Connect's list — which
+  // is how most people arrive — already holds its row: name, owner, dogs. Open
+  // on that rather than on "Your meetup"; the full load replaces it.
+  const [pack, setPack] = useState<CommunityPack | null>(
+    () => cached?.pack
+      ?? (packId ? readSnapshot<CommunityPack[]>(cacheKey.packs())?.find(item => item.id === packId) : undefined)
+      ?? null,
+  );
   const [members, setMembers] = useState<PackMember[]>(cached?.members ?? []);
   const [walks, setWalks] = useState<CommunityWalk[]>(cached?.walks ?? []);
   const [claims, setClaims] = useState<ExternalInviteClaim[]>([]);
@@ -83,7 +93,13 @@ export default function PackHomeScreen() {
       const ownedByCache = readSnapshot<PackSnapshot>(cacheKey.pack(packId))?.pack.owner_id === user?.id;
       const claimsAhead = ownedByCache ? listExternalInviteClaims(packId).catch(() => []) : null;
 
-      const data = await loadPack(packId);
+      // Bounded so `loaded` always resolves: a stalled request would otherwise
+      // leave this screen waiting forever. The catch below keeps what is painted.
+      const data = await withTimeout(
+        timed('loadPack', 2, () => loadPack(packId)),
+        TOGETHER_READ_TIMEOUT_MS,
+        'loadPack',
+      );
       setPack(data.pack);
       setMembers(data.members);
       setWalks(data.walks);
@@ -96,7 +112,7 @@ export default function PackHomeScreen() {
         setClaims(await (claimsAhead ?? listExternalInviteClaims(packId)));
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This trail could not load.');
+      setError(cause instanceof Error ? cause.message : 'This meetup could not load.');
     } finally {
       setLoaded(true);
     }
@@ -127,7 +143,7 @@ export default function PackHomeScreen() {
     const who = member.person?.full_name || (member.person?.username ? `@${member.person.username}` : 'this owner');
     Alert.alert(
       `Remove ${who}?`,
-      'They lose access to this trail, its plans and its shared memories. Photos they contributed stay unless they remove them.',
+      'They lose access to this meetup, its plans and its shared memories. Photos they contributed stay unless they remove them.',
       [
         { text: 'Keep them', style: 'cancel' },
         {
@@ -149,6 +165,28 @@ export default function PackHomeScreen() {
     );
   };
 
+  /**
+   * Refetched on every focus, behind the snapshot.
+   *
+   * ── Why there is no freshness gate here ──────────────────────────────────
+   *
+   * There was one — skip the refetch if the trail was fetched in the last 20 s.
+   * It saved one request on a bounce back from Invite, and bought no visible
+   * speed at all: this screen already paints instantly from the snapshot, so a
+   * refetch behind it is invisible either way.
+   *
+   * What it cost was an obligation on every mutation anywhere in the app: change
+   * something this screen shows and you had better `invalidate()` its key, or
+   * the next visit silently shows the old answer. That trap was hit four times
+   * in one day across this screen and the walk screen. The gate was removed
+   * rather than patched a fifth time.
+   *
+   * Home keeps its gate. Home is a genuine hot path — toggling the segment chips
+   * fans out several requests — so the saving there is real.
+   *
+   * Not wrapped in `share()` either: `load` also runs straight after a write,
+   * and sharing would hand that caller a request that started BEFORE the write.
+   */
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   /**
@@ -177,7 +215,10 @@ export default function PackHomeScreen() {
   const memories = walks.filter(walk => walk.state === 'completed');
   const allDogs = members.flatMap(member => member.dogs);
 
-  const canEditPlan = !!nextWalk && nextWalk.organizer_id === user?.id && nextWalk.state === 'planned';
+  // Editing the plan is the host's, like planning it was. `isOwner` above is
+  // the same test; kept as its own name because this one also needs the walk
+  // to still be editable.
+  const canEditPlan = !!nextWalk && isOwner && nextWalk.state === 'planned';
 
   return (
     <SafeAreaView style={communityScreenStyles.screen}>
@@ -189,15 +230,22 @@ export default function PackHomeScreen() {
         <Pressable onPress={() => router.back()} style={styles.circleAction} accessibilityRole="button" accessibilityLabel="Go back">
           <Ionicons name="arrow-back" size={21} color={color.navy} />
         </Pressable>
-        <Text style={styles.navTitle} numberOfLines={1}>{pack?.name ?? 'Your trail'}</Text>
-        <Pressable
-          onPress={() => router.push(`/community/${packId}/invite` as never)}
-          style={styles.circleAction}
-          accessibilityRole="button"
-          accessibilityLabel="Invite someone to this trail"
-        >
-          <Ionicons name="person-add-outline" size={19} color={color.navy} />
-        </Pressable>
+        <Text style={styles.navTitle} numberOfLines={1}>{pack?.name ?? 'Your meetup'}</Text>
+        {/* Inviting belongs to the host. A spacer rather than nothing, so the
+            title stays centred for a member — an action that disappears and
+            takes the layout with it reads as a bug. */}
+        {isOwner ? (
+          <Pressable
+            onPress={() => router.push(`/community/${packId}/invite` as never)}
+            style={styles.circleAction}
+            accessibilityRole="button"
+            accessibilityLabel="Invite someone to this meetup"
+          >
+            <Ionicons name="person-add-outline" size={19} color={color.navy} />
+          </Pressable>
+        ) : (
+          <View style={styles.circleActionSpacer} />
+        )}
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -205,16 +253,23 @@ export default function PackHomeScreen() {
             card so the sections below can be about what happens next. */}
         <View style={styles.hero}>
           <View style={styles.heroRing} pointerEvents="none" />
-          <Text style={styles.heroEyebrow}>PRIVATE TRAIL</Text>
-          <Text style={styles.heroName}>{(pack?.name ?? 'Your trail').toUpperCase()}</Text>
+          <Text style={styles.heroEyebrow}>PRIVATE MEETUP</Text>
+          <Text style={styles.heroName}>{(pack?.name ?? 'Your meetup').toUpperCase()}</Text>
+          {/* Nothing here may claim "no dogs yet" or "0 walks" before the
+              meetup has loaded — on a cold start there is no snapshot, and the
+              blank hero used to read as an empty meetup for a round trip. */}
           <Text style={styles.heroBlurb}>
             {allDogs.length > 0
               ? `A shared history of ${allDogs.map(dog => dog.name).slice(0, 3).join(', ')}, made together.`
-              : 'Invite the owners you already walk with, and the history starts here.'}
+              : loaded
+                ? 'Invite the owners you already walk with, and the history starts here.'
+                : ' '}
           </Text>
           {allDogs.length > 0 ? <View style={styles.heroDogs}><DogStack dogs={allDogs} max={4} /></View> : null}
           <Text style={styles.heroCount}>
-            {allDogs.length} {allDogs.length === 1 ? 'dog' : 'dogs'} · {memories.length} {memories.length === 1 ? 'walk' : 'walks'} together
+            {loaded || allDogs.length > 0
+              ? `${allDogs.length} ${allDogs.length === 1 ? 'dog' : 'dogs'} · ${memories.length} ${memories.length === 1 ? 'walk' : 'walks'} together`
+              : ' '}
           </Text>
         </View>
 
@@ -242,8 +297,8 @@ export default function PackHomeScreen() {
 
         <SectionHead
           title={laterWalks.length ? 'Upcoming walks' : 'Next walk'}
-          actionLabel={nextWalk ? 'Plan another' : undefined}
-          onAction={nextWalk ? () => router.push(`/community/${packId}/plan` as never) : undefined}
+          actionLabel={nextWalk && isOwner ? 'Plan another' : undefined}
+          onAction={nextWalk && isOwner ? () => router.push(`/community/${packId}/plan` as never) : undefined}
         />
 
         {nextWalk ? (
@@ -276,7 +331,7 @@ export default function PackHomeScreen() {
                 <Text style={styles.attendanceText} numberOfLines={1}>
                   {nextWalk.state === 'active'
                     ? 'Walking now'
-                    : `${members.length} ${members.length === 1 ? 'owner' : 'owners'} on this trail`}
+                    : `${members.length} ${members.length === 1 ? 'owner' : 'owners'} in this meetup`}
                 </Text>
               </View>
             </View>
@@ -295,14 +350,25 @@ export default function PackHomeScreen() {
         ) : (
           <View style={styles.walkCard}>
             <Text style={styles.emptyWalkTitle}>Nothing planned yet</Text>
-            <Text style={styles.emptyWalkBody}>Pick a time and a meeting point. Everyone can answer without starting location sharing.</Text>
-            <Pressable
-              onPress={() => router.push(`/community/${packId}/plan` as never)}
-              style={({ pressed }) => [styles.primary, styles.primaryInline, pressed && styles.pressed]}
-              accessibilityRole="button"
-            >
-              <Text style={styles.primaryText}>Plan the first walk</Text>
-            </Pressable>
+            {/* Two different sentences, because the reader's position is
+                different. The host is being asked to do something; a member is
+                being told why there is nothing here, which is not their doing
+                and not theirs to fix. Offering them a button that the database
+                would refuse is worse than offering them nothing. */}
+            <Text style={styles.emptyWalkBody}>
+              {isOwner
+                ? 'Pick a time and a meeting point. Everyone can answer without starting location sharing.'
+                : 'The host sets the walks in this meetup. You will be asked when there is one.'}
+            </Text>
+            {isOwner ? (
+              <Pressable
+                onPress={() => router.push(`/community/${packId}/plan` as never)}
+                style={({ pressed }) => [styles.primary, styles.primaryInline, pressed && styles.pressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.primaryText}>Plan the first walk</Text>
+              </Pressable>
+            ) : null}
           </View>
         )}
 
@@ -331,8 +397,8 @@ export default function PackHomeScreen() {
 
         <SectionHead
           title="The pack"
-          actionLabel="Invite"
-          onAction={() => router.push(`/community/${packId}/invite` as never)}
+          actionLabel={isOwner ? 'Invite' : undefined}
+          onAction={isOwner ? () => router.push(`/community/${packId}/invite` as never) : undefined}
         />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.memberRail}>
           {members.map((member, index) => {
@@ -344,7 +410,7 @@ export default function PackHomeScreen() {
               <View key={member.user_id} style={styles.memberCard}>
                 <DogAvatar dog={dog} size={56} ringColor={index === 0 ? color.yellow : color.surface} />
                 <Text style={styles.dogName} numberOfLines={1}>{member.dogs.map(item => item.name).join(' & ') || member.person?.full_name || 'Friend'}</Text>
-                <Text style={styles.ownerName} numberOfLines={1}>{member.person?.username ? `@${member.person.username}` : member.role === 'owner' ? 'Trail owner' : 'Pack member'}</Text>
+                <Text style={styles.ownerName} numberOfLines={1}>{member.person?.username ? `@${member.person.username}` : member.role === 'owner' ? 'Meetup host' : 'Pack member'}</Text>
                 {canRemove ? (
                   <Pressable onPress={() => confirmRemove(member)} style={styles.removeMember} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove ${member.person?.full_name || member.person?.username || 'this member'}`}>
                     <Text style={styles.removeMemberText}>Remove</Text>
@@ -414,7 +480,7 @@ export default function PackHomeScreen() {
           accessibilityRole="button"
         >
           <Ionicons name="settings-outline" size={18} color={color.slateMuted} />
-          <Text style={styles.settingsText}>Trail settings</Text>
+          <Text style={styles.settingsText}>Meetup settings</Text>
         </Pressable>
 
         {error ? <Text style={communityScreenStyles.error}>{error}</Text> : null}
@@ -468,11 +534,11 @@ function DateChip({ iso, live, quiet }: { iso?: string | null; live?: boolean; q
         {live
           ? 'NOW'
           : valid
-            ? new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date).toUpperCase()
+            ? dateFormat({ weekday: 'short' }).format(date).toUpperCase()
             : 'TBC'}
       </Text>
       <Text style={[styles.dateChipDay, quiet && styles.dateChipDayQuiet]}>
-        {valid ? new Intl.DateTimeFormat(undefined, { day: 'numeric' }).format(date) : '—'}
+        {valid ? dateFormat({ day: 'numeric' }).format(date) : '—'}
       </Text>
     </View>
   );
@@ -500,6 +566,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Holds the invite button's place for a member, so the title stays centred.
+  // Transparent, not `circleAction` — reusing that style would leave a white
+  // circle sitting there with nothing in it.
+  circleActionSpacer: { width: 44, height: 44 },
 
   hero: {
     position: 'relative',

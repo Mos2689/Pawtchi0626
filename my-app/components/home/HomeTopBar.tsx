@@ -46,7 +46,7 @@ import { WalkStoryRing } from '../WalkStoryRing';
 const SEGMENTS: { key: RailSegment; label: string }[] = [
   { key: 'walks', label: 'Walk' },
   { key: 'spots', label: 'Nearby' },
-  { key: 'together', label: 'Together' },
+  { key: 'together', label: 'Connect' },
 ];
 
 interface HomeTopBarProps {

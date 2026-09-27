@@ -66,7 +66,7 @@ export default function OwnerProfileScreen() {
                 <View style={styles.usernameCard}>
                     <Text style={styles.usernameTitle}>Your username</Text>
                     <Text style={styles.usernameBody}>
-                        Friends type this exactly to invite you to a trail. Pawtchi has no people
+                        Friends type this exactly to invite you to a meetup. Pawtchi has no people
                         search and never lists you anywhere.
                     </Text>
                     {username !== undefined ? (

@@ -128,7 +128,22 @@ export type EndReason =
   | 'auto_home'
   | 'manual'
   | 'time_cap'
-  | 'recovered';
+  | 'recovered'
+  /**
+   * The trail's host closed the shared walk while this phone was recording.
+   *
+   * Its own reason rather than borrowing `recovered`, which means something
+   * specific and different — "the app found an orphaned walk on launch and
+   * finalised it". These rows are neither orphaned nor recovered: the walk
+   * ended cleanly, somebody else just chose the moment. Reusing `recovered`
+   * would have put a small untruth in a column that outlives the walk and is
+   * read by the Walksign engine.
+   *
+   * `walk_sessions.end_reason` has no CHECK constraint and its two consumers
+   * (geoLabels, walksignEngine) both only test for 'auto_home', so a new value
+   * is additive.
+   */
+  | 'host_closed';
 
 export interface WalkSessionState {
   status: SessionStatus;

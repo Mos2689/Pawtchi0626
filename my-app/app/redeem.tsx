@@ -33,23 +33,11 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Svg, { Path } from 'react-native-svg';
-import Animated, {
-  Easing,
-  FadeIn,
-  FadeInDown,
-  ZoomIn,
-  cancelAnimation,
-  useAnimatedProps,
-  useReducedMotion,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-} from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 
 import { color, displayLine, font, motion, radius, space } from '../constants/design';
 import { TextField } from '../components/ui/TextField';
-import { lassoPath } from '../components/BrandLasso';
+import { LassoJourney, LassoWorkingContent } from '../components/LassoLoader';
 import { useSubscription } from '../providers/SubscriptionProvider';
 import { track } from '../lib/analytics';
 import { redeemCreatorCode } from '../lib/creatorCode/client';
@@ -322,86 +310,11 @@ export default function RedeemScreen() {
 
 function WorkingContent() {
   return (
-    <View style={styles.workingContent} accessibilityLiveRegion="polite">
-      <Animated.View
-        entering={FadeInDown.duration(motion.duration.base).delay(80)}
-        style={styles.successIntro}
-      >
-        <Text style={styles.workingTitle}>{REDEEM_WORKING_TITLE}</Text>
-        <Text style={styles.workingBody}>{REDEEM_WORKING_BODY}</Text>
-        <LassoJourney mode="working" />
-        <View style={styles.workingPill}>
-          <View style={styles.workingPillDot} />
-          <Text style={styles.workingPillText}>{REDEEM_CTA_WORKING}</Text>
-        </View>
-      </Animated.View>
-    </View>
-  );
-}
-
-const AnimatedPath = Animated.createAnimatedComponent(Path);
-const LASSO_LENGTH = 430;
-const LASSO_D = lassoPath(320, 120, 38);
-
-function LassoJourney({ mode }: { mode: 'working' | 'complete' }) {
-  const reducedMotion = useReducedMotion();
-  const dashOffset = useSharedValue(mode === 'complete' ? LASSO_LENGTH : 0);
-
-  useEffect(() => {
-    if (reducedMotion) {
-      dashOffset.value = mode === 'complete' ? 0 : -145;
-      return;
-    }
-
-    if (mode === 'complete') {
-      dashOffset.value = withTiming(0, {
-        duration: motion.duration.ring,
-        easing: Easing.out(Easing.cubic),
-      });
-    } else {
-      dashOffset.value = withRepeat(
-        withTiming(-LASSO_LENGTH, { duration: 1450, easing: Easing.linear }),
-        -1,
-        false,
-      );
-    }
-    return () => cancelAnimation(dashOffset);
-  }, [dashOffset, mode, reducedMotion]);
-
-  const animatedProps = useAnimatedProps(() => ({
-    strokeDashoffset: dashOffset.value,
-  }));
-
-  return (
-    <Animated.View
-      entering={FadeIn.duration(motion.duration.base)}
-      style={[styles.lassoStage, mode === 'complete' && styles.lassoStageComplete]}
-    >
-      <Svg width="100%" height="100%" viewBox="0 0 320 120">
-        <Path
-          d={LASSO_D}
-          fill="none"
-          stroke={color.yellow}
-          strokeOpacity={mode === 'working' ? 0.14 : 0.18}
-          strokeWidth={mode === 'working' ? 2 : 7}
-          strokeLinecap="round"
-        />
-        <AnimatedPath
-          animatedProps={animatedProps}
-          d={LASSO_D}
-          fill="none"
-          stroke={color.yellow}
-          strokeWidth={mode === 'complete' ? 5 : 6}
-          strokeLinecap="round"
-          strokeDasharray={mode === 'complete' ? `${LASSO_LENGTH} ${LASSO_LENGTH}` : '92 338'}
-        />
-      </Svg>
-      {mode === 'complete' && (
-        <Animated.View entering={ZoomIn.delay(650).duration(motion.duration.fast)} style={styles.lassoCheck}>
-          <MaterialIcons name="check" size={16} color={color.navy} />
-        </Animated.View>
-      )}
-    </Animated.View>
+    <LassoWorkingContent
+      title={REDEEM_WORKING_TITLE}
+      body={REDEEM_WORKING_BODY}
+      status={REDEEM_CTA_WORKING}
+    />
   );
 }
 
@@ -590,75 +503,6 @@ const styles = StyleSheet.create({
     fontFamily: font.extrabold,
     fontSize: 16,
     color: color.navy,
-  },
-  workingContent: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: space.xxl,
-    paddingBottom: 72,
-  },
-  workingTitle: {
-    ...displayLine(38),
-    textAlign: 'center',
-    letterSpacing: 0.5,
-    color: color.cream,
-    marginBottom: space.md,
-  },
-  workingBody: {
-    alignSelf: 'center',
-    maxWidth: 310,
-    fontFamily: font.regular,
-    fontSize: 14.5,
-    lineHeight: 22,
-    textAlign: 'center',
-    color: color.creamDim,
-  },
-  lassoStage: {
-    position: 'relative',
-    width: '100%',
-    height: 150,
-    alignSelf: 'center',
-    marginTop: space.xxl,
-  },
-  lassoStageComplete: {
-    height: 96,
-    marginTop: 0,
-    marginBottom: space.sm,
-  },
-  lassoCheck: {
-    position: 'absolute',
-    right: 0,
-    top: 43,
-    width: 28,
-    height: 28,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: color.cream,
-    borderWidth: 3,
-    borderColor: color.navy,
-  },
-  workingPill: {
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    marginTop: space.xl,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.sm,
-    borderRadius: radius.pill,
-    backgroundColor: color.yellowSoft,
-  },
-  workingPillDot: {
-    width: 6,
-    height: 6,
-    borderRadius: radius.pill,
-    backgroundColor: color.yellow,
-  },
-  workingPillText: {
-    fontFamily: font.semibold,
-    fontSize: 12,
-    color: color.cream,
   },
   successScroll: {
     flex: 1,

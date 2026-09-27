@@ -58,6 +58,7 @@ import {
   type KeepsakeOutboxEntry,
 } from '../lib/walk/keepsakeOutbox';
 import { outboxPorts } from '../lib/walk/keepsakeOutboxPorts';
+import { newClientId } from '../lib/walk/clientId';
 import { readPlacePromptLog, recordPlacePrompt } from '../lib/walk/placePromptLog';
 import { haversineMeters } from '../lib/walk/geo';
 import type { WalkCaptureResult } from '../components/walk/WalkCamera';
@@ -65,6 +66,19 @@ import type { KeepsakePromptKind } from '../components/walk/KeepsakePrompt';
 
 /** A capture waiting for the walk to save and hand over its session id. */
 export interface PendingCapture extends WalkCaptureResult {
+  /**
+   * The id this photo's `walk_media` row will be given, decided now.
+   *
+   * Assigned at the shutter rather than by the database, because a photo on a
+   * Trail is published to the pack immediately and its `walk_media` row cannot
+   * be written until the walk ends (that table needs a `walk_session_id`).
+   * Both rows have to name the same photo, so the name is chosen here, once,
+   * and carried through the drafts and the outbox unchanged.
+   *
+   * A solo walk's keepsake carries one too and simply uses it as its own id —
+   * one path, not two, so the shared case is not a special case.
+   */
+  mediaId: string;
   lat: number | null;
   lng: number | null;
   routeIndex: number | null;
@@ -261,6 +275,8 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
     (result: WalkCaptureResult) => {
       accept({
         ...result,
+        // Named here, at the shutter, and never re-named. See PendingCapture.
+        mediaId: newClientId(),
         lat,
         lng,
         routeIndex:
@@ -293,6 +309,10 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
 
       for (const capture of batch) {
         const stored = await insertKeepsake({
+          // The id this photo was given at the shutter. For a Trail photo it
+          // is already written into community_shared_media, so this row must
+          // take that id rather than a fresh one from the server.
+          mediaId: capture.mediaId,
           ownerId,
           petId,
           walkSessionId,
@@ -319,6 +339,10 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
         if (!stored) {
           failed.push({
             id: newOutboxId(capture.capturedAt),
+            // Carried into the queue so a retry writes the SAME row this
+            // photo was already published under. Dropping it here would give
+            // the retry a fresh id and orphan the trail's copy.
+            mediaId: capture.mediaId,
             ownerId,
             petId,
             walkSessionId,

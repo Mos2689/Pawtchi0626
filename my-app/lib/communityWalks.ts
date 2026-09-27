@@ -1,8 +1,10 @@
 import { supabase } from './supabase';
-import { cacheKey, readSnapshot, writeSnapshot } from './communityCache';
+import { beginWrite, cacheKey, commitSnapshot, isFresh, readSnapshot, writeOptimistic, writeSnapshot } from './communityCache';
 import { currentUserId } from './sessionUser';
 import { isValidUsername, normalizeUsername } from './communityUsername';
 import { mergeTraces } from './community/memoryTraces';
+import { isMissingFunction, toPreviousInvitee, type PreviousInvitee } from './community/previousInvitees';
+import { toInvitationPreview, type InvitationPreview } from './community/invitationPreview';
 
 export { isValidUsername, normalizeUsername } from './communityUsername';
 
@@ -215,13 +217,66 @@ export interface ExternalInviteClaim extends UsernameMatch {
   claimed_at: string;
 }
 
+/**
+ * The trail's host — the one person who runs it.
+ *
+ * ── Owner, not organiser ───────────────────────────────────────────────────
+ *
+ * Every screen used to ask `walk.organizer_id === user.id`, which meant
+ * whoever created a walk controlled it, and any member could create one. A
+ * trail now has a single host: planning, starting, ending, editing the plan
+ * and inviting all belong to them, and the database enforces it
+ * (20260922020000_trail_host_authority).
+ *
+ * This reads the PACK's owner rather than the walk's organiser on purpose.
+ * Those are the same person for every walk created from now on, but not for
+ * the walks that already exist — and ownership is the durable fact. It also
+ * means a trail whose ownership is transferred moves its controls with it,
+ * rather than stranding them on whoever happened to press the button once.
+ *
+ * Exported as one function rather than repeated inline so a screen cannot
+ * quietly disagree with the policy about who is in charge.
+ */
+export function isTrailHost(
+  pack: Pick<CommunityPack, 'owner_id'> | null | undefined,
+  userId: string | null | undefined,
+): boolean {
+  return !!pack && !!userId && pack.owner_id === userId;
+}
+
 function unwrap<T>(data: T | null, error: { message: string } | null): T {
   if (error) throw new Error(error.message);
   if (data === null) throw new Error('Nothing was returned.');
   return data;
 }
 
+/**
+ * The viewer's own username, as last seen.
+ *
+ * `undefined` means nobody has looked yet, which is NOT the same as `null`
+ * ("looked, and they have not chosen one"). The Together prompt keys off that
+ * difference — it must not flash at somebody who simply has not been read yet.
+ */
+let knownUsername: string | null | undefined;
+
+function rememberUsername(value: string | null): void {
+  knownUsername = value;
+}
+
+/** Forgotten on sign-out with the rest of the previous account's memory. */
+export function resetKnownUsername(): void {
+  knownUsername = undefined;
+}
+
+/**
+ * Free when the trails list has already been loaded, which on the only screen
+ * that asks is always. `community_trails_for_me` returns this column, so the
+ * separate round trip this used to make on every focus is now redundant — but
+ * the function stays, because the owner's profile screen reads it without ever
+ * touching Together.
+ */
 export async function getMyUsername(): Promise<string | null> {
+  if (knownUsername !== undefined) return knownUsername;
   const userId = await currentUserId();
   if (!userId) return null;
   const { data, error } = await supabase
@@ -230,7 +285,9 @@ export async function getMyUsername(): Promise<string | null> {
     .eq('id', userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return (data?.username as string | null | undefined) ?? null;
+  const username = (data?.username as string | null | undefined) ?? null;
+  rememberUsername(username);
+  return username;
 }
 
 export async function listMyDogs(): Promise<CommunityDog[]> {
@@ -258,6 +315,9 @@ export async function saveMyUsername(value: string): Promise<string> {
     if (error.code === '23505') throw new Error('That username is already taken.');
     throw new Error(error.message);
   }
+  // Kept in step with the write, or the memoised read above would keep
+  // answering with the handle they just changed.
+  rememberUsername(username);
   return username;
 }
 
@@ -314,22 +374,17 @@ export async function lookupUsername(value: string): Promise<UsernameMatch | nul
   };
 }
 
-/**
- * How many recent walks are scanned for a trail cover photo, across all of an
- * owner's trails. A trail whose last photo is older than this shows its map
- * instead, which is the same thing a trail with no photo at all shows.
- */
-const COVER_WALK_SCAN_LIMIT = 150;
-
-/**
- * Statuses that mean "I am coming". `invited` is not one of them — being asked
- * is not an answer, and counting it as one is how a walk nobody replied to
- * claims a full turnout.
- */
-const COMING_STATUSES: AttendanceStatus[] = ['coming', 'checked_in', 'walking', 'finished'];
-
-/** How many of this owner's own answers are read to badge the trail list. */
-const MY_ATTENDANCE_LIMIT = 500;
+// COVER_WALK_SCAN_LIMIT, COMING_STATUSES and MY_ATTENDANCE_LIMIT used to live
+// here. They existed to bound client-side IN lists that `listPacks` assembled
+// across three waves of queries — a cap on how many walk ids could go into a
+// URL before meeting a 414, essentially. `community_trails_for_me` does that
+// work in SQL where there is no URL and nothing to bound, so the caps went
+// with the queries.
+//
+// The one rule among them that mattered is not a cap and did not go: "coming"
+// is ('coming','checked_in','walking','finished') and never 'invited', because
+// being asked is not an answer. It now lives in the RPC's goingCount, which is
+// the only place that counts.
 
 /** Unanswered walk invitations read for the waiting pill. */
 const WALK_INVITE_LIMIT = 50;
@@ -337,147 +392,42 @@ const WALK_INVITE_LIMIT = 50;
 /** Completed walks scanned to find one drawable route per trail. */
 const TRAIL_ROUTE_SCAN_LIMIT = 60;
 
+/**
+ * Every trail this owner is in, shaped for the Together sheet.
+ *
+ * ── This used to be nine queries in three serial waves ─────────────────────
+ *
+ * Memberships, then members + upcoming walks + walk ids + my answers, then
+ * photos + attendance + dogs + profiles — each wave waiting on ids the last
+ * one produced. Three round trips to Tokyo before the list could paint, and
+ * one of those queries (`pets`) cost 95 ms on its own: 60 ms of RLS PLANNING,
+ * because `pets` carries four permissive policies OR'd together and PostgREST
+ * re-plans them per request.
+ *
+ * `community_trails_for_me` is the same answer in one round trip. Being
+ * SECURITY DEFINER it also never plans that disjunction — it does its own
+ * authorisation instead, which is why the function checks `auth.uid()` before
+ * it reads anything.
+ *
+ * The username rides along. It was a separate round trip on every focus, for
+ * one column of a row this already had open.
+ */
 export async function listPacks(): Promise<CommunityPack[]> {
   const userId = await currentUserId();
-  if (!userId) return [];
-  const { data: memberships, error } = await supabase
-    .from('community_pack_members')
-    .select('pack_id, role, community_packs(*)')
-    .eq('user_id', userId)
-    .order('joined_at', { ascending: false });
+  // Not `[]`: an empty list here reads as "you have no meetups", and not
+  // knowing who is asking is not that. Callers keep what they had and say
+  // they could not check.
+  if (!userId) throw new Error('auth_required');
+
+  const ticket = beginWrite(cacheKey.packs());
+  const { data, error } = await supabase.rpc('community_trails_for_me');
   if (error) throw new Error(error.message);
-  const packs = (memberships ?? []).map((row: any) => ({
-    ...(Array.isArray(row.community_packs) ? row.community_packs[0] : row.community_packs),
-    role: row.role,
-  })) as CommunityPack[];
-  if (!packs.length) return [];
 
-  const packIds = packs.map(pack => pack.id);
-  const now = new Date().toISOString();
-  const [{ data: members }, { data: walks }, { data: allWalkIds }, { data: myRows }] = await Promise.all([
-    supabase.from('community_pack_members').select('pack_id, user_id').in('pack_id', packIds),
-    supabase
-      .from('community_walks')
-      .select('*')
-      .in('pack_id', packIds)
-      .in('state', ['planned', 'active'])
-      .or(`scheduled_for.gte.${now},scheduled_for.is.null`)
-      .order('scheduled_for', { ascending: true, nullsFirst: true }),
-    // Walks the cover could come from — the ones that have already happened,
-    // which the query above deliberately excludes.
-    //
-    // Capped, and the cap is about the NEXT query rather than this one: those
-    // ids become an `IN` list in a URL, and an owner with a few well-walked
-    // trails would otherwise build one several kilobytes long and eventually
-    // meet a 414. Newest first, because a cover is the newest photo and a photo
-    // is published when a walk ends — so the walks that could supply one are
-    // the recent ones by construction.
-    supabase
-      .from('community_walks')
-      .select('id, pack_id')
-      .in('pack_id', packIds)
-      .order('created_at', { ascending: false })
-      .limit(COVER_WALK_SCAN_LIMIT),
-    // My own answers, every one of them, matched to walks in memory below.
-    //
-    // Fetched by user rather than by walk on purpose: keying it on walk ids
-    // would make it wait for the query above, and this is the badge on a list
-    // row — not worth a second round trip. These are only ever this owner's
-    // rows, so the set is bounded by how many walks they have been asked to.
-    supabase
-      .from('community_walk_attendance')
-      .select('walk_id, status')
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false })
-      .limit(MY_ATTENDANCE_LIMIT),
-  ]);
-
-  // Newest contributed photo per pack, in one round trip rather than one per
-  // card. `removed_at` is respected here as everywhere — a contributor who
-  // withdrew a photo must not find it still fronting the trail.
-  const walkToPack = new Map<string, string>();
-  for (const row of (allWalkIds ?? []) as any[]) walkToPack.set(row.id, row.pack_id);
-  const coverByPack = new Map<string, string>();
-  // Who has said yes to each upcoming walk. Rides alongside the cover lookup
-  // rather than behind it — both need walk ids and neither needs the other.
-  const upcomingIds = ((walks ?? []) as CommunityWalk[]).map(walk => walk.id);
-  const goingByWalk = new Map<string, number>();
-
-  const memberIds = Array.from(new Set(((members ?? []) as any[]).map(row => row.user_id)));
-  const [{ data: media }, { data: going }, { data: memberDogs }, { data: memberProfiles }] = await Promise.all([
-    walkToPack.size > 0
-      ? supabase
-          .from('community_shared_media')
-          .select('walk_id, display_path, captured_at')
-          .in('walk_id', [...walkToPack.keys()])
-          .not('display_path', 'is', null)
-          .is('removed_at', null)
-          .order('captured_at', { ascending: false })
-      : Promise.resolve({ data: [] as any[] }),
-    upcomingIds.length
-      ? supabase
-          .from('community_walk_attendance')
-          .select('walk_id, status')
-          .in('walk_id', upcomingIds)
-          .in('status', COMING_STATUSES)
-      : Promise.resolve({ data: [] as any[] }),
-    // The faces on every card. Same stage as the two above — all three need
-    // ids that stage one produced, and none of them needs the others.
-    memberIds.length
-      ? supabase
-          .from('pets')
-          .select('id, owner_id, name, image_url')
-          .eq('species', 'dog')
-          .in('owner_id', memberIds)
-      : Promise.resolve({ data: [] as any[] }),
-    memberIds.length
-      ? supabase.from('profiles').select('id, full_name, username').in('id', memberIds)
-      : Promise.resolve({ data: [] as any[] }),
-  ]);
-
-  for (const row of (media ?? []) as any[]) {
-    const packId = walkToPack.get(row.walk_id);
-    // Ordered newest-first, so the first one seen for a pack is its cover.
-    if (packId && !coverByPack.has(packId)) coverByPack.set(packId, row.display_path);
-  }
-  for (const row of (going ?? []) as any[]) {
-    goingByWalk.set(row.walk_id, (goingByWalk.get(row.walk_id) ?? 0) + 1);
-  }
-  const myStatusByWalk = new Map<string, AttendanceStatus>(
-    ((myRows ?? []) as any[]).map(row => [row.walk_id, row.status as AttendanceStatus]),
-  );
-  // Which owners belong to which pack, so a pack's dogs are its own.
-  const ownersByPack = new Map<string, string[]>();
-  for (const row of (members ?? []) as any[]) {
-    ownersByPack.set(row.pack_id, [...(ownersByPack.get(row.pack_id) ?? []), row.user_id]);
-  }
-  const dogsByOwner = new Map<string, CommunityDog[]>();
-  for (const dog of (memberDogs ?? []) as any[]) {
-    dogsByOwner.set(dog.owner_id, [...(dogsByOwner.get(dog.owner_id) ?? []), dog as CommunityDog]);
-  }
-  const nameById = new Map<string, string | null>(
-    ((memberProfiles ?? []) as any[]).map(row => [
-      row.id,
-      // A first name, because this reads as "Mira hosts" in a sentence.
-      (row.full_name as string | null)?.trim().split(/\s+/)[0]
-        || (row.username ? `@${row.username}` : null),
-    ]),
-  );
-
-  const resolved = packs.map(pack => {
-    const nextWalk = ((walks ?? []) as CommunityWalk[]).find(walk => walk.pack_id === pack.id) ?? null;
-    return {
-      ...pack,
-      memberCount: (members ?? []).filter((member: any) => member.pack_id === pack.id).length,
-      nextWalk,
-      coverPath: coverByPack.get(pack.id) ?? null,
-      goingCount: nextWalk ? goingByWalk.get(nextWalk.id) ?? 0 : 0,
-      myStatus: nextWalk ? myStatusByWalk.get(nextWalk.id) ?? null : null,
-      dogs: (ownersByPack.get(pack.id) ?? []).flatMap(owner => dogsByOwner.get(owner) ?? []),
-      hostName: nextWalk ? nameById.get(nextWalk.organizer_id) ?? null : null,
-    };
-  });
-  writeSnapshot(cacheKey.packs(), resolved);
+  const doc = (data ?? {}) as { trails?: unknown; username?: unknown };
+  const resolved = (Array.isArray(doc.trails) ? doc.trails : []) as CommunityPack[];
+  // Remembered here so `getMyUsername` below can answer without the network.
+  rememberUsername(typeof doc.username === 'string' ? doc.username : null);
+  commitSnapshot(ticket, resolved);
   return resolved;
 }
 
@@ -527,7 +477,10 @@ export function rememberNewPack(pack: CommunityPack, firstWalk: CommunityWalk | 
     nextWalk: firstWalk,
     coverPath: null,
   };
-  writeSnapshot(cacheKey.packs(), [entry, ...existing.filter(row => row.id !== pack.id)]);
+  // Optimistic, not authoritative: this row is something we assembled, and the
+  // refetch on the next focus must still happen to replace it. `writeSnapshot`
+  // here would mark the list fresh and suppress exactly that.
+  writeOptimistic(cacheKey.packs(), [entry, ...existing.filter(row => row.id !== pack.id)]);
 }
 
 export async function createPack(name: string): Promise<CommunityPack> {
@@ -594,9 +547,16 @@ export async function listWalkInvitations(): Promise<WalkInvitation[]> {
 
   // Embedded rather than a second round trip, the same way `listPacks` reads a
   // membership's pack. One FK, so the relationship is unambiguous.
+  //
+  // The pack's NAME is embedded one level deeper for the same reason. It used
+  // to be a second query keyed on the pack ids this one produced — a whole
+  // round trip to turn a handful of UUIDs into a handful of names, on a pill
+  // that is often showing a single number.
   const { data, error } = await supabase
     .from('community_walk_attendance')
-    .select('walk_id, community_walks!inner(id, pack_id, title, scheduled_for, meeting_label, state)')
+    .select(
+      'walk_id, community_walks!inner(id, pack_id, title, scheduled_for, meeting_label, state, community_packs(id, name))',
+    )
     .eq('user_id', userId)
     .eq('status', 'invited')
     .limit(WALK_INVITE_LIMIT);
@@ -607,21 +567,19 @@ export async function listWalkInvitations(): Promise<WalkInvitation[]> {
     .filter(walk => walk && (walk.state === 'planned' || walk.state === 'active'));
   if (!rows.length) return [];
 
-  const packIds = Array.from(new Set(rows.map((walk: any) => walk.pack_id)));
-  const { data: packs } = await supabase
-    .from('community_packs')
-    .select('id, name')
-    .in('id', packIds);
-  const nameById = new Map<string, string>(((packs ?? []) as any[]).map(p => [p.id, p.name]));
-
-  return rows.map((walk: any) => ({
-    walkId: walk.id,
-    packId: walk.pack_id,
-    packName: nameById.get(walk.pack_id) ?? 'A trail',
-    title: walk.title,
-    scheduledFor: walk.scheduled_for,
-    meetingLabel: walk.meeting_label,
-  }));
+  return rows.map((walk: any) => {
+    const pack = Array.isArray(walk.community_packs) ? walk.community_packs[0] : walk.community_packs;
+    return {
+      walkId: walk.id,
+      packId: walk.pack_id,
+      // "A trail" rather than an empty string: the row reads as a sentence and
+      // a nameless trail should still be answerable.
+      packName: pack?.name ?? 'A meetup',
+      title: walk.title,
+      scheduledFor: walk.scheduled_for,
+      meetingLabel: walk.meeting_label,
+    };
+  });
 }
 
 export async function respondToInvitation(invitationId: string, accept: boolean): Promise<void> {
@@ -639,6 +597,43 @@ export async function inviteUsername(packId: string, username: string): Promise<
     p_username: normalizeUsername(username),
   });
   return unwrap(data as CommunityInvitation | null, error);
+}
+
+/**
+ * People this HOST has invited before, for one-tap re-inviting.
+ *
+ * Host only, and only their own history — both enforced by the function, not
+ * here (migration 20260924000000_previous_invitees). Throws the raw message so
+ * the caller can tell "not on this database yet" from a real failure.
+ */
+export async function listPreviousInvitees(packId: string): Promise<PreviousInvitee[]> {
+  const { data, error } = await supabase.rpc('community_previous_invitees', { p_pack_id: packId });
+  if (error) throw new Error(error.message);
+  return ((data as Record<string, unknown>[] | null) ?? [])
+    .map(toPreviousInvitee)
+    .filter((person): person is PreviousInvitee => person !== null);
+}
+
+/** Invite several previous invitees at once. Resolves to how many were newly invited. */
+export async function invitePreviousInvitees(packId: string, userIds: string[]): Promise<number> {
+  const { data, error } = await supabase.rpc('invite_previous_community_invitees', {
+    p_pack_id: packId,
+    p_user_ids: userIds,
+  });
+  if (error) throw new Error(error.message);
+  return typeof data === 'number' ? data : 0;
+}
+
+/**
+ * A look inside the meetup an invitation is for, before answering it.
+ * Only the invited person, only while pending — see migration 20260926020000.
+ */
+export async function loadInvitationPreview(invitationId: string): Promise<InvitationPreview> {
+  const { data, error } = await supabase.rpc('community_invitation_preview', { p_invitation_id: invitationId });
+  if (error) throw new Error(error.message);
+  const preview = toInvitationPreview(data);
+  if (!preview) throw new Error('invitation_not_available');
+  return preview;
 }
 
 export async function createExternalInvite(packId: string): Promise<CommunityInvitation> {
@@ -664,6 +659,31 @@ export async function listExternalInviteClaims(packId: string): Promise<External
   })) as ExternalInviteClaim[];
 }
 
+/**
+ * Everyone waiting to be let into any of these trails, in one call.
+ *
+ * Home asked `list_external_community_claims` once PER owned trail to draw a
+ * single number on a single pill — eight trails meant eight concurrent round
+ * trips, competing for the four-or-so sockets React Native allows per host and
+ * so delaying the requests the list itself was waiting on.
+ *
+ * The RPC checks ownership per row and silently drops trails the caller does
+ * not own, rather than raising: this list is assembled client-side, and one
+ * stale id in it should cost that trail's requests, not the whole pill.
+ */
+export async function listClaimsForPacks(packIds: string[]): Promise<ExternalInviteClaim[]> {
+  if (!packIds.length) return [];
+  const { data, error } = await supabase.rpc('community_claims_for_packs', {
+    p_pack_ids: packIds,
+  });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as any[]).map(row => ({
+    ...row,
+    id: row.claimant_id,
+    dogs: Array.isArray(row.dogs) ? row.dogs : [],
+  })) as ExternalInviteClaim[];
+}
+
 export async function approveExternalInvite(invitationId: string, approve: boolean): Promise<void> {
   const { data, error } = await supabase.rpc('approve_external_community_invite', {
     p_invitation_id: invitationId,
@@ -680,7 +700,63 @@ export interface PackSnapshot {
   invited: PendingInvite[];
 }
 
+function toPendingInvites(rows: unknown, now: number): PendingInvite[] {
+  return ((rows ?? []) as any[]).map(row => ({
+    invitation_id: row.invitation_id,
+    id: row.invitee_id,
+    username: row.username,
+    full_name: row.full_name,
+    avatar_url: row.avatar_url,
+    dogs: Array.isArray(row.dogs) ? row.dogs : [],
+    state: row.state,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    expired: row.state === 'pending' && Date.parse(row.expires_at) < now,
+  })) as PendingInvite[];
+}
+
+/**
+ * A meetup's screen: the pack, its members (with names and dogs), its recent
+ * walks, and who has been invited.
+ *
+ * Was six requests in two waves — pack, members and walks, THEN profiles, dogs
+ * and invitations — on every open of the meetup, its settings and its invite
+ * screen. `community_pack_detail` (migration 20260926010000) returns the first
+ * five in one read, with the old policies' rules restated inside it; the
+ * invitation roster keeps its own RPC and rides in the same wave. It also
+ * skips the `pets` RLS planning that made that one query cost ~95 ms.
+ *
+ * Falls back to the six reads only when the function is not deployed yet.
+ */
 export async function loadPack(packId: string): Promise<PackSnapshot> {
+  const ticket = beginWrite(cacheKey.pack(packId));
+  const [detail, invitations] = await Promise.all([
+    supabase.rpc('community_pack_detail', { p_pack_id: packId }),
+    supabase.rpc('list_pack_invitations', { p_pack_id: packId }),
+  ]);
+  if (detail.error && isMissingFunction(detail.error.message)) return loadPackLegacy(packId, ticket);
+  if (detail.error) throw new Error(detail.error.message);
+  if (invitations.error) throw new Error(invitations.error.message);
+
+  const doc = (detail.data ?? {}) as { pack?: unknown; members?: unknown; walks?: unknown };
+  if (!doc.pack) throw new Error('This meetup could not load.');
+  const snapshot: PackSnapshot = {
+    pack: doc.pack as CommunityPack,
+    members: ((Array.isArray(doc.members) ? doc.members : []) as any[]).map(row => ({
+      ...row,
+      person: row.person ?? undefined,
+      dogs: Array.isArray(row.dogs) ? row.dogs : [],
+    })) as PackMember[],
+    walks: (Array.isArray(doc.walks) ? doc.walks : []) as CommunityWalk[],
+    invited: toPendingInvites(invitations.data, Date.now()),
+  };
+
+  commitSnapshot(ticket, snapshot);
+  for (const walk of snapshot.walks) primeOuting(walk, snapshot.pack);
+  return snapshot;
+}
+
+async function loadPackLegacy(packId: string, ticket: ReturnType<typeof beginWrite>): Promise<PackSnapshot> {
   const [{ data: pack, error: packError }, { data: memberRows, error: memberError }, { data: walks, error: walkError }] =
     await Promise.all([
       supabase.from('community_packs').select('*').eq('id', packId).single(),
@@ -705,20 +781,31 @@ export async function loadPack(packId: string): Promise<PackSnapshot> {
   // be a third serial round trip, which is a third of this screen's open time
   // spent doing nothing.
   const ids = (memberRows ?? []).map((row: any) => row.user_id);
-  const [{ data: profiles }, { data: dogs }, { data: invitedRows }] = await Promise.all([
+  const [
+    { data: profiles, error: profileError },
+    { data: dogs, error: dogError },
+    { data: invitedRows, error: invitedError },
+  ] = await Promise.all([
     ids.length
       ? supabase.from('profiles').select('id, username, full_name, avatar_url').in('id', ids)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     ids.length
       ? supabase.from('pets').select('id, owner_id, name, image_url').eq('species', 'dog').in('owner_id', ids)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] as any[], error: null }),
     supabase.rpc('list_pack_invitations', { p_pack_id: packId }),
   ]);
+  // A failure here used to be ignored and the half-built result cached as a
+  // good one: every member rendered as "Friend" with no dogs until the next
+  // load happened to succeed. Throwing keeps whatever the screen already shows
+  // (every caller keeps its cached content on error) and caches nothing wrong.
+  if (profileError) throw new Error(profileError.message);
+  if (dogError) throw new Error(dogError.message);
+  if (invitedError) throw new Error(invitedError.message);
 
   // Who has been asked but has not answered. Through an RPC because the host
   // cannot read a pending invitee's profile directly — every profiles policy
   // needs a shared pack, and that is precisely what an invitation has not
-  // created yet. See 20260917999998_pack_invitation_roster.sql.
+  // created yet. See 20260917171343_pack_invitation_roster.sql.
   const now = Date.now();
 
   const snapshot: PackSnapshot = {
@@ -743,7 +830,7 @@ export async function loadPack(packId: string): Promise<PackSnapshot> {
     })) as PendingInvite[],
   };
 
-  writeSnapshot(cacheKey.pack(packId), snapshot);
+  commitSnapshot(ticket, snapshot);
   // Every walk on this trail, primed for the screen that opens next. The trail
   // is the only way into a walk, so by the time someone taps one its plan is
   // already known here — there is no reason for that screen to spend a round
@@ -764,10 +851,34 @@ export function primeOuting(walk: CommunityWalk, pack: CommunityPack): void {
   const existing = readSnapshot<OutingSnapshot>(key);
   // Never downgrade a complete snapshot back to a partial one.
   if (existing && !existing.partial) {
-    writeSnapshot(key, { ...existing, walk, pack });
+    // `walk` and `pack` here ARE freshly fetched, but the attendance being
+    // carried over is not — so a re-prime must not restart its freshness
+    // window. Bouncing between the trail and a walk re-primes on every visit,
+    // and resetting each time would let a roster sit stale indefinitely while
+    // looking current.
+    const write = isFresh(key) ? writeSnapshot : writeOptimistic;
+    write(key, { ...existing, walk, pack });
     return;
   }
-  writeSnapshot(key, { walk, pack, attendance: [], notAsked: [], partial: true });
+  /**
+   * Optimistic, NOT fresh — and the distinction is the whole reason this line
+   * exists separately from the one above.
+   *
+   * This snapshot is a plan with nobody in it: `attendance: []`, `notAsked: []`,
+   * `partial: true`. It is worth PAINTING, because arriving from the trail with
+   * the title and meeting point already on screen beats arriving blank. It is
+   * never worth trusting instead of the network, because the server has not
+   * answered for this walk at all.
+   *
+   * Written with `writeSnapshot` it counted as fresh, and the walk screen's
+   * focus gate skipped the fetch that would have filled it. The roster stayed
+   * empty, no dog got selected, and "Start the walk" was disabled on every
+   * planned walk — a screen that looked loaded and was not.
+   *
+   * Exactly the trap `rememberNewPack` documents two functions below. Any
+   * writer that invents a value belongs here, not there.
+   */
+  writeOptimistic(key, { walk, pack, attendance: [], notAsked: [], partial: true });
 }
 
 /**
@@ -888,82 +999,75 @@ export interface OutingSnapshot {
   partial?: boolean;
 }
 
+/**
+ * One walk and everyone on it.
+ *
+ * Was seven queries in three serial waves, the first of which existed only to
+ * learn `pack_id` — a whole round trip to Tokyo for one UUID. Now one call.
+ *
+ * The roster rule is unchanged and still the interesting part: it is the whole
+ * accepted pack, not only people who have answered. Attendance rows are
+ * created lazily, so reading that table alone made unanswered members vanish
+ * from the pre-walk screen. A missing answer comes back as `invited` in
+ * memory; nothing is written until that person actually responds.
+ */
+/** The document both `community_outing` and `community_memory` return. */
+interface OutingDoc {
+  walk?: CommunityWalk;
+  pack?: CommunityPack;
+  people?: {
+    user_id: string;
+    attendance: Record<string, unknown> | null;
+    person?: CommunityPerson;
+    dogs?: CommunityDog[];
+  }[];
+}
+
+/**
+ * Turn that document into the snapshot every screen reads.
+ *
+ * Shared by `loadOuting` and `loadMemory` rather than written twice, because
+ * the interesting rule lives here: somebody with NO attendance row is not
+ * absent, they simply have not answered. They come back as `invited` in memory
+ * with the walk's own `created_at` standing in for an update that never
+ * happened. Two copies of that would eventually disagree, and the way it would
+ * show is a member quietly missing from one screen and present on the other.
+ */
+function decodeOuting(walkId: string, raw: unknown): OutingSnapshot {
+  const doc = (raw ?? {}) as OutingDoc;
+  if (!doc.walk || !doc.pack) throw new Error('That walk could not be opened.');
+
+  const walk = doc.walk;
+  const people = doc.people ?? [];
+  const decorate = (entry: (typeof people)[number]): WalkAttendance => ({
+    walk_id: walkId,
+    user_id: entry.user_id,
+    status: 'invited',
+    share_location: false,
+    checked_in_at: null,
+    joined_at: null,
+    finished_at: null,
+    updated_at: walk.created_at,
+    // Spread AFTER the defaults, so a real row wins every field it carries.
+    ...(entry.attendance ?? {}),
+    person: entry.person,
+    dogs: entry.dogs ?? [],
+  }) as WalkAttendance;
+
+  return {
+    walk,
+    pack: doc.pack,
+    attendance: people.filter(entry => entry.attendance).map(decorate),
+    notAsked: people.filter(entry => !entry.attendance).map(decorate),
+  };
+}
+
 export async function loadOuting(walkId: string): Promise<OutingSnapshot> {
-  const { data: walk, error: walkError } = await supabase
-    .from('community_walks')
-    .select('*')
-    .eq('id', walkId)
-    .single();
-  if (walkError) throw new Error(walkError.message);
-  const [
-    { data: pack, error: packError },
-    { data: attendance, error: attendanceError },
-    { data: memberRows, error: memberError },
-  ] = await Promise.all([
-    supabase.from('community_packs').select('*').eq('id', walk.pack_id).single(),
-    supabase.from('community_walk_attendance').select('*').eq('walk_id', walkId).order('updated_at'),
-    supabase
-      .from('community_pack_members')
-      .select('user_id')
-      .eq('pack_id', walk.pack_id)
-      .order('joined_at'),
-  ]);
-  if (packError) throw new Error(packError.message);
-  if (attendanceError) throw new Error(attendanceError.message);
-  if (memberError) throw new Error(memberError.message);
-
-  // The outing roster is the whole accepted pack, not just people who have
-  // already answered. Attendance rows are intentionally created lazily, so a
-  // query of that table alone made unanswered members disappear from the
-  // pre-walk screen. Merge the pack roster with those rows and represent a
-  // missing answer as `invited` in memory; the database remains unchanged
-  // until that person responds.
-  const ids = Array.from(new Set([
-    ...(memberRows ?? []).map((row: any) => row.user_id),
-    ...(attendance ?? []).map((row: any) => row.user_id),
-  ]));
-  const [{ data: profiles }, { data: participantDogs }, { data: packDogs }] = ids.length
-    ? await Promise.all([
-        supabase.from('profiles').select('id, username, full_name, avatar_url').in('id', ids),
-        supabase.from('community_walk_participant_pets').select('user_id, pets(id, owner_id, name, image_url)').eq('walk_id', walkId),
-        supabase.from('pets').select('id, owner_id, name, image_url').eq('species', 'dog').in('owner_id', ids),
-      ])
-    : [{ data: [] as any[] }, { data: [] as any[] }, { data: [] as any[] }];
-
-  const attendanceByUser = new Map((attendance ?? []).map((row: any) => [row.user_id, row]));
-  const decorate = (userId: string, row: any): WalkAttendance => {
-    const selectedDogs = (participantDogs ?? [])
-      .filter((entry: any) => entry.user_id === userId)
-      .flatMap((entry: any) => Array.isArray(entry.pets) ? entry.pets : [entry.pets])
-      .filter(Boolean);
-    return {
-      walk_id: walkId,
-      user_id: userId,
-      status: 'invited',
-      share_location: false,
-      checked_in_at: null,
-      joined_at: null,
-      finished_at: null,
-      updated_at: walk.created_at,
-      ...row,
-      person: (profiles ?? []).find((profile: any) => profile.id === userId),
-      dogs: selectedDogs.length
-        ? selectedDogs
-        : (packDogs ?? []).filter((dog: any) => dog.owner_id === userId),
-    } as WalkAttendance;
-  };
-
-  const snapshot: OutingSnapshot = {
-    walk: walk as CommunityWalk,
-    pack: pack as CommunityPack,
-    attendance: ids
-      .filter(id => attendanceByUser.has(id))
-      .map(id => decorate(id, attendanceByUser.get(id))),
-    notAsked: ids
-      .filter(id => !attendanceByUser.has(id))
-      .map(id => decorate(id, null)),
-  };
-  writeSnapshot(cacheKey.outing(walkId), snapshot);
+  const ticket = beginWrite(cacheKey.outing(walkId));
+  const { data, error } = await supabase.rpc('community_outing', { p_walk_id: walkId });
+  if (error) throw new Error(error.message);
+  const snapshot = decodeOuting(walkId, data);
+  commitSnapshot(ticket, snapshot);
   return snapshot;
 }
 
@@ -1042,7 +1146,48 @@ export async function startOuting(walkId: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-export async function joinOuting(walkId: string, petIds: string[], shareLocation: boolean): Promise<void> {
+/** Plain sentences for what `join_community_walk` can refuse. */
+export function joinErrorMessage(raw: string): string {
+  if (raw.includes('walk_closed')) return 'This walk has finished.';
+  if (raw.includes('pack_host_required')) return 'Only the host can start this walk.';
+  if (raw.includes('walk_access_denied') || raw.includes('walk_not_found')) return 'This walk is no longer available to you.';
+  if (raw.includes('pet_not_yours')) return 'Pick one of your own dogs for this walk.';
+  if (raw.includes('auth_required')) return 'Sign in to join this walk.';
+  return 'The walk could not start. Try again in a moment.';
+}
+
+/**
+ * Join a walk — and, for the host, start it — in ONE transaction.
+ *
+ * This was three client writes in a row (attendance, then delete the dogs,
+ * then insert them), four for a host: 3–4 round trips to Tokyo before
+ * tracking could even begin, and a failure between them left attendance
+ * saying "walking" with the dogs never saved. `join_community_walk`
+ * (migration 20260926010000) does all of it atomically, with every permission
+ * the old RLS policies enforced restated inside it.
+ *
+ * Falls back to the old writes only when the function is not on this database
+ * yet — an app build that has outrun its migration.
+ */
+export async function joinOuting(
+  walkId: string,
+  petIds: string[],
+  shareLocation: boolean,
+  options: { start?: boolean } = {},
+): Promise<void> {
+  const { error } = await supabase.rpc('join_community_walk', {
+    p_walk_id: walkId,
+    p_pet_ids: petIds,
+    p_share_location: shareLocation,
+    p_start: !!options.start,
+  });
+  if (!error) return;
+  if (!isMissingFunction(error.message)) throw new Error(joinErrorMessage(error.message));
+  if (options.start) await startOuting(walkId);
+  await joinOutingLegacy(walkId, petIds, shareLocation);
+}
+
+async function joinOutingLegacy(walkId: string, petIds: string[], shareLocation: boolean): Promise<void> {
   const userId = await currentUserId();
   if (!userId) throw new Error('Sign in to join this walk.');
   const now = new Date().toISOString();
@@ -1136,48 +1281,66 @@ export async function closeOuting(walkId: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+/**
+ * The shared walk memory: the traces, the moments and who walked.
+ *
+ * Was eight queries in FIVE waves — and two of those waves were serial for no
+ * reason at all, because hearts and routes do not depend on each other and
+ * were simply awaited one after the other. One round trip now.
+ *
+ * Routes come back whole. They are small today (17 points on average) and this
+ * screen draws every walker's line, so there is nothing worth trimming yet;
+ * when a real 45-minute walk lands here at ~900 points, simplify in SQL before
+ * it crosses the wire rather than after.
+ */
 export async function loadMemory(walkId: string): Promise<CommunityMemory> {
-  const [{ walk, pack, attendance }, { data: moments, error: momentError }, { data: sessions, error: sessionError }] =
-    await Promise.all([
-      loadOuting(walkId),
-      supabase.from('community_shared_media').select('*').eq('walk_id', walkId).is('removed_at', null).order('captured_at'),
-      supabase.from('community_walk_sessions').select('user_id, walk_session_id').eq('walk_id', walkId),
-    ]);
-  if (momentError) throw new Error(momentError.message);
-  if (sessionError) throw new Error(sessionError.message);
-  const mediaIds = (moments ?? []).map((row: any) => row.id);
-  const userId = await currentUserId();
-  const { data: hearts } = mediaIds.length
-    ? await supabase.from('community_media_hearts').select('media_id, user_id').in('media_id', mediaIds)
-    : { data: [] as any[] };
-  // The routes are the participants' own recordings, fetched by id rather than
-  // redrawn: the memory shows what each phone actually measured, and an outing
-  // whose members never started a walk simply has none.
-  const sessionIds = (sessions ?? []).map((row: any) => row.walk_session_id);
-  const { data: personalWalks } = sessionIds.length
-    ? await supabase
-        .from('walk_sessions')
-        .select('id, route, distance_m, duration_s, sniff_points')
-        .in('id', sessionIds)
-    : { data: [] as any[] };
+  const ticket = beginWrite(cacheKey.outing(walkId));
+  const { data, error } = await supabase.rpc('community_memory', { p_walk_id: walkId });
+  if (error) throw new Error(error.message);
 
+  const doc = (data ?? {}) as {
+    outing?: unknown;
+    moments?: SharedMoment[];
+    sessions?: {
+      user_id: string;
+      walk_session_id: string;
+      route: unknown;
+      distance_m: unknown;
+      duration_s: unknown;
+      sniff_points: unknown;
+    }[];
+  };
+
+  // The outing half is the identical document `community_outing` returns, so
+  // it is decoded by the same code rather than a second copy of the rules
+  // about lazily-created attendance rows.
+  const snapshot = decodeOuting(walkId, doc.outing);
+  commitSnapshot(ticket, snapshot);
+
+  const sessions = doc.sessions ?? [];
+  const sessionIds = sessions.map(row => row.walk_session_id);
   // One trace per person, not one per link — see mergeTraces for the four-row
   // walker this was written for.
   const traces = mergeTraces(
-    ((sessions ?? []) as any[]).map(row => ({ user_id: row.user_id, walk_session_id: row.walk_session_id })),
-    ((personalWalks ?? []) as any[]),
+    sessions.map(row => ({ user_id: row.user_id, walk_session_id: row.walk_session_id })),
+    sessions.map(row => ({
+      id: row.walk_session_id,
+      route: row.route,
+      distance_m: row.distance_m,
+      duration_s: row.duration_s,
+      sniff_points: row.sniff_points,
+    })),
   );
+
   return {
-    walk,
-    pack,
-    attendance,
-    moments: (moments ?? []).map((moment: any) => ({
-      ...moment,
-      heartCount: (hearts ?? []).filter((heart: any) => heart.media_id === moment.id).length,
-      heartedByMe: (hearts ?? []).some((heart: any) => heart.media_id === moment.id && heart.user_id === userId),
-    })) as SharedMoment[],
+    walk: snapshot.walk,
+    pack: snapshot.pack,
+    attendance: snapshot.attendance,
+    moments: (doc.moments ?? []) as SharedMoment[],
     sessionIds,
-    routes: (personalWalks ?? []).map((row: any) => Array.isArray(row.route) ? row.route : []).filter((route: any[]) => route.length > 0),
+    routes: sessions
+      .map(row => (Array.isArray(row.route) ? (row.route as { lat: number; lng: number }[]) : []))
+      .filter(route => route.length > 0),
     traces,
   };
 }
@@ -1200,29 +1363,6 @@ export async function removeSharedMoment(mediaId: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-/**
- * The same walk again, meeting point and all.
- *
- * The coordinate is carried across deliberately. `create_community_walk` takes
- * only a label, so without this second write a repeat walk kept the words and
- * silently lost the pin — the one thing about "walk again" that is supposed to
- * be identical would have quietly degraded every time it was used.
- */
-export async function walkAgain(walk: CommunityWalk): Promise<CommunityWalk> {
-  const next = await createOuting({
-    packId: walk.pack_id,
-    title: walk.title,
-    scheduledFor: null,
-    meetingLabel: walk.meeting_label,
-    note: walk.note ?? undefined,
-  });
-  if (walk.meeting_lat != null && walk.meeting_lng != null) {
-    // Best-effort, like every other pin write: the walk is already real, and
-    // losing the coordinate costs a map on a card, not the plan.
-    await setOutingMeetingPoint(next.id, walk.meeting_lat, walk.meeting_lng).catch(() => {});
-  }
-  return next;
-}
 
 export async function setPackMuted(packId: string, muted: boolean): Promise<void> {
   const { error } = await supabase.rpc('set_community_pack_muted', {

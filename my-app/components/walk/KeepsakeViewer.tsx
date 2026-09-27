@@ -486,13 +486,32 @@ export function KeepsakeViewer({ pins, initialIndex = 0, context, sharedCaption,
    */
   const widthRef = useRef(width);
   widthRef.current = width;
+  /**
+   * WHICH photos, not which array.
+   *
+   * This effect used to depend on `pins` itself, and that made it fire on a new
+   * array of the very same photographs — which the memory screen produces every
+   * time it reloads, because it re-mints signed URLs into a fresh object and
+   * its `momentPins` memo depends on that object. Hearting a photo reloads.
+   *
+   * The effect then scrolled back to `initialIndex`, which is fixed at the
+   * photo that was originally tapped and does not move as you swipe. So the
+   * reader was thrown back to the first picture, and the viewer read as stuck.
+   *
+   * Keyed on the ids, it re-seeds when the SET of photos genuinely changes and
+   * stays out of the way otherwise.
+   */
+  const pinKey = (pins ?? []).map(pin => pin.id).join('|');
   useEffect(() => {
     if (!pins || pins.length === 0) return;
     const next = Math.min(Math.max(initialIndex, 0), pins.length - 1);
     setIndex(next);
     setPeeked(false);
     listRef.current?.scrollToOffset({ offset: next * widthRef.current, animated: false });
-  }, [pins, initialIndex]);
+    // `pins` is deliberately absent: its identity is not the question, its
+    // contents are, and `pinKey` is those.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinKey, initialIndex]);
 
   /**
    * The card, out of the way — but never gone.

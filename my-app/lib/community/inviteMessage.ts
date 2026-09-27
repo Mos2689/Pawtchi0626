@@ -73,7 +73,7 @@ export function walkLine(when: string | null, where: string | null): string | nu
 
 export function buildInviteMessage(input: InviteMessageInput): string {
   const who = input.hostName?.trim();
-  const trail = input.trailName.trim() || 'a trail';
+  const trail = input.trailName.trim() || 'a meetup';
 
   // Named if we can. "Sam is walking with…" is a person talking; "You have been
   // invited" is a system, and a system is what people ignore.
@@ -82,7 +82,7 @@ export function buildInviteMessage(input: InviteMessageInput): string {
     : 'You have been invited to walk together on Pawtchi.';
 
   const detail = walkLine(input.when, input.where);
-  const about = detail ? `${trail} — ${detail}.` : `The trail is ${trail}.`;
+  const about = detail ? `${trail} — ${detail}.` : `The meetup is ${trail}.`;
 
   return [
     opener,

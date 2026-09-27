@@ -26,10 +26,11 @@ import {
   type CommunityPack,
 } from '../../lib/communityWalks';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { dateFormat } from '../../lib/dateFormats';
 
 function formatWalkTime(value: string | null): string {
   if (!value) return 'Choose a date together';
-  return new Intl.DateTimeFormat(undefined, {
+  return dateFormat({
     weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   }).format(new Date(value));
 }
@@ -60,7 +61,7 @@ export default function CommunityScreen() {
       setInvitations(nextInvitations);
       setUsername(nextUsername);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Your trails could not load.');
+      setError(cause instanceof Error ? cause.message : 'Your meetups could not load.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -100,15 +101,15 @@ export default function CommunityScreen() {
     <SafeAreaView style={communityScreenStyles.screen}>
       <CommunityHeader
         eyebrow="Walk together"
-        title="Your trails"
-        subtitle="Each trail is a standing arrangement with people you know — the next walk, and every one you have shared."
+        title="Your meetups"
+        subtitle="Each meetup is a standing arrangement with people you know — the next walk, and every one you have shared."
         onBack={() => router.back()}
         action={
           <Pressable
             onPress={() => router.push('/community/create' as never)}
             style={styles.addButton}
             accessibilityRole="button"
-            accessibilityLabel="Start a trail"
+            accessibilityLabel="Plan a meetup"
           >
             <Ionicons name="add" size={24} color={color.navy} />
           </Pressable>
@@ -148,10 +149,22 @@ export default function CommunityScreen() {
           {invitations.map(invitation => (
             <CommunityCard key={invitation.id} style={styles.inviteCard}>
               <StatusPill label="PRIVATE INVITATION" />
-              <Text style={styles.inviteTitle}>{invitation.pack?.name ?? 'A new trail'}</Text>
+              <Text style={styles.inviteTitle}>{invitation.pack?.name ?? 'A new meetup'}</Text>
               {invitation.dogs?.length ? <View style={styles.inviteDogs}><DogStack dogs={invitation.dogs} /><Text style={styles.inviteDogNames}>{invitation.dogs.map(dog => dog.name).join(', ')}</Text></View> : null}
               <Text style={styles.cardBody}>
                 {invitation.inviter?.full_name || (invitation.inviter?.username ? `@${invitation.inviter.username}` : 'A friend')} invited you. Accepting gives you access to this trail’s shared archive and future plans. Location sharing stays off until you join a walk.
+              </Text>
+              {/*
+                Sits between the invitation and the buttons, which is the only
+                place it does any work. Trails have no people search and nobody
+                can find you here — an invitation always came from somebody who
+                already knew your handle or had your number. This says the
+                quiet part: that is the whole of the vetting, and the rest of
+                the judgement is the reader's.
+              */}
+              <Text style={styles.inviteCaution}>
+                Meetups are private and invitation-only. Accept from people you know, or people you
+                are happy to meet and walk with.
               </Text>
               <View style={styles.inviteActions}>
                 <CommunityButton label="Accept" onPress={() => void respond(invitation, true)} disabled={responding === invitation.id} style={styles.flex} />
@@ -160,7 +173,7 @@ export default function CommunityScreen() {
             </CommunityCard>
           ))}
 
-          {packs.length ? <Text style={communityScreenStyles.sectionEyebrow}>YOUR TRAILS</Text> : null}
+          {packs.length ? <Text style={communityScreenStyles.sectionEyebrow}>YOUR MEETUPS</Text> : null}
           {packs.map(pack => (
             <Pressable
               key={pack.id}
@@ -202,13 +215,13 @@ export default function CommunityScreen() {
             <View style={styles.empty}>
               <View style={styles.emptyMark}><Ionicons name="paw" size={32} color={color.electric} /></View>
               <Text style={communityScreenStyles.emptyTitle}>Start with familiar faces</Text>
-              <Text style={communityScreenStyles.emptyBody}>Start a trail, invite people you already know, and build a shelf of walks together.</Text>
-              <CommunityButton label="Start a trail" icon="add" onPress={() => router.push('/community/create' as never)} style={styles.emptyCta} />
+              <Text style={communityScreenStyles.emptyBody}>Plan a meetup, invite people you already know, and build a shelf of walks together.</Text>
+              <CommunityButton label="Plan a meetup" icon="add" onPress={() => router.push('/community/create' as never)} style={styles.emptyCta} />
               <CommunityButton label="Use invitation code" variant="quiet" icon="key-outline" onPress={() => router.push('/community-invite' as never)} style={styles.codeCta} />
             </View>
           ) : (
             <View style={styles.bottomActions}>
-              <CommunityButton label="Start another trail" variant="secondary" icon="add" onPress={() => router.push('/community/create' as never)} />
+              <CommunityButton label="Plan another meetup" variant="secondary" icon="add" onPress={() => router.push('/community/create' as never)} />
               <CommunityButton label="Use invitation code" variant="quiet" icon="key-outline" onPress={() => router.push('/community-invite' as never)} />
             </View>
           )}
@@ -234,6 +247,7 @@ const styles = StyleSheet.create({
   inviteTitle: { ...type.title, color: color.navy, marginTop: space.lg },
   inviteDogs: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space.md },
   inviteDogNames: { ...type.label, color: color.navy, flex: 1 },
+  inviteCaution: { ...type.body, fontSize: 12, lineHeight: 18, color: color.slateFaint, marginTop: space.md },
   inviteActions: { flexDirection: 'row', gap: space.sm, marginTop: space.lg },
   packCard: { backgroundColor: color.surface, borderRadius: radius.xxl, overflow: 'hidden', borderWidth: 1, borderColor: color.hairline, marginBottom: space.lg },
   pressed: { opacity: 0.9, transform: [{ scale: 0.992 }] },

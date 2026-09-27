@@ -89,6 +89,25 @@ export const color = {
     sniff: '#144EFF',
   },
 
+  // ── The pack story (shared-walk Instagram story) ───────────────────────────
+  // One line per walker, drawn over warm paper and the owner's own prints.
+  // Brand colours first, in this order — electric yellow, electric blue, navy,
+  // black — so a two- or three-dog walk is unmistakably Pawtchi. Bigger packs
+  // continue into saturated accents that still hold as ink on paper. Literal
+  // repeats of electric/navy only because an object cannot reference its own
+  // siblings. Yellow is always drawn with a navy casing: the brand
+  // book is clear that bare yellow does not hold as ink on a light ground.
+  packStoryLines: [
+    BRAND_YELLOW,
+    '#144EFF', // electric
+    '#07202A', // navy
+    '#000000', // black
+    '#F472B6', // pink
+    '#16A34A', // green
+    '#D97706', // amber
+    '#7C3AED', // violet
+  ],
+
   // ── The archive trail ──────────────────────────────────────────────────────
   // Every route this pet has ever walked, drawn together as one faint web under
   // the walk gallery's map. It is the layer that turns a scatter of pins into

@@ -19,6 +19,13 @@
  *
  * Which state you are in is decided in lib/community/upNext.ts and tested
  * there. This paints it and nothing else.
+ *
+ * ── And a fifth, which is not a state of your plans ────────────────────────
+ *
+ * `UpNextSkeleton` is what shows while we do not know yet. It is the card's
+ * shape with nothing in it and a breathing paw — never the `empty` card, whose
+ * dashed border and "Host" button are a claim that nothing is booked. That
+ * claim is only made once the server has made it (lib/community/connectStatus).
  */
 
 import React from 'react';
@@ -28,6 +35,7 @@ import { color, font, radius, type } from '../../../constants/design';
 import type { UpNextState } from '../../../lib/community/upNext';
 import type { CommunityDog } from '../../../lib/communityWalks';
 import { DogStack } from '../../community/CommunityUI';
+import { BreathingPaw } from '../../BreathingPaw';
 
 interface UpNextCardProps {
   state: UpNextState;
@@ -128,6 +136,31 @@ export const UpNextCard = React.memo(function UpNextCard({
   );
 });
 
+/** The card's shape, holding its place while the first answer is on its way. */
+export const UpNextSkeleton = React.memo(function UpNextSkeleton() {
+  return (
+    <View
+      style={[styles.card, styles.cardSkeleton]}
+      accessible
+      accessibilityLabel="Finding your meetups"
+    >
+      <View style={styles.top}>
+        <View style={styles.copy}>
+          <View style={[styles.bar, styles.barEyebrow]} />
+          <View style={[styles.bar, styles.barTitle]} />
+          <View style={[styles.bar, styles.barSubtitle]} />
+        </View>
+        <View style={styles.skeletonAction}>
+          <BreathingPaw size={20} workingColor={color.slateFaint} />
+        </View>
+      </View>
+      <View style={styles.footer}>
+        <View style={[styles.bar, styles.barFootnote]} />
+      </View>
+    </View>
+  );
+});
+
 const styles = StyleSheet.create({
   card: {
     borderRadius: 22,
@@ -146,6 +179,24 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderStyle: 'dashed',
     borderColor: color.slateFaint,
+  },
+
+  cardSkeleton: {
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.hairline,
+  },
+  bar: { borderRadius: 6, backgroundColor: color.surfaceSubtle },
+  barEyebrow: { width: 92, height: 10 },
+  barTitle: { width: '78%', height: 22, marginTop: 4 },
+  barSubtitle: { width: '52%', height: 12, marginTop: 4 },
+  barFootnote: { width: '46%', height: 12 },
+  skeletonAction: {
+    minHeight: 44,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
 
   top: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },

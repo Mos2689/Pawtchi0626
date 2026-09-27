@@ -297,16 +297,16 @@ export function CommunityDogsOnly({ petName, onBack }: { petName?: string | null
     <>
       <CommunityHeader
         eyebrow="Walk with friends"
-        title="Trails walk with dogs"
+        title="Meetups are for dogs"
         subtitle={petName
-          ? `${petName} is a cat, so trails stay closed while that profile is active.`
-          : 'Trails are a dogs-only part of Pawtchi.'}
+          ? `${petName} is a cat, so meetups stay closed while that profile is active.`
+          : 'Meetups are a dogs-only part of Pawtchi.'}
         onBack={onBack}
       />
       <View style={styles.gate}>
         <View style={styles.gateMark}><Ionicons name="paw-outline" size={30} color={color.electric} /></View>
         <Text style={communityScreenStyles.emptyBody}>
-          Switch to a dog profile to open your trails, plan a walk, or answer an invitation. Nothing is lost while you wait.
+          Switch to a dog profile to open your meetups, plan a walk, or answer an invitation. Nothing is lost while you wait.
         </Text>
       </View>
     </>

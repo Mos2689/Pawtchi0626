@@ -19,8 +19,8 @@ import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
+import { WhenPicker } from '../../components/community/WhenPicker';
 
 import {
   CommunityButton,
@@ -50,6 +50,7 @@ import {
 } from '../../lib/communityMeetingPoint';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
+import { dateFormat } from '../../lib/dateFormats';
 
 export default function CreateTrailScreen() {
   const router = useRouter();
@@ -64,6 +65,14 @@ export default function CreateTrailScreen() {
   const [hasDate, setHasDate] = useState(false);
   const [date, setDate] = useState(() => new Date(Date.now() + 24 * 60 * 60 * 1000));
   const [saving, setSaving] = useState(false);
+  /**
+   * Ticked before the trail can be started, and asked fresh for every trail.
+   *
+   * Not remembered per account: hosting is a decision taken once per trail, and
+   * a tick carried over from a trail started months ago is not an acceptance of
+   * this one. It costs the host a tap.
+   */
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { user } = useAuth();
   // The no-prompt centre — this owner's own geography, never a location ask.
@@ -117,7 +126,7 @@ export default function CreateTrailScreen() {
       // finishes onto the Together list instead of back where it came from.
       router.replace(`/community/${pack.id}/invite?from=create` as never);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This trail could not be started.');
+      setError(cause instanceof Error ? cause.message : 'This meetup could not be planned.');
     } finally {
       setSaving(false);
     }
@@ -189,7 +198,11 @@ export default function CreateTrailScreen() {
           >
             <Ionicons name="arrow-back" size={21} color={color.navy} />
           </Pressable>
-          <Text style={styles.navTitle} numberOfLines={1}>Start a trail</Text>
+          {/* A question, not a label — and longer than the old "Start a trail",
+              so it shrinks a touch on narrow phones rather than truncating. */}
+          <Text style={styles.navTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+            What meetup are we planning?
+          </Text>
           {/* Balances the arrow's width so the title is centred on the screen.
               Deliberately not `styles.navButton` — that carries the button's
               surface, which would draw a second, tappable-looking circle. */}
@@ -200,11 +213,11 @@ export default function CreateTrailScreen() {
           <TextInput
             value={name}
             onChangeText={value => { setName(value); setError(null); }}
-            placeholder="Name this trail"
+            placeholder="Name this meetup"
             placeholderTextColor={color.slateFaint}
             maxLength={48}
             style={styles.bigField}
-            accessibilityLabel="Trail name"
+            accessibilityLabel="Meetup name"
           />
 
           <MeetingPointField
@@ -227,7 +240,7 @@ export default function CreateTrailScreen() {
             />
             <Text style={[styles.dateText, !hasDate && styles.dateTextMuted]}>
               {hasDate
-                ? new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' }).format(date)
+                ? dateFormat({ weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' }).format(date)
                 : 'Add a date'}
             </Text>
             <Ionicons
@@ -238,29 +251,7 @@ export default function CreateTrailScreen() {
           </Pressable>
 
           {hasDate ? (
-            <View style={styles.pickers}>
-              <DateTimePicker
-                value={date}
-                mode="date"
-                minimumDate={new Date()}
-                display={Platform.OS === 'ios' ? 'compact' : 'default'}
-                onChange={(_, value) => value && setDate(current => {
-                  const next = new Date(value);
-                  next.setHours(current.getHours(), current.getMinutes(), 0, 0);
-                  return next;
-                })}
-              />
-              <DateTimePicker
-                value={date}
-                mode="time"
-                display={Platform.OS === 'ios' ? 'compact' : 'default'}
-                onChange={(_, value) => value && setDate(current => {
-                  const next = new Date(current);
-                  next.setHours(value.getHours(), value.getMinutes(), 0, 0);
-                  return next;
-                })}
-              />
-            </View>
+            <WhenPicker value={date} onChange={setDate} minimumDate={new Date()} style={styles.pickers} />
           ) : null}
 
           {/* Last, and optional, because it is the only question here without a
@@ -281,10 +272,48 @@ export default function CreateTrailScreen() {
           />
 
           {error ? <Text style={communityScreenStyles.error}>{error}</Text> : null}
+
+          {/*
+            The host's acceptance.
+            ────────────────────────────────────────────────────────────────
+            A tick, not a wall. The earlier version put the whole declaration
+            on the screen and it dominated a form that is otherwise four quiet
+            fields — the responsibilities read as a warning rather than as
+            terms, which is both worse to look at and worse at its job.
+
+            The tick is a deliberate act and it is recorded; the substance
+            lives one tap away for whoever wants it. That is the ordinary
+            shape of accepting terms, and it is what the host expects to see.
+          */}
+          <Pressable
+            onPress={() => setAcceptedTerms(current => !current)}
+            style={styles.accept}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: acceptedTerms }}
+            accessibilityLabel="Accept the host terms for meetups"
+            hitSlop={6}
+          >
+            <Ionicons
+              name={acceptedTerms ? 'checkbox' : 'square-outline'}
+              size={22}
+              color={acceptedTerms ? color.navy : color.slateFaint}
+            />
+            <Text style={styles.acceptText}>
+              I accept the{' '}
+              <Text
+                style={styles.acceptLink}
+                onPress={() => router.push('/trail-safety' as never)}
+                accessibilityRole="link"
+              >
+                terms for hosting a meetup
+              </Text>
+            </Text>
+          </Pressable>
+
           <CommunityButton
-            label={saving ? 'Starting…' : 'Start the trail'}
+            label={saving ? 'Planning…' : 'Plan the meetup'}
             onPress={() => void submit()}
-            disabled={!ready || saving}
+            disabled={!ready || saving || !acceptedTerms}
             style={styles.submit}
           />
         </ScrollView>
@@ -353,5 +382,22 @@ const styles = StyleSheet.create({
   dateText: { ...type.bodyMedium, fontSize: 17, color: color.ink, flex: 1 },
   dateTextMuted: { color: color.slateFaint },
   pickers: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: space.md },
-  submit: { marginTop: space.xxl },
+  submit: { marginTop: space.lg },
+  accept: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.xxl,
+  },
+  acceptText: {
+    ...type.body,
+    fontSize: 13,
+    lineHeight: 20,
+    color: color.slateMuted,
+    flexShrink: 1,
+  },
+  acceptLink: {
+    color: color.navy,
+    textDecorationLine: 'underline',
+  },
 });

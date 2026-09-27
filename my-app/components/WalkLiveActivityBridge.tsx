@@ -38,6 +38,7 @@ import {
   LiveWalkContent,
   buildLiveWalkContent,
   finalContent,
+  type LiveTrail,
   shouldPushUpdate,
 } from '../lib/walk/liveActivity';
 import {
@@ -68,6 +69,13 @@ export function WalkLiveActivityBridge() {
     // marker is gone, and both belong to the activity's immutable attributes.
     let walkId: string | null = null;
     let petName = '';
+    /**
+     * The Trail, held for exactly the reason `petName` is: the wrap-up runs
+     * after the marker has been cleared, and that is the frame where the card
+     * has to offer "See the trail" rather than "See the map". Reading the store
+     * at that point would find a solo walk that never was.
+     */
+    let trail: LiveTrail | null = null;
     let content: LiveWalkContent | null = null;
     let lastSentAt = 0;
     let frozen = false;
@@ -89,15 +97,23 @@ export function WalkLiveActivityBridge() {
       const live = phase === 'starting' || phase === 'tracking';
 
       if (live && marker) {
+        // Straight off the durable record, so a walk the OS relaunched from
+        // cold still knows it is a Trail — the same fact the foreground-service
+        // notification and the resume routing read.
+        const markerTrail: LiveTrail | null = marker.trail
+          ? { walkId: marker.trail.walkId, packName: marker.trail.packName }
+          : null;
         const next = buildLiveWalkContent({
           petName: marker.petName,
           startedAt: marker.startedAt,
           session,
+          trail: markerTrail,
         });
 
         if (walkId !== marker.id) {
           walkId = marker.id;
           petName = marker.petName;
+          trail = markerTrail;
           content = next;
           frozen = false;
           lastSentAt = Date.now();
@@ -129,6 +145,7 @@ export function WalkLiveActivityBridge() {
           endedAt: Date.now(),
           saved: false,
           walkSessionId: walkId,
+          trail,
         });
         content = final;
         lastSentAt = Date.now();
@@ -159,10 +176,12 @@ export function WalkLiveActivityBridge() {
         durationMs: result ? result.summary.durationS * 1000 : undefined,
         saved,
         walkSessionId: walkId,
+        trail,
       });
       const payload = { ...final, walkId, petName };
       walkId = null;
       content = null;
+      trail = null;
       frozen = false;
       serialize(() => endLiveActivity(payload, DISMISS_AFTER_MS));
     };

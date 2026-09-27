@@ -162,6 +162,26 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   let plugins = [...(config.plugins ?? [])];
   plugins = upsertPlugin(plugins, 'expo-location', {
     locationWhenInUsePermission: walkEnabled ? LOCATION_PERMISSION : false,
+    // ── The two "Always" strings are deliberately omitted ─────────────────
+    //
+    // Left to itself the plugin writes NSLocationAlwaysUsageDescription and
+    // NSLocationAlwaysAndWhenInUseUsageDescription with its own placeholder,
+    // "Allow $(PRODUCT_NAME) to access your location" — an obviously unedited
+    // default, in an app that has been rejected over permissions before.
+    //
+    // The fix is to remove them rather than to write better copy, because
+    // Pawtchi never asks for Always: walkTracker calls
+    // requestForegroundPermissionsAsync and nothing else. iOS grants
+    // continuous background updates on When In Use alone, given
+    // UIBackgroundModes: location and the blue indicator bar, both of which
+    // `isIosBackgroundLocationEnabled` below keeps. Shipping the Always keys
+    // would describe an authorization the app has no code to request, and
+    // invite the reviewer question we would have no answer to.
+    //
+    // Verify with `npx expo config --type introspect`: UIBackgroundModes must
+    // still contain 'location', and neither Always key may appear.
+    locationAlwaysPermission: false,
+    locationAlwaysAndWhenInUsePermission: false,
     isIosBackgroundLocationEnabled: walkEnabled,
     isAndroidBackgroundLocationEnabled: false,
     isAndroidForegroundServiceEnabled: walkEnabled,

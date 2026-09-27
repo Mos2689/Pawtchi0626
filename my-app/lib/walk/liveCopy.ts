@@ -44,6 +44,46 @@ export const LIVE_EYEBROW = {
   sniffing: 'SNIFFING',
 } as const;
 
+/**
+ * How much of a pack's name the eyebrow can carry.
+ *
+ * The eyebrow is one short uppercase line beside a pulsing dot, and it already
+ * holds the walk's state. A pack called "Thursday morning beach crew" would
+ * push the state off the card on a Lock Screen, so the name is clipped here
+ * rather than left to SwiftUI — a truncation the widget performs is one the
+ * copy rules never saw.
+ */
+export const TRAIL_NAME_CAP = 18;
+
+function clipPackName(packName: string): string {
+  const name = packName.trim();
+  if (name.length <= TRAIL_NAME_CAP) return name;
+  // Trim back to a word boundary where there is one close enough, so the clip
+  // reads as a shortened name rather than a broken one.
+  const cut = name.slice(0, TRAIL_NAME_CAP);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > TRAIL_NAME_CAP - 6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/**
+ * The eyebrow, which on a Trail also has to say WHICH trail.
+ *
+ * The state stays first because it is the thing that changes — an owner
+ * glancing at the card is checking whether the dog is moving, not re-reading
+ * the pack's name. The pack rides behind it as context.
+ *
+ * A solo walk is unchanged, and that is the point: absence of a pack name is
+ * how the two kinds of walk stay visibly different on the Lock Screen.
+ */
+export function liveEyebrow(
+  state: keyof typeof LIVE_EYEBROW,
+  packName?: string | null,
+): string {
+  const base = LIVE_EYEBROW[state];
+  const pack = packName?.trim();
+  return pack ? `${base} · ${clipPackName(pack).toUpperCase()}` : base;
+}
+
 /** The geofence pill. Always true of a tracked walk — auto-stop is armed from
  *  the first fix — so it is a statement of fact, not a prediction. */
 export const ENDS_AT_HOME = 'Ends at home';
@@ -53,6 +93,15 @@ export const WAITING_FOR_SIGNAL = 'Waiting for signal';
 
 /** The finished card's call to action. */
 export const SEE_THE_MAP = 'See the map';
+
+/**
+ * The same CTA when the walk was a Trail.
+ *
+ * Different words because it opens a different thing: a solo walk's wrap-up
+ * opens that walk's own map, a Trail's opens the shared memory with everyone
+ * else's traces on it. "See the map" would undersell what is waiting there.
+ */
+export const SEE_THE_TRAIL = 'See the meetup';
 
 /** "Momo's walk" — the starting card's title. */
 export function startingTitle(petName: string): string {
@@ -78,8 +127,47 @@ export function finishedTitle(durationMs: number): string {
  * and complete, and it will sync later — but the card cannot say a row exists
  * on the server when it does not. The honest variant costs one word.
  */
-export function finishedEyebrow(saved: boolean): string {
-  return saved ? 'HOME · WALK SAVED' : 'HOME · WALK FINISHED';
+export function finishedEyebrow(saved: boolean, packName?: string | null): string {
+  const outcome = saved ? 'WALK SAVED' : 'WALK FINISHED';
+  // "HOME" is the solo walk's own ending — the geofence it stopped at. A Trail
+  // walk did not necessarily end at anyone's home, and saying so would be the
+  // one untrue word on the card. The pack takes that slot instead.
+  const pack = packName?.trim();
+  return pack ? `${clipPackName(pack).toUpperCase()} · ${outcome}` : `HOME · ${outcome}`;
+}
+
+/**
+ * The Android foreground-service notification — the ONLY thing on screen while
+ * a walk runs with the app closed, and therefore the only place some owners
+ * will ever read what tracking is doing.
+ *
+ * Three variants rather than one, because the honest sentence differs:
+ *   - solo: nothing leaves the phone.
+ *   - a Trail with sharing on: the pack can see where you are, and that has to
+ *     be stated here, not only on the screen where it was switched on.
+ *   - a Trail with sharing off: on the walk together, but not broadcasting.
+ *
+ * It says the walk ends on its own in every variant, because that is the
+ * reassurance that stops people opening the app to check.
+ */
+export function trackingNotification(input: {
+  petName: string;
+  packName?: string | null;
+  sharingLocation?: boolean;
+}): { title: string; body: string } {
+  const pack = input.packName?.trim();
+  if (!pack) {
+    return {
+      title: `${input.petName}'s walk is being tracked`,
+      body: 'Pawtchi is measuring the route. The walk ends on its own when you get home.',
+    };
+  }
+  return {
+    title: `${input.petName} is walking ${pack}`,
+    body: input.sharingLocation
+      ? 'Pawtchi is measuring your route and showing the pack where you are. The walk ends on its own when you get home.'
+      : 'Pawtchi is measuring your route. Your position stays private, and the walk ends on its own when you get home.',
+  };
 }
 
 /** "1.4 km · 6 sniffs".

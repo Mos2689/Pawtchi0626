@@ -58,7 +58,7 @@ describe('buildInviteMessage', () => {
 
   it('describes the trail when the walk has no details yet', () => {
     expect(buildInviteMessage({ ...base, when: null, where: null }))
-      .toContain('The trail is Sept Salty Walk.');
+      .toContain('The meetup is Sept Salty Walk.');
   });
 
   it('still works with no host name', () => {
@@ -116,7 +116,7 @@ describe('buildInviteMessage', () => {
 
     it('survives an unnamed trail without printing an empty gap', () => {
       const text = buildInviteMessage({ ...base, trailName: '   ', when: null, where: null });
-      expect(text).toContain('The trail is a trail.');
+      expect(text).toContain('The meetup is a meetup.');
       expect(text).not.toMatch(/\s{3,}/);
     });
   });

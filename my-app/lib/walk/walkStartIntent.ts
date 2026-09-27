@@ -38,21 +38,22 @@ export interface WalkDestination {
   origin?: { lat: number; lng: number };
 }
 
-/**
- * The private outing around an otherwise ordinary personal recording.
- * Kept in the same one-shot handoff as the start intent so opening /walk by
- * itself can never begin sharing or attach a later solo walk to an old pack.
- */
-export interface CommunityWalkContext {
-  walkId: string;
-  packId: string;
-  packName: string;
-  shareLocation: boolean;
-}
+// `CommunityWalkContext`, `armCommunityWalkStart` and `takeCommunityWalkContext`
+// used to live here — the handoff that told `/walk` it was recording a Trail.
+//
+// They are gone because the route they served is gone. A Trail walk no longer
+// passes through `/walk` at all: the trail's own screen calls `startWalk` with
+// the trail, which puts it in walkTracker's DURABLE record, and
+// components/walk/TrailRecording.tsx reads it from there. That is strictly
+// better than a one-shot in-memory handoff, which could not survive the OS
+// relaunching the app from a background location event — see
+// [[trail-vs-solo-walk-separation]].
+//
+// This module is now what its name says: the gate that stops a bare mount of
+// `/walk` from starting a walk nobody asked for.
 
 let armed = false;
 let destination: WalkDestination | null = null;
-let communityContext: CommunityWalkContext | null = null;
 
 /**
  * Call right before navigating to `/walk` to begin a walk.
@@ -69,14 +70,6 @@ let communityContext: CommunityWalkContext | null = null;
 export function armWalkStart(to: WalkDestination | null = null): void {
   armed = true;
   destination = to;
-  communityContext = null;
-}
-
-/** Arm a personal recording that is explicitly participating in one outing. */
-export function armCommunityWalkStart(context: CommunityWalkContext): void {
-  armed = true;
-  destination = null;
-  communityContext = context;
 }
 
 /**
@@ -91,13 +84,6 @@ export function armCommunityWalkStart(context: CommunityWalkContext): void {
 export function takeWalkDestination(): WalkDestination | null {
   const taken = destination;
   destination = null;
-  return taken;
-}
-
-/** Read the private-outing handoff once and forget it. */
-export function takeCommunityWalkContext(): CommunityWalkContext | null {
-  const taken = communityContext;
-  communityContext = null;
   return taken;
 }
 
