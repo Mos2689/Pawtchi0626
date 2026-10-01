@@ -4,6 +4,8 @@ import { AppState, Platform } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
 import { processLock } from '@supabase/auth-js';
 
+import { timedFetch } from './apiTiming';
+
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://YOUR_SUPABASE_URL.supabase.co';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
 
@@ -50,6 +52,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     // presented as an Android login stuck on the loader.
     lock: processLock,
   },
+  // Every request timed: a console line in development, and a sampled PostHog
+  // event in release only while perf-api-timing is on. A pure pass-through
+  // around the global fetch — see lib/apiTiming.ts.
+  global: { fetch: timedFetch((input, init) => fetch(input, init)) },
 });
 
 // Run the token autorefresh only while the app is foregrounded (the other
