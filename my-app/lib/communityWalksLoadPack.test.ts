@@ -9,6 +9,7 @@
 
 import { joinErrorMessage, joinOuting, loadPack } from './communityWalks';
 import { cacheKey, clearCommunityCache, readSnapshot } from './communityCache';
+import { resetPerfFlagsForTests, setPerfFlagOverride } from './perfFlags';
 
 type Response = { data: unknown; error: { message: string } | null };
 const mockResponses: Record<string, Response> = {};
@@ -125,5 +126,62 @@ describe('joinOuting', () => {
     for (const code of ['walk_closed', 'pack_host_required', 'walk_access_denied', 'pet_not_yours', 'auth_required', 'x']) {
       expect(joinErrorMessage(code)).not.toContain('!');
     }
+  });
+});
+
+/**
+ * The meetup read primes each listed walk's screen. With perf-walk-instant-open
+ * on and the attendance migration deployed, that prime is the whole roster;
+ * otherwise it is the plan alone, as before.
+ */
+describe('loadPack → walk screen prime', () => {
+  const plannedWalk = {
+    id: 'w1', pack_id: 'p1', organizer_id: 'u1', title: 'Saturday loop', scheduled_for: null,
+    meeting_label: 'North Bondi', meeting_lat: null, meeting_lng: null, note: null, state: 'planned',
+    started_at: null, ended_at: null, created_at: '2026-09-30T09:00:00Z', updated_at: '2026-09-30T09:00:00Z',
+  };
+  const withWalk = (extra: Record<string, unknown>) => {
+    const base = (mockResponses['rpc:community_pack_detail'].data ?? {}) as Record<string, unknown>;
+    mockResponses['rpc:community_pack_detail'] = ok({ ...base, walks: [plannedWalk], ...extra });
+  };
+  const coming = {
+    row: {
+      walk_id: 'w1', user_id: 'u1', status: 'coming', share_location: false, checked_in_at: null,
+      joined_at: null, finished_at: null, updated_at: '2026-09-30T10:00:00Z',
+    },
+    pet_ids: ['d1'],
+  };
+
+  afterEach(() => resetPerfFlagsForTests());
+
+  it('primes the whole roster when the read carries attendance', async () => {
+    setPerfFlagOverride('walkInstantOpen', true);
+    withWalk({ attendance: { w1: [coming] } });
+    await loadPack('p1');
+    const outing = readSnapshot<any>(cacheKey.outing('w1'));
+    expect(outing?.partial).toBeFalsy();
+    expect(outing?.attendance[0]).toMatchObject({ user_id: 'u1', status: 'coming' });
+    expect(outing?.attendance[0].dogs.map((dog: any) => dog.name)).toEqual(['Olive']);
+  });
+
+  it('primes the plan alone on a database without the attendance migration', async () => {
+    setPerfFlagOverride('walkInstantOpen', true);
+    withWalk({});
+    await loadPack('p1');
+    expect(readSnapshot<any>(cacheKey.outing('w1'))?.partial).toBe(true);
+  });
+
+  it('primes the plan alone with the flag off', async () => {
+    setPerfFlagOverride('walkInstantOpen', false);
+    withWalk({ attendance: { w1: [coming] } });
+    await loadPack('p1');
+    expect(readSnapshot<any>(cacheKey.outing('w1'))?.partial).toBe(true);
+  });
+
+  it('shrugs off an attendance field it does not understand', async () => {
+    setPerfFlagOverride('walkInstantOpen', true);
+    withWalk({ attendance: 'nonsense' });
+    await expect(loadPack('p1')).resolves.toBeDefined();
+    expect(readSnapshot<any>(cacheKey.outing('w1'))?.partial).toBe(true);
   });
 });

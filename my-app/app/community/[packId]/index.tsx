@@ -15,10 +15,13 @@ import {
 import { color, font, space, type } from '../../../constants/design';
 import { TOGETHER_READ_TIMEOUT_MS, cacheKey, readSnapshot } from '../../../lib/communityCache';
 import { timed } from '../../../lib/community/perf';
+import { prefetchOuting } from '../../../lib/community/outingPrefetch';
+import { isPerfFlagOn } from '../../../lib/perfFlags';
 import { withTimeout } from '../../../lib/withTimeout';
 import {
   approveExternalInvite,
   listExternalInviteClaims,
+  loadOuting,
   loadPack,
   removePackMember,
   type CommunityPack,
@@ -190,6 +193,16 @@ export default function PackHomeScreen() {
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   /**
+   * perf-walk-instant-open: ask for the walk as the finger lands, so the read
+   * travels during the push transition rather than after it. The walk screen
+   * claims it once (lib/community/outingPrefetch.ts); with the flag off this
+   * does nothing and the walk screen asks on focus, as before.
+   */
+  const prefetchWalk = useCallback((walkId: string) => {
+    if (isPerfFlagOn('walkInstantOpen')) prefetchOuting(walkId, loadOuting);
+  }, []);
+
+  /**
    * Everything still ahead of this trail, soonest first, undated last.
    *
    * This used to collapse to a single walk — `active ?? first planned` — which
@@ -336,6 +349,7 @@ export default function PackHomeScreen() {
               </View>
             </View>
             <Pressable
+              onPressIn={() => prefetchWalk(nextWalk.id)}
               onPress={() => router.push(`/community/walk/${nextWalk.id}` as never)}
               style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
               accessibilityRole="button"
@@ -377,6 +391,7 @@ export default function PackHomeScreen() {
             {laterWalks.map(walk => (
               <Pressable
                 key={walk.id}
+                onPressIn={() => prefetchWalk(walk.id)}
                 onPress={() => router.push(`/community/walk/${walk.id}` as never)}
                 style={styles.laterRow}
                 accessibilityRole="button"

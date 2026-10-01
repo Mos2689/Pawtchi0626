@@ -15,6 +15,7 @@ import { invalidateAskCache } from '../lib/askVet';
 import { clearCommunityCache } from '../lib/communityCache';
 import { clearConnectSnapshot } from '../lib/community/connectSnapshot';
 import { clearCommunityMediaUrls } from '../lib/communityMedia';
+import { clearOutingPrefetches } from '../lib/community/outingPrefetch';
 import { resetKnownUsername } from '../lib/communityWalks';
 import { resetSessionUser } from '../lib/sessionUser';
 import { clearProOfferCache } from '../lib/proOffer/client';
@@ -67,6 +68,9 @@ function clearAllUserState(): void {
   // re-downloading them. Scoped to one object each and short-lived, but they
   // point at a previous account's pictures and belong with its other state.
   try { clearCommunityMediaUrls(); } catch {}
+  // A walk read started on press-in by the previous account, still claimable
+  // for a few seconds. Theirs, not the next person's.
+  try { clearOutingPrefetches(); } catch {}
   try { resetSessionUser(); } catch {}
   // The viewer's own handle is memoised beside the trails list. Left behind it
   // would answer for the NEXT person to sign in on this device.

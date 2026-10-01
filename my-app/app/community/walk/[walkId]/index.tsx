@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -14,6 +14,9 @@ import { color, font, makeShadow, radius, space, type } from '../../../../consta
 import { useWalkEnabled } from '../../../../hooks/useWalkEnabled';
 import { TOGETHER_READ_TIMEOUT_MS, cacheKey, readSnapshot } from '../../../../lib/communityCache';
 import { timed } from '../../../../lib/community/perf';
+import { initialDogSelection, seedDogsFromPack, sortRosterForDisplay } from '../../../../lib/community/outingDoc';
+import { claimPrefetchedOuting } from '../../../../lib/community/outingPrefetch';
+import { isPerfFlagOn } from '../../../../lib/perfFlags';
 import { withTimeout } from '../../../../lib/withTimeout';
 import {
   inviteToWalk,
@@ -26,6 +29,7 @@ import {
   type CommunityPack,
   type CommunityWalk,
   type OutingSnapshot,
+  type PackSnapshot,
   type WalkAttendance,
 } from '../../../../lib/communityWalks';
 import {
@@ -159,10 +163,36 @@ export default function OutingScreen() {
    * every position becomes unreadable, including the ones already written.
    */
   const shareLocation = true;
-  const [myDogs, setMyDogs] = useState<CommunityDog[]>([]);
-  const [selectedDogIds, setSelectedDogIds] = useState<string[]>([]);
+  /**
+   * perf-walk-instant-open, read once per visit so the screen never switches
+   * path halfway through. Off means exactly what build 98 did.
+   */
+  const instant = useMemo(() => isPerfFlagOn('walkInstantOpen'), []);
+  /**
+   * My dogs, already known from my row in this walk's meetup — the same dogs
+   * `listMyDogs` would fetch — so the picker and the selected dog are there on
+   * the first frame. Null (the old path) when there is no such row.
+   */
+  const seededDogs = useMemo(
+    () => (instant && cached?.walk
+      ? seedDogsFromPack(readSnapshot<PackSnapshot>(cacheKey.pack(cached.walk.pack_id)), user?.id)
+      : null),
+    [cached, instant, user?.id],
+  );
+  const [myDogs, setMyDogs] = useState<CommunityDog[]>(seededDogs ?? []);
+  const [selectedDogIds, setSelectedDogIds] = useState<string[]>(
+    () => (instant ? initialDogSelection(activePet?.id, seededDogs ?? []) : []),
+  );
   /** Whether the roster is still unknown — a primed plan does not answer it. */
   const [loading, setLoading] = useState(!cached || !!cached.partial);
+  /**
+   * Whether a complete roster has ever been on this screen: a composed prime,
+   * or a load that landed. With a dog seeded up front this — not an empty
+   * selection — is what keeps the button waiting on a partial prime.
+   */
+  const [rosterKnown, setRosterKnown] = useState(!!cached && !cached.partial);
+  /** Only the first load may take the meetup screen's press-in read. */
+  const firstLoad = useRef(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** The Play-policy disclosure stands between joining and tracking. */
@@ -171,11 +201,18 @@ export default function OutingScreen() {
   const load = useCallback(async () => {
     if (!walkId) return;
     setError(null);
+    // The read the meetup screen started on press-in, if it is still young —
+    // claimed once, because a reload after a write must ask afresh. A failed
+    // prefetch is not this load's failure: ask again rather than report it.
+    const claimed = instant && firstLoad.current ? claimPrefetchedOuting(walkId) : null;
+    firstLoad.current = false;
+    const readOuting = () => (claimed ? claimed.catch(() => loadOuting(walkId)) : loadOuting(walkId));
+    const readDogs = () => (instant && seededDogs ? Promise.resolve(seededDogs) : listMyDogs());
     try {
       // Bounded so `loading` always resolves and the button can never sit on a
       // request that will not answer. The catch below keeps the painted snapshot.
       const [outing, dogs] = await withTimeout(
-        timed('loadOuting+dogs', 1, () => Promise.all([loadOuting(walkId), listMyDogs()])),
+        timed('loadOuting+dogs', 1, () => Promise.all([readOuting(), readDogs()])),
         TOGETHER_READ_TIMEOUT_MS,
         'loadOuting',
       );
@@ -191,12 +228,13 @@ export default function OutingScreen() {
           : dogs[0]
             ? [dogs[0].id]
             : []);
+      setRosterKnown(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'This walk could not load.');
     } finally {
       setLoading(false);
     }
-  }, [activePet, walkId]);
+  }, [activePet, instant, seededDogs, walkId]);
 
   /**
    * Refetched on every focus, behind the snapshot painted at the top of this
@@ -220,6 +258,20 @@ export default function OutingScreen() {
   /** Only shown when the host actually named this walk something of its own. */
   const named = distinctTitle(walk?.title, pack?.name);
   const comingCount = attendance.filter(row => ['coming', 'checked_in', 'walking', 'finished'].includes(row.status)).length;
+  /**
+   * The order the rows are drawn in. `community_outing` returns its roster in
+   * no particular order, so with the composed prime on (instant) both lists
+   * are put in one fixed order — otherwise the rows would visibly reshuffle
+   * when the fetch replaced the prime with the same people.
+   */
+  const shownAttendance = useMemo(
+    () => (instant ? sortRosterForDisplay(attendance, walk?.organizer_id) : attendance),
+    [attendance, instant, walk?.organizer_id],
+  );
+  const shownNotAsked = useMemo(
+    () => (instant ? sortRosterForDisplay(notAsked, walk?.organizer_id) : notAsked),
+    [instant, notAsked, walk?.organizer_id],
+  );
 
   /**
    * Ask one more person, after the walk already exists.
@@ -434,7 +486,10 @@ export default function OutingScreen() {
     || !walk
     || walk.state === 'cancelled'
     || (!previewOnly && (!activePet || selectedDogIds.length === 0))
-    || (walk.state === 'planned' && !isOrganizer);
+    || (walk.state === 'planned' && !isOrganizer)
+    // With a dog seeded before any load, the roster is the gate instead: a
+    // partial prime does not know whether I am already walking.
+    || (instant && !previewOnly && !rosterKnown);
 
   if (!walkEnabled) {
     return (
@@ -549,7 +604,20 @@ export default function OutingScreen() {
         </View>
 
         <View style={styles.roster}>
-          {attendance.map(person => {
+          {/* Rows the shape of people while a partial prime waits on the
+              roster, rather than a blank gap that reads as "nobody". */}
+          {instant && loading && attendance.length === 0
+            ? SKELETON_ROWS.map(width => (
+              <View key={width} style={styles.personRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                <View style={styles.skeletonAvatar} />
+                <View style={styles.personCopy}>
+                  <View style={[styles.skeletonLine, { width }]} />
+                  <View style={[styles.skeletonLine, styles.skeletonLineShort]} />
+                </View>
+              </View>
+            ))
+            : null}
+          {shownAttendance.map(person => {
             const organizer = person.user_id === walk?.organizer_id;
             const isMe = person.user_id === user?.id;
             const ownerName = firstName(person.person?.full_name || person.person?.username);
@@ -617,7 +685,7 @@ export default function OutingScreen() {
             <Text style={styles.notAskedTitle}>
               Also in the pack · not asked to this one
             </Text>
-            {notAsked.map(person => {
+            {shownNotAsked.map(person => {
               const ownerName = firstName(person.person?.full_name || person.person?.username);
               const dogNames = person.dogs?.map(dog => dog.name).join(' & ');
               const avatarDog = person.dogs?.[0] ?? { id: person.user_id, name: ownerName, image_url: person.person?.avatar_url ?? null };
@@ -736,6 +804,9 @@ export default function OutingScreen() {
 const CARD_PAD = 20;
 const CARD_LEAD = 52;
 const CARD_GAP = 14;
+
+/** Name-line widths of the placeholder rows; uneven so they read as names. */
+const SKELETON_ROWS = ['58%', '44%', '66%'] as const;
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#FBFAF7' },
@@ -857,6 +928,9 @@ const styles = StyleSheet.create({
   notAskedInviteText: { ...type.label, fontSize: 12, color: color.navy },
   roster: { gap: 2 },
   personRow: { minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: space.md },
+  skeletonAvatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: color.hairline },
+  skeletonLine: { height: 12, borderRadius: 6, backgroundColor: color.hairline },
+  skeletonLineShort: { width: '34%', height: 10, borderRadius: 5, marginTop: 8 },
   personCopy: { flex: 1, minWidth: 0 },
   /** The one column every row's trailing element lives in. */
   rowAction: { width: 112, alignItems: 'flex-end', justifyContent: 'center' },

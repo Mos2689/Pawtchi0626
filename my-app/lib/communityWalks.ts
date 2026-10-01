@@ -5,6 +5,8 @@ import { isValidUsername, normalizeUsername } from './communityUsername';
 import { mergeTraces } from './community/memoryTraces';
 import { isMissingFunction, toPreviousInvitee, type PreviousInvitee } from './community/previousInvitees';
 import { toInvitationPreview, type InvitationPreview } from './community/invitationPreview';
+import { composeOutingSnapshot, decodeOuting, type PackAttendanceEntry } from './community/outingDoc';
+import { isPerfFlagOn } from './perfFlags';
 
 export { isValidUsername, normalizeUsername } from './communityUsername';
 
@@ -738,7 +740,7 @@ export async function loadPack(packId: string): Promise<PackSnapshot> {
   if (detail.error) throw new Error(detail.error.message);
   if (invitations.error) throw new Error(invitations.error.message);
 
-  const doc = (detail.data ?? {}) as { pack?: unknown; members?: unknown; walks?: unknown };
+  const doc = (detail.data ?? {}) as { pack?: unknown; members?: unknown; walks?: unknown; attendance?: unknown };
   if (!doc.pack) throw new Error('This meetup could not load.');
   const snapshot: PackSnapshot = {
     pack: doc.pack as CommunityPack,
@@ -752,8 +754,24 @@ export async function loadPack(packId: string): Promise<PackSnapshot> {
   };
 
   commitSnapshot(ticket, snapshot);
-  for (const walk of snapshot.walks) primeOuting(walk, snapshot.pack);
+  // Who has answered each listed walk (20261002040000). Absent on a database
+  // without that migration, which leaves every walk on the plain partial prime.
+  const answered = toWalkAttendance(doc.attendance);
+  for (const walk of snapshot.walks) {
+    const rows = answered?.[walk.id];
+    primeOuting(walk, snapshot.pack, rows ? { members: snapshot.members, attendance: rows } : undefined);
+  }
   return snapshot;
+}
+
+/** `community_pack_detail.attendance`: walk id → that walk's answers, or null if absent. */
+function toWalkAttendance(raw: unknown): Record<string, PackAttendanceEntry[]> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out: Record<string, PackAttendanceEntry[]> = {};
+  for (const [walkId, rows] of Object.entries(raw as Record<string, unknown>)) {
+    if (Array.isArray(rows)) out[walkId] = rows as PackAttendanceEntry[];
+  }
+  return out;
 }
 
 async function loadPackLegacy(packId: string, ticket: ReturnType<typeof beginWrite>): Promise<PackSnapshot> {
@@ -845,10 +863,34 @@ async function loadPackLegacy(packId: string, ticket: ReturnType<typeof beginWri
  * Marked `partial`, and that flag is load-bearing: attendance is genuinely
  * unknown here, so a screen painting this frame must stay quiet about who is
  * coming rather than claim nobody is. A real `loadOuting` overwrites it.
+ *
+ * With perf-walk-instant-open on and `roster` given (the meetup read carried
+ * the walk's attendance), the seed is the WHOLE walk screen instead — the same
+ * snapshot `community_outing` would return, composed by its own decoder (see
+ * lib/community/outingDoc.ts). Still written optimistic, never fresh: the walk
+ * screen refetches behind it on focus exactly as before. A server answer from
+ * the last few seconds outranks it, and anything the composer cannot
+ * reproduce exactly falls through to the partial seed below.
  */
-export function primeOuting(walk: CommunityWalk, pack: CommunityPack): void {
+export function primeOuting(
+  walk: CommunityWalk,
+  pack: CommunityPack,
+  roster?: { members: readonly PackMember[]; attendance: readonly PackAttendanceEntry[] },
+): void {
   const key = cacheKey.outing(walk.id);
   const existing = readSnapshot<OutingSnapshot>(key);
+  if (roster && isPerfFlagOn('walkInstantOpen') && !(existing && !existing.partial && isFresh(key))) {
+    let composed: OutingSnapshot | null = null;
+    try {
+      composed = composeOutingSnapshot({ walk, pack, members: roster.members, attendance: roster.attendance });
+    } catch {
+      // A malformed row must never fail the meetup's load; the old seed follows.
+    }
+    if (composed) {
+      writeOptimistic(key, composed);
+      return;
+    }
+  }
   // Never downgrade a complete snapshot back to a partial one.
   if (existing && !existing.partial) {
     // `walk` and `pack` here ARE freshly fetched, but the attendance being
@@ -1011,57 +1053,6 @@ export interface OutingSnapshot {
  * from the pre-walk screen. A missing answer comes back as `invited` in
  * memory; nothing is written until that person actually responds.
  */
-/** The document both `community_outing` and `community_memory` return. */
-interface OutingDoc {
-  walk?: CommunityWalk;
-  pack?: CommunityPack;
-  people?: {
-    user_id: string;
-    attendance: Record<string, unknown> | null;
-    person?: CommunityPerson;
-    dogs?: CommunityDog[];
-  }[];
-}
-
-/**
- * Turn that document into the snapshot every screen reads.
- *
- * Shared by `loadOuting` and `loadMemory` rather than written twice, because
- * the interesting rule lives here: somebody with NO attendance row is not
- * absent, they simply have not answered. They come back as `invited` in memory
- * with the walk's own `created_at` standing in for an update that never
- * happened. Two copies of that would eventually disagree, and the way it would
- * show is a member quietly missing from one screen and present on the other.
- */
-function decodeOuting(walkId: string, raw: unknown): OutingSnapshot {
-  const doc = (raw ?? {}) as OutingDoc;
-  if (!doc.walk || !doc.pack) throw new Error('That walk could not be opened.');
-
-  const walk = doc.walk;
-  const people = doc.people ?? [];
-  const decorate = (entry: (typeof people)[number]): WalkAttendance => ({
-    walk_id: walkId,
-    user_id: entry.user_id,
-    status: 'invited',
-    share_location: false,
-    checked_in_at: null,
-    joined_at: null,
-    finished_at: null,
-    updated_at: walk.created_at,
-    // Spread AFTER the defaults, so a real row wins every field it carries.
-    ...(entry.attendance ?? {}),
-    person: entry.person,
-    dogs: entry.dogs ?? [],
-  }) as WalkAttendance;
-
-  return {
-    walk,
-    pack: doc.pack,
-    attendance: people.filter(entry => entry.attendance).map(decorate),
-    notAsked: people.filter(entry => !entry.attendance).map(decorate),
-  };
-}
-
 export async function loadOuting(walkId: string): Promise<OutingSnapshot> {
   const ticket = beginWrite(cacheKey.outing(walkId));
   const { data, error } = await supabase.rpc('community_outing', { p_walk_id: walkId });
