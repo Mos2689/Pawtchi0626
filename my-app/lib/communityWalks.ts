@@ -939,14 +939,37 @@ export function primeOuting(
  * allowed to fail silently — a trail with no completed walk simply has no line,
  * which is true of every brand-new trail and must not look like an error.
  *
- * Three hops, deliberately off the critical path rather than folded into
- * `listPacks`: a line under a map is not worth delaying the list above it.
+ * Deliberately off the critical path rather than folded into `listPacks`: a
+ * line under a map is not worth delaying the list above it.
+ *
+ * One request since `community_trail_routes` (20261002050000): the latest
+ * completed walk per trail and one route from it, under the caller's own RLS.
+ * The three reads below remain for a database without the function. Any other
+ * failure rejects rather than answering {}, so the caller keeps the lines it
+ * already drew instead of wiping them for a network blip.
  */
 export async function listTrailRoutes(
   packIds: string[],
 ): Promise<Record<string, { lat: number; lng: number }[]>> {
   if (!packIds.length) return {};
 
+  const { data, error } = await supabase.rpc('community_trail_routes', { p_pack_ids: packIds });
+  if (error && isMissingFunction(error.message)) return listTrailRoutesLegacy(packIds);
+  if (error) throw new Error(error.message);
+
+  const out: Record<string, { lat: number; lng: number }[]> = {};
+  for (const row of (Array.isArray(data) ? data : []) as any[]) {
+    const route = Array.isArray(row?.route) ? row.route : [];
+    // The same test the three reads apply: a single fix is a dot, not a line.
+    if (typeof row?.pack_id === 'string' && route.length > 1 && !out[row.pack_id]) out[row.pack_id] = route;
+  }
+  return out;
+}
+
+/** The three-hop version, kept for a database without `community_trail_routes`. */
+async function listTrailRoutesLegacy(
+  packIds: string[],
+): Promise<Record<string, { lat: number; lng: number }[]>> {
   const { data: done } = await supabase
     .from('community_walks')
     .select('id, pack_id, ended_at')
