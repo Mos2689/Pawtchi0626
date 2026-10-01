@@ -29,7 +29,9 @@ import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 
 import { track } from '../analytics';
+import { isPerfFlagOn } from '../perfFlags';
 import { supabase } from '../supabase';
+import { markSynced, shouldSync } from './notifSync';
 
 export interface PushRegistration {
   token: string | null;
@@ -96,18 +98,45 @@ export async function buildPushRegistration(): Promise<PushRegistration | null> 
  * Fire-and-forget by contract: a failed sync costs one notification cycle and is
  * retried on the next launch, whereas surfacing it would interrupt whatever the
  * owner was actually doing.
+ *
+ * With the `pushChangeDetection` perf flag on and a `userId` supplied, an
+ * unchanged token/platform/timezone already accepted this week is not sent
+ * again (see notifSync.ts for why that is safe, and why sign-out wipes it).
+ * `force` — an explicit permission tap — always sends.
  */
-export function registerPushToken(registration: PushRegistration | null): void {
+export function registerPushToken(
+  registration: PushRegistration | null,
+  options: { userId?: string | null; force?: boolean } = {},
+): void {
   if (!registration?.token) return;
-  supabase
-    .rpc('register_push_token', {
-      push_token: registration.token,
-      platform: registration.platform,
-      timezone: registration.timezone,
-    })
-    .then(({ error }) => {
-      if (error) console.error('Failed to sync push token:', error.message);
-    });
+  const token = registration.token;
+  const fingerprint = `${token}|${registration.platform}|${registration.timezone ?? ''}`;
+  const userId = options.userId ?? null;
+
+  const send = () => {
+    supabase
+      .rpc('register_push_token', {
+        push_token: token,
+        platform: registration.platform,
+        timezone: registration.timezone,
+      })
+      .then(({ error }) => {
+        if (error) {
+          console.error('Failed to sync push token:', error.message);
+          return;
+        }
+        // Only after the server accepted it — a failure is simply retried.
+        if (userId) void markSynced('push_token', userId, fingerprint).catch(() => {});
+      });
+  };
+
+  if (options.force || !userId || !isPerfFlagOn('pushChangeDetection')) {
+    send();
+    return;
+  }
+  void shouldSync('push_token', userId, fingerprint).then(needed => {
+    if (needed) send();
+  });
 }
 
 /**
@@ -133,6 +162,7 @@ export async function requestPushPermission(): Promise<PushRegistration | null> 
   if (status !== 'granted') return null;
 
   const registration = await buildPushRegistration();
-  registerPushToken(registration);
+  // An explicit tap always reaches the server — never skipped as "unchanged".
+  registerPushToken(registration, { force: true });
   return registration;
 }

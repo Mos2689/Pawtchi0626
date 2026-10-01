@@ -18,6 +18,7 @@ import { clearCommunityMediaUrls } from '../lib/communityMedia';
 import { resetKnownUsername } from '../lib/communityWalks';
 import { resetSessionUser } from '../lib/sessionUser';
 import { clearProOfferCache } from '../lib/proOffer/client';
+import { clearNotifSync } from '../lib/notifications/notifSync';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
 
 /**
@@ -75,6 +76,11 @@ function clearAllUserState(): void {
   // one — the runtimeItems leak above, with a price attached. Async and
   // deliberately not awaited: sign-out must not wait on disk.
   try { void clearProOfferCache(); } catch {}
+  // What this phone last told the server about notifications (push token,
+  // permission, push_enabled). MUST go: the server re-binds a device's token to
+  // whoever registers it, so a returning user who skipped registration as
+  // "already sent" would have their pushes delivered to the previous account.
+  try { clearNotifSync(); } catch {}
 }
 
 type AuthContextType = {

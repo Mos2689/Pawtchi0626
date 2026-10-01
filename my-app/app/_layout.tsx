@@ -131,7 +131,8 @@ function PushNotificationsBridge({ userId }: { userId: string }) {
   const timezone = registration?.timezone;
   useEffect(() => {
     if (!userId || !token || !platform) return;
-    registerPushToken({ token, platform, timezone: timezone ?? null });
+    // `userId` lets an unchanged token be skipped (perf flag, notifSync.ts).
+    registerPushToken({ token, platform, timezone: timezone ?? null }, { userId });
   }, [userId, token, platform, timezone]);
 
   return null;

@@ -13,6 +13,7 @@
  */
 
 import { supabase } from '../supabase';
+import { rememberPushEnabled } from './notifSync';
 
 export type NotificationIntensity = 'minimal' | 'standard' | 'chatty';
 
@@ -128,5 +129,8 @@ export async function saveNotificationPreferences(
       { owner_id: ownerId, ...prefs },
       { onConflict: 'owner_id' },
     );
+  // Write-through for useNotificationPermission's short-lived memo, so a switch
+  // flipped here is what the Home chip shows next — not a read from before it.
+  if (!error) rememberPushEnabled(ownerId, prefs.push_enabled);
   return { error: error?.message ?? null };
 }

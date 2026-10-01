@@ -6,7 +6,6 @@ import { track } from '@/lib/analytics';
 import { campaignKeyFor, routeFor, type NotificationPayload } from '@/lib/notifications/deepLink';
 import {
   buildPushRegistration,
-  deviceTimezone,
   ensureAndroidChannel,
   requestPushPermission,
   type PushRegistration,
@@ -83,6 +82,8 @@ export function usePushNotifications(options?: { autoRequest?: boolean }) {
     const responseListener = useRef<Notifications.Subscription | undefined>(undefined);
     const receivedListener = useRef<Notifications.Subscription | undefined>(undefined);
     const tokenListener = useRef<Notifications.Subscription | undefined>(undefined);
+    /** The last NATIVE device token the OS reported — see the listener below. */
+    const deviceTokenRef = useRef<string | null>(null);
     const markOpenedRef = useRef<(key: string) => void>(() => {});
     const router = useRouter();
 
@@ -137,13 +138,29 @@ export function usePushNotifications(options?: { autoRequest?: boolean }) {
         // The OS rotates push tokens (reinstall, restore, APNs refresh). Without
         // this listener a rotated token silently orphans the user: the server
         // keeps pushing to a dead address and nothing ever notices.
+        //
+        // `next.data` is the NATIVE device token (APNs / FCM), not an Expo push
+        // token — Expo documents this listener as reporting the device token.
+        // It used to be stored as the registration, so every iOS launch sent
+        // an APNs hex string to `register_push_token`, which rejected it as
+        // malformed (13 failures a day in the 2026-10-01 baseline). The Expo
+        // token is derived from the device token, so a rotation means asking
+        // for the Expo token again.
+        //
+        // The listener also fires as an echo of our OWN registration: deriving
+        // the Expo token registers with the OS, which reports the device token
+        // back. So the first emission is remembered and ignored (the mount
+        // refresh above already registered the current token), and only a
+        // DIFFERENT device token later in the session re-derives — which then
+        // echoes that same new token, which is ignored. No loop.
         tokenListener.current = Notifications.addPushTokenListener((next) => {
-            setRegistration({
-                token: next.data,
-                platform: Platform.OS,
-                timezone: deviceTimezone(),
-            });
+            const device = typeof next?.data === 'string' ? next.data : null;
+            if (!device) return;
+            const previous = deviceTokenRef.current;
+            deviceTokenRef.current = device;
+            if (previous === null || previous === device) return;
             track('push_token_registered', { platform: Platform.OS, reason: 'rotated' });
+            void refreshIfGranted();
         });
 
         return () => {

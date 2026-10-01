@@ -16,6 +16,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Linking, Platform, type AppStateStatus } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '@/lib/supabase';
+import { isPerfFlagOn } from '@/lib/perfFlags';
+import { markSynced, readPushEnabled, rememberPushEnabled, shouldSync } from '@/lib/notifications/notifSync';
 
 export type PermissionState = 'granted' | 'denied' | 'undetermined' | 'loading';
 
@@ -45,6 +47,33 @@ export interface NotificationPermission {
   isReachable: boolean;
   refresh: () => Promise<PermissionState>;
   openSystemSettings: () => void;
+}
+
+/**
+ * Tell the server the OS permission. Every mounted copy of this hook used to
+ * send it at least once per launch (each copy's `lastSynced` only knew about
+ * itself). With the `pushChangeDetection` perf flag on, a state the server
+ * already accepted this week is skipped — shared across copies via the ledger
+ * in notifSync.ts, which sign-out wipes. Remembered only after success.
+ */
+function recordPermission(state: PermissionState, ownerId: string | undefined): void {
+  const send = () => {
+    supabase.rpc('record_notification_permission', { p_status: state })
+      .then(({ error }) => {
+        if (error) {
+          if (__DEV__) console.log('record_notification_permission:', error.message);
+          return;
+        }
+        if (ownerId) void markSynced('notification_permission', ownerId, state).catch(() => {});
+      });
+  };
+  if (!ownerId || !isPerfFlagOn('pushChangeDetection')) {
+    send();
+    return;
+  }
+  void shouldSync('notification_permission', ownerId, state).then(needed => {
+    if (needed) send();
+  });
 }
 
 /** Normalises the platform differences into the three states we care about. */
@@ -93,37 +122,49 @@ export function useNotificationPermission(): NotificationPermission {
     setStatus(next);
     setCanAsk(ask);
 
-    if (lastSynced.current !== next) {
-      lastSynced.current = next;
-      supabase.rpc('record_notification_permission', { p_status: next })
-        .then(({ error }) => {
-          if (error && __DEV__) console.log('record_notification_permission:', error.message);
-        });
-    }
-
-    // Pawtchi's own switch. A missing row means the owner never opened the
-    // settings screen, which defaults to enabled.
-    //
     // `getSession` rather than `getUser`: the latter is a round trip to the auth
     // server, and this pass runs on every foreground and every Home focus. The
     // session is already on disk and carries the same id — the only thing this
     // needs it for.
+    let ownerId: string | undefined;
     try {
       const { data: auth } = await supabase.auth.getSession();
-      const ownerId = auth?.session?.user?.id;
-      if (ownerId) {
-        const { data } = await supabase
-          .from('owner_preferences')
-          .select('push_enabled')
-          .eq('owner_id', ownerId)
-          .maybeSingle();
-        setPushEnabledInApp((data as { push_enabled?: boolean } | null)?.push_enabled ?? true);
-      }
+      ownerId = auth?.session?.user?.id;
     } catch {
-      // A dropped connection is not evidence the owner switched Pawtchi off.
-      // Leaving the previous answer in place keeps `isReachable` honest, and an
-      // unhandled rejection here would surface on a screen that only wanted to
-      // know whether to draw a badge.
+      ownerId = undefined;
+    }
+
+    if (lastSynced.current !== next) {
+      lastSynced.current = next;
+      recordPermission(next, ownerId);
+    }
+
+    // Pawtchi's own switch. A missing row means the owner never opened the
+    // settings screen, which defaults to enabled.
+    if (ownerId) {
+      // Perf flag on: a read from the last few minutes is reused, so a
+      // foreground or a Home focus no longer queries owner_preferences each
+      // time. The settings screen writes through on save (preferences.ts).
+      const remembered = isPerfFlagOn('pushChangeDetection') ? readPushEnabled(ownerId) : undefined;
+      if (remembered !== undefined) {
+        setPushEnabledInApp(remembered);
+      } else {
+        try {
+          const { data } = await supabase
+            .from('owner_preferences')
+            .select('push_enabled')
+            .eq('owner_id', ownerId)
+            .maybeSingle();
+          const value = (data as { push_enabled?: boolean } | null)?.push_enabled ?? true;
+          rememberPushEnabled(ownerId, value);
+          setPushEnabledInApp(value);
+        } catch {
+          // A dropped connection is not evidence the owner switched Pawtchi off.
+          // Leaving the previous answer in place keeps `isReachable` honest, and
+          // an unhandled rejection here would surface on a screen that only
+          // wanted to know whether to draw a badge.
+        }
+      }
     }
 
     return next;
