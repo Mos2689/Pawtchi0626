@@ -10,6 +10,8 @@ import { computeWaterTargetMl } from '../lib/hydration';
 import { checkFeature } from '../lib/health/featureRequirements';
 import { getLocalYMD, localDayStartUtcISO } from '../lib/dateUtils';
 import { track } from '../lib/analytics';
+import { isPerfFlagOn } from '../lib/perfFlags';
+import { readContextSnapshot, saveContextSnapshot } from '../lib/health/lazyContext';
 
 // Persisted across app launches so a tapped nudge stays gone for the day even
 // after process death.
@@ -171,6 +173,12 @@ interface PetContextState extends TodayData, DerivedToday, TrendData {
   hydrateDismissedNudges: () => Promise<void>;
   invalidateContext: () => void;
   clearContext: () => void;
+  /**
+   * perf-lazy-pet-context: paint the last saved answer for this user, pet and
+   * local day while the launch's deferred fetch waits (lib/health/lazyContext.ts).
+   * A stand-in only — it does not count as a fetch. Resolves whether it applied.
+   */
+  restoreSnapshot: (userId: string, petId: string) => Promise<boolean>;
 }
 
 // How long a refreshToday/refreshTrends result is considered fresh. Pure
@@ -295,6 +303,77 @@ const initialTrends: TrendData = {
   observedMer: null,
   exerciseCalorieRatio: null,
 };
+
+/**
+ * perf-lazy-pet-context: exactly the fields a saved answer carries. `satisfies`
+ * makes a field added to TodayData or TrendData a compile error here until it
+ * is listed, so the snapshot can never quietly drop one.
+ */
+const TODAY_FIELDS = {
+  todayCalories: true,
+  todayWater: true,
+  todayWalks: true,
+  treatsConsumed: true,
+  treatCaloriesConsumed: true,
+  todayScans: true,
+  nextActivity: true,
+  todayActivityMinutes: true,
+  todayActivityTargetMinutes: true,
+  activityCompletionRate: true,
+  todayProtein: true,
+  todayCarbs: true,
+  todayFats: true,
+} satisfies Record<keyof TodayData, true>;
+
+const TREND_FIELDS = {
+  nutritionScore: true,
+  activityScore: true,
+  hydrationScore: true,
+  weightTrend: true,
+  avgTreatsPerDay: true,
+  weeklyTreatCalPercent: true,
+  daysSinceLastWeighIn: true,
+  hasWeightGoal: true,
+  weeklyCaloriesConsumed: true,
+  weeklyTarget: true,
+  weeklyDelta: true,
+  daysUnderTarget: true,
+  consecutiveHighIntensityDays: true,
+  daysSinceLastFoodLog: true,
+  exerciseCalorieRatio: true,
+  observedMer: true,
+} satisfies Record<keyof TrendData, true>;
+
+/** The listed fields from `source`, anything absent falling back to `base`. */
+function pickFields<T extends object>(source: object, fields: Record<keyof T, true>, base: T): T {
+  const from = source as Record<string, unknown>;
+  const out = { ...base } as Record<string, unknown>;
+  for (const key of Object.keys(fields)) {
+    if (from[key] !== undefined) out[key] = from[key];
+  }
+  return out as T;
+}
+
+/**
+ * perf-lazy-pet-context: keep the answer that just landed for the next launch.
+ * Only for the pet it was fetched for, and never able to fail a refresh.
+ */
+function saveSnapshotIfEnabled(petId: string, date: string, state: PetContextState): void {
+  try {
+    if (!isPerfFlagOn('lazyPetContext')) return;
+    const pet = useActivePetStore.getState().activePet;
+    if (!pet || pet.id !== petId || !pet.owner_id) return;
+    saveContextSnapshot({
+      userId: pet.owner_id,
+      petId,
+      date,
+      today: pickFields(state, TODAY_FIELDS, initialTodayData) as unknown as Record<string, unknown>,
+      trends: pickFields(state, TREND_FIELDS, initialTrends) as unknown as Record<string, unknown>,
+    });
+  } catch {
+    // Persistence is a head start for the next launch, never a reason to fail this one.
+  }
+}
 
 const initialClinical: ClinicalContext = {
   allergies: [],
@@ -673,6 +752,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       const computedNudge = computeNudge(buildNudgeInput(get()));
       const nudge = getAllowedNudge(computedNudge, get().dismissedNudges);
       set({ nudge });
+      saveSnapshotIfEnabled(petId, today, get());
     } catch (err) {
       console.error('[PetContext] refreshToday error:', err);
       set({ isTodayLoading: false });
@@ -1035,6 +1115,7 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
       const computedNudge = computeNudge(buildNudgeInput(get()));
       const nudge = getAllowedNudge(computedNudge, get().dismissedNudges);
       set({ nudge });
+      saveSnapshotIfEnabled(petId, todayStr, get());
     } catch (err) {
       console.error('[PetContext] refreshTrends error:', err);
       set({ isTrendsLoading: false });
@@ -1130,4 +1211,30 @@ export const usePetContextStore = create<PetContextState>((set, get) => ({
     _trendsFetchedAt: 0,
     _contextPetId: null,
   }),
+
+  restoreSnapshot: async (userId: string, petId: string) => {
+    const snapshot = await readContextSnapshot({ userId, petId, date: getLocalYMD(new Date()) });
+    if (!snapshot) return false;
+    if (!get()._dismissedHydrated) await get().hydrateDismissedNudges();
+    const state = get();
+    // Only while nothing real has arrived: never over a fetch that has landed
+    // (`_contextPetId` is set by every successful one and survives
+    // invalidation) or over a write made this session (`dataVersion` moves on
+    // every one, and never goes back).
+    if (state._contextPetId !== null || state.dataVersion !== 0) return false;
+    const pet = useActivePetStore.getState().activePet;
+    if (!pet || pet.id !== petId) return false;
+    const today = pickFields(snapshot.today, TODAY_FIELDS, initialTodayData);
+    const trends = pickFields(snapshot.trends, TREND_FIELDS, initialTrends);
+    // Fetch stamps stay at 0, so the deferred fetch still runs and replaces this.
+    set({
+      ...today,
+      ...trends,
+      ...computeDerived(today, pet, trends.weightTrend, trends.weeklyDelta),
+      clinical: deriveClinical(pet),
+    });
+    const nudge = getAllowedNudge(computeNudge(buildNudgeInput(get())), get().dismissedNudges);
+    set({ nudge });
+    return true;
+  },
 }));

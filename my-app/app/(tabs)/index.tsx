@@ -36,6 +36,8 @@ import { useAuth } from '../../providers/AuthProvider';
 import { useSubscription } from '../../hooks/useSubscription';
 import { useRecentWalks } from '../../hooks/useRecentWalks';
 import { track } from '../../lib/analytics';
+import { deferContextFetch } from '../../lib/health/lazyContext';
+import { isPerfFlagOn } from '../../lib/perfFlags';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
 import {
   SPOTS_OSM_MVP_ENABLED,
@@ -1260,7 +1262,15 @@ export default function HomeScreen() {
   const refreshToday = usePetContextStore(s => s.refreshToday);
 
   useFocusEffect(useCallback(() => {
-    if (activePet?.id) refreshToday(activePet.id);
+    if (!activePet?.id) return;
+    // perf-lazy-pet-context: Home shows none of these numbers — the bell and
+    // one prompt read them — so its refresh waits out the launch burst rather
+    // than joining it. Health, which shows them, still refreshes at once.
+    if (isPerfFlagOn('lazyPetContext')) {
+      const petId = activePet.id;
+      return deferContextFetch(() => { void refreshToday(petId); });
+    }
+    refreshToday(activePet.id);
   }, [activePet?.id, refreshToday]));
 
   useFocusEffect(useCallback(() => {

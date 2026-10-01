@@ -16,6 +16,7 @@ import { clearCommunityCache } from '../lib/communityCache';
 import { clearConnectSnapshot } from '../lib/community/connectSnapshot';
 import { clearCommunityMediaUrls } from '../lib/communityMedia';
 import { clearOutingPrefetches } from '../lib/community/outingPrefetch';
+import { clearContextSnapshot } from '../lib/health/lazyContext';
 import { resetKnownUsername } from '../lib/communityWalks';
 import { resetSessionUser } from '../lib/sessionUser';
 import { clearProOfferCache } from '../lib/proOffer/client';
@@ -42,6 +43,9 @@ function clearAllUserState(): void {
   try { useActivePetStore.getState().clearPet(); } catch {}
   try { useStreakStore.getState().clearStreak(); } catch {}
   try { usePetContextStore.getState().clearContext(); } catch {}
+  // …and its saved copy for the next launch (perf-lazy-pet-context). Disk, so
+  // it would otherwise survive into the next account's first frame.
+  try { clearContextSnapshot(); } catch {}
   try { useNotificationCenterStore.getState().clearCenter(); } catch {}
   // Owner routine (feeding and walk times) — rendered for the next user until
   // their own `fetchPrefs` resolved.

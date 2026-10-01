@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Tabs as ExpoTabs, useRouter, Redirect } from 'expo-router';
 import { useAuth } from '../../providers/AuthProvider';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -16,6 +16,8 @@ import { SplitTabBar } from '../../components/navigation/SplitTabBar';
 import { ProfileTabIcon } from '../../components/navigation/ProfileTabIcon';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
 import { reconcilePersistedWeightPlan } from '../../lib/weightPlanService';
+import { deferContextFetch } from '../../lib/health/lazyContext';
+import { isPerfFlagOn } from '../../lib/perfFlags';
 import { takeCommunityInviteCode } from '../../lib/communityInviteIntent';
 
 // The boot gate's escape hatch: shown when the first pet/streak load times
@@ -129,10 +131,22 @@ export default function TabLayout() {
   }, [session, authLoading, petHydrated]);
 
   // Hydrate pet context store once the active pet is loaded
+  const contextStarted = useRef(false);
   useEffect(() => {
-    if (activePet?.id) {
-      fetchContext(activePet.id);
+    if (!activePet?.id) return;
+    const first = !contextStarted.current;
+    contextStarted.current = true;
+    // perf-lazy-pet-context: this launch's FIRST fetch paints the last saved
+    // answer and waits out the launch burst (lib/health/lazyContext.ts). A pet
+    // switch afterwards fetches at once, exactly as before — a wait there
+    // would show one pet's numbers under another's name.
+    const userId = session?.user?.id;
+    if (first && userId && isPerfFlagOn('lazyPetContext')) {
+      const petId = activePet.id;
+      void usePetContextStore.getState().restoreSnapshot(userId, petId).catch(() => {});
+      return deferContextFetch(() => { void fetchContext(petId); });
     }
+    fetchContext(activePet.id);
   }, [activePet?.id]);
 
   // An external pack invitation may have crossed an install/sign-in boundary.
