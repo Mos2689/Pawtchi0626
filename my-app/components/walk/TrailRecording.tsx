@@ -64,6 +64,7 @@ import {
 } from '../../lib/community/hostClose';
 import { beginLegSettle, settleLeg } from '../../lib/community/legSettle';
 import { supabase } from '../../lib/supabase';
+import { withTimeout } from '../../lib/withTimeout';
 import { useWalkStore } from '../../store/useWalkStore';
 import type { ActiveWalkTrail } from '../../lib/walk/walkTracker';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -81,6 +82,12 @@ const LOCATION_INTERVAL_MS = 12_000;
 
 /** How often a recording phone re-reads its walk's state, in case a close was missed. */
 const CLOSE_POLL_MS = 10_000;
+
+/** A close-check read is abandoned (not cancelled) after this, freeing the slot. */
+const CLOSE_CHECK_TIMEOUT_MS = 10_000;
+
+/** A position publish is abandoned (not cancelled) after this, freeing the slot. */
+const PUBLISH_TIMEOUT_MS = 10_000;
 
 /** Points kept in a published trace. Enough shape, not the whole recording. */
 const TRACE_POINTS = 160;
@@ -323,16 +330,35 @@ export function TrailRecording() {
    * this walker agreed to share, which is a per-walk decision made on the join
    * step and never a standing one.
    */
+  /**
+   * One publish in the air at a time (perf audit E6, 2026-10-01).
+   *
+   * On a stalled connection each 12-second tick used to start another upsert
+   * on top of the ones still waiting, so a bad patch of signal stacked
+   * requests that all landed at once when it cleared. Now a tick that finds a
+   * publish still pending is skipped WITHOUT moving the throttle clock, so the
+   * first fix after the stall goes straight out — newer than any it replaced.
+   * The timeout only frees the slot; the request itself is not cancelled.
+   */
+  const publishingRef = useRef(false);
   useEffect(() => {
     const point = session?.lastAccepted;
     if (!trail?.shareLocation || phase !== 'tracking' || !point) return;
     if (point.timestamp - lastLocationRef.current < LOCATION_INTERVAL_MS) return;
+    if (publishingRef.current) return;
+    publishingRef.current = true;
     lastLocationRef.current = point.timestamp;
-    void publishLiveLocation(
-      trail.walkId,
-      point,
-      simplifyRoute(session?.path ?? [], TRACE_POINTS),
-    ).catch(() => {});
+    void withTimeout(
+      publishLiveLocation(
+        trail.walkId,
+        point,
+        simplifyRoute(session?.path ?? [], TRACE_POINTS),
+      ),
+      PUBLISH_TIMEOUT_MS,
+      'publishLiveLocation',
+    )
+      .catch(() => {})
+      .finally(() => { publishingRef.current = false; });
   }, [trail, phase, session?.lastAccepted, session?.path]);
 
   /**
@@ -479,13 +505,25 @@ export function TrailRecording() {
 
     // One primary-key read. Cheap enough to do on every foreground, and it is
     // the only thing that sees a close made while the socket was down.
+    //
+    // One at a time (perf audit E6): with replies slower than the 10-second
+    // poll, reads used to overlap and pile up. A pending read makes the next
+    // tick a no-op; the timeout frees the slot without cancelling the read.
+    let checking = false;
     const check = () => {
-      void supabase
-        .from('community_walks')
-        .select('state')
-        .eq('id', walkId)
-        .maybeSingle()
-        .then(({ data }) => { void followHostClose(data as ClosableWalk | null); }, () => {});
+      if (checking) return;
+      checking = true;
+      void withTimeout(
+        supabase
+          .from('community_walks')
+          .select('state')
+          .eq('id', walkId)
+          .maybeSingle(),
+        CLOSE_CHECK_TIMEOUT_MS,
+        'closeCheck',
+      )
+        .then(({ data }) => { void followHostClose(data as ClosableWalk | null); }, () => {})
+        .finally(() => { checking = false; });
     };
     check();
 

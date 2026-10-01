@@ -72,6 +72,8 @@ import { withTimeout } from '../../../../lib/withTimeout';
 import { useLiveMapCamera } from '../../../../hooks/useLiveMapCamera';
 import { legSettled } from '../../../../lib/community/legSettle';
 import { memoryReadiness, memoryWaitingLine } from '../../../../lib/community/memoryReadiness';
+import { reuseRoutes } from '../../../../lib/community/stableRoutes';
+import type { GeoPoint } from '../../../../lib/walk/geo';
 import { withHeart } from '../../../../lib/community/momentHeart';
 import { shareMoment } from '../../../../lib/shareMoment';
 import { useActivePetStore } from '../../../../store/useActivePetStore';
@@ -88,6 +90,9 @@ import { dateFormat } from '../../../../lib/dateFormats';
  */
 const TRACE_W = 260;
 const TRACE_H = 24;
+
+/** A line on the memory map — the shape `reuseRoutes` keeps stable across reloads. */
+type MemoryRoute = { id: string; path: readonly GeoPoint[]; color: string; dashed: boolean };
 
 /**
  * The longest the loader waits for this phone's own leg to reach the memory.
@@ -232,28 +237,40 @@ export default function CommunityMemoryScreen() {
    */
   const [landed, setLanded] = useState(0);
   const drawable = useMemo(() => traces.filter(trace => trace.routes.length > 0), [traces]);
+  // WHO is drawn, in order. Every load — the settling poll, every focus —
+  // hands back new arrays for the same lines, and keying the landing on the
+  // array replayed it each time: the lines vanished and re-landed on a simple
+  // return to this screen (perf audit E3). Keyed on the walkers, the lines
+  // land once; a new walker arriving still lands them afresh.
+  const drawKey = useMemo(() => drawable.map(trace => trace.userId).join('|'), [drawable]);
+  const drawCount = drawable.length;
   useEffect(() => {
-    if (!drawable.length) return;
-    if (reducedMotion) { setLanded(drawable.length); return; }
+    if (!drawCount) return;
+    if (reducedMotion) { setLanded(drawCount); return; }
     setLanded(0);
-    const timers = drawable.map((_, index) =>
+    const timers = Array.from({ length: drawCount }, (_, index) =>
       setTimeout(() => setLanded(index + 1), 160 + index * 190));
     return () => { timers.forEach(clearTimeout); };
-  }, [drawable, reducedMotion]);
+  }, [drawKey, drawCount, reducedMotion]);
 
-  const mapRoutes = useMemo(
+  const previousRoutes = useRef<MemoryRoute[] | null>(null);
+  const mapRoutes = useMemo(() => {
     // One entry per SEGMENT, keyed on the walker and the segment's place in
     // their list. A walker who stopped and restarted has several lines and one
     // colour, which is the truth: same person, same walk, two recordings.
-    () => drawable.slice(0, landed).flatMap(trace =>
+    const next: MemoryRoute[] = drawable.slice(0, landed).flatMap(trace =>
       trace.routes.map((segment, index) => ({
         id: `${trace.userId}#${index}`,
         path: segment,
         color: tintFor(trace.userId),
         dashed: false,
-      }))),
-    [drawable, landed, tintFor],
-  );
+      })));
+    // Unchanged lines stay the SAME objects (and an unchanged set the same
+    // array), so a reload does not re-send polylines to the map.
+    const stable = reuseRoutes(next, previousRoutes.current);
+    previousRoutes.current = stable;
+    return stable;
+  }, [drawable, landed, tintFor]);
 
   const momentPins = useMemo<KeepsakeMapPin[]>(
     () => (memory?.moments ?? [])

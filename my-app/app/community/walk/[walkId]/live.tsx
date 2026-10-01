@@ -47,6 +47,7 @@ import {
   type PublishedMoment,
 } from '../../../../lib/community/liveMoments';
 import { spreadMarkers } from '../../../../lib/community/spreadMarkers';
+import { walkerColourOrder } from '../../../../lib/community/liveRoster';
 import { communityMediaUrls } from '../../../../lib/communityMedia';
 import { WALK_CAMERA_ENABLED } from '../../../../constants/features';
 import { useRecorderHandle } from '../../../../lib/walk/recorderHandle';
@@ -553,7 +554,13 @@ export default function CommunityLiveScreen() {
    * Deriving this from the roster instead means one walker moving no longer
    * rebuilds every other walker's line.
    */
-  const rosterKey = mappedParties.map(party => party.user_id).join('|');
+  // A STABLE order — never the positions list's, which is sorted by latest
+  // ping and so swapped two walkers' colours every few seconds. See
+  // lib/community/liveRoster.
+  const rosterKey = useMemo(
+    () => walkerColourOrder(user?.id, attendance, mappedParties.map(party => party.user_id)).join('|'),
+    [attendance, mappedParties, user?.id],
+  );
   const identity = useMemo(() => {
     const assigned = new Map<string, { color: string; dashed: boolean }>();
     (rosterKey ? rosterKey.split('|') : []).forEach((userId, index) => {

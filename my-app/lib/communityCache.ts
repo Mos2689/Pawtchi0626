@@ -57,6 +57,32 @@ interface Entry {
 
 const entries = new Map<string, Entry>();
 
+/**
+ * Hard ceiling on remembered keys (perf audit E5, 2026-10-01).
+ *
+ * A trail primes an entry for every walk it lists, so a long session browsing
+ * many trails grew this map without bound — nothing ever left it except an
+ * aged-out read. 200 is far above any real working set; past it, entries a
+ * read would refuse anyway (older than MAX_AGE_MS) go first, then the least
+ * recently written. Evicting only ever costs a refetch, never a wrong answer.
+ */
+export const MAX_SNAPSHOT_ENTRIES = 200;
+
+function putEntry(key: string, entry: Entry, now: number): void {
+  // Re-inserting moves the key to the end, so Map order is write order.
+  entries.delete(key);
+  entries.set(key, entry);
+  if (entries.size <= MAX_SNAPSHOT_ENTRIES) return;
+  for (const [k, e] of entries) {
+    if (now - e.at > MAX_AGE_MS) entries.delete(k);
+  }
+  while (entries.size > MAX_SNAPSHOT_ENTRIES) {
+    const oldest = entries.keys().next().value;
+    if (oldest === undefined) break;
+    entries.delete(oldest);
+  }
+}
+
 /** Cache keys. Functions rather than strings so a typo cannot silently miss. */
 export const cacheKey = {
   packs: () => 'packs',
@@ -122,7 +148,7 @@ export function commitSnapshot<T>(ticket: WriteTicket, value: T, now: number = D
   if (ticket.epoch !== epoch) return false;
   if ((lastWrite.get(ticket.key) ?? 0) > ticket.seq) return false;
   lastWrite.set(ticket.key, ticket.seq);
-  entries.set(ticket.key, { at: now, fetchedAt: now, value });
+  putEntry(ticket.key, { at: now, fetchedAt: now, value }, now);
   return true;
 }
 
@@ -130,7 +156,7 @@ export function commitSnapshot<T>(ticket: WriteTicket, value: T, now: number = D
 export function writeSnapshot<T>(key: string, value: T, now: number = Date.now()): void {
   sequence += 1;
   lastWrite.set(key, sequence);
-  entries.set(key, { at: now, fetchedAt: now, value });
+  putEntry(key, { at: now, fetchedAt: now, value }, now);
 }
 
 /**
@@ -141,7 +167,7 @@ export function writeSnapshot<T>(key: string, value: T, now: number = Date.now()
  * the reason the truth does not arrive.
  */
 export function writeOptimistic<T>(key: string, value: T, now: number = Date.now()): void {
-  entries.set(key, { at: now, fetchedAt: 0, value });
+  putEntry(key, { at: now, fetchedAt: 0, value }, now);
 }
 
 /**

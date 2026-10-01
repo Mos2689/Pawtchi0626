@@ -8,6 +8,7 @@
 
 import {
   FRESH_SNAPSHOT_MS,
+  MAX_SNAPSHOT_ENTRIES,
   TOGETHER_READ_TIMEOUT_MS,
   MAX_SNAPSHOT_AGE_MS,
   beginWrite,
@@ -376,5 +377,35 @@ describe('write ownership (late answers cannot overwrite newer ones)', () => {
     expect(commitSnapshot(second, ['b'], T0)).toBe(true);
     expect(readSnapshot('packs', T0)).toEqual(['b']);
     expect(isFresh('packs', T0)).toBe(true);
+  });
+});
+
+describe('entry ceiling (perf audit E5)', () => {
+  it('never holds more than MAX_SNAPSHOT_ENTRIES keys', () => {
+    for (let i = 0; i < MAX_SNAPSHOT_ENTRIES + 25; i++) writeSnapshot(`outing:${i}`, i, T0 + i);
+    let held = 0;
+    for (let i = 0; i < MAX_SNAPSHOT_ENTRIES + 25; i++) if (readSnapshot(`outing:${i}`, T0 + 1_000) !== null) held++;
+    expect(held).toBe(MAX_SNAPSHOT_ENTRIES);
+  });
+
+  it('evicts the least recently written, keeping the newest', () => {
+    for (let i = 0; i < MAX_SNAPSHOT_ENTRIES + 1; i++) writeSnapshot(`outing:${i}`, i, T0 + i);
+    expect(readSnapshot('outing:0', T0 + 1_000)).toBeNull();
+    expect(readSnapshot(`outing:${MAX_SNAPSHOT_ENTRIES}`, T0 + 1_000)).toBe(MAX_SNAPSHOT_ENTRIES);
+  });
+
+  it('counts a rewrite as recent, so a key in use is not the one evicted', () => {
+    for (let i = 0; i < MAX_SNAPSHOT_ENTRIES; i++) writeSnapshot(`outing:${i}`, i, T0 + i);
+    writeSnapshot('outing:0', 'again', T0 + 500);
+    writeSnapshot('outing:new', 'new', T0 + 600);
+    expect(readSnapshot('outing:0', T0 + 1_000)).toBe('again');
+    expect(readSnapshot('outing:1', T0 + 1_000)).toBeNull();
+  });
+
+  it('drops aged-out entries before anything still paintable', () => {
+    writeSnapshot('outing:stale', 'old', T0);
+    const later = T0 + MAX_SNAPSHOT_AGE_MS + 1;
+    for (let i = 0; i < MAX_SNAPSHOT_ENTRIES; i++) writeSnapshot(`outing:${i}`, i, later + i);
+    expect(readSnapshot('outing:0', later + 1_000)).toBe(0);
   });
 });

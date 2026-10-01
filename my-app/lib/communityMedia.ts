@@ -247,6 +247,25 @@ const signedUrls = new Map<string, { url: string; expiresAt: number }>();
  */
 const RESIGN_MARGIN_MS = 10 * 60_000;
 
+/**
+ * Hard ceiling on held URLs (perf audit E5). Past it, expired signatures —
+ * useless anyway — go first, then the oldest. Far above any one screen's
+ * photos; evicting only means a URL is signed again when next needed.
+ */
+export const MAX_SIGNED_URLS = 500;
+
+function pruneSignedUrls(now: number): void {
+  if (signedUrls.size <= MAX_SIGNED_URLS) return;
+  for (const [path, held] of signedUrls) {
+    if (held.expiresAt <= now) signedUrls.delete(path);
+  }
+  while (signedUrls.size > MAX_SIGNED_URLS) {
+    const oldest = signedUrls.keys().next().value;
+    if (oldest === undefined) break;
+    signedUrls.delete(oldest);
+  }
+}
+
 export async function communityMediaUrls(paths: string[]): Promise<Record<string, string>> {
   const unique = [...new Set(paths.filter(Boolean))];
   if (!unique.length) return {};
@@ -274,9 +293,12 @@ export async function communityMediaUrls(paths: string[]): Promise<Record<string
   const expiresAt = now + SIGNED_URL_TTL_S * 1000;
   for (const row of data) {
     if (!row.path || !row.signedUrl) continue;
+    // Re-inserting moves the path to the end, so Map order is signing order.
+    signedUrls.delete(row.path);
     signedUrls.set(row.path, { url: row.signedUrl, expiresAt });
     out[row.path] = row.signedUrl;
   }
+  pruneSignedUrls(now);
   return out;
 }
 

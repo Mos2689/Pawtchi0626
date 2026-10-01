@@ -6,7 +6,7 @@
  * attached to a photo that really exists.
  */
 
-import { capturesToSweep, clearCommunityMediaUrls, communityMediaUrls, selectSharedCaptures } from './communityMedia';
+import { MAX_SIGNED_URLS, capturesToSweep, clearCommunityMediaUrls, communityMediaUrls, selectSharedCaptures } from './communityMedia';
 import { newClientId } from './walk/clientId';
 
 // Hoisted above the import by jest; neither module is reached by the pure
@@ -185,5 +185,29 @@ describe('capturesToSweep (the finish-time backstop)', () => {
 
   it('sweeps everything shared when nothing was confirmed — the offline walk', () => {
     expect(capturesToSweep(captures, shared).map(c => c.mediaId)).toEqual(['published', 'failed', 'never-started']);
+  });
+});
+
+describe('signed URL ceiling (perf audit E5)', () => {
+  beforeEach(() => {
+    clearCommunityMediaUrls();
+    mockCreateSignedUrls.mockReset();
+    mockCreateSignedUrls.mockImplementation(async (paths: string[]) => ({
+      data: paths.map(path => ({ path, signedUrl: `https://cdn/${path}?t=1` })),
+      error: null,
+    }));
+  });
+
+  it('keeps at most MAX_SIGNED_URLS, re-signing the oldest when asked again', async () => {
+    const paths = Array.from({ length: MAX_SIGNED_URLS + 5 }, (_, i) => `p${i}.jpg`);
+    const out = await communityMediaUrls(paths);
+    // Everything asked for is answered, even what the memo then drops.
+    expect(Object.keys(out)).toHaveLength(MAX_SIGNED_URLS + 5);
+    mockCreateSignedUrls.mockClear();
+    await communityMediaUrls(['p0.jpg']);
+    expect(mockCreateSignedUrls).toHaveBeenCalledWith(['p0.jpg'], expect.any(Number));
+    mockCreateSignedUrls.mockClear();
+    await communityMediaUrls([`p${MAX_SIGNED_URLS + 4}.jpg`]);
+    expect(mockCreateSignedUrls).not.toHaveBeenCalled();
   });
 });
