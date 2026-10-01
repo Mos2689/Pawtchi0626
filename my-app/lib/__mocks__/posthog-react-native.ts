@@ -13,4 +13,8 @@ export default class PostHog {
   reset(): void {}
   flush(): Promise<void> { return Promise.resolve(); }
   screen(_name: string, _props?: Record<string, unknown>): void {}
+  /** Feature flags: tests drive these through `__flags` on the instance. */
+  __flags: Record<string, boolean> = {};
+  ready(): Promise<void> { return Promise.resolve(); }
+  isFeatureEnabled(key: string): boolean | undefined { return this.__flags[key]; }
 }
