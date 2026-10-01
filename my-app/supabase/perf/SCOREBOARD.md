@@ -82,3 +82,17 @@ from extensions.pg_stat_statements where calls > 5 order by total_exec_time desc
 
 ### 6. Dashboard parity
 Run as the owner in a rolled-back transaction. The md5 of `get_pet_dashboard(...)::text` must equal the pre-change hash for the same pet and date. Verified identical on 2026-10-01: owner `ca17d007…`, non-owner `06ba590b…`.
+
+### 7. Phone-side timings (Train 2, `perf-api-timing`)
+PostHog event `api_timing`, sampled 10%, at most 200 per launch, release builds only. Properties: `endpoint` (name only), `method`, `status` (0 = network failure), `ms` (as the phone saw it), `server_ms` (the gateway's `x-envoy-upstream-service-time`), `inflight` (requests already in the air). `ms − server_ms` is network plus client queueing. Turn the flag off again once the scoreboard has what it needs.
+
+## Train 2 flags (PostHog, boolean, created at 0%)
+
+| Flag | Change | Should move |
+|---|---|---|
+| `perf-push-change-detection` | Push token / permission sent only when changed (or weekly) | `register_push_token`, `record_notification_permission` calls per launch → ~0; burst p90 |
+| `perf-walk-instant-open` | Meetup → walk composed from the meetup read; press-in prefetch | One `community_outing` per walk open, starting at press-in; no `pets` read for the dog picker when opened from the meetup |
+| `perf-lazy-pet-context` | `get_pet_dashboard` waits 3 s after launch; last answer painted meanwhile | Burst p90; dashboard no longer in the first 3 s window |
+| `perf-api-timing` | Sampled `api_timing` events | Query 7 |
+
+Unflagged in Train 2, protected by fallbacks instead: `community_trail_routes` (the app falls back to the three reads while the function is missing; dropping it is the kill switch) and `community_pack_detail.attendance` (old builds ignore the key).
