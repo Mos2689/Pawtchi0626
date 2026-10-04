@@ -95,7 +95,7 @@ export default function PackSettingsScreen() {
         setBusy(true);
         // The trail is gone from every list that shows it, and Home is one
         // back-press away with a snapshot that still has it.
-        try { await leavePack(packId!); invalidate(cacheKey.packs()); router.replace('/(tabs)/community' as never); }
+        try { await leavePack(packId!); invalidate(cacheKey.packs()); router.replace({ pathname: '/(tabs)', params: { segment: 'together' } } as never); }
         catch (cause) { setError(describeError(cause, 'community_action')); setBusy(false); }
       } },
     ]);
@@ -115,7 +115,7 @@ export default function PackSettingsScreen() {
             await load();
           } else {
             await leavePack(packId!);
-            router.replace('/(tabs)/community' as never);
+            router.replace({ pathname: '/(tabs)', params: { segment: 'together' } } as never);
           }
         } catch (cause) {
           setError(describeError(cause, 'community_action'));

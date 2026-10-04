@@ -18,7 +18,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions, InteractionManager } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 import Reanimated from 'react-native-reanimated';
@@ -647,6 +647,7 @@ export default function HomeScreen() {
     [router],
   );
   const createTrail = React.useCallback(() => router.push('/community/create' as never), [router]);
+  const openInviteCode = React.useCallback(() => router.push('/community-invite' as never), [router]);
   /** Straight into the walk itself — only offered while one is actually live. */
   const openTrailWalk = React.useCallback((pack: CommunityPack) => {
     const walkId = pack.nextWalk?.id;
@@ -1245,6 +1246,37 @@ export default function HomeScreen() {
     ].slice(0, 3),
     [trailClaims, trailInvites],
   );
+
+  /**
+   * "Open Connect" from somewhere else — the invite confirmation, the retired
+   * meetups screen, and pushes that still route there.
+   *
+   * Home never unmounts and its segment is local state, so the request comes
+   * in as route params (`?segment=together`, plus `&open=waiting` to show the
+   * invitations and requests) and is consumed once: cleared at once, so the
+   * next ordinary visit opens on whatever the owner last chose. Only consumed
+   * once Connect is available — before the active pet has loaded it is not,
+   * and dropping the request then would lose it.
+   */
+  const homeParams = useLocalSearchParams<{ segment?: string; open?: string }>();
+  const [pendingWaiting, setPendingWaiting] = React.useState(false);
+  React.useEffect(() => {
+    if (homeParams.segment !== 'together' || !togetherEnabled) return;
+    onSegmentChange('together');
+    if (homeParams.open === 'waiting') setPendingWaiting(true);
+    router.setParams({ segment: undefined, open: undefined });
+  }, [homeParams.segment, homeParams.open, togetherEnabled, onSegmentChange, router]);
+  // The sheet opens once there is something in it; a load that confirms there
+  // is nothing simply drops the request rather than showing an empty sheet.
+  React.useEffect(() => {
+    if (!pendingWaiting || segment !== 'together') return;
+    if (waitingCount > 0) {
+      setWaitingOpen(true);
+      setPendingWaiting(false);
+    } else if (connectStatus === 'ready' || connectStatus === 'error') {
+      setPendingWaiting(false);
+    }
+  }, [pendingWaiting, segment, waitingCount, connectStatus]);
 
   const [locationPromptDismissed, setLocationPromptDismissed] = React.useState(false);
   const showLocationPrompt =
@@ -1909,6 +1941,7 @@ export default function HomeScreen() {
           onOpenTrail={openTrail}
           onOpenWalk={openTrailWalk}
           onCreate={createTrail}
+          onUseCode={openInviteCode}
           onStopChange={onSheetStopChange}
           bottomInset={TAB_BAR_CLEARANCE + insets.bottom}
         />
