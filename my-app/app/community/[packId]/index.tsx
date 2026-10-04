@@ -33,6 +33,7 @@ import {
   type PendingInvite,
 } from '../../../lib/communityWalks';
 import { useAuth } from '../../../providers/AuthProvider';
+import { useAutoRetry } from '../../../hooks/useAutoRetry';
 import { dateFormat } from '../../../lib/dateFormats';
 
 function dateLabel(value: string | null): string {
@@ -79,10 +80,16 @@ export default function PackHomeScreen() {
    * a cached open starts true because the cache is a landed answer.
    */
   const [loaded, setLoaded] = useState(!!cached);
+  /** An action that did not go through. */
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The latest refresh failed and is being retried. Said quietly: whatever is
+   * on screen stays, and the screen is already trying again.
+   */
+  const [loadIssue, setLoadIssue] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!packId) return;
+  const load = useCallback(async (): Promise<boolean> => {
+    if (!packId) return true;
     setError(null);
     try {
       /**
@@ -115,19 +122,27 @@ export default function PackHomeScreen() {
       } else {
         setClaims(await (claimsAhead ?? listExternalInviteClaims(packId)));
       }
-    } catch (cause) {
-      setError(describeError(cause, 'community_load'));
-    } finally {
+      // Only a landed answer makes the screen "loaded". A failed first load
+      // used to set it too, and the screen then announced "Nothing planned
+      // yet" about a meetup it had simply failed to read.
       setLoaded(true);
+      setLoadIssue(null);
+      return true;
+    } catch (cause) {
+      setLoadIssue(describeError(cause, 'community_load'));
+      return false;
     }
   }, [packId, user?.id]);
+
+  /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
+  const run = useAutoRetry(load);
 
   const respondToClaim = async (claim: ExternalInviteClaim, approve: boolean) => {
     setRespondingClaim(claim.invitation_id);
     setError(null);
     try {
       await approveExternalInvite(claim.invitation_id, approve);
-      await load();
+      await run();
     } catch (cause) {
       setError(describeError(cause, 'community_action'));
     } finally {
@@ -158,7 +173,7 @@ export default function PackHomeScreen() {
               setError(null);
               try {
                 await removePackMember(packId!, member.user_id);
-                await load();
+                await run();
               } catch (cause) {
                 setError(describeError(cause, 'community_action'));
               }
@@ -191,7 +206,7 @@ export default function PackHomeScreen() {
    * Not wrapped in `share()` either: `load` also runs straight after a write,
    * and sharing would hand that caller a request that started BEFORE the write.
    */
-  useFocusEffect(useCallback(() => { void load(); }, [load]));
+  useFocusEffect(useCallback(() => { void run(); }, [run]));
 
   /**
    * perf-walk-instant-open: ask for the walk as the finger lands, so the read
@@ -263,6 +278,7 @@ export default function PackHomeScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        {loadIssue && !error ? <Text style={styles.loadIssue}>{loadIssue}</Text> : null}
         {/* The trail, as an object. Everything identifying it lives on one navy
             card so the sections below can be about what happens next. */}
         <View style={styles.hero}>
@@ -693,6 +709,7 @@ const styles = StyleSheet.create({
   primaryText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
   pressed: { opacity: 0.9 },
 
+  loadIssue: { ...type.body, fontSize: 12.5, color: color.slateMuted, textAlign: 'center', marginBottom: space.md },
   /** A quiet placeholder the height of a line, not a spinner over the screen. */
   skeletonLine: {
     height: 14,

@@ -122,6 +122,14 @@ describe('joinOuting', () => {
     await expect(joinOuting('w1', ['d1'], false)).resolves.toBeUndefined();
   });
 
+  it('keeps a dropped connection distinct from a refusal, so the screen can retry it', async () => {
+    mockResponses['rpc:join_community_walk'] = { data: null, error: { message: 'TypeError: Network request failed' } };
+    const failure = await joinOuting('w1', ['d1'], false).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.name).not.toBe('UserFacingError');
+    expect(failure.message).toBe('TypeError: Network request failed');
+  });
+
   it('never shouts in its errors', () => {
     for (const code of ['walk_closed', 'pack_host_required', 'walk_access_denied', 'pet_not_yours', 'auth_required', 'x']) {
       expect(joinErrorMessage(code)).not.toContain('!');

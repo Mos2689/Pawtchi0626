@@ -24,7 +24,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { describeError, rawErrorMessage } from '../../../../lib/appError';
+import { describeError, rawErrorMessage, toAppError } from '../../../../lib/appError';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
 import Animated, { FadeIn, FadeOut, useReducedMotion } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
@@ -71,6 +71,7 @@ import { timed } from '../../../../lib/community/perf';
 import { TOGETHER_READ_TIMEOUT_MS } from '../../../../lib/communityCache';
 import { withTimeout } from '../../../../lib/withTimeout';
 import { useLiveMapCamera } from '../../../../hooks/useLiveMapCamera';
+import { useAutoRetry } from '../../../../hooks/useAutoRetry';
 import { legSettled } from '../../../../lib/community/legSettle';
 import { memoryReadiness, memoryWaitingLine } from '../../../../lib/community/memoryReadiness';
 import { reuseRoutes } from '../../../../lib/community/stableRoutes';
@@ -445,8 +446,8 @@ export default function CommunityMemoryScreen() {
    * and need the answer after it.
    */
   const loadsInFlight = useRef(0);
-  const load = useCallback(async () => {
-    if (!walkId) return;
+  const load = useCallback(async (): Promise<boolean> => {
+    if (!walkId) return true;
     loadsInFlight.current += 1;
     setError(null);
     try {
@@ -479,22 +480,33 @@ export default function CommunityMemoryScreen() {
       )
         .then(signed => setUrls(current => ({ ...current, ...signed })))
         .catch(() => {});
+      return true;
     } catch (cause) {
       // `walk_not_attended` is not a failure. A walk's memory belongs to the
       // people who were on it (migration 20260923000000), and somebody in the
       // pack who did not come is in an ordinary, expected state — so they get a
       // sentence explaining it, not a raw Postgres error string.
       const raw = rawErrorMessage(cause);
+      const notAttended = raw.includes('walk_not_attended');
       setError(
-        raw.includes('walk_not_attended')
+        notAttended
           ? 'This walk’s memory is kept for the people who walked it. You can see the plan and who came on the walk itself.'
           : describeError(cause, 'community_load'),
       );
+      // A permanent answer ends the wait. A passing failure keeps the loader
+      // up while the screen retries: settling to "loaded" here used to show
+      // "A quiet walk still counts. Nobody recorded a route" about a memory
+      // that had simply failed to arrive.
+      const permanent = notAttended || !toAppError(cause).retryable;
+      if (permanent) setLoaded(true);
+      return permanent;
     } finally {
       loadsInFlight.current -= 1;
-      setLoaded(true);
     }
   }, [walkId]);
+
+  /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
+  const run = useAutoRetry(load);
 
   /**
    * Deliberately NOT freshness-gated, unlike the trail and walk screens.
@@ -515,8 +527,8 @@ export default function CommunityMemoryScreen() {
     // The first load of a just-finished walk belongs to the wait below —
     // loading now as well would fetch a memory without this person's route.
     if (awaitingLegRef.current) return;
-    void load();
-  }, [load]));
+    void run();
+  }, [run]));
 
   useEffect(() => {
     if (!awaitingLeg || !walkId) return;
@@ -525,7 +537,7 @@ export default function CommunityMemoryScreen() {
       withTimeout(legSettled(walkId), LEG_SETTLE_TIMEOUT_MS, 'legSettled').catch(() => {}),
       wait(MIN_FINISH_LOADER_MS),
     ])
-      .then(() => (alive ? load() : undefined))
+      .then(() => (alive ? run() : undefined))
       .finally(() => { if (alive) setAwaitingLeg(false); });
     return () => { alive = false; };
     // Once per arrival: the wait is for the leg that was finishing when this

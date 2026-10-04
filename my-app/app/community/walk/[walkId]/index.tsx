@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { describeError } from '../../../../lib/appError';
+import { describeError, errorCopy, isTransientError, toAppError, type AppError } from '../../../../lib/appError';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -13,12 +13,15 @@ import {
 } from '../../../../components/community/CommunityUI';
 import { color, font, makeShadow, radius, space, type } from '../../../../constants/design';
 import { useWalkEnabled } from '../../../../hooks/useWalkEnabled';
+import { useAutoRetry } from '../../../../hooks/useAutoRetry';
+import { ErrorState } from '../../../../components/ErrorState';
 import { TOGETHER_READ_TIMEOUT_MS, cacheKey, readSnapshot } from '../../../../lib/communityCache';
 import { timed } from '../../../../lib/community/perf';
 import { initialDogSelection, seedDogsFromPack, sortRosterForDisplay } from '../../../../lib/community/outingDoc';
 import { claimPrefetchedOuting } from '../../../../lib/community/outingPrefetch';
 import { isPerfFlagOn } from '../../../../lib/perfFlags';
 import { withTimeout } from '../../../../lib/withTimeout';
+import { withRetry } from '../../../../lib/withRetry';
 import {
   inviteToWalk,
   joinOuting,
@@ -181,11 +184,15 @@ export default function OutingScreen() {
     [cached, instant, user?.id],
   );
   const [myDogs, setMyDogs] = useState<CommunityDog[]>(seededDogs ?? []);
+  /**
+   * Seeded at mount on every path. It used to be set only by a load that
+   * LANDED, so one failed refresh left "Join the walk" greyed out beside a
+   * roster that was right there (4 Oct 2026). Whether the roster is known is
+   * what gates the button now — see `rosterKnown`.
+   */
   const [selectedDogIds, setSelectedDogIds] = useState<string[]>(
-    () => (instant ? initialDogSelection(activePet?.id, seededDogs ?? []) : []),
+    () => initialDogSelection(activePet?.id, seededDogs ?? []),
   );
-  /** Whether the roster is still unknown — a primed plan does not answer it. */
-  const [loading, setLoading] = useState(!cached || !!cached.partial);
   /**
    * Whether a complete roster has ever been on this screen: a composed prime,
    * or a load that landed. With a dog seeded up front this — not an empty
@@ -195,13 +202,22 @@ export default function OutingScreen() {
   /** Only the first load may take the meetup screen's press-in read. */
   const firstLoad = useRef(true);
   const [busy, setBusy] = useState(false);
+  /** An action that did not go through (join, answer, invite). */
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Why the latest load failed, if it did. Kept apart from `error`: a failed
+   * refresh is the screen's business — it retries on its own — while a failed
+   * action is the owner's, and needs their attention.
+   */
+  const [loadIssue, setLoadIssue] = useState<AppError | null>(null);
+  const [loadInFlight, setLoadInFlight] = useState(false);
   /** The Play-policy disclosure stands between joining and tracking. */
   const [pendingStart, setPendingStart] = useState(false);
 
-  const load = useCallback(async () => {
-    if (!walkId) return;
+  const load = useCallback(async (): Promise<boolean> => {
+    if (!walkId) return true;
     setError(null);
+    setLoadInFlight(true);
     // The read the meetup screen started on press-in, if it is still young —
     // claimed once, because a reload after a write must ask afresh. A failed
     // prefetch is not this load's failure: ask again rather than report it.
@@ -230,12 +246,18 @@ export default function OutingScreen() {
             ? [dogs[0].id]
             : []);
       setRosterKnown(true);
+      setLoadIssue(null);
+      return true;
     } catch (cause) {
-      setError(describeError(cause, 'community_load'));
+      setLoadIssue(toAppError(cause));
+      return false;
     } finally {
-      setLoading(false);
+      setLoadInFlight(false);
     }
   }, [activePet, instant, seededDogs, walkId]);
+
+  /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
+  const run = useAutoRetry(load);
 
   /**
    * Refetched on every focus, behind the snapshot painted at the top of this
@@ -248,8 +270,8 @@ export default function OutingScreen() {
    */
   useFocusEffect(useCallback(() => {
     if (!walkEnabled) return;
-    void load();
-  }, [load, walkEnabled]));
+    void run();
+  }, [run, walkEnabled]));
 
   const mine = attendance.find(row => row.user_id === user?.id);
   // The trail's host, not this walk's organiser. Starting, editing and
@@ -294,10 +316,10 @@ export default function OutingScreen() {
         setNotAsked(current => current.filter(person => person.user_id !== userId));
         setAttendanceRows(current => [...current, { ...asked, status: 'invited' }]);
       }
-      void load();
+      void run();
     } catch (cause) {
       setError(describeError(cause, 'community_action'));
-      void load();
+      void run();
     } finally {
       setInviting(null);
     }
@@ -322,8 +344,10 @@ export default function OutingScreen() {
       setNotAsked(current => current.filter(row => row.user_id !== user.id));
     }
     try {
-      await setAttendance(walkId, status);
-      void load();
+      // An upsert of my own answer, so one quiet retry through a dropped
+      // connection or a busy server is safe.
+      await withRetry(() => setAttendance(walkId, status), { delayMs: 1_500, retryIf: isTransientError });
+      void run();
     } catch (cause) {
       setAttendanceRows(previous);
       setNotAsked(previousNotAsked);
@@ -359,7 +383,12 @@ export default function OutingScreen() {
     setError(null);
     try {
       // One transaction — starting (host) and joining together. See joinOuting.
-      await joinOuting(walkId, selectedDogIds, shareLocation, { start: startSharedOuting });
+      // Idempotent by design (join_community_walk), so one quiet retry through
+      // a dropped connection or a busy server is safe; refusals are not retried.
+      await withRetry(
+        () => joinOuting(walkId, selectedDogIds, shareLocation, { start: startSharedOuting }),
+        { delayMs: 1_500, retryIf: isTransientError },
+      );
 
       // Google Play requires a prominent in-app disclosure BEFORE the runtime
       // location request whenever location is collected in the background,
@@ -460,7 +489,7 @@ export default function OutingScreen() {
     // No walk yet means it has not arrived, not that it is broken. This said
     // "Walk unavailable" during the load — an error message, in the primary
     // button, on a walk that was about to appear perfectly fine.
-    return error ? 'This walk could not open' : 'Opening this walk…';
+    return 'Opening this walk…';
   })();
 
   /**
@@ -488,9 +517,14 @@ export default function OutingScreen() {
     || walk.state === 'cancelled'
     || (!previewOnly && (!activePet || selectedDogIds.length === 0))
     || (walk.state === 'planned' && !isOrganizer)
-    // With a dog seeded before any load, the roster is the gate instead: a
-    // partial prime does not know whether I am already walking.
-    || (instant && !previewOnly && !rosterKnown);
+    // With a dog seeded up front, the roster is the gate: a partial prime does
+    // not know whether I am already walking. Once known it stays known, so a
+    // failed refresh never takes the button away.
+    || (!previewOnly && !rosterKnown);
+
+  /** Nothing to show and the last try failed: the calm card, not an empty shell. */
+  const unavailable = !walk && !!loadIssue && !loadInFlight;
+  const loadIssueLine = loadIssue ? errorCopy(loadIssue, { context: 'community_load' }).message : null;
 
   if (!walkEnabled) {
     return (
@@ -551,244 +585,261 @@ export default function OutingScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        {/* ── One card, one grid ──────────────────────────────────────────
-            Two facts, said the same way twice over: a 52pt block, a 14pt gap,
-            then an eyebrow above a value. Both rows share that lead width and
-            that gap, which is the whole repair — they used to be 54+20 and
-            40+16, so the two text columns began eighteen points apart and the
-            card read as though it had been assembled by two people. */}
-        <View style={styles.planCard}>
-          {named ? <Text style={styles.planName} numberOfLines={2}>{named}</Text> : null}
+        {unavailable && loadIssue ? (
+          <View style={styles.unavailable}>
+            <ErrorState
+              copy={errorCopy(loadIssue, { context: 'community_load' })}
+              errorKind={loadIssue.kind}
+              errorContext="community_load"
+              screen="/community/walk"
+              onAction={action => { if (action === 'retry') void run(); }}
+            />
+          </View>
+        ) : (
+          <>
+          {/* ── One card, one grid ──────────────────────────────────────────
+              Two facts, said the same way twice over: a 52pt block, a 14pt gap,
+              then an eyebrow above a value. Both rows share that lead width and
+              that gap, which is the whole repair — they used to be 54+20 and
+              40+16, so the two text columns began eighteen points apart and the
+              card read as though it had been assembled by two people. */}
+          <View style={styles.planCard}>
+            {named ? <Text style={styles.planName} numberOfLines={2}>{named}</Text> : null}
 
-          <View style={styles.planRow}>
-            <View style={styles.dateChip}>
-              <Text style={styles.dateMonth}>{date.month}</Text>
-              <Text style={styles.dateDay}>{date.day}</Text>
-            </View>
-            <View style={styles.planCell}>
-              <View style={styles.eyebrowRow}>
-                {walk?.state === 'active' ? <View style={styles.liveDot} /> : null}
-                <Text style={[styles.cellEyebrow, walk?.state === 'active' && styles.cellEyebrowLive]}>
-                  {walk?.state === 'active' ? 'WALKING NOW' : 'WHEN'}
+            <View style={styles.planRow}>
+              <View style={styles.dateChip}>
+                <Text style={styles.dateMonth}>{date.month}</Text>
+                <Text style={styles.dateDay}>{date.day}</Text>
+              </View>
+              <View style={styles.planCell}>
+                <View style={styles.eyebrowRow}>
+                  {walk?.state === 'active' ? <View style={styles.liveDot} /> : null}
+                  <Text style={[styles.cellEyebrow, walk?.state === 'active' && styles.cellEyebrowLive]}>
+                    {walk?.state === 'active' ? 'WALKING NOW' : 'WHEN'}
+                  </Text>
+                </View>
+                <Text style={styles.cellValue} numberOfLines={2}>
+                  {walk ? date.when : ''}
                 </Text>
               </View>
-              <Text style={styles.cellValue} numberOfLines={2}>
-                {walk ? date.when : ''}
-              </Text>
             </View>
+
+            <View style={styles.planRule} />
+
+            <View style={styles.planRow}>
+              <View style={styles.locationMark}>
+                <Ionicons name="location" size={20} color={color.navy} />
+              </View>
+              <View style={styles.planCell}>
+                <Text style={styles.cellEyebrow}>MEETING POINT</Text>
+                <Text style={styles.cellValue} numberOfLines={2}>
+                  {walk ? walk.meeting_label || 'To be confirmed' : ''}
+                </Text>
+              </View>
+            </View>
+
+            {/* Full width, under both rows. A sentence indented into a column two
+                thirds of the card wide wraps into a ribbon. */}
+            {walk?.note ? <Text style={styles.planNote}>{walk.note}</Text> : null}
           </View>
 
-          <View style={styles.planRule} />
-
-          <View style={styles.planRow}>
-            <View style={styles.locationMark}>
-              <Ionicons name="location" size={20} color={color.navy} />
-            </View>
-            <View style={styles.planCell}>
-              <Text style={styles.cellEyebrow}>MEETING POINT</Text>
-              <Text style={styles.cellValue} numberOfLines={2}>
-                {walk ? walk.meeting_label || 'To be confirmed' : ''}
-              </Text>
-            </View>
-          </View>
-
-          {/* Full width, under both rows. A sentence indented into a column two
-              thirds of the card wide wraps into a ribbon. */}
-          {walk?.note ? <Text style={styles.planNote}>{walk.note}</Text> : null}
-        </View>
-
-        <View style={styles.sectionHeading}>
-          <Text style={styles.sectionTitle}>Who’s walking</Text>
-          <Text style={styles.comingCount}>
-            {loading && attendance.length === 0 ? ' ' : `${comingCount} of ${attendance.length} coming`}
-          </Text>
-        </View>
-
-        <View style={styles.roster}>
-          {/* Rows the shape of people while a partial prime waits on the
-              roster, rather than a blank gap that reads as "nobody". */}
-          {instant && loading && attendance.length === 0
-            ? SKELETON_ROWS.map(width => (
-              <View key={width} style={styles.personRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-                <View style={styles.skeletonAvatar} />
-                <View style={styles.personCopy}>
-                  <View style={[styles.skeletonLine, { width }]} />
-                  <View style={[styles.skeletonLine, styles.skeletonLineShort]} />
-                </View>
-              </View>
-            ))
-            : null}
-          {shownAttendance.map(person => {
-            const organizer = person.user_id === walk?.organizer_id;
-            const isMe = person.user_id === user?.id;
-            const ownerName = firstName(person.person?.full_name || person.person?.username);
-            const dogNames = person.dogs?.map(dog => dog.name).join(' & ');
-            const avatarDog = person.dogs?.[0] ?? { id: person.user_id, name: ownerName, image_url: person.person?.avatar_url ?? null };
-            const answeredYes = ['coming', 'checked_in', 'walking', 'finished'].includes(person.status);
-            return (
-              <View key={person.user_id} style={styles.personRow}>
-                <DogAvatar dog={avatarDog} size={48} />
-                <View style={styles.personCopy}>
-                  <Text style={styles.personName} numberOfLines={1}>{dogNames ? `${ownerName} & ${dogNames}` : ownerName}</Text>
-                  {/* Suppressed where a button beside it already says the same
-                      word: my own answered row showed "Coming" in grey text
-                      next to a yellow chip reading "Coming". */}
-                  {walk?.state === 'planned' && isMe && !organizer && person.status !== 'invited'
-                    ? null
-                    : <Text style={styles.personStatus}>{statusCopy(person, organizer)}</Text>}
-                </View>
-
-                {/* One fixed-width column for whatever ends the row. Without
-                    it a Host pill, two answer buttons and a bare tick each set
-                    their own right edge, and four rows stack into a ragged
-                    margin that reads as a layout bug. */}
-                <View style={styles.rowAction}>
-                  {walk?.state === 'planned' && isMe && !organizer ? (
-                    <View style={styles.responseGroup}>
-                      <Pressable
-                        onPress={() => void respond('coming')}
-                        disabled={busy}
-                        style={[styles.responseButton, person.status === 'coming' && styles.responseButtonSelected]}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: person.status === 'coming' }}
-                      >
-                        <Text style={[styles.responseButtonText, person.status === 'coming' && styles.responseTextSelected]}>
-                          Coming
-                        </Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() => void respond('cant_make_it')}
-                        disabled={busy}
-                        style={[styles.responseButton, person.status === 'cant_make_it' && styles.responseButtonMutedSelected]}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected: person.status === 'cant_make_it' }}
-                      >
-                        <Text style={styles.responseMutedText}>Can’t</Text>
-                      </Pressable>
-                    </View>
-                  ) : organizer ? (
-                    <View style={styles.hostBadge}><Text style={styles.hostBadgeText}>HOST</Text></View>
-                  ) : answeredYes ? (
-                    <Ionicons name="checkmark-circle" size={23} color={color.success} />
-                  ) : person.status === 'cant_make_it' ? (
-                    <Ionicons name="close-circle" size={23} color={color.slateFaint} />
-                  ) : (
-                    <Ionicons name="time-outline" size={21} color={color.slateFaint} />
-                  )}
-                </View>
-              </View>
-            );
-          })}
-        </View>
-
-        {notAsked.length ? (
-          <View style={styles.notAskedBlock}>
-            <Text style={styles.notAskedTitle}>
-              Also in the pack · not asked to this one
+          <View style={styles.sectionHeading}>
+            <Text style={styles.sectionTitle}>Who’s walking</Text>
+            <Text style={styles.comingCount}>
+              {rosterKnown ? `${comingCount} of ${attendance.length} coming` : ' '}
             </Text>
-            {shownNotAsked.map(person => {
+          </View>
+
+          <View style={styles.roster}>
+            {/* Rows the shape of people while a partial prime waits on the
+                roster, rather than a blank gap that reads as "nobody". */}
+            {!rosterKnown && attendance.length === 0
+              ? SKELETON_ROWS.map(width => (
+                <View key={width} style={styles.personRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                  <View style={styles.skeletonAvatar} />
+                  <View style={styles.personCopy}>
+                    <View style={[styles.skeletonLine, { width }]} />
+                    <View style={[styles.skeletonLine, styles.skeletonLineShort]} />
+                  </View>
+                </View>
+              ))
+              : null}
+            {shownAttendance.map(person => {
+              const organizer = person.user_id === walk?.organizer_id;
+              const isMe = person.user_id === user?.id;
               const ownerName = firstName(person.person?.full_name || person.person?.username);
               const dogNames = person.dogs?.map(dog => dog.name).join(' & ');
               const avatarDog = person.dogs?.[0] ?? { id: person.user_id, name: ownerName, image_url: person.person?.avatar_url ?? null };
-              const isMe = person.user_id === user?.id;
+              const answeredYes = ['coming', 'checked_in', 'walking', 'finished'].includes(person.status);
               return (
-                <View key={person.user_id} style={styles.notAskedRow}>
-                  <View style={styles.notAskedAvatar}>
-                    <DogAvatar dog={avatarDog} size={36} />
+                <View key={person.user_id} style={styles.personRow}>
+                  <DogAvatar dog={avatarDog} size={48} />
+                  <View style={styles.personCopy}>
+                    <Text style={styles.personName} numberOfLines={1}>{dogNames ? `${ownerName} & ${dogNames}` : ownerName}</Text>
+                    {/* Suppressed where a button beside it already says the same
+                        word: my own answered row showed "Coming" in grey text
+                        next to a yellow chip reading "Coming". */}
+                    {walk?.state === 'planned' && isMe && !organizer && person.status !== 'invited'
+                      ? null
+                      : <Text style={styles.personStatus}>{statusCopy(person, organizer)}</Text>}
                   </View>
-                  <Text style={styles.notAskedName} numberOfLines={1}>
-                    {dogNames ? `${ownerName} & ${dogNames}` : ownerName}
-                  </Text>
-                  {/* Nobody asked them, and they can still come — being in the
-                      pack is the permission. The host gets the other half of
-                      that: asking them without leaving this screen. */}
-                  {/* The same fixed column as the roster above, so both lists
-                      share one right margin instead of two. */}
+
+                  {/* One fixed-width column for whatever ends the row. Without
+                      it a Host pill, two answer buttons and a bare tick each set
+                      their own right edge, and four rows stack into a ragged
+                      margin that reads as a layout bug. */}
                   <View style={styles.rowAction}>
-                    {isMe && walk?.state === 'planned' ? (
-                      <Pressable
-                        onPress={() => void respond('coming')}
-                        disabled={busy}
-                        style={styles.notAskedJoin}
-                        accessibilityRole="button"
-                        accessibilityLabel="Come to this walk anyway"
-                      >
-                        <Text style={styles.notAskedJoinText}>I’ll come</Text>
-                      </Pressable>
-                    ) : isOrganizer && walk?.state === 'planned' ? (
-                      <Pressable
-                        onPress={() => void invite(person.user_id)}
-                        disabled={inviting !== null}
-                        style={({ pressed }) => [
-                          styles.notAskedInvite,
-                          (pressed || inviting === person.user_id) && styles.notAskedInvitePressed,
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Ask ${ownerName} to this walk`}
-                      >
-                        <Ionicons name="add" size={15} color={color.navy} />
-                        <Text style={styles.notAskedInviteText}>
-                          {inviting === person.user_id ? 'Asking…' : 'Invite'}
-                        </Text>
-                      </Pressable>
-                    ) : null}
+                    {walk?.state === 'planned' && isMe && !organizer ? (
+                      <View style={styles.responseGroup}>
+                        <Pressable
+                          onPress={() => void respond('coming')}
+                          disabled={busy}
+                          style={[styles.responseButton, person.status === 'coming' && styles.responseButtonSelected]}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: person.status === 'coming' }}
+                        >
+                          <Text style={[styles.responseButtonText, person.status === 'coming' && styles.responseTextSelected]}>
+                            Coming
+                          </Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => void respond('cant_make_it')}
+                          disabled={busy}
+                          style={[styles.responseButton, person.status === 'cant_make_it' && styles.responseButtonMutedSelected]}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: person.status === 'cant_make_it' }}
+                        >
+                          <Text style={styles.responseMutedText}>Can’t</Text>
+                        </Pressable>
+                      </View>
+                    ) : organizer ? (
+                      <View style={styles.hostBadge}><Text style={styles.hostBadgeText}>HOST</Text></View>
+                    ) : answeredYes ? (
+                      <Ionicons name="checkmark-circle" size={23} color={color.success} />
+                    ) : person.status === 'cant_make_it' ? (
+                      <Ionicons name="close-circle" size={23} color={color.slateFaint} />
+                    ) : (
+                      <Ionicons name="time-outline" size={21} color={color.slateFaint} />
+                    )}
                   </View>
                 </View>
               );
             })}
           </View>
-        ) : null}
 
-        {myDogs.length > 1 && walk?.state !== 'completed' ? (
-          <View style={styles.dogPicker}>
-            <Text style={styles.dogPickerLabel}>Walking with</Text>
-            <View style={styles.dogChoices}>
-              {myDogs.map(dog => {
-                const selected = selectedDogIds.includes(dog.id);
+          {notAsked.length ? (
+            <View style={styles.notAskedBlock}>
+              <Text style={styles.notAskedTitle}>
+                Also in the pack · not asked to this one
+              </Text>
+              {shownNotAsked.map(person => {
+                const ownerName = firstName(person.person?.full_name || person.person?.username);
+                const dogNames = person.dogs?.map(dog => dog.name).join(' & ');
+                const avatarDog = person.dogs?.[0] ?? { id: person.user_id, name: ownerName, image_url: person.person?.avatar_url ?? null };
+                const isMe = person.user_id === user?.id;
                 return (
-                  <Pressable
-                    key={dog.id}
-                    onPress={() => setSelectedDogIds(current => selected
-                      ? dog.id === activePet?.id ? current : current.filter(id => id !== dog.id)
-                      : [...current, dog.id])}
-                    style={[styles.dogChoice, selected && styles.dogChoiceSelected]}
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: selected }}
-                  >
-                    <DogAvatar dog={dog} size={30} />
-                    <Text style={styles.dogChoiceText}>{dog.name}</Text>
-                  </Pressable>
+                  <View key={person.user_id} style={styles.notAskedRow}>
+                    <View style={styles.notAskedAvatar}>
+                      <DogAvatar dog={avatarDog} size={36} />
+                    </View>
+                    <Text style={styles.notAskedName} numberOfLines={1}>
+                      {dogNames ? `${ownerName} & ${dogNames}` : ownerName}
+                    </Text>
+                    {/* Nobody asked them, and they can still come — being in the
+                        pack is the permission. The host gets the other half of
+                        that: asking them without leaving this screen. */}
+                    {/* The same fixed column as the roster above, so both lists
+                        share one right margin instead of two. */}
+                    <View style={styles.rowAction}>
+                      {isMe && walk?.state === 'planned' ? (
+                        <Pressable
+                          onPress={() => void respond('coming')}
+                          disabled={busy}
+                          style={styles.notAskedJoin}
+                          accessibilityRole="button"
+                          accessibilityLabel="Come to this walk anyway"
+                        >
+                          <Text style={styles.notAskedJoinText}>I’ll come</Text>
+                        </Pressable>
+                      ) : isOrganizer && walk?.state === 'planned' ? (
+                        <Pressable
+                          onPress={() => void invite(person.user_id)}
+                          disabled={inviting !== null}
+                          style={({ pressed }) => [
+                            styles.notAskedInvite,
+                            (pressed || inviting === person.user_id) && styles.notAskedInvitePressed,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Ask ${ownerName} to this walk`}
+                        >
+                          <Ionicons name="add" size={15} color={color.navy} />
+                          <Text style={styles.notAskedInviteText}>
+                            {inviting === person.user_id ? 'Asking…' : 'Invite'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  </View>
                 );
               })}
             </View>
-          </View>
-        ) : null}
+          ) : null}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+          {myDogs.length > 1 && walk?.state !== 'completed' ? (
+            <View style={styles.dogPicker}>
+              <Text style={styles.dogPickerLabel}>Walking with</Text>
+              <View style={styles.dogChoices}>
+                {myDogs.map(dog => {
+                  const selected = selectedDogIds.includes(dog.id);
+                  return (
+                    <Pressable
+                      key={dog.id}
+                      onPress={() => setSelectedDogIds(current => selected
+                        ? dog.id === activePet?.id ? current : current.filter(id => id !== dog.id)
+                        : [...current, dog.id])}
+                      style={[styles.dogChoice, selected && styles.dogChoiceSelected]}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: selected }}
+                    >
+                      <DogAvatar dog={dog} size={30} />
+                      <Text style={styles.dogChoiceText}>{dog.name}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
 
-        {/* Waiting is not an action, so it does not get an action's shape.
-            A full-width slab in the brand's loudest colour, greyed out and
-            reading "Waiting for organiser", made the most prominent object on
-            the screen the one telling you there is nothing to do. */}
-        {waiting ? (
-          <View style={styles.waitingNote}>
-            <Ionicons name="time-outline" size={16} color={color.slateMuted} />
-            <Text style={styles.waitingText}>{primaryLabel}</Text>
-          </View>
-        ) : (
-          <Pressable
-            onPress={openPrimaryAction}
-            disabled={primaryDisabled}
-            style={({ pressed }) => [
-              styles.primaryAction,
-              primaryDisabled && styles.primaryActionDisabled,
-              pressed && styles.primaryActionPressed,
-            ]}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: primaryDisabled }}
-          >
-            <Text style={styles.primaryActionText}>{primaryLabel}</Text>
-          </Pressable>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {/* A refresh that failed while the walk is on screen: said quietly,
+              because nothing is lost and the screen is already trying again. */}
+          {!error && walk && loadIssueLine ? <Text style={styles.staleNote}>{loadIssueLine}</Text> : null}
+
+          {/* Waiting is not an action, so it does not get an action's shape.
+              A full-width slab in the brand's loudest colour, greyed out and
+              reading "Waiting for organiser", made the most prominent object on
+              the screen the one telling you there is nothing to do. */}
+          {waiting ? (
+            <View style={styles.waitingNote}>
+              <Ionicons name="time-outline" size={16} color={color.slateMuted} />
+              <Text style={styles.waitingText}>{primaryLabel}</Text>
+            </View>
+          ) : (
+            <Pressable
+              onPress={openPrimaryAction}
+              disabled={primaryDisabled}
+              style={({ pressed }) => [
+                styles.primaryAction,
+                primaryDisabled && styles.primaryActionDisabled,
+                pressed && styles.primaryActionPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: primaryDisabled }}
+            >
+              <Text style={styles.primaryActionText}>{primaryLabel}</Text>
+            </Pressable>
+          )}
+          </>
         )}
       </ScrollView>
     </SafeAreaView>
@@ -974,6 +1025,8 @@ const styles = StyleSheet.create({
   dogChoiceSelected: { backgroundColor: color.electricSoft, borderWidth: 1, borderColor: color.electric },
   dogChoiceText: { ...type.label, color: color.navy },
   error: { ...type.bodyMedium, color: color.error, marginTop: space.md },
+  staleNote: { ...type.body, fontSize: 12.5, color: color.slateMuted, marginTop: space.md },
+  unavailable: { marginTop: space.xxl },
   primaryAction: {
     marginTop: space.lg,
     minHeight: 56,

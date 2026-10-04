@@ -573,6 +573,17 @@ export function describeError(
 }
 
 /**
+ * Whether trying the same thing again could succeed: the connection dropped,
+ * the server was busy, or it took too long. Never true for a refusal or a
+ * validation failure — those are answers.
+ */
+export function isTransientError(cause: unknown): boolean {
+  if (isUserFacingError(cause)) return false;
+  const kind = toAppError(cause).kind;
+  return kind === 'offline' || kind === 'timeout' || kind === 'server';
+}
+
+/**
  * The raw message, for matching server codes and for diagnostics ONLY.
  * Never render it — that is what `describeError` is for. Kept as a named
  * helper so the no-raw-errors guard test can tell the two uses apart.

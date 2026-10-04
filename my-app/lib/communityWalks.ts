@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { UserFacingError } from './appError';
+import { UserFacingError, isTransientError } from './appError';
 import { beginWrite, cacheKey, commitSnapshot, isFresh, readSnapshot, writeOptimistic, writeSnapshot } from './communityCache';
 import { currentUserId } from './sessionUser';
 import { isValidUsername, normalizeUsername } from './communityUsername';
@@ -1197,7 +1197,13 @@ export async function joinOuting(
     p_start: !!options.start,
   });
   if (!error) return;
-  if (!isMissingFunction(error.message)) throw new UserFacingError(joinErrorMessage(error.message));
+  if (!isMissingFunction(error.message)) {
+    // A refusal is the walk's answer and gets its own sentence. A dropped
+    // connection or a busy server is not an answer: it keeps its kind, so the
+    // screen can say what happened — and retry, since joining is idempotent.
+    if (isTransientError(new Error(error.message))) throw new Error(error.message);
+    throw new UserFacingError(joinErrorMessage(error.message));
+  }
   if (options.start) await startOuting(walkId);
   await joinOutingLegacy(walkId, petIds, shareLocation);
 }

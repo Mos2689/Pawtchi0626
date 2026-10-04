@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { describeError } from '../../../../lib/appError';
+import { useAutoRetry } from '../../../../hooks/useAutoRetry';
 import {
   Alert, AppState, Pressable, StyleSheet, Text, View,
   type AppStateStatus, type LayoutChangeEvent, type StyleProp, type TextStyle,
@@ -205,7 +206,13 @@ export default function CommunityLiveScreen() {
   const [mapSize, setMapSize] = useState({ width: 0, height: 0 });
   const [reportedCamera, setReportedCamera] = useState<MapCamera | null>(null);
   const [finishing, setFinishing] = useState(false);
+  /** An action that did not go through (closing the walk). */
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The latest refresh failed and is being retried. The map, the dots and the
+   * finish button all stay; this is said quietly, never in the error tone.
+   */
+  const [loadIssue, setLoadIssue] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   /**
    * The recorder's capture pipeline, published by /walk while it is tracking
@@ -257,8 +264,8 @@ export default function CommunityLiveScreen() {
     })));
   }, []);
 
-  const load = useCallback(async () => {
-    if (!walkId) return;
+  const load = useCallback(async (): Promise<boolean> => {
+    if (!walkId) return true;
     try {
       // Other people's photos — the rows, not just a count, because they are
       // pinned on the map now that a photo reaches the pack as it is taken.
@@ -288,9 +295,11 @@ export default function CommunityLiveScreen() {
       setParties(live);
       await applyOthersMoments(((moments.data ?? []) as OthersRow[]).slice().reverse());
       setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
-      setError(null);
+      setLoadIssue(null);
+      return true;
     } catch (cause) {
-      setError(describeError(cause, 'community_load'));
+      setLoadIssue(describeError(cause, 'community_load'));
+      return false;
     }
     // `applyOthersMoments` is a `useCallback(…, [])`, so naming it here costs
     // nothing and keeps this list honest.
@@ -342,7 +351,10 @@ export default function CommunityLiveScreen() {
     }
   }, [user?.id, walkId]);
 
-  useFocusEffect(useCallback(() => { void load(); }, [load]));
+  /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
+  const run = useAutoRetry(load);
+
+  useFocusEffect(useCallback(() => { void run(); }, [run]));
 
   /**
    * The subscriptions' door into `load`, with a window on it.
@@ -980,6 +992,9 @@ export default function CommunityLiveScreen() {
       </View>
 
       {error ? <View style={[styles.errorChip, { top: insets.top + 190 }]}><Text style={styles.errorText}>{error}</Text></View> : null}
+      {!error && loadIssue ? (
+        <View style={[styles.issueChip, { top: insets.top + 190 }]}><Text style={styles.issueText}>{loadIssue}</Text></View>
+      ) : null}
 
 
       {/* ── The sheet ────────────────────────────────────────────────────────
@@ -1143,6 +1158,8 @@ const styles = StyleSheet.create({
   markerLabelText: { fontFamily: font.bold, fontSize: 8.5, color: color.surface },
   errorChip: { position: 'absolute', zIndex: 9, left: space.xl, right: space.xl, padding: space.sm, borderRadius: radius.md, backgroundColor: color.errorSoft },
   errorText: { ...type.label, color: color.error, textAlign: 'center' },
+  issueChip: { position: 'absolute', zIndex: 9, left: space.xl, right: space.xl, padding: space.sm, borderRadius: radius.md, backgroundColor: color.surface },
+  issueText: { ...type.label, fontSize: 12, color: color.slateMuted, textAlign: 'center' },
   // Same geometry as the error chip, deliberately not the same colour: a walk
   // that ended exactly as designed must not be painted in the error tone.
   // Edge to edge and anchored to the bottom, so the sheet reads as the floor

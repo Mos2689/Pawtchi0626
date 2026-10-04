@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { describeError } from '../../lib/appError';
+import { describeError, errorCopy, toAppError, type AppError } from '../../lib/appError';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -18,6 +18,8 @@ import {
 } from '../../components/community/CommunityUI';
 import { color, radius, space, type } from '../../constants/design';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
+import { useAutoRetry } from '../../hooks/useAutoRetry';
+import { ErrorState } from '../../components/ErrorState';
 import {
   getMyUsername,
   listInvitations,
@@ -43,17 +45,23 @@ export default function CommunityScreen() {
   const [packs, setPacks] = useState<CommunityPack[]>([]);
   const [invitations, setInvitations] = useState<CommunityInvitation[]>([]);
   const [username, setUsername] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  /**
+   * Whether an answer has ever landed. Until one has, nothing on this screen
+   * may claim anything — not "no meetups", not "choose your username". A
+   * failed first load used to fall through to both.
+   */
+  const [loadedOnce, setLoadedOnce] = useState(false);
+  const [loadInFlight, setLoadInFlight] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  /** An action that did not go through. */
   const [error, setError] = useState<string | null>(null);
+  /** The latest load failed and is being retried. */
+  const [loadIssue, setLoadIssue] = useState<AppError | null>(null);
   const [responding, setResponding] = useState<string | null>(null);
 
-  const load = useCallback(async (quiet = false) => {
-    // `quiet` no longer decides whether a loader appears — the render does,
-    // and only when there is nothing on screen yet. This just marks the first
-    // request so the empty list is not mistaken for an answer.
-    if (!quiet) setLoading(true);
+  const load = useCallback(async (): Promise<boolean> => {
     setError(null);
+    setLoadInFlight(true);
     try {
       const [nextPacks, nextInvitations, nextUsername] = await Promise.all([
         listPacks(), listInvitations(), getMyUsername(),
@@ -61,25 +69,32 @@ export default function CommunityScreen() {
       setPacks(nextPacks);
       setInvitations(nextInvitations);
       setUsername(nextUsername);
+      setLoadedOnce(true);
+      setLoadIssue(null);
+      return true;
     } catch (cause) {
-      setError(describeError(cause, 'community_load'));
+      setLoadIssue(toAppError(cause));
+      return false;
     } finally {
-      setLoading(false);
+      setLoadInFlight(false);
       setRefreshing(false);
     }
   }, []);
 
+  /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
+  const run = useAutoRetry(load);
+
   useFocusEffect(useCallback(() => {
     if (!walkEnabled) return;
-    void load();
-  }, [load, walkEnabled]));
+    void run();
+  }, [run, walkEnabled]));
 
   const respond = async (invitation: CommunityInvitation, accept: boolean) => {
     setResponding(invitation.id);
     setError(null);
     try {
       await respondToInvitation(invitation.id, accept);
-      await load(true);
+      await run();
     } catch (cause) {
       setError(describeError(cause, 'community_action'));
     } finally {
@@ -117,18 +132,31 @@ export default function CommunityScreen() {
         }
       />
 
-      {loading && packs.length === 0 && invitations.length === 0 ? (
+      {!loadedOnce ? (
         // Only the very first visit waits, and quietly. A modal loader on every
         // refocus wiped a list that was already on screen and made coming back
-        // from a trail feel like a cold start.
-        <View style={styles.firstLoad} />
+        // from a trail feel like a cold start. If that first answer will not
+        // come, say so calmly and offer to try again — never an empty list.
+        loadIssue && !loadInFlight ? (
+          <View style={styles.unavailable}>
+            <ErrorState
+              copy={errorCopy(loadIssue, { context: 'community_load' })}
+              errorKind={loadIssue.kind}
+              errorContext="community_load"
+              screen="/(tabs)/community"
+              onAction={action => { if (action === 'retry') void run(); }}
+            />
+          </View>
+        ) : (
+          <View style={styles.firstLoad} />
+        )
       ) : (
         <ScrollView
           contentContainerStyle={communityScreenStyles.scroll}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => { setRefreshing(true); void load(true); }}
+              onRefresh={() => { setRefreshing(true); void run(); }}
               tintColor={color.electric}
             />
           }
@@ -228,6 +256,9 @@ export default function CommunityScreen() {
           )}
 
           {error ? <Text style={communityScreenStyles.error}>{error}</Text> : null}
+          {!error && loadIssue ? (
+            <Text style={styles.loadIssue}>{errorCopy(loadIssue, { context: 'community_load' }).message}</Text>
+          ) : null}
         </ScrollView>
       )}
     </SafeAreaView>
@@ -236,6 +267,8 @@ export default function CommunityScreen() {
 
 const styles = StyleSheet.create({
   firstLoad: { flex: 1 },
+  unavailable: { flex: 1, paddingHorizontal: space.xl, paddingTop: space.xxl },
+  loadIssue: { ...type.body, fontSize: 12.5, color: color.slateMuted, textAlign: 'center', marginTop: space.md },
   flex: { flex: 1 },
   addButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: color.yellow, alignItems: 'center', justifyContent: 'center' },
   usernameCard: { flexDirection: 'row', alignItems: 'center', gap: space.md },

@@ -10,11 +10,20 @@
 
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  opts?: { delayMs?: number },
+  opts?: {
+    delayMs?: number;
+    /**
+     * Retry only failures this accepts. A refusal ("this walk has finished")
+     * is an answer, and asking again only delays it; pass `isTransientError`
+     * from lib/appError.ts to retry dropped connections and busy servers only.
+     */
+    retryIf?: (error: unknown) => boolean;
+  },
 ): Promise<T> {
   try {
     return await fn();
   } catch (firstErr) {
+    if (opts?.retryIf && !opts.retryIf(firstErr)) throw firstErr;
     await new Promise((r) => setTimeout(r, opts?.delayMs ?? 1200));
     try {
       return await fn();
