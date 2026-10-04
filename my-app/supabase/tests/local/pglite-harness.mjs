@@ -112,6 +112,41 @@ CREATE FUNCTION realtime.topic() RETURNS TEXT LANGUAGE sql STABLE AS
   $$ SELECT nullif(current_setting('realtime.topic', true), '')::text $$;
 GRANT EXECUTE ON FUNCTION realtime.topic() TO anon, authenticated;
 
+CREATE TABLE public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE, full_name TEXT, username TEXT);
+CREATE TABLE public.community_pack_invitations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pack_id UUID NOT NULL REFERENCES public.community_packs(id) ON DELETE CASCADE,
+  inviter_id UUID NOT NULL REFERENCES auth.users(id),
+  invitee_id UUID REFERENCES auth.users(id),
+  invite_code UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+  claimed_by UUID REFERENCES auth.users(id),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'pending_host', 'accepted', 'declined', 'revoked', 'expired')),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '14 days',
+  responded_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (invitee_id IS NOT NULL OR state IN ('pending', 'pending_host', 'revoked', 'expired')));
+CREATE TABLE public.community_notification_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  pack_id UUID, walk_id UUID, title TEXT NOT NULL, body TEXT NOT NULL, route TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT community_notification_events_event_type_check CHECK (event_type IN (
+    'community_invite', 'community_walk_change', 'community_memory_ready',
+    'community_rsvp', 'community_moment', 'community_walk_soon')));
+CREATE FUNCTION public.enqueue_community_notification(
+  p_user_id UUID, p_event_type TEXT, p_pack_id UUID, p_walk_id UUID,
+  p_title TEXT, p_body TEXT, p_route TEXT, p_dedupe_key TEXT)
+RETURNS VOID LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+  INSERT INTO public.community_notification_events
+    (user_id, event_type, pack_id, walk_id, title, body, route, dedupe_key)
+  VALUES (p_user_id, p_event_type, p_pack_id, p_walk_id, p_title, p_body, p_route, p_dedupe_key)
+  ON CONFLICT (dedupe_key) DO NOTHING $$;
+REVOKE ALL ON FUNCTION public.enqueue_community_notification(UUID, TEXT, UUID, UUID, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
 CREATE FUNCTION public.is_community_pack_owner(p_pack_id UUID, p_user_id UUID DEFAULT auth.uid())
 RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT EXISTS (SELECT 1 FROM public.community_packs p WHERE p.id = p_pack_id AND p.owner_id = p_user_id) $$;
