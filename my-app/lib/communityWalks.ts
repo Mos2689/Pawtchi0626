@@ -646,10 +646,24 @@ export async function createExternalInvite(packId: string): Promise<CommunityInv
   return unwrap(data as CommunityInvitation | null, error);
 }
 
-export async function claimExternalInvite(code: string): Promise<'host_confirmation_required' | 'invalid_or_expired'> {
+/**
+ * What opening an invite link did (20261005000000).
+ *
+ *   host_confirmation_required  sent to the host (also on a repeat)
+ *   own_invite                  the link is the caller's own; it is untouched
+ *   already_member              the caller is already in that meetup; untouched
+ *   invalid_or_expired          used by someone else, expired, or no such link
+ */
+export type InviteClaimOutcome = 'host_confirmation_required' | 'own_invite' | 'already_member' | 'invalid_or_expired';
+
+export async function claimExternalInvite(code: string): Promise<InviteClaimOutcome> {
   const { data, error } = await supabase.rpc('claim_external_community_invite', { p_code: code.trim() });
   if (error) throw new Error(error.message);
-  return data as 'host_confirmation_required' | 'invalid_or_expired';
+  // An older server answers only the first and last; anything unknown is
+  // treated as unusable rather than guessed at.
+  return data === 'host_confirmation_required' || data === 'own_invite' || data === 'already_member'
+    ? data
+    : 'invalid_or_expired';
 }
 
 export async function listExternalInviteClaims(packId: string): Promise<ExternalInviteClaim[]> {

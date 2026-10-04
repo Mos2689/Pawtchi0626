@@ -39,13 +39,41 @@ export function CommunityHeader({
   subtitle,
   onBack,
   action,
+  inline = false,
 }: {
   eyebrow?: string;
   title: string;
   subtitle?: string;
   onBack?: () => void;
   action?: React.ReactNode;
+  /**
+   * Title beside the back button, in one row — the meetup screen's bar. For
+   * screens with a sentence of explanation under the title, where the large
+   * stacked title pushed the content below the fold. No eyebrow in this form.
+   */
+  inline?: boolean;
 }) {
+  if (inline) {
+    return (
+      <View style={styles.headerInline}>
+        <View style={styles.inlineRow}>
+          {onBack ? (
+            <Pressable
+              onPress={onBack}
+              style={styles.iconButton}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <Ionicons name="arrow-back" size={22} color={color.navy} />
+            </Pressable>
+          ) : null}
+          <Text style={styles.inlineTitle} numberOfLines={2} accessibilityRole="header">{title}</Text>
+          {action ?? null}
+        </View>
+        {subtitle ? <Text style={styles.inlineSubtitle}>{subtitle}</Text> : null}
+      </View>
+    );
+  }
   return (
     <View style={styles.header}>
       <View style={styles.headerTop}>
@@ -360,6 +388,10 @@ const styles = StyleSheet.create({
   eyebrow: { ...type.caption, color: color.electric, marginTop: space.lg },
   title: { fontFamily: font.bold, fontSize: 34, lineHeight: 39, letterSpacing: -1.1, color: color.navy, marginTop: space.xs },
   subtitle: { ...type.body, color: color.slateMuted, maxWidth: 330, marginTop: space.sm },
+  headerInline: { paddingHorizontal: space.xl, paddingTop: space.md, paddingBottom: space.lg },
+  inlineRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: space.md },
+  inlineTitle: { ...type.heading, fontSize: 21, lineHeight: 26, letterSpacing: -0.4, color: color.navy, flex: 1 },
+  inlineSubtitle: { ...type.body, color: color.slateMuted, marginTop: space.lg },
   button: {
     minHeight: 52,
     paddingHorizontal: space.xl,
