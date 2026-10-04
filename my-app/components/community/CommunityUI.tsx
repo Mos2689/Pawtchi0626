@@ -107,7 +107,13 @@ export function CommunityButton({
   label: string;
   onPress: () => void;
   icon?: keyof typeof Ionicons.glyphMap;
-  variant?: 'primary' | 'secondary' | 'quiet' | 'danger';
+  /**
+   * `accent` is the electric-blue fill, for the second decisive action on a
+   * surface whose one yellow CTA is already taken (a host confirming someone
+   * on a meetup page that also offers "Open this walk"). Matches the approve
+   * button in Connect's waiting sheet.
+   */
+  variant?: 'primary' | 'secondary' | 'quiet' | 'danger' | 'accent';
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
@@ -129,10 +135,10 @@ export function CommunityButton({
         <Ionicons
           name={icon}
           size={18}
-          color={variant === 'secondary' || variant === 'quiet' ? color.navy : color.ink}
+          color={variant === 'accent' ? color.surface : variant === 'secondary' || variant === 'quiet' ? color.navy : color.ink}
         />
       ) : null}
-      <Text style={[styles.buttonText, variant === 'quiet' && styles.buttonTextQuiet]}>{label}</Text>
+      <Text style={[styles.buttonText, variant === 'quiet' && styles.buttonTextQuiet, variant === 'accent' && styles.buttonTextAccent]}>{label}</Text>
     </Pressable>
   );
 }
@@ -405,10 +411,12 @@ const styles = StyleSheet.create({
   button_secondary: { backgroundColor: color.surface, borderWidth: 1, borderColor: color.hairline },
   button_quiet: { backgroundColor: 'transparent' },
   button_danger: { backgroundColor: color.errorSoft },
+  button_accent: { backgroundColor: color.electric },
   buttonPressed: { transform: [{ scale: 0.98 }], opacity: 0.92 },
   buttonDisabled: { opacity: 0.45 },
   buttonText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
   buttonTextQuiet: { color: color.navy },
+  buttonTextAccent: { color: color.surface },
   avatar: {
     width: 42,
     height: 42,
