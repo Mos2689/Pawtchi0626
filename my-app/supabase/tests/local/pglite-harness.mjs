@@ -89,6 +89,32 @@ CREATE TABLE public.community_stale_walk_watch (
   first_flagged_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_flagged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   times_flagged INTEGER NOT NULL DEFAULT 1, resolved_at TIMESTAMPTZ);
 
+CREATE TABLE public.pets (
+  id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES auth.users(id), name TEXT NOT NULL,
+  species TEXT, current_weight_kg NUMERIC, target_daily_calories INTEGER, bowl_size TEXT);
+CREATE TABLE public.community_walk_participant_pets (
+  walk_id UUID NOT NULL REFERENCES public.community_walks(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  pet_id UUID NOT NULL REFERENCES public.pets(id) ON DELETE CASCADE,
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (walk_id, user_id, pet_id));
+
+-- Realtime, as far as policies can see it: the table and the topic GUC.
+CREATE SCHEMA realtime;
+CREATE TABLE realtime.messages (
+  id UUID NOT NULL DEFAULT gen_random_uuid(), topic TEXT NOT NULL, extension TEXT NOT NULL,
+  payload JSONB, event TEXT, private BOOLEAN DEFAULT false,
+  updated_at TIMESTAMP NOT NULL DEFAULT now(), inserted_at TIMESTAMP NOT NULL DEFAULT now());
+ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+GRANT USAGE ON SCHEMA realtime TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON realtime.messages TO anon, authenticated;
+CREATE FUNCTION realtime.topic() RETURNS TEXT LANGUAGE sql STABLE AS
+  $$ SELECT nullif(current_setting('realtime.topic', true), '')::text $$;
+GRANT EXECUTE ON FUNCTION realtime.topic() TO anon, authenticated;
+
+CREATE FUNCTION public.is_community_pack_owner(p_pack_id UUID, p_user_id UUID DEFAULT auth.uid())
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM public.community_packs p WHERE p.id = p_pack_id AND p.owner_id = p_user_id) $$;
 CREATE FUNCTION public.is_community_pack_member(p_pack_id UUID, p_user_id UUID DEFAULT auth.uid())
 RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT EXISTS (SELECT 1 FROM public.community_pack_members WHERE pack_id = p_pack_id AND user_id = p_user_id) $$;
@@ -107,6 +133,78 @@ CREATE POLICY community_walks_read_members ON public.community_walks FOR SELECT 
   USING (public.is_community_pack_member(pack_id, (select auth.uid())));
 CREATE POLICY community_attendance_read_pack ON public.community_walk_attendance FOR SELECT TO authenticated
   USING (public.can_access_community_walk(walk_id, (select auth.uid())));
+
+CREATE POLICY community_walks_update_host ON public.community_walks FOR UPDATE TO authenticated
+  USING (public.is_community_pack_owner(pack_id, (select auth.uid())))
+  WITH CHECK (public.is_community_pack_owner(pack_id, (select auth.uid())));
+
+-- join_community_walk as production has it (20260926010000; md5 checked 2026-10-04).
+CREATE OR REPLACE FUNCTION public.join_community_walk(
+  p_walk_id UUID,
+  p_pet_ids UUID[],
+  p_share_location BOOLEAN,
+  p_start BOOLEAN DEFAULT FALSE
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user UUID := auth.uid();
+  v_walk public.community_walks;
+  v_now TIMESTAMPTZ := now();
+  v_pets UUID[] := ARRAY(SELECT DISTINCT unnest(coalesce(p_pet_ids, '{}'::UUID[])));
+BEGIN
+  IF v_user IS NULL THEN RAISE EXCEPTION 'auth_required'; END IF;
+
+  -- Locked for the length of the join, so a host closing the walk at the same
+  -- moment either lands before (and this refuses) or after (and sees us).
+  SELECT * INTO v_walk FROM public.community_walks WHERE id = p_walk_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'walk_not_found'; END IF;
+  IF NOT public.can_access_community_walk(p_walk_id, v_user) THEN
+    RAISE EXCEPTION 'walk_access_denied';
+  END IF;
+
+  IF p_start THEN
+    IF NOT public.is_community_pack_owner(v_walk.pack_id, v_user) THEN
+      RAISE EXCEPTION 'pack_host_required';
+    END IF;
+    IF v_walk.state = 'planned' THEN
+      UPDATE public.community_walks
+        SET state = 'active', started_at = v_now, updated_at = v_now
+        WHERE id = p_walk_id;
+      v_walk.state := 'active';
+    END IF;
+  END IF;
+
+  IF v_walk.state NOT IN ('planned', 'active') THEN RAISE EXCEPTION 'walk_closed'; END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM unnest(v_pets) AS wanted(pet_id)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM public.pets p WHERE p.id = wanted.pet_id AND p.owner_id = v_user
+    )
+  ) THEN
+    RAISE EXCEPTION 'pet_not_yours';
+  END IF;
+
+  INSERT INTO public.community_walk_attendance
+    (walk_id, user_id, status, share_location, joined_at, updated_at)
+  VALUES (p_walk_id, v_user, 'walking', coalesce(p_share_location, FALSE), v_now, v_now)
+  ON CONFLICT (walk_id, user_id) DO UPDATE
+    SET status = 'walking',
+        share_location = EXCLUDED.share_location,
+        joined_at = EXCLUDED.joined_at,
+        updated_at = EXCLUDED.updated_at;
+
+  DELETE FROM public.community_walk_participant_pets
+    WHERE walk_id = p_walk_id AND user_id = v_user;
+  INSERT INTO public.community_walk_participant_pets (walk_id, user_id, pet_id)
+    SELECT p_walk_id, v_user, wanted.pet_id FROM unnest(v_pets) AS wanted(pet_id);
+END;
+$$;
+REVOKE ALL ON FUNCTION public.join_community_walk(UUID, UUID[], BOOLEAN, BOOLEAN) FROM PUBLIC, anon;
 
 -- Production's live-location policies, verbatim (the unqualified walk_id bug).
 CREATE POLICY community_locations_read_attendees ON public.community_live_locations
