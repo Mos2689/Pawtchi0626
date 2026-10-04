@@ -65,6 +65,8 @@ import {
 import { beginLegSettle, settleLeg } from '../../lib/community/legSettle';
 import { supabase } from '../../lib/supabase';
 import { withTimeout } from '../../lib/withTimeout';
+import { isPerfFlagOn } from '../../lib/perfFlags';
+import { closeCheckDue } from '../../lib/community/liveRoster';
 import { useWalkStore } from '../../store/useWalkStore';
 import type { ActiveWalkTrail } from '../../lib/walk/walkTracker';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -494,6 +496,13 @@ export function TrailRecording() {
     // round trip at the moment it matters.
     void resolveIsHost().catch(() => {});
 
+    // perf-live-deltas: while the realtime channel is connected the close
+    // event arrives on its own, so the read below is only a backstop and runs
+    // every 30 s instead of every 10 (lib/community/liveRoster closeCheckDue).
+    const lighter = isPerfFlagOn('liveDeltas');
+    let subscribed = false;
+    let lastCheckAt = 0;
+
     const channel = supabase
       .channel(`trail-close-${walkId}`)
       .on(
@@ -501,7 +510,7 @@ export function TrailRecording() {
         { event: 'UPDATE', schema: 'public', table: 'community_walks', filter: `id=eq.${walkId}` },
         payload => { void followHostClose(payload.new as ClosableWalk); },
       )
-      .subscribe();
+      .subscribe(status => { subscribed = status === 'SUBSCRIBED'; });
 
     // One primary-key read. Cheap enough to do on every foreground, and it is
     // the only thing that sees a close made while the socket was down.
@@ -513,6 +522,7 @@ export function TrailRecording() {
     const check = () => {
       if (checking) return;
       checking = true;
+      lastCheckAt = Date.now();
       void withTimeout(
         supabase
           .from('community_walks')
@@ -533,7 +543,9 @@ export function TrailRecording() {
     // without telling anyone. One primary-key read every ten seconds, only
     // while this phone is recording a meetup, bounds a missed close at ten
     // seconds instead of "whenever they next background the app".
-    const poll = setInterval(check, CLOSE_POLL_MS);
+    const poll = setInterval(() => {
+      if (closeCheckDue({ lighter, subscribed, lastCheckAt, now: Date.now() })) check();
+    }, CLOSE_POLL_MS);
 
     let previous: AppStateStatus = AppState.currentState;
     const subscription = AppState.addEventListener('change', next => {

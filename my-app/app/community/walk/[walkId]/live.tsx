@@ -28,7 +28,9 @@ import WalkMap from '../../../../components/walk/WalkMap';
 import { DogAvatar, DogStack, partyColors } from '../../../../components/community/CommunityUI';
 import { haversineMeters } from '../../../../lib/walk/geo';
 import { color, font, makeShadow, radius, space, type } from '../../../../constants/design';
-import { cacheKey, invalidate, readSnapshot } from '../../../../lib/communityCache';
+import { TOGETHER_READ_TIMEOUT_MS, cacheKey, invalidate, readSnapshot } from '../../../../lib/communityCache';
+import { isPerfFlagOn } from '../../../../lib/perfFlags';
+import { withTimeout } from '../../../../lib/withTimeout';
 import {
   closeOuting,
   listLiveParties,
@@ -49,7 +51,7 @@ import {
   type PublishedMoment,
 } from '../../../../lib/community/liveMoments';
 import { spreadMarkers } from '../../../../lib/community/spreadMarkers';
-import { walkerColourOrder } from '../../../../lib/community/liveRoster';
+import { LIVE_RECONCILE_MS, applyLivePartyChange, walkerColourOrder } from '../../../../lib/community/liveRoster';
 import { communityMediaUrls } from '../../../../lib/communityMedia';
 import { WALK_CAMERA_ENABLED } from '../../../../constants/features';
 import { useRecorderHandle } from '../../../../lib/walk/recorderHandle';
@@ -326,6 +328,11 @@ export default function CommunityLiveScreen() {
    * that changed meanwhile. Reads never overlap, so they cannot land out of
    * order, and a burst of pings costs two reads rather than one each.
    */
+  /**
+   * perf-live-deltas, read once per visit: apply each position event directly
+   * instead of re-reading everybody's position on every ping.
+   */
+  const lighter = useMemo(() => isPerfFlagOn('liveDeltas'), []);
   const partiesInFlight = useRef(false);
   const partiesStale = useRef(false);
   const refreshParties = useCallback(async () => {
@@ -339,7 +346,9 @@ export default function CommunityLiveScreen() {
       do {
         partiesStale.current = false;
         try {
-          const live = await listLiveParties(walkId);
+          // Bounded: a read that never answers used to hold `partiesInFlight`
+          // for good, and every dot froze for the rest of the walk.
+          const live = await withTimeout(listLiveParties(walkId), TOGETHER_READ_TIMEOUT_MS, 'listLiveParties');
           setParties(live);
           setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
         } catch {
@@ -466,18 +475,40 @@ export default function CommunityLiveScreen() {
       .channel(`community-walk-${walkId}`)
       // Positions move; rosters do not. Only the other two tables change
       // anything this screen would have to re-derive.
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_live_locations', filter: `walk_id=eq.${walkId}` }, () => { void refreshParties(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'community_live_locations', filter: `walk_id=eq.${walkId}` }, payload => {
+        // perf-live-deltas: the event carries the row, so apply it. The full
+        // read stays for (re)subscribe, foreground and once a minute below.
+        if (lighter) {
+          setParties(current => applyLivePartyChange(current, payload));
+          return;
+        }
+        void refreshParties();
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'community_walk_attendance', filter: `walk_id=eq.${walkId}` }, scheduleReload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'community_shared_media', filter: `walk_id=eq.${walkId}` }, scheduleReload)
       // The walk itself. Added when the host became the only person who can
       // end it: without this a member's phone never learned the walk was over
       // and kept recording into a trail that had closed.
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'community_walks', filter: `id=eq.${walkId}` }, scheduleReload)
-      .subscribe();
+      .subscribe(status => {
+        // Every (re)join can follow a gap in which events were missed, so the
+        // event-driven map catches up with one full read.
+        if (lighter && status === 'SUBSCRIBED') void refreshParties();
+      });
     return () => { void supabase.removeChannel(channel); };
     // `scheduleReload` is stable where `load` was not, so the channel is no
     // longer torn down and re-subscribed every time `load`'s identity changes.
-  }, [refreshParties, scheduleReload, walkId]);
+  }, [lighter, refreshParties, scheduleReload, walkId]);
+
+  /**
+   * perf-live-deltas: a once-a-minute full read, so anything the event stream
+   * dropped is corrected within a minute rather than never.
+   */
+  useEffect(() => {
+    if (!lighter || !walkId) return;
+    const timer = setInterval(() => { void refreshParties(); }, LIVE_RECONCILE_MS);
+    return () => clearInterval(timer);
+  }, [lighter, refreshParties, walkId]);
 
   /**
    * A coarse clock, for deciding who has gone quiet.
