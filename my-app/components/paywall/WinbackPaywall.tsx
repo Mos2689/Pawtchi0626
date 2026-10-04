@@ -50,7 +50,7 @@ import { useSubscription } from '../../hooks/useSubscription';
 import { track, type AnalyticsProps } from '../../lib/analytics';
 import { openManageSubscription } from '../../lib/manageSubscription';
 import { BILLING_HELP_LABEL } from '../../lib/support/copy';
-import { errorCopy, reportError, toAppError, type ErrorCopy } from '../../lib/appError';
+import { errorCopy, reportError, toAppError, type ErrorCopy, rawErrorMessage } from '../../lib/appError';
 import {
     recordPaywallInteraction,
     recordProOfferConversion,
@@ -206,11 +206,11 @@ export function WinbackPaywall({
             reportError(appErr, 'purchase');
             track('pro_offer_purchase_failed', {
                 ...analyticsProps,
-                reason: e instanceof Error ? e.message : 'exception',
+                reason: rawErrorMessage(e) || 'exception',
             });
             track('paywall_purchase_failed', {
                 ...analyticsProps,
-                reason: e instanceof Error ? e.message : 'exception',
+                reason: rawErrorMessage(e) || 'exception',
             });
             setFailure(errorCopy(appErr, { context: 'purchase' }));
         } finally {

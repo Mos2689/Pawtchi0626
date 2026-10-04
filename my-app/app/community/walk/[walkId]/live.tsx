@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { describeError } from '../../../../lib/appError';
 import {
   Alert, AppState, Pressable, StyleSheet, Text, View,
   type AppStateStatus, type LayoutChangeEvent, type StyleProp, type TextStyle,
@@ -289,7 +290,7 @@ export default function CommunityLiveScreen() {
       setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The shared map could not update.');
+      setError(describeError(cause, 'community_load'));
     }
     // `applyOthersMoments` is a `useCallback(…, [])`, so naming it here costs
     // nothing and keeps this list honest.
@@ -786,7 +787,7 @@ export default function CommunityLiveScreen() {
           // on a walk they just closed.
           invalidate(cacheKey.outing(walkId));
         } catch (cause) {
-          setError(cause instanceof Error ? cause.message : 'The walk could not be closed for everyone.');
+          setError(describeError(cause, 'community_action'));
         }
       }
       if (walkPhase === 'tracking' || walkPhase === 'starting') await endWalk('manual');

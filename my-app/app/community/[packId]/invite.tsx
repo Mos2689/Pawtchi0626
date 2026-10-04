@@ -26,6 +26,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { describeError, rawErrorMessage } from '../../../lib/appError';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -192,7 +193,7 @@ export default function InviteToPackScreen() {
       setSelected(new Set());
       setSent(true);
     } catch (cause) {
-      const raw = cause instanceof Error ? cause.message : '';
+      const raw = rawErrorMessage(cause);
       setPreviousError(previousInviteError(raw));
       if (raw.includes('not_a_previous_invitee')) void loadPrevious();
     } finally {
@@ -225,7 +226,7 @@ export default function InviteToPackScreen() {
       setMatch(result);
       setSearched(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'That username could not be checked.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setFinding(false);
     }
@@ -243,7 +244,7 @@ export default function InviteToPackScreen() {
       invalidate(cacheKey.pack(packId));
       setSent(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The invitation could not be sent.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setSending(false);
     }
@@ -294,7 +295,7 @@ export default function InviteToPackScreen() {
         url: link,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The share sheet could not open.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setSharing(false);
     }

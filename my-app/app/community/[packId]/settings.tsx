@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import { describeError } from '../../../lib/appError';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -44,7 +45,7 @@ export default function PackSettingsScreen() {
       setMembers(data.members);
       setMuted(data.members.find(member => member.user_id === user?.id)?.notifications_muted ?? false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Meetup settings could not load.');
+      setError(describeError(cause, 'community_load'));
     }
   }, [packId, user?.id]);
 
@@ -58,7 +59,7 @@ export default function PackSettingsScreen() {
     // trail screen paints from still holds the old preference. Removing and
     // transferring both call `load()`, which refetches and leaves it correct.
     try { await setPackMuted(packId, value); invalidate(cacheKey.pack(packId)); }
-    catch (cause) { setMuted(!value); setError(cause instanceof Error ? cause.message : 'That preference could not be saved.'); }
+    catch (cause) { setMuted(!value); setError(describeError(cause, 'community_action')); }
   };
 
   const confirmRemove = (member: PackMember) => {
@@ -68,7 +69,7 @@ export default function PackSettingsScreen() {
       { text: 'Remove', style: 'destructive', onPress: async () => {
         setBusy(true);
         try { await removePackMember(packId!, member.user_id); await load(); }
-        catch (cause) { setError(cause instanceof Error ? cause.message : 'The member could not be removed.'); }
+        catch (cause) { setError(describeError(cause, 'community_action')); }
         finally { setBusy(false); }
       } },
     ]);
@@ -81,7 +82,7 @@ export default function PackSettingsScreen() {
       { text: 'Transfer', onPress: async () => {
         setBusy(true);
         try { await transferPackOwnership(packId!, member.user_id); await load(); }
-        catch (cause) { setError(cause instanceof Error ? cause.message : 'Ownership could not be transferred.'); }
+        catch (cause) { setError(describeError(cause, 'community_action')); }
         finally { setBusy(false); }
       } },
     ]);
@@ -95,7 +96,7 @@ export default function PackSettingsScreen() {
         // The trail is gone from every list that shows it, and Home is one
         // back-press away with a snapshot that still has it.
         try { await leavePack(packId!); invalidate(cacheKey.packs()); router.replace('/(tabs)/community' as never); }
-        catch (cause) { setError(cause instanceof Error ? cause.message : 'You could not leave this meetup.'); setBusy(false); }
+        catch (cause) { setError(describeError(cause, 'community_action')); setBusy(false); }
       } },
     ]);
   };
@@ -117,7 +118,7 @@ export default function PackSettingsScreen() {
             router.replace('/(tabs)/community' as never);
           }
         } catch (cause) {
-          setError(cause instanceof Error ? cause.message : 'The report could not be sent.');
+          setError(describeError(cause, 'community_action'));
         } finally { setBusy(false); }
       } },
     ]);

@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { describeError } from '../../../../lib/appError';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -230,7 +231,7 @@ export default function OutingScreen() {
             : []);
       setRosterKnown(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This walk could not load.');
+      setError(describeError(cause, 'community_load'));
     } finally {
       setLoading(false);
     }
@@ -295,7 +296,7 @@ export default function OutingScreen() {
       }
       void load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'They could not be invited.');
+      setError(describeError(cause, 'community_action'));
       void load();
     } finally {
       setInviting(null);
@@ -326,7 +327,7 @@ export default function OutingScreen() {
     } catch (cause) {
       setAttendanceRows(previous);
       setNotAsked(previousNotAsked);
-      setError(cause instanceof Error ? cause.message : 'Your response could not be saved.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setBusy(false);
     }
@@ -371,7 +372,7 @@ export default function OutingScreen() {
       }
       await launchTracking();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The walk could not start.');
+      setError(describeError(cause, 'community_action'));
       setBusy(false);
     }
   };

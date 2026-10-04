@@ -19,6 +19,7 @@ import type {
   PackSnapshot,
   WalkAttendance,
 } from '../communityWalks';
+import { UserFacingError } from '../appError';
 
 /** The document both `community_outing` and `community_memory` return. */
 export interface OutingDoc {
@@ -44,7 +45,7 @@ export interface OutingDoc {
  */
 export function decodeOuting(walkId: string, raw: unknown): OutingSnapshot {
   const doc = (raw ?? {}) as OutingDoc;
-  if (!doc.walk || !doc.pack) throw new Error('That walk could not be opened.');
+  if (!doc.walk || !doc.pack) throw new UserFacingError('That walk could not be opened.');
 
   const walk = doc.walk;
   const people = doc.people ?? [];

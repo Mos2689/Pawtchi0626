@@ -132,6 +132,9 @@ const CONTEXT_TO_AREA: Record<ErrorContext, SupportArea> = {
   auth: 'other',
   account: 'other',
   render_crash: 'other',
+  // Connect is walks-only, like the area itself.
+  community_load: 'walks',
+  community_action: 'walks',
   generic: 'other',
 };
 

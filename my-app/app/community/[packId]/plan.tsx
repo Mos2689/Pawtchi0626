@@ -18,6 +18,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { describeError } from '../../../lib/appError';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -180,9 +181,7 @@ export default function PlanWalkScreen() {
       // someone who had just planned one for next week.
       router.back();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : editing
-        ? 'The plan could not be changed.'
-        : 'The walk could not be planned.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setSaving(false);
     }

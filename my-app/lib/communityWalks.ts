@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { UserFacingError } from './appError';
 import { beginWrite, cacheKey, commitSnapshot, isFresh, readSnapshot, writeOptimistic, writeSnapshot } from './communityCache';
 import { currentUserId } from './sessionUser';
 import { isValidUsername, normalizeUsername } from './communityUsername';
@@ -308,13 +309,13 @@ export async function listMyDogs(): Promise<CommunityDog[]> {
 export async function saveMyUsername(value: string): Promise<string> {
   const username = normalizeUsername(value);
   if (!isValidUsername(username)) {
-    throw new Error('Use 3–24 lowercase letters, numbers or underscores.');
+    throw new UserFacingError('Use 3–24 lowercase letters, numbers or underscores.');
   }
   const userId = await currentUserId();
-  if (!userId) throw new Error('Sign in to choose a username.');
+  if (!userId) throw new UserFacingError('Sign in to choose a username.');
   const { error } = await supabase.from('profiles').update({ username }).eq('id', userId);
   if (error) {
-    if (error.code === '23505') throw new Error('That username is already taken.');
+    if (error.code === '23505') throw new UserFacingError('That username is already taken.');
     throw new Error(error.message);
   }
   // Kept in step with the write, or the memoised read above would keep
@@ -487,7 +488,7 @@ export function rememberNewPack(pack: CommunityPack, firstWalk: CommunityWalk | 
 
 export async function createPack(name: string): Promise<CommunityPack> {
   const clean = name.trim();
-  if (clean.length < 2) throw new Error('Give the pack a name.');
+  if (clean.length < 2) throw new UserFacingError('Give the pack a name.');
   const { data, error } = await supabase.rpc('create_community_pack', { p_name: clean });
   return unwrap(data as CommunityPack | null, error);
 }
@@ -590,7 +591,7 @@ export async function respondToInvitation(invitationId: string, accept: boolean)
     p_accept: accept,
   });
   if (error) throw new Error(error.message);
-  if (data === 'not_available') throw new Error('That invitation is no longer available.');
+  if (data === 'not_available') throw new UserFacingError('That invitation is no longer available.');
 }
 
 export async function inviteUsername(packId: string, username: string): Promise<CommunityInvitation> {
@@ -692,7 +693,7 @@ export async function approveExternalInvite(invitationId: string, approve: boole
     p_approve: approve,
   });
   if (error) throw new Error(error.message);
-  if (data === 'not_available') throw new Error('That request is no longer available.');
+  if (data === 'not_available') throw new UserFacingError('That request is no longer available.');
 }
 
 export interface PackSnapshot {
@@ -741,7 +742,7 @@ export async function loadPack(packId: string): Promise<PackSnapshot> {
   if (invitations.error) throw new Error(invitations.error.message);
 
   const doc = (detail.data ?? {}) as { pack?: unknown; members?: unknown; walks?: unknown; attendance?: unknown };
-  if (!doc.pack) throw new Error('This meetup could not load.');
+  if (!doc.pack) throw new UserFacingError('This meetup could not load.');
   const snapshot: PackSnapshot = {
     pack: doc.pack as CommunityPack,
     members: ((Array.isArray(doc.members) ? doc.members : []) as any[]).map(row => ({
@@ -1087,7 +1088,7 @@ export async function loadOuting(walkId: string): Promise<OutingSnapshot> {
 
 export async function setAttendance(walkId: string, status: AttendanceStatus): Promise<void> {
   const userId = await currentUserId();
-  if (!userId) throw new Error('Sign in to respond.');
+  if (!userId) throw new UserFacingError('Sign in to respond.');
   const now = new Date().toISOString();
   const patch: Record<string, unknown> = { walk_id: walkId, user_id: userId, status, updated_at: now };
   if (status === 'checked_in') patch.checked_in_at = now;
@@ -1196,14 +1197,14 @@ export async function joinOuting(
     p_start: !!options.start,
   });
   if (!error) return;
-  if (!isMissingFunction(error.message)) throw new Error(joinErrorMessage(error.message));
+  if (!isMissingFunction(error.message)) throw new UserFacingError(joinErrorMessage(error.message));
   if (options.start) await startOuting(walkId);
   await joinOutingLegacy(walkId, petIds, shareLocation);
 }
 
 async function joinOutingLegacy(walkId: string, petIds: string[], shareLocation: boolean): Promise<void> {
   const userId = await currentUserId();
-  if (!userId) throw new Error('Sign in to join this walk.');
+  if (!userId) throw new UserFacingError('Sign in to join this walk.');
   const now = new Date().toISOString();
   const { error: attendanceError } = await supabase.from('community_walk_attendance').upsert(
     {

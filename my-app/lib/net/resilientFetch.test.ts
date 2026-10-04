@@ -19,7 +19,7 @@ const json = (status: number, body: unknown) =>
 const schemaCache = () => json(503, { code: 'PGRST002', message: 'Could not query the database for the schema cache. Retrying.' });
 const ok = (body: unknown = [{ state: 'active' }]) => json(200, body);
 
-function harness(answers: Array<Response | Error>, overrides: Partial<ResilientFetchDeps> = {}, sendMs = 0) {
+function harness(answers: (Response | Error)[], overrides: Partial<ResilientFetchDeps> = {}, sendMs = 0) {
   let clock = 0;
   const sleeps: number[] = [];
   const base = jest.fn(async () => {

@@ -16,6 +16,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { describeError } from '../../lib/appError';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -126,7 +127,7 @@ export default function CreateTrailScreen() {
       // finishes onto the Together list instead of back where it came from.
       router.replace(`/community/${pack.id}/invite?from=create` as never);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This meetup could not be planned.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setSaving(false);
     }

@@ -59,7 +59,7 @@ import { openManageSubscription } from '../../lib/manageSubscription';
 import { promoPaywallBody } from '../../lib/creatorCode/copy';
 import { BILLING_HELP_LABEL } from '../../lib/support/copy';
 import { FailureModal } from '../FailureModal';
-import { errorCopy, reportError, toAppError, type ErrorCopy, type RecoveryActionId } from '../../lib/appError';
+import { errorCopy, reportError, toAppError, type ErrorCopy, type RecoveryActionId, rawErrorMessage } from '../../lib/appError';
 import {
     NAVY,
     YELLOW,
@@ -402,7 +402,7 @@ export function StandardPaywall() {
                 setPackages([]);
                 setLoadState('error');
                 track('paywall_offerings_error', {
-                    reason: e instanceof Error ? e.message : 'exception',
+                    reason: rawErrorMessage(e) || 'exception',
                     variant: 'standard',
                 });
             }
@@ -479,7 +479,7 @@ export function StandardPaywall() {
             appErr.kind = 'purchase';
             reportError(appErr, 'purchase');
             track('paywall_purchase_failed', {
-                reason: e instanceof Error ? e.message : 'exception',
+                reason: rawErrorMessage(e) || 'exception',
                 variant: 'standard',
             });
             retryRef.current = handlePurchase;

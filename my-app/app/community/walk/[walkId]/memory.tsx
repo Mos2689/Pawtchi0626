@@ -24,6 +24,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { describeError, rawErrorMessage } from '../../../../lib/appError';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
 import Animated, { FadeIn, FadeOut, useReducedMotion } from 'react-native-reanimated';
 import { StatusBar } from 'expo-status-bar';
@@ -483,11 +484,11 @@ export default function CommunityMemoryScreen() {
       // people who were on it (migration 20260923000000), and somebody in the
       // pack who did not come is in an ordinary, expected state — so they get a
       // sentence explaining it, not a raw Postgres error string.
-      const raw = cause instanceof Error ? cause.message : '';
+      const raw = rawErrorMessage(cause);
       setError(
         raw.includes('walk_not_attended')
           ? 'This walk’s memory is kept for the people who walked it. You can see the plan and who came on the walk itself.'
-          : raw || 'This memory could not load.',
+          : describeError(cause, 'community_load'),
       );
     } finally {
       loadsInFlight.current -= 1;

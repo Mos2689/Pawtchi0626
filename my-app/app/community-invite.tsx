@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { describeError } from '../lib/appError';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -28,7 +29,7 @@ export default function CommunityInviteScreen() {
       await clearCommunityInviteCode();
       setResult(outcome === 'host_confirmation_required' ? 'waiting' : 'invalid');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The invitation could not be recovered.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setBusy(false);
     }

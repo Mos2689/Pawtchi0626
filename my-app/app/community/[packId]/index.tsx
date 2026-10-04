@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import { describeError } from '../../../lib/appError';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -115,7 +116,7 @@ export default function PackHomeScreen() {
         setClaims(await (claimsAhead ?? listExternalInviteClaims(packId)));
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This meetup could not load.');
+      setError(describeError(cause, 'community_load'));
     } finally {
       setLoaded(true);
     }
@@ -128,7 +129,7 @@ export default function PackHomeScreen() {
       await approveExternalInvite(claim.invitation_id, approve);
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'That request could not be updated.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setRespondingClaim(null);
     }
@@ -159,7 +160,7 @@ export default function PackHomeScreen() {
                 await removePackMember(packId!, member.user_id);
                 await load();
               } catch (cause) {
-                setError(cause instanceof Error ? cause.message : 'They could not be removed.');
+                setError(describeError(cause, 'community_action'));
               }
             })();
           },

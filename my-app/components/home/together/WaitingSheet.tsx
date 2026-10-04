@@ -28,6 +28,7 @@
  */
 
 import React from 'react';
+import { rawErrorMessage } from '../../../lib/appError';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -105,7 +106,7 @@ export function WaitingSheet({
       .then(preview => setPreviews(current => ({ ...current, [next]: preview })))
       .catch(cause => setPreviews(current => ({
         ...current,
-        [next]: { error: previewErrorMessage(cause instanceof Error ? cause.message : '') },
+        [next]: { error: previewErrorMessage(rawErrorMessage(cause)) },
       })));
   };
   /**

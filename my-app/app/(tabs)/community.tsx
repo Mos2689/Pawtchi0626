@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import { describeError } from '../../lib/appError';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -61,7 +62,7 @@ export default function CommunityScreen() {
       setInvitations(nextInvitations);
       setUsername(nextUsername);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Your meetups could not load.');
+      setError(describeError(cause, 'community_load'));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -80,7 +81,7 @@ export default function CommunityScreen() {
       await respondToInvitation(invitation.id, accept);
       await load(true);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'That response could not be saved.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setResponding(null);
     }

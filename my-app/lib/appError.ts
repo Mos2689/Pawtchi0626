@@ -125,7 +125,28 @@ export async function extractInvokeErrorCode(err: unknown): Promise<string | nul
 // codes existed, or by any path that still stitches internals into a message.
 // These must never surface — classify by content, discard the wording.
 const LEGACY_AI_PATTERN = /gemini|api error|api key|not configured|parse|json/i;
-const OFFLINE_PATTERN = /network request failed|failed to fetch|networkerror|fetch failed|could not connect/i;
+const OFFLINE_PATTERN = /network request failed|failed to fetch|networkerror|fetch failed|could not connect|network connection was lost/i;
+/**
+ * The server is up but cannot answer right now: PostgREST without a schema
+ * cache or a free connection, a statement timeout, a gateway error. All of it
+ * happened on 4 Oct 2026 during one live walk, and all of it reached users
+ * verbatim. Retryable — it is the server's moment, not the owner's mistake.
+ */
+const SERVER_BUSY_PATTERN =
+  /PGRST00\d|schema cache|connection pool|statement timeout|canceling statement|upstream|service unavailable|bad gateway|gateway time-?out|\b50[234]\b/i;
+/**
+ * Codes our own SQL raises (RAISE EXCEPTION '<code>'). They arrive as the
+ * whole message, and used to be shown exactly like that.
+ */
+const SERVER_CODE_TO_KIND: Record<string, AppErrorKind> = {
+  walk_access_denied: 'not_found',
+  pack_access_denied: 'not_found',
+  walk_not_found: 'not_found',
+  invitation_not_available: 'not_found',
+  walk_closed: 'not_found',
+  pack_host_required: 'permission',
+  auth_required: 'auth',
+};
 
 /** Map legacy code-less auth error messages onto detail keys. */
 function sniffAuthDetail(message: string): string | undefined {
@@ -177,9 +198,20 @@ export function toAppError(err: unknown, opts?: { errorCode?: string | null }): 
       return makeError('server', `${name}: ${msg}`);
     }
 
-    // 6. Legacy internal messages — never let the wording through.
+    // 6. A code our own SQL raised, as the whole message.
+    const serverCode = SERVER_CODE_TO_KIND[msg.trim()];
+    if (serverCode) return makeError(serverCode, `server code: ${msg}`);
+
+    // 7. Legacy internal messages — never let the wording through. Before the
+    //    busy check: an old edge message like "Gemini API error: 503" is the
+    //    analysis being unavailable, not the database.
     if (LEGACY_AI_PATTERN.test(msg)) {
       return makeError('ai_unavailable', `legacy message scrubbed: ${msg}`);
+    }
+
+    // 8. The server is up but cannot answer right now (4 Oct 2026).
+    if (SERVER_BUSY_PATTERN.test(msg)) {
+      return makeError('server', `server busy: ${msg}`);
     }
 
     return makeError('unknown', `${name}: ${msg}`);
@@ -229,6 +261,10 @@ export type ErrorContext =
   | 'account'
   | 'log'
   | 'render_crash'
+  /** A Connect screen's content failed to load or refresh. */
+  | 'community_load'
+  /** Something the owner did on a Connect screen did not go through. */
+  | 'community_action'
   | 'generic';
 
 const retryAction: RecoveryAction = { label: 'Try again', action: 'retry' };
@@ -417,6 +453,72 @@ const CONTEXT_COPY: Partial<Record<ErrorContext, Partial<Record<AppErrorKind, (i
       actions: [retryAction, dismissAction],
     }),
   },
+  // Connect. Every message is one complete sentence, because these render as
+  // a single line under content that is still on screen.
+  community_load: {
+    offline: () => ({
+      title: 'No connection right now',
+      message: 'You’re offline. We’ll refresh as soon as you’re back.',
+      actions: [retryAction],
+    }),
+    timeout: () => ({
+      title: 'Taking longer than usual',
+      message: 'Pawtchi is slow to answer right now. We’ll keep trying.',
+      actions: [retryAction],
+    }),
+    server: () => ({
+      title: 'Pawtchi is busy for a moment',
+      message: 'Pawtchi is busy for a moment. We’ll keep trying.',
+      actions: [retryAction],
+    }),
+    unknown: () => ({
+      title: 'Couldn’t refresh just now',
+      message: 'Couldn’t refresh just now. We’ll try again shortly.',
+      actions: [retryAction],
+    }),
+    not_found: () => ({
+      title: 'Not available any more',
+      message: 'This isn’t available to you any more.',
+      actions: [{ label: 'Go back', action: 'go_back' }],
+    }),
+    permission: () => ({
+      title: 'Only the host can do that',
+      message: 'Only the host can do that.',
+      actions: [okAction],
+    }),
+  },
+  community_action: {
+    offline: () => ({
+      title: 'You’re offline',
+      message: 'That didn’t go through because you’re offline. Try again once you’re connected.',
+      actions: [retryAction, dismissAction],
+    }),
+    timeout: () => ({
+      title: 'That took too long',
+      message: 'That took too long to go through. Try again in a moment.',
+      actions: [retryAction, dismissAction],
+    }),
+    server: () => ({
+      title: 'Pawtchi is busy for a moment',
+      message: 'Pawtchi is busy for a moment. Try again in a few seconds.',
+      actions: [retryAction, dismissAction],
+    }),
+    unknown: () => ({
+      title: 'That didn’t go through',
+      message: 'That didn’t go through. Try again in a moment.',
+      actions: [retryAction, dismissAction],
+    }),
+    not_found: () => ({
+      title: 'Not available any more',
+      message: 'That isn’t available any more.',
+      actions: [okAction],
+    }),
+    permission: () => ({
+      title: 'Only the host can do that',
+      message: 'Only the host can do that.',
+      actions: [okAction],
+    }),
+  },
 };
 
 /** The single source of user-facing failure copy. */
@@ -434,6 +536,49 @@ export function errorCopy(
   if (override) return override(input);
 
   return BASE_COPY[error.kind](input);
+}
+
+// ── One line of copy for an inline error ───────────────────────────────────
+
+/**
+ * A sentence our own code wrote for the owner, safe to show as it is.
+ *
+ * Throw this — not a plain Error — wherever the message was written for a
+ * person ("That username is already taken."). Everything else is treated as
+ * technical and replaced with catalog copy by `describeError`.
+ */
+export class UserFacingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UserFacingError';
+  }
+}
+
+export function isUserFacingError(value: unknown): value is UserFacingError {
+  return value instanceof Error && value.name === 'UserFacingError';
+}
+
+/**
+ * The single line an inline error shows: our own sentence if the failure
+ * carries one, otherwise the catalog's message for its kind and context.
+ * Never a raw server or network message.
+ */
+export function describeError(
+  cause: unknown,
+  context: ErrorContext,
+  opts?: { petName?: string | null },
+): string {
+  if (isUserFacingError(cause)) return cause.message;
+  return errorCopy(toAppError(cause), { context, petName: opts?.petName }).message;
+}
+
+/**
+ * The raw message, for matching server codes and for diagnostics ONLY.
+ * Never render it — that is what `describeError` is for. Kept as a named
+ * helper so the no-raw-errors guard test can tell the two uses apart.
+ */
+export function rawErrorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : '';
 }
 
 // ── Developer-side reporting ────────────────────────────────────────────────
@@ -461,6 +606,6 @@ export function reportError(error: AppError, context: ErrorContext): void {
 export const ALL_ERROR_KINDS: AppErrorKind[] = Object.keys(BASE_COPY) as AppErrorKind[];
 export const ALL_ERROR_CONTEXTS: ErrorContext[] = [
   'vet_scan', 'food_scan', 'ask_vet', 'pet_save', 'schedule', 'report',
-  'auth', 'purchase', 'account', 'log', 'render_crash', 'generic',
+  'auth', 'purchase', 'account', 'log', 'render_crash', 'community_load', 'community_action', 'generic',
 ];
 export const ALL_AUTH_DETAIL_KEYS: string[] = Object.keys(AUTH_DETAIL_COPY);

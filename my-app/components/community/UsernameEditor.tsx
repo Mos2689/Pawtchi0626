@@ -19,6 +19,7 @@
  */
 
 import React from 'react';
+import { describeError } from '../../lib/appError';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -81,7 +82,7 @@ export function UsernameEditor({
       setSaved(true);
       onSaved(next);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'That username could not be saved.');
+      setError(describeError(cause, 'community_action'));
     } finally {
       setSaving(false);
     }

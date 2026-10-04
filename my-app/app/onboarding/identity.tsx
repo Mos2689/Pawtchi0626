@@ -32,7 +32,7 @@ import { isValidUsername, normalizeUsername, saveMyUsername } from '../../lib/co
 import { useUsernameAvailability } from '../../hooks/useUsernameAvailability';
 import { blocksSave, statusMessage, statusTone } from '../../lib/community/usernameStatus';
 import { UsernameMark } from '../../components/community/UsernameMark';
-import { errorCopy, reportError, toAppError } from '../../lib/appError';
+import { errorCopy, reportError, toAppError, describeError, isUserFacingError } from '../../lib/appError';
 import { track } from '../../lib/analytics';
 import {
   stepIndex, trackFieldSkipped, trackStepCompleted, useOnboardingStepTracking,
@@ -259,11 +259,12 @@ export default function IdentityScreen() {
         await saveMyUsername(wantedUsername);
       } catch (cause) {
         setSaving(false);
-        const reason = cause instanceof Error ? cause.message : 'That username could not be saved.';
         // The way out is stated, because there has to be one. A taken name —
         // or no signal — must never become a dead end in front of a field
         // that was optional in the first place.
-        setUsernameError(`${reason} Pick another, or clear it and choose later.`);
+        setUsernameError(isUserFacingError(cause)
+          ? `${cause.message} Pick another, or clear it and choose later.`
+          : `${describeError(cause, 'community_action')} You can also clear it and choose later.`);
         haptic.warning();
         return;
       }
