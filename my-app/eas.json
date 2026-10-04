@@ -28,6 +28,18 @@
       "android": {
         "buildType": "app-bundle"
       }
+    },
+    "spike-ios": {
+      "extends": "production",
+      "env": {
+        "EXPO_PUBLIC_LIVE_SPIKE": "1"
+      }
+    },
+    "spike-android": {
+      "extends": "preview",
+      "env": {
+        "EXPO_PUBLIC_LIVE_SPIKE": "1"
+      }
     }
   },
   "submit": {
