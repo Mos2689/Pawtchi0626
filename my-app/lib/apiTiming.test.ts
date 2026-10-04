@@ -106,6 +106,7 @@ describe('timedFetch — what is reported', () => {
       ms: 250,
       server_ms: 180,
       inflight: 0,
+      attempts: 1,
     });
     expect(JSON.stringify(mockCapture.mock.calls)).not.toContain(UUID);
   });

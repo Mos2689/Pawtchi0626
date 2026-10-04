@@ -36,6 +36,15 @@ export const PERF_FLAGS = {
   lazyPetContext: 'perf-lazy-pet-context',
   /** Sampled per-request timings to analytics (dev logs are always on). */
   apiTiming: 'perf-api-timing',
+  /**
+   * INVERTED — a kill switch, not a feature. Automatic retries of failed
+   * requests (lib/net/resilientFetch.ts) are ON unless this flag is on.
+   * Off, unknown or unreachable all mean "keep retrying", because retrying is
+   * the safe behaviour; turn it on only if retries themselves misbehave.
+   */
+  killNetRetry: 'kill-net-retry',
+  /** Live walk: apply position events directly; fewer close-check polls. */
+  liveDeltas: 'perf-live-deltas',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;

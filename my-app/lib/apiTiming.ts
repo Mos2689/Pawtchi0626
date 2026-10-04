@@ -58,21 +58,48 @@ export function timedFetch(
 ): Fetch {
   const timed = async (input: Parameters<Fetch>[0], init?: Parameters<Fetch>[1]): Promise<Response> => {
     const started = clock.now();
-    const concurrent = inFlight;
-    inFlight += 1;
+    const concurrent = beginRequest();
     let response: Response;
     try {
       response = await base(input, init);
     } catch (error) {
-      inFlight -= 1;
-      note(input, init, 0, clock.now() - started, null, concurrent, clock);
+      endRequest();
+      recordRequest({ input, init, status: 0, ms: clock.now() - started, response: null, concurrent, attempts: 1 }, clock);
       throw error;
     }
-    inFlight -= 1;
-    note(input, init, response.status, clock.now() - started, response, concurrent, clock);
+    endRequest();
+    recordRequest({ input, init, status: response.status, ms: clock.now() - started, response, concurrent, attempts: 1 }, clock);
     return response;
   };
   return timed as Fetch;
+}
+
+/** Count a request in; returns how many were already in the air. */
+export function beginRequest(): number {
+  const concurrent = inFlight;
+  inFlight += 1;
+  return concurrent;
+}
+
+export function endRequest(): void {
+  inFlight = Math.max(0, inFlight - 1);
+}
+
+export interface RequestRecord {
+  input: Parameters<Fetch>[0];
+  init: Parameters<Fetch>[1];
+  /** 0 when no answer arrived (a network failure). */
+  status: number;
+  ms: number;
+  response: Response | null;
+  concurrent: number;
+  /** Sends it took, retries included (lib/net/resilientFetch.ts). */
+  attempts: number;
+}
+
+/** Log or sample one finished request. Never throws. */
+export function recordRequest(entry: RequestRecord, clock: { random(): number }): void {
+  note(entry.input, entry.init, entry.status, entry.ms, entry.response, entry.concurrent, entry.attempts, clock);
 }
 
 function note(
@@ -82,6 +109,7 @@ function note(
   ms: number,
   response: Response | null,
   concurrent: number,
+  attempts: number,
   clock: { random(): number },
 ): void {
   try {
@@ -97,7 +125,8 @@ function note(
       console.log(
         `[api] ${method.padEnd(6)} ${endpoint.padEnd(36)} ${String(status || 'ERR').padStart(3)} ${String(ms).padStart(5)}ms`
           + (serverMs !== null ? `  server ${serverMs}ms` : '')
-          + (concurrent ? `  +${concurrent} in flight` : ''),
+          + (concurrent ? `  +${concurrent} in flight` : '')
+          + (attempts > 1 ? `  ${attempts} attempts` : ''),
       );
       return;
     }
@@ -110,13 +139,14 @@ function note(
       ms,
       server_ms: serverMs,
       inflight: concurrent,
+      attempts,
     });
   } catch {
     // Instrumentation never affects the request it measures.
   }
 }
 
-function urlOf(input: Parameters<Fetch>[0]): string {
+export function urlOf(input: Parameters<Fetch>[0]): string {
   if (typeof input === 'string') return input;
   const candidate = input as { url?: unknown; href?: unknown };
   if (typeof candidate.url === 'string') return candidate.url;
