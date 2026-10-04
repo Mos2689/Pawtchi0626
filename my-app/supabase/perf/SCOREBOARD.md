@@ -94,5 +94,10 @@ PostHog event `api_timing`, sampled 10%, at most 200 per launch, release builds 
 | `perf-walk-instant-open` | Meetup → walk composed from the meetup read; press-in prefetch | One `community_outing` per walk open, starting at press-in; no `pets` read for the dog picker when opened from the meetup |
 | `perf-lazy-pet-context` | `get_pet_dashboard` waits 3 s after launch; last answer painted meanwhile | Burst p90; dashboard no longer in the first 3 s window |
 | `perf-api-timing` | Sampled `api_timing` events | Query 7 |
+| `perf-live-deltas` | Live map applies position events directly; close check every 30 s while realtime is connected | During a 2–3 phone walk: `community_live_locations` GETs and `community_walks` GETs per minute down ≥60% |
+| `kill-net-retry` | **Inverted kill switch.** Off = automatic retries ON (lib/net/resilientFetch.ts) | Turn on only if retries misbehave; `api_timing.attempts` shows how often they fire |
+
+### 8. Failure storms (added after 4 Oct 2026)
+PostgREST logs: count `schema cache reload message`, `PGRST002`, `PGRST003` and `Thread killed by timeout manager` per hour. Postgres logs: `checkpoint complete` write times (seconds) and `statement timeout` counts. On 4 Oct, a Realtime daily-partition DDL at 07:47 UTC triggered a schema reload that ran past the 8 s statement limit during a disk stall (checkpoints taking 11–15 s), giving about 90 s of 503s. The 25 Sep walk showed the same strain without the overlap.
 
 Unflagged in Train 2, protected by fallbacks instead: `community_trail_routes` (the app falls back to the three reads while the function is missing; dropping it is the kill switch) and `community_pack_detail.attendance` (old builds ignore the key).
