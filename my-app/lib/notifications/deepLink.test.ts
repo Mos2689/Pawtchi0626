@@ -1,5 +1,5 @@
 import { ALL_CAMPAIGNS } from './copy';
-import { CAMPAIGN_ROUTE, campaignKeyFor, routeFor, routeForUrl } from './deepLink';
+import { CAMPAIGN_ROUTE, campaignKeyFor, routeFor, routeForUrl, systemPathFor } from './deepLink';
 import {
   ALL_EMAIL_CAMPAIGNS,
   EMAIL_CAMPAIGN_ROUTE,
@@ -192,5 +192,35 @@ describe('campaignKeyFor', () => {
     expect(campaignKeyFor({ action: 'meal' })).toBe('meal');
     expect(campaignKeyFor({})).toBeNull();
     expect(campaignKeyFor(null)).toBeNull();
+  });
+});
+
+describe('systemPathFor (app/+native-intent.tsx)', () => {
+  it('turns a shared invite link into the invite screen, keeping the code', () => {
+    expect(systemPathFor('https://pawtchi.com/app/community-invite?code=10deaa9c-0840-4b22-9291-141e326431cc'))
+      .toBe('/community-invite?code=10deaa9c-0840-4b22-9291-141e326431cc');
+  });
+
+  it('does the same for the scheme form Expo Router showed as "Unmatched Route"', () => {
+    expect(systemPathFor('pawtchi://app/community-invite?code=abc-123')).toBe('/community-invite?code=abc-123');
+    expect(systemPathFor('pawtchi:///app/community-invite?code=abc-123')).toBe('/community-invite?code=abc-123');
+  });
+
+  it('maps emailed links, and sends an unknown pawtchi.com link Home rather than to a dead end', () => {
+    expect(systemPathFor('https://www.pawtchi.com/app/health')).toBe('/(tabs)/health');
+    expect(systemPathFor('https://pawtchi.com/app/nonsense')).toBe('/');
+    expect(systemPathFor('pawtchi://app/nonsense')).toBe('/');
+  });
+
+  it('leaves every route-shaped scheme link to Expo Router, query and all', () => {
+    expect(systemPathFor('pawtchi:///community-invite?code=abc-123')).toBeNull();
+    expect(systemPathFor('pawtchi:///(tabs)/health?engagement_send=x')).toBeNull();
+    expect(systemPathFor('pawtchi:///')).toBeNull();
+  });
+
+  it('leaves other hosts and rubbish alone', () => {
+    expect(systemPathFor('https://evil.example.com/app/community-invite?code=x')).toBeNull();
+    expect(systemPathFor('not a url')).toBeNull();
+    expect(systemPathFor(null)).toBeNull();
   });
 });

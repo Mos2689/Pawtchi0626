@@ -253,6 +253,51 @@ export function routeForUrl(url: string | null | undefined): string | null {
 }
 
 /**
+ * What Expo Router should open for a URL the operating system hands the app,
+ * or null to let Expo Router route it unchanged. Called from
+ * app/+native-intent.tsx, BEFORE Expo Router reads the URL.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * A shared invite is `https://pawtchi.com/app/community-invite?code=…`. When
+ * the OS opens the app with it, Expo Router reads the path literally —
+ * `/app/community-invite` — finds no such screen and shows "Unmatched Route"
+ * (displaying it as `pawtchi://app/community-invite?code=…`). useEmailDeepLinks
+ * pushed the right screen afterwards, but the dead end was already on screen.
+ * Translating here means Expo Router only ever sees a route that exists.
+ *
+ * Only the two shapes Expo Router cannot route are rewritten:
+ *   https://pawtchi.com/app/<slug>…   → routeForUrl
+ *   pawtchi://app/<slug>…             → the same, as if it were the web link
+ * Every other `pawtchi://` link is already a route and passes through with its
+ * query intact (routeForUrl drops a scheme link's query, which here would lose
+ * an invite's code). A pawtchi.com link we do not recognise opens Home rather
+ * than a dead end.
+ */
+export function systemPathFor(url: string | null | undefined): string | null {
+  if (!url) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+
+  if (isAppSchemeUrl(parsed)) {
+    const segments = [parsed.hostname, ...parsed.pathname.split('/')].filter(Boolean);
+    if (segments[0] !== 'app') return null;
+    const web = `https://pawtchi.com/${segments.join('/')}${parsed.search}`;
+    return routeForUrl(web) ?? '/';
+  }
+
+  const isWeb = parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  if (isWeb && parsed.hostname.replace(/^www\./, '') === 'pawtchi.com') {
+    return routeForUrl(url) ?? '/';
+  }
+  return null;
+}
+
+/**
  * True for a `pawtchi://` URL — the shape the emailed click endpoint redirects
  * to, and the one Expo Router already routes on its own.
  *
