@@ -102,10 +102,18 @@ function describe(e: SpikeEvent): string {
   return `${time} ${a === 'active' ? '' : '[bg] '}${k} ${JSON.stringify(rest)}`;
 }
 
+/** When the log last reached the phone's storage. */
+let lastFlushAt = 0;
+/** Write at least this often, on any event — not only from the timer. */
+const FLUSH_EVERY_MS = 5_000;
+
 function log(body: SpikeEventBody): void {
   const e = { ...body, t: Date.now(), m: monotonic(), a: AppState.currentState ?? 'unknown' } as SpikeEvent;
   unflushed.push(e);
   useLiveSpike.setState(s => ({ lines: [describe(e), ...s.lines].slice(0, 40) }));
+  // A locked Android runs no timers, and may close the app at any moment, so
+  // every event that does get to run also saves what is waiting.
+  if (e.t - lastFlushAt >= FLUSH_EVERY_MS || e.a !== 'active') flush();
 }
 
 function flush(): void {
@@ -113,6 +121,7 @@ function flush(): void {
   if (!runId || unflushed.length === 0) return;
   const batch = unflushed;
   unflushed = [];
+  lastFlushAt = Date.now();
   try {
     const folder = dir();
     folder.create({ intermediates: true, idempotent: true });

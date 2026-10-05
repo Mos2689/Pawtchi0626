@@ -104,6 +104,13 @@ describe('summariseSpike', () => {
     expect(own.presence.leaves.map(l => l.key)).toEqual(['bbbbbbbb']);
   });
 
+  it('says when a run ended without Stop, and not when it was stopped', () => {
+    const cut = summariseSpike([tick(0, 'active'), tick(5, 'background')]);
+    expect(cut.endedUnexpectedlyAt).toBe(5000);
+    expect(formatSpikeSummary(cut)).toContain('Ended without Stop');
+    expect(summariseSpike([tick(0, 'active'), at(5, 'active', { k: 'stop' })]).endedUnexpectedlyAt).toBeNull();
+  });
+
   it('flags ticks where the socket stayed open past token expiry', () => {
     const late = summariseSpike([tick(6000, 'background', 'open', 5000)]);
     expect(late.token.ticksPastExpiryWhileOpen).toBe(1);

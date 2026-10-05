@@ -148,6 +148,8 @@ export interface SpikeSummary {
   probes: { what: string; status: string; pings: number; presence: number; at: number }[];
   /** Walk recording phases, to see whether auto-stop ended the walk while locked. */
   walkPhases: { phase: string; at: number }[];
+  /** Null when Stop was pressed; else the last thing recorded before the app stopped. */
+  endedUnexpectedlyAt: number | null;
   notes: { text: string; at: number }[];
 }
 
@@ -265,6 +267,7 @@ export function summariseSpike(events: readonly SpikeEvent[]): SpikeSummary {
     postgresChanges: { count: pgcs.length, lagMsP50: percentile(pgLags, 50), lagMsMax: pgLags.length ? Math.max(...pgLags) : null },
     probes: only(events, 'probe').map(p => ({ what: p.what, status: p.status, pings: p.pings, presence: p.presence, at: p.t })),
     walkPhases: only(events, 'walk').map(w => ({ phase: w.phase, at: w.t })),
+    endedUnexpectedlyAt: events.length && !only(events, 'stop').length ? events[events.length - 1].t : null,
     notes: only(events, 'note').map(n => ({ text: n.text, at: n.t })),
   };
 }
@@ -279,6 +282,9 @@ export function formatSpikeSummary(s: SpikeSummary): string {
   const lines: string[] = [];
   lines.push(`Live Walk spike — ${show(s.platform)} build ${show(s.build)} — room ${show(s.room)} as ${show(s.role)}`);
   lines.push(`Ran ${s.durationMin} min, ${s.backgroundMin} min in the background (locked or switched away).`);
+  if (s.endedUnexpectedlyAt !== null) {
+    lines.push(`Ended without Stop: nothing recorded after ${clock(s.endedUnexpectedlyAt)} (the app was closed, or is still recording).`);
+  }
   lines.push('');
   lines.push(`1 Location: ${s.location.batches} batches, ${s.location.backgroundBatches} in background; longest background gap ${show(s.location.maxBackgroundGapSec)} s`);
   lines.push(`2 Socket: ${s.socket.opens} opens, ${s.socket.closes.length} closes, ${s.socket.errors} errors, ${s.socket.disconnectedSec} s not open`);

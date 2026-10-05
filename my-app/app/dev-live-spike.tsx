@@ -70,6 +70,7 @@ function Recorder() {
   }, [view.running]);
 
   const start = async () => {
+    setPicked(null);
     try {
       await startSpike(room.trim().toLowerCase(), role, meetup.trim().toLowerCase() || null);
     } catch (cause) {
@@ -77,7 +78,8 @@ function Recorder() {
     }
   };
 
-  const latest = view.runId ?? runs[0] ?? null;
+  const [picked, setPicked] = useState<string | null>(null);
+  const latest = picked ?? view.runId ?? runs[0] ?? null;
   const tokenLeft = view.tokenExp ? Math.round(view.tokenExp - now / 1000) : null;
 
   return (
@@ -141,7 +143,16 @@ function Recorder() {
         <Button label="Share summary" disabled={!latest} onPress={() => { if (latest) void shareSummary(latest); }} />
         <Button label="Share full log" disabled={!latest} onPress={() => { if (latest) void shareFullLog(latest); }} />
       </View>
-      {runs.length > 1 && <Text style={styles.stat}>{runs.length} runs saved on this phone</Text>}
+      {runs.length > 1 ? (
+        <>
+          <Text style={styles.label}>Saved runs (tap one to share it)</Text>
+          <View style={styles.wrap}>
+            {runs.map(run => (
+              <Button key={run} label={run} tone={run === latest ? 'primary' : 'plain'} onPress={() => setPicked(run)} />
+            ))}
+          </View>
+        </>
+      ) : null}
       <Button
         label="Delete all runs"
         disabled={view.running || runs.length === 0}
