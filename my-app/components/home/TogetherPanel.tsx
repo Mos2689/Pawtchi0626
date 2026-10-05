@@ -106,6 +106,12 @@ interface TogetherPanelProps {
   onOpenTrail: (pack: CommunityPack) => void;
   onOpenWalk: (pack: CommunityPack) => void;
   onCreate: () => void;
+  /**
+   * Type in a code from an invitation. Lived only on the retired "Your
+   * meetups" screen until Connect replaced it; without it here, nobody could
+   * paste a code they had been sent.
+   */
+  onUseCode: () => void;
   /** Told the height of each stop so the map can frame its pins above it. */
   onStopChange?: (stop: SheetStop, height: number) => void;
   bottomInset: number;
@@ -132,6 +138,7 @@ export function TogetherPanel({
   onOpenTrail,
   onOpenWalk,
   onCreate,
+  onUseCode,
   onStopChange,
   bottomInset,
 }: TogetherPanelProps) {
@@ -340,6 +347,16 @@ export function TogetherPanel({
             ))}
           </View>
         ) : null}
+
+        <Pressable
+          onPress={onUseCode}
+          style={({ pressed }) => [styles.codeLink, pressed && styles.pressed]}
+          accessibilityRole="button"
+          hitSlop={6}
+        >
+          <Ionicons name="key-outline" size={15} color={color.slateMuted} />
+          <Text style={styles.codeLinkText}>Have an invitation code?</Text>
+        </Pressable>
       </ScrollView>
     </SheetRoot>
   );
@@ -392,6 +409,15 @@ const styles = StyleSheet.create({
     backgroundColor: color.yellow,
   },
   emptyCtaText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
+  codeLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 44,
+    marginTop: space.lg,
+  },
+  codeLinkText: { ...type.label, color: color.slateMuted },
   pressed: { opacity: 0.85 },
 
   scroll: { paddingBottom: space.xxl },

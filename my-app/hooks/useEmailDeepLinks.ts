@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import * as Linking from 'expo-linking';
-import { useRouter } from 'expo-router';
 import { track } from '@/lib/analytics';
 import {
   engagementSendFromUrl,
@@ -9,7 +8,11 @@ import {
 } from '@/lib/notifications/deepLink';
 
 /**
- * Routes an emailed universal link to the right screen.
+ * Records which emailed or shared link opened the app.
+ *
+ * Navigation itself is Expo Router's (see app/+native-intent.tsx, which
+ * rewrites `https://pawtchi.com/app/…` into a real route first). The history
+ * below explains why the routing exists; this hook now only measures it.
  *
  * ── Why this hook exists ────────────────────────────────────────────────────
  *
@@ -38,7 +41,6 @@ import {
  * same tracking shape, and the same rule that no route beats an arbitrary one.
  */
 export function useEmailDeepLinks() {
-  const router = useRouter();
   // Guards against the cold-start URL being handled twice — on some Android
   // builds getInitialURL() resolves and the `url` event also fires for the
   // same link, which would push the route onto the stack twice.
@@ -53,10 +55,11 @@ export function useEmailDeepLinks() {
       handled.current = url;
 
       const route = routeForUrl(url);
-      // `pawtchi:///(tabs)/health` — what engagement-click redirects to. Expo
-      // Router resolves it natively through the same getStateFromPath that
-      // router.push() uses, so pushing it again here would put the same screen
-      // on the stack twice and leave a back gesture that goes nowhere.
+      // Expo Router now opens every link itself: `pawtchi:///…` natively, and
+      // `https://pawtchi.com/app/…` after app/+native-intent.tsx has rewritten
+      // it to a real route. Pushing here as well put the screen on the stack
+      // twice — and, before the rewrite existed, on top of an "Unmatched
+      // Route" page. This hook is now the analytics half only.
       const routedByExpoRouter = isAppSchemeLink(url);
 
       track('email_link_opened', {
@@ -72,7 +75,6 @@ export function useEmailDeepLinks() {
         source: routedByExpoRouter ? 'app_scheme' : 'universal_link',
       });
 
-      if (route && !routedByExpoRouter) router.push(route as never);
     };
 
     void Linking.getInitialURL().then(handle);
@@ -82,7 +84,7 @@ export function useEmailDeepLinks() {
       cancelled = true;
       sub.remove();
     };
-  }, [router]);
+  }, []);
 }
 
 /** Path without host, query or fragment — safe to put in an analytics event. */

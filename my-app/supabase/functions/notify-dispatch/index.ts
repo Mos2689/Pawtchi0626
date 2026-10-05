@@ -105,7 +105,10 @@ interface CommunityNotificationCandidate {
     // Added 20260922000000.
     | 'community_rsvp'
     | 'community_moment'
-    | 'community_walk_soon';
+    | 'community_walk_soon'
+    // Added 20261005000000: an invite link was used, and the host confirmed.
+    | 'community_join_request'
+    | 'community_join_approved';
   title: string;
   body: string;
   route: string;

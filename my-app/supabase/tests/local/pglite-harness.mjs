@@ -1,0 +1,368 @@
+// Local check for SQL migrations and pgTAP files, without Docker or a branch:
+// a Supabase-shaped stub schema in PGlite (Postgres 17 compiled to WASM), the
+// production live-location policies as they stood before 20261004000000, then
+// the migrations given, then the pgTAP files through a small TAP shim
+// (plan / is / ok / throws_ok with 4 arguments / lives_ok / finish).
+//
+// It is a fast first gate, not the release gate: no Realtime, no PostgREST, a
+// single connection (so no concurrency), and only the tables the live-walk
+// tests touch. The release gate is the same .test.sql on a Supabase branch.
+//
+// PGlite is not a project dependency. Install it in a scratch folder and run
+// from there:
+//
+//   mkdir -p /tmp/pglite && cd /tmp/pglite && npm init -y && npm i @electric-sql/pglite@0.5.8
+//   node <repo>/supabase/tests/local/pglite-harness.mjs //     <repo>/supabase/migrations/20261004000000_live_walk_privacy_and_rpc.sql //     <repo>/supabase/tests/live_walk_v2.test.sql
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+const requireFromCwd = createRequire(pathToFileURL(`${process.cwd()}/`).href);
+const { PGlite } = await import(pathToFileURL(requireFromCwd.resolve('@electric-sql/pglite')).href);
+
+const [, , ...files] = process.argv;
+const tests = files.filter(f => f.endsWith('.test.sql'));
+const migrations = files.filter(f => !f.endsWith('.test.sql'));
+
+const bootstrap = `
+CREATE ROLE anon NOLOGIN;
+CREATE ROLE authenticated NOLOGIN;
+CREATE ROLE service_role NOLOGIN BYPASSRLS;
+GRANT anon, authenticated, service_role TO postgres;
+
+CREATE SCHEMA auth;
+CREATE TABLE auth.users (id UUID PRIMARY KEY, email TEXT);
+CREATE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql STABLE AS
+  $$ SELECT nullif(current_setting('request.jwt.claims', true)::json ->> 'sub', '')::uuid $$;
+GRANT USAGE ON SCHEMA auth TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION auth.uid() TO anon, authenticated;
+
+CREATE SCHEMA private;
+GRANT USAGE ON SCHEMA private TO authenticated;
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+
+CREATE TABLE public.community_packs (
+  id UUID PRIMARY KEY, name TEXT NOT NULL, owner_id UUID NOT NULL REFERENCES auth.users(id));
+CREATE TABLE public.community_pack_members (
+  pack_id UUID NOT NULL REFERENCES public.community_packs(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+  archive_from TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notifications_muted BOOLEAN NOT NULL DEFAULT false,
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (pack_id, user_id));
+CREATE TABLE public.community_walks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pack_id UUID NOT NULL REFERENCES public.community_packs(id) ON DELETE CASCADE,
+  organizer_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+  title TEXT NOT NULL DEFAULT 'Pack walk',
+  scheduled_for TIMESTAMPTZ,
+  meeting_label TEXT NOT NULL,
+  meeting_lat DOUBLE PRECISION, meeting_lng DOUBLE PRECISION, note TEXT,
+  state TEXT NOT NULL DEFAULT 'planned' CHECK (state IN ('planned', 'active', 'completed', 'cancelled')),
+  started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE public.community_walk_attendance (
+  walk_id UUID NOT NULL REFERENCES public.community_walks(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'invited'
+    CHECK (status IN ('invited', 'coming', 'cant_make_it', 'checked_in', 'walking', 'finished')),
+  share_location BOOLEAN NOT NULL DEFAULT false,
+  checked_in_at TIMESTAMPTZ, joined_at TIMESTAMPTZ, finished_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (walk_id, user_id));
+CREATE TABLE public.community_live_locations (
+  walk_id UUID NOT NULL REFERENCES public.community_walks(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  lat DOUBLE PRECISION NOT NULL CHECK (lat BETWEEN -90 AND 90),
+  lng DOUBLE PRECISION NOT NULL CHECK (lng BETWEEN -180 AND 180),
+  accuracy_m DOUBLE PRECISION CHECK (accuracy_m IS NULL OR accuracy_m >= 0),
+  path JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(path) = 'array' AND jsonb_array_length(path) <= 200),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (walk_id, user_id));
+CREATE TABLE public.community_stale_walk_watch (
+  walk_id UUID PRIMARY KEY REFERENCES public.community_walks(id) ON DELETE CASCADE,
+  started_at TIMESTAMPTZ, last_activity_at TIMESTAMPTZ NOT NULL,
+  first_flagged_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_flagged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  times_flagged INTEGER NOT NULL DEFAULT 1, resolved_at TIMESTAMPTZ);
+
+CREATE TABLE public.pets (
+  id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES auth.users(id), name TEXT NOT NULL,
+  species TEXT, current_weight_kg NUMERIC, target_daily_calories INTEGER, bowl_size TEXT);
+CREATE TABLE public.community_walk_participant_pets (
+  walk_id UUID NOT NULL REFERENCES public.community_walks(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  pet_id UUID NOT NULL REFERENCES public.pets(id) ON DELETE CASCADE,
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (walk_id, user_id, pet_id));
+
+-- Realtime, as far as policies can see it: the table and the topic GUC.
+CREATE SCHEMA realtime;
+CREATE TABLE realtime.messages (
+  id UUID NOT NULL DEFAULT gen_random_uuid(), topic TEXT NOT NULL, extension TEXT NOT NULL,
+  payload JSONB, event TEXT, private BOOLEAN DEFAULT false,
+  updated_at TIMESTAMP NOT NULL DEFAULT now(), inserted_at TIMESTAMP NOT NULL DEFAULT now());
+ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+GRANT USAGE ON SCHEMA realtime TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON realtime.messages TO anon, authenticated;
+CREATE FUNCTION realtime.topic() RETURNS TEXT LANGUAGE sql STABLE AS
+  $$ SELECT nullif(current_setting('realtime.topic', true), '')::text $$;
+GRANT EXECUTE ON FUNCTION realtime.topic() TO anon, authenticated;
+
+CREATE TABLE public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE, full_name TEXT, username TEXT);
+CREATE TABLE public.community_pack_invitations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pack_id UUID NOT NULL REFERENCES public.community_packs(id) ON DELETE CASCADE,
+  inviter_id UUID NOT NULL REFERENCES auth.users(id),
+  invitee_id UUID REFERENCES auth.users(id),
+  invite_code UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+  claimed_by UUID REFERENCES auth.users(id),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'pending_host', 'accepted', 'declined', 'revoked', 'expired')),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '14 days',
+  responded_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (invitee_id IS NOT NULL OR state IN ('pending', 'pending_host', 'revoked', 'expired')));
+CREATE TABLE public.community_notification_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  pack_id UUID, walk_id UUID, title TEXT NOT NULL, body TEXT NOT NULL, route TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT community_notification_events_event_type_check CHECK (event_type IN (
+    'community_invite', 'community_walk_change', 'community_memory_ready',
+    'community_rsvp', 'community_moment', 'community_walk_soon')));
+CREATE FUNCTION public.enqueue_community_notification(
+  p_user_id UUID, p_event_type TEXT, p_pack_id UUID, p_walk_id UUID,
+  p_title TEXT, p_body TEXT, p_route TEXT, p_dedupe_key TEXT)
+RETURNS VOID LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+  INSERT INTO public.community_notification_events
+    (user_id, event_type, pack_id, walk_id, title, body, route, dedupe_key)
+  VALUES (p_user_id, p_event_type, p_pack_id, p_walk_id, p_title, p_body, p_route, p_dedupe_key)
+  ON CONFLICT (dedupe_key) DO NOTHING $$;
+REVOKE ALL ON FUNCTION public.enqueue_community_notification(UUID, TEXT, UUID, UUID, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
+CREATE FUNCTION public.is_community_pack_owner(p_pack_id UUID, p_user_id UUID DEFAULT auth.uid())
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM public.community_packs p WHERE p.id = p_pack_id AND p.owner_id = p_user_id) $$;
+CREATE FUNCTION public.is_community_pack_member(p_pack_id UUID, p_user_id UUID DEFAULT auth.uid())
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM public.community_pack_members WHERE pack_id = p_pack_id AND user_id = p_user_id) $$;
+CREATE FUNCTION public.can_access_community_walk(p_walk_id UUID, p_user_id UUID DEFAULT auth.uid())
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM public.community_walks w JOIN public.community_pack_members m ON m.pack_id = w.pack_id
+                  WHERE w.id = p_walk_id AND m.user_id = p_user_id) $$;
+
+ALTER TABLE public.community_walks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_walk_attendance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_live_locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_pack_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_packs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY community_walks_read_members ON public.community_walks FOR SELECT TO authenticated
+  USING (public.is_community_pack_member(pack_id, (select auth.uid())));
+CREATE POLICY community_attendance_read_pack ON public.community_walk_attendance FOR SELECT TO authenticated
+  USING (public.can_access_community_walk(walk_id, (select auth.uid())));
+
+CREATE POLICY community_walks_update_host ON public.community_walks FOR UPDATE TO authenticated
+  USING (public.is_community_pack_owner(pack_id, (select auth.uid())))
+  WITH CHECK (public.is_community_pack_owner(pack_id, (select auth.uid())));
+
+-- join_community_walk as production has it (20260926010000; md5 checked 2026-10-04).
+CREATE OR REPLACE FUNCTION public.join_community_walk(
+  p_walk_id UUID,
+  p_pet_ids UUID[],
+  p_share_location BOOLEAN,
+  p_start BOOLEAN DEFAULT FALSE
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user UUID := auth.uid();
+  v_walk public.community_walks;
+  v_now TIMESTAMPTZ := now();
+  v_pets UUID[] := ARRAY(SELECT DISTINCT unnest(coalesce(p_pet_ids, '{}'::UUID[])));
+BEGIN
+  IF v_user IS NULL THEN RAISE EXCEPTION 'auth_required'; END IF;
+
+  -- Locked for the length of the join, so a host closing the walk at the same
+  -- moment either lands before (and this refuses) or after (and sees us).
+  SELECT * INTO v_walk FROM public.community_walks WHERE id = p_walk_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'walk_not_found'; END IF;
+  IF NOT public.can_access_community_walk(p_walk_id, v_user) THEN
+    RAISE EXCEPTION 'walk_access_denied';
+  END IF;
+
+  IF p_start THEN
+    IF NOT public.is_community_pack_owner(v_walk.pack_id, v_user) THEN
+      RAISE EXCEPTION 'pack_host_required';
+    END IF;
+    IF v_walk.state = 'planned' THEN
+      UPDATE public.community_walks
+        SET state = 'active', started_at = v_now, updated_at = v_now
+        WHERE id = p_walk_id;
+      v_walk.state := 'active';
+    END IF;
+  END IF;
+
+  IF v_walk.state NOT IN ('planned', 'active') THEN RAISE EXCEPTION 'walk_closed'; END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM unnest(v_pets) AS wanted(pet_id)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM public.pets p WHERE p.id = wanted.pet_id AND p.owner_id = v_user
+    )
+  ) THEN
+    RAISE EXCEPTION 'pet_not_yours';
+  END IF;
+
+  INSERT INTO public.community_walk_attendance
+    (walk_id, user_id, status, share_location, joined_at, updated_at)
+  VALUES (p_walk_id, v_user, 'walking', coalesce(p_share_location, FALSE), v_now, v_now)
+  ON CONFLICT (walk_id, user_id) DO UPDATE
+    SET status = 'walking',
+        share_location = EXCLUDED.share_location,
+        joined_at = EXCLUDED.joined_at,
+        updated_at = EXCLUDED.updated_at;
+
+  DELETE FROM public.community_walk_participant_pets
+    WHERE walk_id = p_walk_id AND user_id = v_user;
+  INSERT INTO public.community_walk_participant_pets (walk_id, user_id, pet_id)
+    SELECT p_walk_id, v_user, wanted.pet_id FROM unnest(v_pets) AS wanted(pet_id);
+END;
+$$;
+REVOKE ALL ON FUNCTION public.join_community_walk(UUID, UUID[], BOOLEAN, BOOLEAN) FROM PUBLIC, anon;
+
+-- Production's live-location policies, verbatim (the unqualified walk_id bug).
+CREATE POLICY community_locations_read_attendees ON public.community_live_locations
+  FOR SELECT TO authenticated
+  USING (
+    public.can_access_community_walk(walk_id, (select auth.uid())) AND
+    EXISTS (
+      SELECT 1 FROM public.community_walks w
+      JOIN public.community_walk_attendance a ON a.walk_id = w.id
+      WHERE w.id = walk_id
+        AND w.state = 'active'
+        AND a.user_id = (select auth.uid())
+        AND a.status IN ('coming', 'checked_in', 'walking', 'finished')
+    )
+  );
+CREATE POLICY community_locations_write_self ON public.community_live_locations
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    user_id = (select auth.uid()) AND
+    public.can_access_community_walk(walk_id, (select auth.uid())) AND
+    EXISTS (
+      SELECT 1 FROM public.community_walk_attendance a
+      JOIN public.community_walks w ON w.id = a.walk_id
+      WHERE a.walk_id = walk_id AND a.user_id = (select auth.uid())
+        AND a.status = 'walking' AND a.share_location AND w.state = 'active'
+    )
+  );
+CREATE POLICY community_locations_update_self ON public.community_live_locations
+  FOR UPDATE TO authenticated
+  USING (user_id = (select auth.uid()))
+  WITH CHECK (
+    user_id = (select auth.uid()) AND
+    public.can_access_community_walk(walk_id, (select auth.uid())) AND
+    EXISTS (
+      SELECT 1 FROM public.community_walk_attendance a
+      JOIN public.community_walks w ON w.id = a.walk_id
+      WHERE a.walk_id = walk_id AND a.user_id = (select auth.uid())
+        AND a.status = 'walking' AND a.share_location AND w.state = 'active'
+    )
+  );
+`;
+
+// A minimal pgTAP: plan / is / ok / throws_ok (4 args) / lives_ok / finish.
+const tap = `
+CREATE TABLE public._tap (n SERIAL, ok BOOLEAN, description TEXT);
+CREATE TABLE public._tap_plan (planned INT);
+REVOKE ALL ON public._tap, public._tap_plan FROM anon, authenticated;
+CREATE FUNCTION public._tap_record(p_ok BOOLEAN, p_desc TEXT, p_diag TEXT DEFAULT NULL) RETURNS TEXT
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_n INT;
+BEGIN
+  INSERT INTO public._tap (ok, description) VALUES (p_ok, p_desc) RETURNING n INTO v_n;
+  RETURN (CASE WHEN p_ok THEN 'ok ' ELSE 'not ok ' END) || v_n || ' - ' || p_desc
+         || CASE WHEN p_ok OR p_diag IS NULL THEN '' ELSE E'\\n#   ' || p_diag END;
+END $$;
+CREATE FUNCTION public.plan(p INT) RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN INSERT INTO public._tap_plan VALUES (p); RETURN '1..' || p; END $$;
+CREATE FUNCTION public.is(got ANYELEMENT, want ANYELEMENT, descr TEXT) RETURNS TEXT LANGUAGE sql AS $$
+  SELECT public._tap_record(got IS NOT DISTINCT FROM want, descr,
+    'got: ' || coalesce(got::TEXT, 'NULL') || ' want: ' || coalesce(want::TEXT, 'NULL')) $$;
+CREATE FUNCTION public.ok(cond BOOLEAN, descr TEXT) RETURNS TEXT LANGUAGE sql AS $$
+  SELECT public._tap_record(coalesce(cond, false), descr) $$;
+CREATE FUNCTION public.throws_ok(p_sql TEXT, p_code TEXT, p_msg TEXT, descr TEXT) RETURNS TEXT
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE p_sql;
+  RETURN public._tap_record(false, descr, 'no error raised');
+EXCEPTION WHEN OTHERS THEN
+  RETURN public._tap_record(
+    (p_code IS NULL OR SQLSTATE = p_code) AND (p_msg IS NULL OR SQLERRM = p_msg),
+    descr, 'raised ' || SQLSTATE || ': ' || SQLERRM);
+END $$;
+CREATE FUNCTION public.lives_ok(p_sql TEXT, descr TEXT) RETURNS TEXT LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE p_sql;
+  RETURN public._tap_record(true, descr);
+EXCEPTION WHEN OTHERS THEN
+  RETURN public._tap_record(false, descr, 'raised ' || SQLSTATE || ': ' || SQLERRM);
+END $$;
+CREATE FUNCTION public.finish() RETURNS SETOF TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_run INT; v_fail INT; v_plan INT;
+BEGIN
+  SELECT count(*), count(*) FILTER (WHERE NOT ok) INTO v_run, v_fail FROM public._tap;
+  SELECT planned INTO v_plan FROM public._tap_plan LIMIT 1;
+  IF v_plan IS DISTINCT FROM v_run THEN RETURN NEXT '# planned ' || v_plan || ' but ran ' || v_run; END IF;
+  RETURN NEXT '# ' || v_run || ' run, ' || v_fail || ' failed';
+END $$;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated;
+`;
+
+const db = await PGlite.create();
+await db.exec(bootstrap);
+await db.exec(tap);
+
+for (const file of migrations) {
+  try {
+    await db.exec(readFileSync(file, 'utf8'));
+    console.log(`# applied ${file.split(/[\\/]/).pop()}`);
+  } catch (e) {
+    console.log(`Bail out! migration ${file}: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+let failed = false;
+for (const file of tests) {
+  console.log(`# ${file.split(/[\\/]/).pop()}`);
+  let results;
+  try {
+    results = await db.exec(readFileSync(file, 'utf8'));
+  } catch (e) {
+    console.log(`Bail out! ${e.message}`);
+    process.exit(1);
+  }
+  for (const r of results) {
+    for (const row of r.rows ?? []) {
+      for (const value of Object.values(row)) {
+        if (typeof value === 'string' && /^(ok|not ok|#|1\.\.)/.test(value)) {
+          console.log(value);
+          if (value.startsWith('not ok') || /failed$/.test(value) && !/ 0 failed$/.test(value) || value.startsWith('# planned')) failed = true;
+        }
+      }
+    }
+  }
+}
+process.exit(failed ? 1 : 0);

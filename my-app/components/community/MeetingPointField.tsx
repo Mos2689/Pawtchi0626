@@ -19,9 +19,11 @@
  * is a pond. The gate you actually meet at is thirty seconds of panning away,
  * and only the person planning the walk knows which gate.
  *
- * Search runs on submit, never per keystroke: it is an OS geocoder call, and
- * firing one per letter is both wasteful and, on Android, rate-limited into
- * failure right when someone finishes typing.
+ * Suggestions come as you type, near the map's area (lib/community/
+ * placeSearch.ts — an OpenStreetMap search, never Pawtchi's server), one
+ * request per pause in typing. Pressing search with no suggestion falls back to
+ * the phone's own geocoder, which must never be called per keystroke: on
+ * Android it is rate-limited into failure right when someone finishes typing.
  *
  * ── The label survives ──────────────────────────────────────────────────────
  *
@@ -31,14 +33,16 @@
  * read; the pin is how they get near enough to read them.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
+  ScrollView,
   TextInput,
   View,
 } from 'react-native';
@@ -59,9 +63,13 @@ import {
 import { geocodePlaceLabel, reverseGeocodeLabel } from '../../lib/walk/geoLabels';
 import type { GeoPoint } from '../../lib/walk/geo';
 import type { MapCamera } from '../../lib/walk/mapCamera';
+import { MIN_QUERY_LENGTH, wantsExactAddress, type PlaceSuggestion, type SearchArea } from '../../lib/community/placeSearch';
+import { deviceCountryCode, searchPlaces } from '../../lib/community/placeSearchClient';
 
 /** How long the map must sit still before we ask the OS what it is looking at. */
 const SETTLE_MS = 550;
+/** A pause in typing this long sends one search. */
+const SUGGEST_DEBOUNCE_MS = 300;
 
 interface MeetingPointFieldProps {
   value: MeetingPoint;
@@ -163,10 +171,66 @@ function MeetingPointPicker({
   const [commandedCenter, setCommandedCenter] = useState<GeoPoint | null>(
     isPinned(initial) ? { lat: initial.lat!, lng: initial.lng! } : fallbackCenter ?? null,
   );
+  /**
+   * Whether the map is looking at a real place yet.
+   *
+   * With no pin, no recent walk and no location, the map used to open at
+   * latitude 0, longitude 0 — the sea off West Africa — and the reverse
+   * geocoder helpfully named the spot "South Atlantic Ocean", ready to be
+   * saved. Until something real is known, the map is covered and the spot
+   * cannot be used.
+   */
+  const [hasCenter, setHasCenter] = useState(commandedCenter !== null);
   /** Where the map actually is. Null until it reports, then it is the truth. */
   const [reported, setReported] = useState<MapCamera | null>(null);
+  /** The map's height right now, which the keyboard changes; caps the suggestion list. */
+  const [mapHeight, setMapHeight] = useState(0);
 
-  const pin = reported?.center ?? commandedCenter;
+  const pin = hasCenter ? reported?.center ?? commandedCenter : null;
+
+  // ── Suggestions as you type ─────────────────────────────────────────────
+  const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [suggestState, setSuggestState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [nearbyOnly, setNearbyOnly] = useState(true);
+  /** The text of the suggestion just chosen: no point suggesting it again. */
+  const chosenQuery = useRef<string | null>(null);
+  const countryCode = useMemo(() => deviceCountryCode(), []);
+  // The search area moves with the map, but only in ~10 km steps, so panning
+  // to the right gate does not re-run the search on every frame.
+  const areaLat = pin ? Math.round(pin.lat * 10) / 10 : null;
+  const areaLng = pin ? Math.round(pin.lng * 10) / 10 : null;
+
+  useEffect(() => {
+    const wanted = query.trim();
+    if (wanted.length < MIN_QUERY_LENGTH || wanted === chosenQuery.current) {
+      setSuggestions([]);
+      setSuggestState('idle');
+      return;
+    }
+    const area: SearchArea = {
+      center: areaLat !== null && areaLng !== null ? { lat: areaLat, lng: areaLng } : null,
+      countryCode,
+    };
+    const controller = new AbortController();
+    setSuggestState('loading');
+    // One request per pause in typing, not per letter.
+    const timer = setTimeout(() => {
+      searchPlaces(wanted, area, nearbyOnly && area.center !== null, controller.signal)
+        .then(found => {
+          setSuggestions(found);
+          setSuggestState('ready');
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          setSuggestions([]);
+          setSuggestState('error');
+        });
+    }, SUGGEST_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, nearbyOnly, areaLat, areaLng, countryCode]);
 
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current); }, []);
@@ -176,9 +240,11 @@ function MeetingPointPicker({
    *
    * Debounced because Android streams camera updates continuously through a
    * drag, and a reverse-geocode per frame is a request storm that ends in the
-   * OS refusing to answer at all.
+   * OS refusing to answer at all. Ignored entirely while the map is not yet
+   * looking at a real place.
    */
   const onCameraChange = useCallback((camera: MapCamera) => {
+    if (!hasCenter) return;
     setReported(camera);
     setSearchMiss(false);
     if (labelTouched.current) return;
@@ -191,25 +257,59 @@ function MeetingPointPicker({
         setLabel(current => suggestLabel(current, resolved));
       }).catch(() => {});
     }, SETTLE_MS);
-  }, []);
+  }, [hasCenter]);
 
+  /** Fly to a place. The saved coordinate is still wherever the pin ends up. */
+  const flyTo = (place: GeoPoint, name: string) => {
+    // A new object every time, including for the same place: this is what
+    // tells the map to move, and choosing the same place twice should still
+    // bring you back rather than do nothing.
+    setCommandedCenter({ lat: place.lat, lng: place.lng });
+    setReported(null);
+    setHasCenter(true);
+    if (!labelTouched.current) setLabel(name);
+  };
+
+  const choose = (suggestion: PlaceSuggestion) => {
+    chosenQuery.current = suggestion.title;
+    setQuery(suggestion.title);
+    setSuggestions([]);
+    setSuggestState('idle');
+    setSearchMiss(false);
+    Keyboard.dismiss();
+    flyTo(suggestion, suggestion.title);
+  };
+
+  /**
+   * Return key / "Find". Usually the top suggestion. A street address whose
+   * house number no suggestion has goes to the phone's geocoder first — it
+   * knows houses OpenStreetMap often does not — and only then to the street.
+   */
   const search = async () => {
     const wanted = query.trim();
+    const exact = wantsExactAddress(wanted, suggestions);
+    if (suggestions.length && !exact) {
+      choose(suggestions[0]);
+      return;
+    }
     if (wanted.length < 3) return;
     setSearching(true);
     setSearchMiss(false);
     try {
       const found = await geocodePlaceLabel(wanted);
       if (!found) {
+        if (suggestions.length) {
+          choose(suggestions[0]);
+          return;
+        }
         setSearchMiss(true);
         return;
       }
-      // A new object every time, including for the same place: this is what
-      // tells the map to move, and searching the same name twice should still
-      // bring you back rather than do nothing.
-      setCommandedCenter({ lat: found.lat, lng: found.lng });
-      setReported(null);
-      if (!labelTouched.current) setLabel(wanted);
+      setSuggestions([]);
+      setSuggestState('idle');
+      chosenQuery.current = wanted;
+      Keyboard.dismiss();
+      flyTo(found, wanted);
     } catch {
       setSearchMiss(true);
     } finally {
@@ -222,7 +322,10 @@ function MeetingPointPicker({
     lat: pin?.lat ?? null,
     lng: pin?.lng ?? null,
   };
-  const ready = isMeetingPointReady(candidate);
+  const ready = hasCenter && isMeetingPointReady(candidate);
+  const anchored = areaLat !== null;
+  const typed = query.trim();
+  const showSuggestions = typed.length >= MIN_QUERY_LENGTH && typed !== chosenQuery.current && suggestState !== 'idle';
 
   return (
     <Modal visible animationType="slide" onRequestClose={onCancel} presentationStyle="fullScreen">
@@ -239,9 +342,9 @@ function MeetingPointPicker({
           <Ionicons name="search" size={18} color={color.slateMuted} />
           <TextInput
             value={query}
-            onChangeText={next => { setQuery(next); setSearchMiss(false); }}
+            onChangeText={next => { setQuery(next); setSearchMiss(false); chosenQuery.current = null; }}
             onSubmitEditing={() => void search()}
-            placeholder="Search for a place"
+            placeholder={anchored ? 'Search near here' : 'Search for a place'}
             placeholderTextColor={color.slateFaint}
             returnKeyType="search"
             autoCorrect={false}
@@ -250,14 +353,14 @@ function MeetingPointPicker({
           />
           {searching ? (
             <BreathingPaw size={20} workingColor={color.slateMuted} />
-          ) : query.trim().length >= 3 ? (
+          ) : typed.length >= 3 ? (
             <Pressable onPress={() => void search()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Search">
               <Text style={styles.searchGo}>Find</Text>
             </Pressable>
           ) : null}
         </View>
 
-        <View style={styles.mapWrap}>
+        <View style={styles.mapWrap} onLayout={event => setMapHeight(event.nativeEvent.layout.height)}>
           <WalkMap
             mode="summary"
             path={[]}
@@ -267,24 +370,108 @@ function MeetingPointPicker({
             style={StyleSheet.absoluteFillObject as any}
           />
 
-          {/* The pin, nailed to the middle of the viewport. Offset upward by
-              half its own height so the point of it — not its centre — sits on
-              the coordinate being chosen. */}
-          <View style={styles.crosshair} pointerEvents="none">
-            <View style={styles.pinHalo} />
-            <View style={styles.pinStem} />
-            <View style={styles.pinHead}>
-              <Ionicons name="paw" size={15} color={color.navy} />
-            </View>
-          </View>
+          {hasCenter ? (
+            <>
+              {/* The pin, nailed to the middle of the viewport. Offset upward by
+                  half its own height so the point of it — not its centre — sits on
+                  the coordinate being chosen. */}
+              <View style={styles.crosshair} pointerEvents="none">
+                <View style={styles.pinHalo} />
+                <View style={styles.pinStem} />
+                <View style={styles.pinHead}>
+                  <Ionicons name="paw" size={15} color={color.navy} />
+                </View>
+              </View>
 
-          <View style={styles.hint} pointerEvents="none">
-            <Text style={styles.hintText}>
-              {searchMiss
-                ? 'No match for that. Move the map to the spot instead.'
-                : 'Move the map to put the pin exactly where you meet.'}
-            </Text>
-          </View>
+              <View style={styles.hint} pointerEvents="none">
+                <Text style={styles.hintText}>
+                  {searchMiss
+                    ? 'No match for that. Move the map to the spot instead.'
+                    : 'Move the map to put the pin exactly where you meet.'}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <View style={styles.noPlace}>
+              <View style={styles.noPlaceMark}>
+                <Ionicons name="search" size={22} color={color.electric} />
+              </View>
+              <Text style={styles.noPlaceTitle}>Search for where you’re meeting</Text>
+              <Text style={styles.noPlaceBody}>
+                {searchMiss
+                  ? 'No match for that. Try a park, a street or a suburb.'
+                  : 'Type a park, street or address above, then fine-tune the pin.'}
+              </Text>
+            </View>
+          )}
+
+          {showSuggestions ? (
+            // Scrolls within whatever height the keyboard leaves the map, and
+            // takes a tap on a suggestion while the keyboard is still up.
+            <ScrollView
+              style={[styles.suggestPanel, mapHeight ? { maxHeight: mapHeight - space.lg } : null]}
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
+            >
+              {(suggestState === 'ready' || suggestState === 'error') && wantsExactAddress(typed, suggestions) ? (
+                <Pressable
+                  onPress={() => void search()}
+                  style={({ pressed }) => [styles.suggestRow, pressed && styles.suggestPressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Find ${typed} exactly`}
+                >
+                  <Ionicons name="search" size={18} color={color.electric} />
+                  <View style={styles.suggestCopy}>
+                    <Text style={styles.suggestTitle} numberOfLines={1}>{`Find “${typed}”`}</Text>
+                    <Text style={styles.suggestSub} numberOfLines={1}>Looks up the exact address with your phone’s maps</Text>
+                  </View>
+                </Pressable>
+              ) : null}
+              {suggestions.map(suggestion => (
+                <Pressable
+                  key={suggestion.id}
+                  onPress={() => choose(suggestion)}
+                  style={({ pressed }) => [styles.suggestRow, pressed && styles.suggestPressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={suggestion.subtitle ? `${suggestion.title}, ${suggestion.subtitle}` : suggestion.title}
+                >
+                  <Ionicons name="location-outline" size={18} color={color.slateMuted} />
+                  <View style={styles.suggestCopy}>
+                    <Text style={styles.suggestTitle} numberOfLines={1}>{suggestion.title}</Text>
+                    {suggestion.subtitle ? <Text style={styles.suggestSub} numberOfLines={1}>{suggestion.subtitle}</Text> : null}
+                  </View>
+                </Pressable>
+              ))}
+              {suggestState === 'loading' && !suggestions.length ? (
+                <View style={styles.suggestNote}>
+                  <BreathingPaw size={16} workingColor={color.slateMuted} />
+                  <Text style={styles.suggestNoteText}>{anchored && nearbyOnly ? 'Searching near here' : 'Searching'}</Text>
+                </View>
+              ) : null}
+              {suggestState === 'ready' && !suggestions.length ? (
+                <Text style={[styles.suggestNoteText, styles.suggestNotePad]}>
+                  {anchored && nearbyOnly ? 'No matches near here.' : 'No matches. Try a street or suburb name.'}
+                </Text>
+              ) : null}
+              {suggestState === 'error' ? (
+                <Text style={[styles.suggestNoteText, styles.suggestNotePad]}>
+                  Suggestions aren’t available right now. Press search to look it up another way.
+                </Text>
+              ) : null}
+              {anchored && suggestState === 'ready' ? (
+                <Pressable
+                  onPress={() => setNearbyOnly(current => !current)}
+                  style={styles.suggestScope}
+                  accessibilityRole="button"
+                  hitSlop={6}
+                >
+                  <Text style={styles.suggestScopeText}>
+                    {nearbyOnly ? 'Not here? Search everywhere' : 'Search near here only'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </ScrollView>
+          ) : null}
         </View>
 
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -300,7 +487,7 @@ function MeetingPointPicker({
               accessibilityLabel="Name of the meeting point"
             />
             <Text style={styles.footerMeta} numberOfLines={1}>
-              {coordinateLabel(candidate) ?? 'The map has not settled yet'}
+              {hasCenter ? coordinateLabel(candidate) ?? 'The map has not settled yet' : 'Choose a place first'}
             </Text>
             <Pressable
               onPress={() => onConfirm({ ...candidate, label: candidate.label.trim() })}
@@ -425,6 +612,45 @@ const styles = StyleSheet.create({
     ...makeShadow(4, 12, 0.10),
   },
   hintText: { ...type.caption, fontSize: 10.5, color: color.slateMuted, textAlign: 'center' },
+
+  noPlace: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: space.xxl,
+    backgroundColor: color.surfaceSubtle,
+  },
+  noPlaceMark: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: color.electricSoft,
+  },
+  noPlaceTitle: { ...type.heading, color: color.navy, marginTop: space.md, textAlign: 'center' },
+  noPlaceBody: { ...type.body, fontSize: 13.5, color: color.slateMuted, marginTop: space.xs, textAlign: 'center' },
+
+  suggestPanel: {
+    position: 'absolute',
+    top: space.sm,
+    left: space.lg,
+    right: space.lg,
+    borderRadius: radius.lg,
+    backgroundColor: color.surface,
+    paddingVertical: space.xs,
+    ...makeShadow(6, 18, 0.14),
+  },
+  suggestRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: 52, paddingHorizontal: space.md },
+  suggestPressed: { backgroundColor: color.surfaceSubtle },
+  suggestCopy: { flex: 1, minWidth: 0 },
+  suggestTitle: { ...type.bodyMedium, fontSize: 14.5, color: color.ink },
+  suggestSub: { ...type.body, fontSize: 12, lineHeight: 16, color: color.slateMuted },
+  suggestNote: { flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: 48, paddingHorizontal: space.md },
+  suggestNoteText: { ...type.body, fontSize: 13, color: color.slateMuted },
+  suggestNotePad: { paddingHorizontal: space.md, paddingVertical: space.md },
+  suggestScope: { minHeight: 40, justifyContent: 'center', paddingHorizontal: space.md, borderTopWidth: 1, borderTopColor: color.hairline },
+  suggestScopeText: { ...type.label, fontSize: 12.5, color: color.electric },
 
   footer: {
     paddingHorizontal: space.lg,

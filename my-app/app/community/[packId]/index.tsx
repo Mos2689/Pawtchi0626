@@ -35,6 +35,7 @@ import {
 import { useAuth } from '../../../providers/AuthProvider';
 import { useAutoRetry } from '../../../hooks/useAutoRetry';
 import { dateFormat } from '../../../lib/dateFormats';
+import { requestedLine, requesterDogs, requesterName } from '../../../lib/community/joinRequest';
 
 function dateLabel(value: string | null): string {
   if (!value) return 'Date to be confirmed';
@@ -137,17 +138,40 @@ export default function PackHomeScreen() {
   /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
   const run = useAutoRetry(load);
 
+  /** What just happened to a request, said once under the list. */
+  const [claimNotice, setClaimNotice] = useState<string | null>(null);
+
   const respondToClaim = async (claim: ExternalInviteClaim, approve: boolean) => {
     setRespondingClaim(claim.invitation_id);
     setError(null);
+    setClaimNotice(null);
     try {
       await approveExternalInvite(claim.invitation_id, approve);
+      setClaimNotice(approve
+        ? `${requesterName(claim)} is in. They’ll get a notification.`
+        : 'Done. That invite link no longer works.');
       await run();
     } catch (cause) {
       setError(describeError(cause, 'community_action'));
     } finally {
       setRespondingClaim(null);
     }
+  };
+
+  /**
+   * "Not them" cancels the link the person used, so it asks once. Confirming
+   * does not: it is the expected answer, and the card already says what it
+   * does.
+   */
+  const confirmNotThem = (claim: ExternalInviteClaim) => {
+    Alert.alert(
+      `Not ${requesterName(claim)}?`,
+      'They won’t join, and the invite link they used stops working. You can send a new invite any time.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Not them', style: 'destructive', onPress: () => void respondToClaim(claim, false) },
+      ],
+    );
   };
 
   const isOwner = !!pack && pack.owner_id === user?.id;
@@ -305,25 +329,45 @@ export default function PackHomeScreen() {
 
         {claims.length ? (
           <>
-            <SectionHead title="Confirm who you invited" />
-            {claims.map(claim => (
-              <CommunityCard key={claim.invitation_id} style={styles.claimCard}>
-                <View style={styles.claimTop}>
-                  <DogStack dogs={claim.dogs} />
-                  <View style={styles.flex}>
-                    <Text style={styles.claimName}>{claim.full_name || (claim.username ? `@${claim.username}` : 'A Pawtchi owner')}</Text>
-                    <Text style={styles.claimMeta}>{claim.username ? `@${claim.username}` : 'No username yet'} · {claim.dogs.map(dog => dog.name).join(' & ') || 'No dog profile'}</Text>
+            <SectionHead title={claims.length === 1 ? 'Asking to join' : `Asking to join · ${claims.length}`} />
+            {claims.map(claim => {
+              const face = claim.dogs[0] ?? { id: claim.claimant_id, name: requesterName(claim), image_url: claim.avatar_url ?? null };
+              const busyHere = respondingClaim === claim.invitation_id;
+              return (
+                <CommunityCard key={claim.invitation_id} style={styles.claimCard}>
+                  <View style={styles.claimTop}>
+                    <DogAvatar dog={face} size={52} />
+                    <View style={styles.flex}>
+                      <Text style={styles.claimName} numberOfLines={1}>{requesterName(claim)}</Text>
+                      <Text style={styles.claimMeta} numberOfLines={1}>
+                        {claim.username && claim.full_name?.trim() ? `@${claim.username} · ` : ''}{requesterDogs(claim)}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-                <Text style={styles.claimHelp}>Only approve if this is the person you meant to invite.</Text>
-                <View style={styles.claimActions}>
-                  <CommunityButton label="Confirm" onPress={() => void respondToClaim(claim, true)} disabled={respondingClaim === claim.invitation_id} style={styles.flex} />
-                  <CommunityButton label="Not them" variant="secondary" onPress={() => void respondToClaim(claim, false)} disabled={respondingClaim === claim.invitation_id} style={styles.flex} />
-                </View>
-              </CommunityCard>
-            ))}
+                  <View style={styles.claimContext}>
+                    <Ionicons name="link-outline" size={15} color={color.electric} />
+                    <Text style={styles.claimContextText}>{requestedLine(claim.claimed_at, Date.now())}</Text>
+                  </View>
+                  <Text style={styles.claimHelp}>
+                    Confirm only if you know them. They’ll join this meetup and see its walks and photos.
+                  </Text>
+                  <View style={styles.claimActions}>
+                    <CommunityButton
+                      label={busyHere ? 'Confirming…' : 'Confirm'}
+                      icon="checkmark"
+                      variant="accent"
+                      onPress={() => void respondToClaim(claim, true)}
+                      disabled={busyHere}
+                      style={styles.flex}
+                    />
+                    <CommunityButton label="Not them" variant="secondary" onPress={() => confirmNotThem(claim)} disabled={busyHere} style={styles.flex} />
+                  </View>
+                </CommunityCard>
+              );
+            })}
           </>
         ) : null}
+        {claimNotice ? <Text style={styles.claimNotice}>{claimNotice}</Text> : null}
 
         <SectionHead
           title={laterWalks.length ? 'Upcoming walks' : 'Next walk'}
@@ -773,8 +817,20 @@ const styles = StyleSheet.create({
 
   claimCard: { gap: space.md, marginBottom: space.md },
   claimTop: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  claimName: { ...type.heading, fontSize: 15, color: color.navy },
+  claimName: { ...type.heading, fontSize: 16, color: color.navy },
   claimMeta: { ...type.body, fontSize: 12, color: color.slateMuted, marginTop: 2 },
-  claimHelp: { ...type.body, fontSize: 12, color: color.slateMuted },
+  claimHelp: { ...type.body, fontSize: 12.5, lineHeight: 18, color: color.slateMuted },
+  claimContext: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: space.md,
+    borderRadius: 999,
+    backgroundColor: color.electricSoft,
+  },
+  claimContextText: { ...type.label, fontSize: 12, color: color.navy },
+  claimNotice: { ...type.body, fontSize: 13, color: color.slateMuted, textAlign: 'center', marginBottom: space.lg },
   claimActions: { flexDirection: 'row', gap: space.sm },
 });

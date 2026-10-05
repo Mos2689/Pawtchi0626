@@ -85,6 +85,8 @@ describe('community notification event types', () => {
       'community_rsvp',
       'community_moment',
       'community_walk_soon',
+      'community_join_request',
+      'community_join_approved',
     ]) {
       expect(sql).toContain(required);
     }

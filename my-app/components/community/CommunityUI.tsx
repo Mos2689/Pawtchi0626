@@ -39,13 +39,41 @@ export function CommunityHeader({
   subtitle,
   onBack,
   action,
+  inline = false,
 }: {
   eyebrow?: string;
   title: string;
   subtitle?: string;
   onBack?: () => void;
   action?: React.ReactNode;
+  /**
+   * Title beside the back button, in one row — the meetup screen's bar. For
+   * screens with a sentence of explanation under the title, where the large
+   * stacked title pushed the content below the fold. No eyebrow in this form.
+   */
+  inline?: boolean;
 }) {
+  if (inline) {
+    return (
+      <View style={styles.headerInline}>
+        <View style={styles.inlineRow}>
+          {onBack ? (
+            <Pressable
+              onPress={onBack}
+              style={styles.iconButton}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <Ionicons name="arrow-back" size={22} color={color.navy} />
+            </Pressable>
+          ) : null}
+          <Text style={styles.inlineTitle} numberOfLines={2} accessibilityRole="header">{title}</Text>
+          {action ?? null}
+        </View>
+        {subtitle ? <Text style={styles.inlineSubtitle}>{subtitle}</Text> : null}
+      </View>
+    );
+  }
   return (
     <View style={styles.header}>
       <View style={styles.headerTop}>
@@ -79,7 +107,13 @@ export function CommunityButton({
   label: string;
   onPress: () => void;
   icon?: keyof typeof Ionicons.glyphMap;
-  variant?: 'primary' | 'secondary' | 'quiet' | 'danger';
+  /**
+   * `accent` is the electric-blue fill, for the second decisive action on a
+   * surface whose one yellow CTA is already taken (a host confirming someone
+   * on a meetup page that also offers "Open this walk"). Matches the approve
+   * button in Connect's waiting sheet.
+   */
+  variant?: 'primary' | 'secondary' | 'quiet' | 'danger' | 'accent';
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
@@ -101,10 +135,10 @@ export function CommunityButton({
         <Ionicons
           name={icon}
           size={18}
-          color={variant === 'secondary' || variant === 'quiet' ? color.navy : color.ink}
+          color={variant === 'accent' ? color.surface : variant === 'secondary' || variant === 'quiet' ? color.navy : color.ink}
         />
       ) : null}
-      <Text style={[styles.buttonText, variant === 'quiet' && styles.buttonTextQuiet]}>{label}</Text>
+      <Text style={[styles.buttonText, variant === 'quiet' && styles.buttonTextQuiet, variant === 'accent' && styles.buttonTextAccent]}>{label}</Text>
     </Pressable>
   );
 }
@@ -360,6 +394,10 @@ const styles = StyleSheet.create({
   eyebrow: { ...type.caption, color: color.electric, marginTop: space.lg },
   title: { fontFamily: font.bold, fontSize: 34, lineHeight: 39, letterSpacing: -1.1, color: color.navy, marginTop: space.xs },
   subtitle: { ...type.body, color: color.slateMuted, maxWidth: 330, marginTop: space.sm },
+  headerInline: { paddingHorizontal: space.xl, paddingTop: space.md, paddingBottom: space.lg },
+  inlineRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: space.md },
+  inlineTitle: { ...type.heading, fontSize: 21, lineHeight: 26, letterSpacing: -0.4, color: color.navy, flex: 1 },
+  inlineSubtitle: { ...type.body, color: color.slateMuted, marginTop: space.lg },
   button: {
     minHeight: 52,
     paddingHorizontal: space.xl,
@@ -373,10 +411,12 @@ const styles = StyleSheet.create({
   button_secondary: { backgroundColor: color.surface, borderWidth: 1, borderColor: color.hairline },
   button_quiet: { backgroundColor: 'transparent' },
   button_danger: { backgroundColor: color.errorSoft },
+  button_accent: { backgroundColor: color.electric },
   buttonPressed: { transform: [{ scale: 0.98 }], opacity: 0.92 },
   buttonDisabled: { opacity: 0.45 },
   buttonText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
   buttonTextQuiet: { color: color.navy },
+  buttonTextAccent: { color: color.surface },
   avatar: {
     width: 42,
     height: 42,
