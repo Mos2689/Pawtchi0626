@@ -19,6 +19,7 @@
 
 import React, { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { showBlockedPermission } from '../../lib/permissions/blockedPermission';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -71,6 +72,7 @@ export function VetReportScanner({ delay = 180 }: VetReportScannerProps) {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
         setScanError('Camera permission is needed to scan the report.');
+        showBlockedPermission('camera');
         return;
       }
       result = await ImagePicker.launchCameraAsync(options);

@@ -62,6 +62,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Linking,
   Modal,
   Platform,
   StyleSheet,
@@ -638,9 +639,18 @@ function PermissionGate({
           <Text style={styles.gateButtonText}>{asked ? 'Try again' : 'Allow camera'}</Text>
         </TouchableOpacity>
       ) : (
-        <Text style={styles.gateHint}>
-          Camera access is off for Pawtchi. You can turn it on in {Platform.OS === 'ios' ? 'Settings' : 'app settings'}.
-        </Text>
+        <>
+          <Text style={styles.gateHint}>
+            Camera access is off for Pawtchi. Turn it on in settings, then come back.
+          </Text>
+          <TouchableOpacity
+            style={styles.gateButton}
+            onPress={() => { void Linking.openSettings().catch(() => {}); }}
+            accessibilityRole="button"
+          >
+            <Text style={styles.gateButtonText}>Open settings</Text>
+          </TouchableOpacity>
+        </>
       )}
     </View>
   );

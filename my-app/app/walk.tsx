@@ -28,6 +28,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { showBlockedPermission } from '../lib/permissions/blockedPermission';
 import { Image } from 'expo-image';
 import { Redirect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -285,8 +286,10 @@ function WalkScreenInner() {
     startWalk(activePet, user.id).then(result => {
       if (result === 'denied') {
         setDenied('Location access is off, so this walk can’t be measured.');
+        showBlockedPermission('location');
       } else if (result === 'services_off') {
         setDenied('Location services are turned off on this phone.');
+        showBlockedPermission('location_services');
       }
     });
   }, [activePet, user?.id, startWalk]);

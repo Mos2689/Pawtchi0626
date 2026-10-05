@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Pressable, Alert, Modal, BackHandler, InteractionManager } from 'react-native';
+import { showBlockedPermission } from '../../lib/permissions/blockedPermission';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -1022,7 +1023,7 @@ function MealScreenContent() {
     if (useCamera) {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission Required', 'Camera access is needed to scan food labels.');
+        showBlockedPermission('camera');
         return;
       }
       result = await ImagePicker.launchCameraAsync({

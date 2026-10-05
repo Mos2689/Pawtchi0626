@@ -27,6 +27,7 @@
  * is defined at bundle load and the OS can wake it with no screen mounted.
  */
 
+import { Platform } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -323,7 +324,17 @@ export async function isRunning(): Promise<boolean> {
  */
 export async function requestPermission(): Promise<WalkPermission> {
   try {
-    const services = await Location.hasServicesEnabledAsync();
+    let services = await Location.hasServicesEnabledAsync();
+    // Android can switch location on from inside the app with one system
+    // dialog; iOS cannot, so there the caller explains and offers Settings.
+    if (!services && Platform.OS === 'android') {
+      try {
+        await Location.enableNetworkProviderAsync();
+        services = await Location.hasServicesEnabledAsync();
+      } catch {
+        // Declined, or no dialog on this device: fall through to services_off.
+      }
+    }
     if (!services) return 'services_off';
     const { status } = await Location.requestForegroundPermissionsAsync();
     return status === 'granted' ? 'granted' : 'denied';

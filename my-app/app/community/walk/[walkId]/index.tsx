@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { describeError, errorCopy, isTransientError, toAppError, type AppError } from '../../../../lib/appError';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { showBlockedPermission } from '../../../../lib/permissions/blockedPermission';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -425,11 +426,13 @@ export default function OutingScreen() {
     if (result === 'denied') {
       setError('Location access is off, so this walk can’t be measured.');
       setBusy(false);
+      showBlockedPermission('location');
       return;
     }
     if (result === 'services_off') {
       setError('Location services are turned off on this phone.');
       setBusy(false);
+      showBlockedPermission('location_services');
       return;
     }
     router.replace(`/community/walk/${walkId}/live` as never);
