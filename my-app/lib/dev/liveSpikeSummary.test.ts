@@ -94,6 +94,16 @@ describe('summariseSpike', () => {
     expect(s.token).toMatchObject({ firstExp: 5000, lastExp: 9000, renewals: 1, authEvents: { TOKEN_REFRESHED: 1 } });
   });
 
+  it("does not count this phone's own Presence entry as someone leaving", () => {
+    const own = summariseSpike([
+      at(0, 'active', { k: 'start', room: 'a1', role: 'walker', platform: 'ios', build: '102', me: 'aaaaaaaa' }),
+      at(5, 'active', { k: 'pres', what: 'join', keys: ['aaaaaaaa'] }),
+      at(9, 'active', { k: 'pres', what: 'leave', keys: ['aaaaaaaa', 'bbbbbbbb'] }),
+    ]);
+    expect(own.presence.joins).toBe(0);
+    expect(own.presence.leaves.map(l => l.key)).toEqual(['bbbbbbbb']);
+  });
+
   it('flags ticks where the socket stayed open past token expiry', () => {
     const late = summariseSpike([tick(6000, 'background', 'open', 5000)]);
     expect(late.token.ticksPastExpiryWhileOpen).toBe(1);

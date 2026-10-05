@@ -262,7 +262,7 @@ export async function startSpike(room: string, role: SpikeRole, meetupId: string
   chunk = 0;
   seq = 0;
   useLiveSpike.setState({ ...IDLE, running: true, runId, room, me });
-  log({ k: 'start', room, role, platform: Platform.OS, build: Application.nativeBuildVersion ?? '?' });
+  log({ k: 'start', room, role, platform: Platform.OS, build: Application.nativeBuildVersion ?? '?', me });
   if (meetupId) log({ k: 'note', text: `database changes from meetup ${shortId(meetupId)}` });
 
   // App state.

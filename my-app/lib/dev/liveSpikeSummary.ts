@@ -16,7 +16,7 @@
 export type SpikeRole = 'walker' | 'viewer';
 
 export type SpikeEventBody =
-  | { k: 'start'; room: string; role: SpikeRole; platform: string; build: string }
+  | { k: 'start'; room: string; role: SpikeRole; platform: string; build: string; me?: string }
   | { k: 'stop' }
   | { k: 'app'; state: string }
   | { k: 'auth'; event: string; exp: number | null }
@@ -182,9 +182,11 @@ export function summariseSpike(events: readonly SpikeEvent[]): SpikeSummary {
   const sentHeartbeats = hbs.filter(h => h.status === 'sent');
 
   // How long each leaving key had already been silent when Presence noticed.
+  // This phone's own Presence entry also "leaves" whenever its socket drops
+  // and rejoins; that is item 2, not someone else going away.
   const leaves = pres
     .filter(p => p.what === 'leave')
-    .flatMap(p => p.keys.map(key => {
+    .flatMap(p => p.keys.filter(key => key !== start?.me).map(key => {
       const heard = recvs.filter(r => r.from === key && r.t <= p.t);
       const lastHeard = heard[heard.length - 1];
       return { key, at: p.t, silentSec: lastHeard ? sec(p.t - lastHeard.t) : null };
@@ -236,7 +238,10 @@ export function summariseSpike(events: readonly SpikeEvent[]): SpikeSummary {
       backgroundHeartbeatsSent: sentHeartbeats.filter(h => isBackground(h.a)).length,
       maxBackgroundHeartbeatGapSec: sec(maxGap(sentHeartbeats.map(h => h.t), bg)),
     },
-    presence: { joins: pres.filter(p => p.what === 'join').reduce((n, p) => n + p.keys.length, 0), leaves },
+    presence: {
+      joins: pres.filter(p => p.what === 'join').reduce((n, p) => n + p.keys.filter(key => key !== start?.me).length, 0),
+      leaves,
+    },
     sends: {
       byResult: countBy(sends, s => s.res),
       backgroundByResult: countBy(sends.filter(s => isBackground(s.a)), s => s.res),
