@@ -8,6 +8,7 @@ import { isMissingFunction, toPreviousInvitee, type PreviousInvitee } from './co
 import { toInvitationPreview, type InvitationPreview } from './community/invitationPreview';
 import { composeOutingSnapshot, decodeOuting, type PackAttendanceEntry } from './community/outingDoc';
 import { isPerfFlagOn } from './perfFlags';
+import { LIVE_PROTOCOL } from './community/liveProtocol';
 
 export { isValidUsername, normalizeUsername } from './communityUsername';
 
@@ -1182,6 +1183,7 @@ export function joinErrorMessage(raw: string): string {
   if (raw.includes('walk_access_denied') || raw.includes('walk_not_found')) return 'This walk is no longer available to you.';
   if (raw.includes('pet_not_yours')) return 'Pick one of your own dogs for this walk.';
   if (raw.includes('auth_required')) return 'Sign in to join this walk.';
+  if (raw.includes('update_required')) return 'This walk needs the latest Pawtchi. Update the app, then join.';
   return 'The walk could not start. Try again in a moment.';
 }
 
@@ -1204,12 +1206,25 @@ export async function joinOuting(
   shareLocation: boolean,
   options: { start?: boolean } = {},
 ): Promise<void> {
-  const { error } = await supabase.rpc('join_community_walk', {
+  // v2 (20261004010000): this build speaks live protocol 2, and asks for the
+  // Broadcast transport only when Live Walk v2 is on for it. The server still
+  // decides — with Broadcast switched off server-side every walk is `db`.
+  const v2 = await supabase.rpc('join_community_walk_v2', {
     p_walk_id: walkId,
     p_pet_ids: petIds,
     p_share_location: shareLocation,
     p_start: !!options.start,
+    p_live_protocol: LIVE_PROTOCOL,
+    p_request_broadcast: isPerfFlagOn('liveWalkV2'),
   });
+  const { error } = v2.error && isMissingFunction(v2.error.message)
+    ? await supabase.rpc('join_community_walk', {
+      p_walk_id: walkId,
+      p_pet_ids: petIds,
+      p_share_location: shareLocation,
+      p_start: !!options.start,
+    })
+    : v2;
   if (!error) return;
   if (!isMissingFunction(error.message)) {
     // A refusal is the walk's answer and gets its own sentence. A dropped

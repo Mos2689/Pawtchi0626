@@ -101,20 +101,50 @@ describe('loadPack', () => {
 });
 
 describe('joinOuting', () => {
-  it('joins — and for the host, starts — in one call', async () => {
+  const V2_MISSING: Response = {
+    data: null,
+    error: { message: 'Could not find the function public.join_community_walk_v2 in the schema cache' },
+  };
+  afterEach(() => resetPerfFlagsForTests());
+
+  it('joins — and for the host, starts — in one call, speaking live protocol 2', async () => {
     await joinOuting('w1', ['d1'], true, { start: true });
     expect(mockRpcCalls).toEqual([{
-      name: 'join_community_walk',
-      args: { p_walk_id: 'w1', p_pet_ids: ['d1'], p_share_location: true, p_start: true },
+      name: 'join_community_walk_v2',
+      args: {
+        p_walk_id: 'w1', p_pet_ids: ['d1'], p_share_location: true, p_start: true,
+        p_live_protocol: 2, p_request_broadcast: false,
+      },
     }]);
   });
 
+  it('asks for Broadcast only when Live Walk v2 is on for this phone', async () => {
+    setPerfFlagOverride('liveWalkV2', true);
+    await joinOuting('w1', ['d1'], true, { start: true });
+    expect((mockRpcCalls[0].args as { p_request_broadcast: boolean }).p_request_broadcast).toBe(true);
+  });
+
+  it('uses the v1 join on a database without v2', async () => {
+    mockResponses['rpc:join_community_walk_v2'] = V2_MISSING;
+    await joinOuting('w1', ['d1'], true, { start: true });
+    expect(mockRpcCalls).toEqual([
+      expect.objectContaining({ name: 'join_community_walk_v2' }),
+      { name: 'join_community_walk', args: { p_walk_id: 'w1', p_pet_ids: ['d1'], p_share_location: true, p_start: true } },
+    ]);
+  });
+
   it('turns a refusal into a sentence', async () => {
-    mockResponses['rpc:join_community_walk'] = { data: null, error: { message: 'walk_closed' } };
+    mockResponses['rpc:join_community_walk_v2'] = { data: null, error: { message: 'walk_closed' } };
     await expect(joinOuting('w1', ['d1'], false)).rejects.toThrow('This walk has finished.');
   });
 
-  it('falls back to the old writes on a database without the function', async () => {
+  it('asks for an update when the walk needs a newer app', async () => {
+    mockResponses['rpc:join_community_walk_v2'] = { data: null, error: { message: 'update_required' } };
+    await expect(joinOuting('w1', ['d1'], false)).rejects.toThrow(/latest Pawtchi/);
+  });
+
+  it('falls back to the old writes on a database without either function', async () => {
+    mockResponses['rpc:join_community_walk_v2'] = V2_MISSING;
     mockResponses['rpc:join_community_walk'] = {
       data: null,
       error: { message: 'Could not find the function public.join_community_walk in the schema cache' },
@@ -123,7 +153,7 @@ describe('joinOuting', () => {
   });
 
   it('keeps a dropped connection distinct from a refusal, so the screen can retry it', async () => {
-    mockResponses['rpc:join_community_walk'] = { data: null, error: { message: 'TypeError: Network request failed' } };
+    mockResponses['rpc:join_community_walk_v2'] = { data: null, error: { message: 'TypeError: Network request failed' } };
     const failure = await joinOuting('w1', ['d1'], false).catch(error => error);
     expect(failure).toBeInstanceOf(Error);
     expect(failure.name).not.toBe('UserFacingError');

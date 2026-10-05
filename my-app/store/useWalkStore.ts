@@ -138,6 +138,12 @@ interface WalkState {
   session: WalkSessionState | null;
   /** Clinical session-cap notice (activityRestrictions) — shown once. */
   capReached: boolean;
+  /**
+   * The newest raw GPS reading, accepted or not — so the live map can tell a
+   * phone whose GPS is alive (but standing still) from one whose last fix is
+   * simply old. Additive: nothing in the session machine reads it.
+   */
+  lastObservation: { at: number; accuracy: number | null } | null;
   lastResult: WalkResult | null;
 
   /**
@@ -186,6 +192,7 @@ export const useWalkStore = create<WalkState>((set, get) => ({
   marker: null,
   session: null,
   capReached: false,
+  lastObservation: null,
   lastResult: null,
 
   startWalk: async (pet: Pet, ownerId: string, trail?: ActiveWalkTrail) => {
@@ -257,6 +264,8 @@ export const useWalkStore = create<WalkState>((set, get) => ({
 
     let next: WalkSessionState = session;
     for (const p of points) next = ingestPoint(next, p, config);
+    const newest = points[points.length - 1];
+    if (newest) set({ lastObservation: { at: newest.timestamp, accuracy: newest.accuracy } });
 
     if (session.status === 'active' && next.status === 'auto_paused') {
       track('walk_auto_paused', { elapsed_s: Math.round((Date.now() - marker.startedAt) / 1000) });

@@ -45,6 +45,13 @@ export const PERF_FLAGS = {
   killNetRetry: 'kill-net-retry',
   /** Live walk: apply position events directly; fewer close-check polls. */
   liveDeltas: 'perf-live-deltas',
+  /**
+   * Live Walk v2 (plan this-is-good-and-giggly-summit): the recorder publishes
+   * through begin_live_session / publish_live_location (and the private room on
+   * a broadcast walk), and the live map reads through the reconciler. Off =
+   * today's path. Read once per session, so a walk never switches mid-way.
+   */
+  liveWalkV2: 'live-walk-v2',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;
