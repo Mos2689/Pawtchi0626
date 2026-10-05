@@ -39,6 +39,14 @@ export const LINK_REFUSED_BACKOFF_MS = 30_000;
 export const ACK_TIMEOUT_MS = 5_000;
 export const UNHEALTHY_AFTER_FAILURES = 2;
 export const PROBE_INTERVAL_MS = 30_000;
+/**
+ * The longest the room may go without being joined — while joining, or after
+ * silently falling out of "joined" — before the channel is thrown away and a
+ * fresh one opened. Field run 2026-10-05: after a few socket drops on iOS the
+ * SDK left a channel in "joining" for ten minutes and never said another word.
+ */
+export const JOIN_WATCHDOG_MS = 20_000;
+const WATCH_EVERY_MS = 5_000;
 
 export type LinkStatus = 'connecting' | 'joined' | 'waiting' | 'closed';
 export type LinkRole = 'walker' | 'viewer';
@@ -123,6 +131,9 @@ export class LiveLink {
   private healthy = true;
   private retryTimer: unknown = null;
   private probeTimer: unknown = null;
+  private watchTimer: unknown = null;
+  /** When the current channel was last seen not joined; null while it is. */
+  private notJoinedSince: number | null = null;
   private trackedRole: LinkRole | null = null;
 
   constructor(
@@ -207,8 +218,35 @@ export class LiveLink {
   private clearTimers(): void {
     if (this.retryTimer !== null) this.timers.clearTimeout(this.retryTimer);
     if (this.probeTimer !== null) this.timers.clearTimeout(this.probeTimer);
+    if (this.watchTimer !== null) this.timers.clearTimeout(this.watchTimer);
     this.retryTimer = null;
     this.probeTimer = null;
+    this.watchTimer = null;
+  }
+
+  /**
+   * Every few seconds while a channel exists: if it has not been joined for
+   * JOIN_WATCHDOG_MS, start over. Elapsed time is counted in watch ticks, so a
+   * phone whose timers were frozen while locked does not trip it on waking.
+   */
+  private watch(attempt: number): void {
+    if (this.watchTimer !== null) this.timers.clearTimeout(this.watchTimer);
+    this.watchTimer = this.timers.setTimeout(() => {
+      this.watchTimer = null;
+      if (attempt !== this.attempt || this.current === 'closed' || !this.channel) return;
+      const joined = this.current === 'joined' && this.channel.state === 'joined';
+      if (joined) {
+        this.notJoinedSince = null;
+      } else {
+        this.notJoinedSince = (this.notJoinedSince ?? 0) + WATCH_EVERY_MS;
+        if (this.notJoinedSince >= JOIN_WATCHDOG_MS) {
+          this.notJoinedSince = null;
+          this.retryLater(false);
+          return;
+        }
+      }
+      this.watch(attempt);
+    }, WATCH_EVERY_MS);
   }
 
   private teardownChannel(): void {
@@ -256,6 +294,8 @@ export class LiveLink {
       );
     }
 
+    this.notJoinedSince = null;
+    this.watch(attempt);
     channel.subscribe(status => {
       if (attempt !== this.attempt || this.current === 'closed') return;
       if (status === 'SUBSCRIBED') {

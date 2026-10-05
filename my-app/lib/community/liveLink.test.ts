@@ -1,5 +1,6 @@
 import {
   ACK_TIMEOUT_MS,
+  JOIN_WATCHDOG_MS,
   LINK_REFUSED_BACKOFF_MS,
   PROBE_INTERVAL_MS,
   acquireLiveLink,
@@ -241,6 +242,30 @@ describe('reconnecting', () => {
     dropped.client.last.fail('CHANNEL_ERROR');
     await dropped.timers.advance(2_000);
     expect(dropped.client.channels).toHaveLength(2);
+  });
+
+  it('starts over when a join never finishes (the SDK going quiet in "joining")', async () => {
+    const { client, timers } = setup();
+    acquireLiveLink(client, ME, WALK, {}, 'viewer', timers);
+    await flush();
+    await timers.advance(JOIN_WATCHDOG_MS - 5_000);
+    expect(client.channels).toHaveLength(1);
+    await timers.advance(5_000);
+    expect(client.removed).toContain(client.channels[0]);
+    await timers.advance(2_000);
+    expect(client.channels).toHaveLength(2);
+  });
+
+  it('starts over when a joined room silently stops being joined', async () => {
+    const { client, timers } = setup();
+    acquireLiveLink(client, ME, WALK, {}, 'viewer', timers);
+    await flush();
+    client.last.join();
+    await timers.advance(30_000);
+    expect(client.channels).toHaveLength(1);
+    client.last.state = 'joining';
+    await timers.advance(JOIN_WATCHDOG_MS + 5_000);
+    expect(client.removed).toContain(client.channels[0]);
   });
 
   it('removes the old channel each time and reports the gap to consumers', async () => {

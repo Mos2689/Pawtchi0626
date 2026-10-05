@@ -42,6 +42,8 @@ import {
 
 
 const TICK_MS = 5_000;
+/** A room not joined for this long is thrown away and opened again. */
+const ROOM_WATCHDOG_MS = 20_000;
 const LOCATION_PING_MIN_GAP_MS = 2_000;
 const FLUSH_MS = 15_000;
 const PROBE_MS = 45_000;
@@ -304,61 +306,95 @@ export async function startSpike(room: string, role: SpikeRole, meetupId: string
   rt.onHeartbeat((status, latency) => log({ k: 'hb', status, latency }));
   cleanups.push(() => rt.onHeartbeat(() => {}));
 
-  // The room.
-  const ch = supabase.channel(`spike:${room}`, {
-    config: { private: true, broadcast: { self: false, ack: true }, presence: { key: me } },
-  });
-  channel = ch;
-  ch.on('broadcast', { event: 'ping' }, ({ payload }) => {
-    const p = (payload ?? {}) as Record<string, unknown>;
-    log({
-      k: 'recv',
-      from: shortId(p.from),
-      seq: typeof p.seq === 'number' ? p.seq : -1,
-      via: typeof p.via === 'string' ? p.via : '?',
-      sentApp: typeof p.app === 'string' ? p.app : '?',
-      sentAt: typeof p.at === 'number' ? p.at : 0,
+  // The room. Opened by a function so the watchdog below can open it again.
+  const peers = () => (channel ? Object.keys(channel.presenceState()).filter(key => key !== me) : []);
+  const openRoom = (): RealtimeChannel => {
+    const ch = supabase.channel(`spike:${room}`, {
+      config: { private: true, broadcast: { self: false, ack: true }, presence: { key: me } },
     });
-    useLiveSpike.setState(s => ({ received: s.received + 1 }));
-  });
-  const peers = () => Object.keys(ch.presenceState()).filter(key => key !== me);
-  ch.on('presence', { event: 'sync' }, () => {
-    log({ k: 'pres', what: 'sync', keys: Object.keys(ch.presenceState()) });
-    useLiveSpike.setState({ peers: peers() });
-  });
-  ch.on('presence', { event: 'join' }, ({ key }) => log({ k: 'pres', what: 'join', keys: [key] }));
-  ch.on('presence', { event: 'leave' }, ({ key }) => log({ k: 'pres', what: 'leave', keys: [key] }));
-  if (meetupId) {
-    // Q7: database changes delivered over a private channel. Authorised by the
-    // table's own RLS, not by the spike policy.
-    const onRow = (payload: { eventType: string; new: Record<string, unknown> }) => {
-      const row = payload.new ?? {};
+    channel = ch;
+    ch.on('broadcast', { event: 'ping' }, ({ payload }) => {
+      const p = (payload ?? {}) as Record<string, unknown>;
       log({
-        k: 'pgc',
-        ev: payload.eventType,
-        from: shortId(row.user_id),
-        recordedAt: typeof row.recorded_at === 'string' ? row.recorded_at : null,
+        k: 'recv',
+        from: shortId(p.from),
+        seq: typeof p.seq === 'number' ? p.seq : -1,
+        via: typeof p.via === 'string' ? p.via : '?',
+        sentApp: typeof p.app === 'string' ? p.app : '?',
+        sentAt: typeof p.at === 'number' ? p.at : 0,
       });
-      useLiveSpike.setState(s => ({ dbChanges: s.dbChanges + 1 }));
-    };
-    const filter = `walk_id=eq.${meetupId}`;
-    ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'community_live_locations', filter }, onRow);
-    ch.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'community_live_locations', filter }, onRow);
-  }
-  ch.subscribe((status, err) => {
-    log({ k: 'ch', status, err: err?.message });
-    if (status === 'SUBSCRIBED') {
-      // Presence does not survive a rejoin, so it is tracked on every one.
-      void ch.track({ role, platform: Platform.OS, since: Date.now() })
-        .then(res => log({ k: 'ch', status: `track_${res}` }))
-        .catch(() => log({ k: 'ch', status: 'track_threw' }));
+      useLiveSpike.setState(s => ({ received: s.received + 1 }));
+    });
+    ch.on('presence', { event: 'sync' }, () => {
+      log({ k: 'pres', what: 'sync', keys: Object.keys(ch.presenceState()) });
+      useLiveSpike.setState({ peers: peers() });
+    });
+    ch.on('presence', { event: 'join' }, ({ key }) => log({ k: 'pres', what: 'join', keys: [key] }));
+    ch.on('presence', { event: 'leave' }, ({ key }) => log({ k: 'pres', what: 'leave', keys: [key] }));
+    if (meetupId) {
+      // Q7: database changes delivered over a private channel. Authorised by the
+      // table's own RLS, not by the spike policy.
+      const onRow = (payload: { eventType: string; new: Record<string, unknown> }) => {
+        const row = payload.new ?? {};
+        log({
+          k: 'pgc',
+          ev: payload.eventType,
+          from: shortId(row.user_id),
+          recordedAt: typeof row.recorded_at === 'string' ? row.recorded_at : null,
+        });
+        useLiveSpike.setState(s => ({ dbChanges: s.dbChanges + 1 }));
+      };
+      const filter = `walk_id=eq.${meetupId}`;
+      ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'community_live_locations', filter }, onRow);
+      ch.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'community_live_locations', filter }, onRow);
+    }
+    ch.subscribe((status, err) => {
+      if (channel !== ch) return;
+      log({ k: 'ch', status, err: err?.message });
+      if (status === 'SUBSCRIBED') {
+        // Presence does not survive a rejoin, so it is tracked on every one.
+        void ch.track({ role, platform: Platform.OS, since: Date.now() })
+          .then(res => log({ k: 'ch', status: `track_${res}` }))
+          .catch(() => log({ k: 'ch', status: 'track_threw' }));
+      }
+    });
+    return ch;
+  };
+  openRoom();
+  cleanups.push(() => {
+    const ch = channel;
+    channel = null;
+    if (ch) {
+      void ch.untrack().catch(() => {});
+      void supabase.removeChannel(ch);
     }
   });
-  cleanups.push(() => {
+
+  /**
+   * The watchdog. Field run 2026-10-05: after a few socket drops on iOS the
+   * SDK left the channel in "joining" for ten minutes without another word.
+   * If the room is not joined for this long, throw the channel away and open
+   * a fresh one — exactly what liveLink does for the real feature.
+   */
+  let notJoinedSince: number | null = null;
+  const watchRoom = () => {
+    const ch = channel;
+    if (!ch) return;
+    if (ch.state === 'joined') {
+      notJoinedSince = null;
+      return;
+    }
+    const now = Date.now();
+    if (notJoinedSince === null) notJoinedSince = now;
+    if (now - notJoinedSince < ROOM_WATCHDOG_MS) return;
+    notJoinedSince = null;
+    log({ k: 'ch', status: `watchdog_rejoin_from_${ch.state}` });
     channel = null;
-    void ch.untrack().catch(() => {});
-    void supabase.removeChannel(ch);
-  });
+    void supabase.removeChannel(ch).catch(() => {});
+    void supabase.realtime.setAuth().catch(() => {}).then(() => {
+      if (useLiveSpike.getState().running && channel === null) openRoom();
+    });
+  };
 
   // Location batches from the walk recorder (observed, never driven).
   let lastLocationPing = 0;
@@ -383,8 +419,10 @@ export async function startSpike(room: string, role: SpikeRole, meetupId: string
     const drift = now - expected;
     expected = now + TICK_MS;
     const exp = tokenExp(supabase.realtime.accessTokenValue);
-    log({ k: 'tick', drift, conn: supabase.realtime.connectionState(), ch: ch.state, tokExp: exp, peers: peers().length });
-    useLiveSpike.setState({ conn: supabase.realtime.connectionState(), channel: ch.state, tokenExp: exp });
+    const state = channel?.state ?? 'none';
+    log({ k: 'tick', drift, conn: supabase.realtime.connectionState(), ch: state, tokExp: exp, peers: peers().length });
+    useLiveSpike.setState({ conn: supabase.realtime.connectionState(), channel: state, tokenExp: exp });
+    watchRoom();
     void ping('timer');
   }, TICK_MS);
   cleanups.push(() => clearInterval(tick));
