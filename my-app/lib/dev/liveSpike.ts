@@ -1,11 +1,13 @@
 /**
  * Live Walk v2 — Phase A device spike: the recorder.
  *
- * Throwaway: delete once the spike is done. Ships inside the normal test
- * build, dormant — it shows and does nothing unless the `dev-live-spike`
- * PostHog flag is on for the signed-in account (or a local build sets
- * EXPO_PUBLIC_LIVE_SPIKE=1). Even then the server refuses its room to anyone
- * not listed in private.live_spike_testers. Runbook: supabase/spike/RUNBOOK.md.
+ * Throwaway, TestFlight only: DELETE before any App Store release. Reachable
+ * only by typing pawtchi://dev-live-spike, and does nothing until Start is
+ * pressed. The lock is the server's: its room refuses every account not in
+ * private.live_spike_testers, so anyone else sees a channel error. (A PostHog
+ * flag gate was tried first and never opened on device — removed rather than
+ * debugged, since the server list already does the job.)
+ * Runbook: supabase/spike/RUNBOOK.md.
  *
  * While running it holds one private Realtime channel, `spike:<room>`, with
  * Broadcast, Presence and (when a meetup id is given) that meetup's
@@ -27,9 +29,7 @@ import * as Sharing from 'expo-sharing';
 import { create } from 'zustand';
 import { RealtimeClient, type RealtimeChannel } from '@supabase/supabase-js';
 
-import { useEffect, useState } from 'react';
 import { supabase } from '../supabase';
-import { posthog } from '../analytics';
 import { currentUserId } from '../sessionUser';
 import { useWalkStore } from '../../store/useWalkStore';
 import {
@@ -40,61 +40,6 @@ import {
   type SpikeRole,
 } from './liveSpikeSummary';
 
-const SPIKE_FLAG = 'dev-live-spike';
-
-/**
- * Whether the recorder is unlocked right now: the `dev-live-spike` PostHog
- * flag, or a local build's EXPO_PUBLIC_LIVE_SPIKE=1.
- *
- * Read live every time, deliberately NOT through isPerfFlagOn. Perf flags are
- * frozen at their first answer for the session, and opening the recorder's
- * link from Safari cold-starts the app straight onto this screen — before
- * PostHog has loaded the signed-in account's flags. The first answer was
- * "off", it stuck, and the screen stayed blank.
- */
-export function liveSpikeAllowedNow(): boolean | null {
-  if (process.env.EXPO_PUBLIC_LIVE_SPIKE === '1') return true;
-  if (!posthog) return false;
-  try {
-    const answer = posthog.isFeatureEnabled(SPIKE_FLAG);
-    return answer === undefined ? null : answer === true;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The recorder's access, kept current: 'checking' until PostHog has an answer
- * for this account (it asks for a fresh one on open), then 'on' or 'off',
- * changing if the flags change while the screen is up. Gives up waiting after
- * 15 s, so the screen says something instead of checking for ever.
- */
-export function useLiveSpikeAccess(): 'checking' | 'on' | 'off' {
-  const [access, setAccess] = useState<'checking' | 'on' | 'off'>(() => {
-    const now = liveSpikeAllowedNow();
-    return now === null ? 'checking' : now ? 'on' : 'off';
-  });
-  useEffect(() => {
-    const read = (settled: boolean) => {
-      const now = liveSpikeAllowedNow();
-      if (now !== null) setAccess(now ? 'on' : 'off');
-      else if (settled) setAccess('off');
-    };
-    let unsubscribe: (() => void) | undefined;
-    try {
-      unsubscribe = posthog?.onFeatureFlags(() => read(true));
-      void posthog?.reloadFeatureFlagsAsync().then(() => read(true)).catch(() => read(true));
-    } catch {
-      read(true);
-    }
-    const giveUp = setTimeout(() => read(true), 15_000);
-    return () => {
-      clearTimeout(giveUp);
-      unsubscribe?.();
-    };
-  }, []);
-  return access;
-}
 
 const TICK_MS = 5_000;
 const LOCATION_PING_MIN_GAP_MS = 2_000;
@@ -305,7 +250,7 @@ async function ping(via: string): Promise<void> {
 }
 
 export async function startSpike(room: string, role: SpikeRole, meetupId: string | null): Promise<void> {
-  if (liveSpikeAllowedNow() !== true || useLiveSpike.getState().running) return;
+  if (useLiveSpike.getState().running) return;
   if (!ROOM.test(room)) throw new Error('Room: 1–64 lowercase letters, digits or dashes.');
   if (meetupId && !UUID.test(meetupId)) throw new Error('Meetup id: leave it empty, or use the id of a meetup you are in.');
   const userId = await currentUserId();

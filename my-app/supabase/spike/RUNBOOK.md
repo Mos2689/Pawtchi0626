@@ -1,6 +1,6 @@
 # Live Walk v2: Phase A device spike runbook
 
-The recorder ships, switched off, inside the normal TestFlight build (`fix/connect-resilience`, build 101). It appears only for accounts with the `dev-live-spike` PostHog flag on, and the server only lets the two accounts in `private.live_spike_testers` use its room. Delete it once the spike is done. It exists to answer the questions below on real phones before the new live-walk design is built on top of those answers.
+The recorder ships inside the normal TestFlight build (`fix/connect-resilience`, build 102 or later). The server only lets the two accounts in `private.live_spike_testers` use its room. It is for TestFlight only: delete it before any App Store release. It exists to answer the questions below on real phones before the new live-walk design is built on top of those answers.
 
 ## What the spike answers
 
@@ -40,7 +40,7 @@ This touches no app tables. It only lets those two accounts use rooms named `spi
 
 ## Step 2: The build, and switching the recorder on
 
-There is no separate spike build. Use the normal TestFlight build from `fix/connect-resilience` (build 101):
+There is no separate spike build. Use the normal TestFlight build from `fix/connect-resilience` (build 102):
 
 ```bash
 git checkout fix/connect-resilience
@@ -60,13 +60,9 @@ For the Android phone, build an installable APK from the same branch and install
 eas build -p android --profile preview
 ```
 
-Then, in PostHog, create a boolean flag **`dev-live-spike`**, released to **0%**, with a condition that includes only your two test accounts (by email or user id). Everyone else keeps it off, so the recorder screen stays blank for them.
-
 ## Step 3: Open the recorder
 
-On each phone, open `pawtchi://dev-live-spike`. You can type it into Safari or Chrome, or tap it in a note. For your two test accounts it shows the recorder; for anyone else it says the recorder is not enabled.
-
-**On build 101 only**, the screen can come up blank: opening the link with the app closed checks the flag before PostHog has loaded it, and the answer sticks. Fix: swipe Pawtchi away, open it normally, wait about 30 seconds on Home, then open the link. Later builds check live and show "Checking access" instead.
+On each phone, open `pawtchi://dev-live-spike`. You can type it into Safari or Chrome, or tap it in a note. The recorder appears for any signed-in account, but only your two tester accounts can use its room. Anyone else gets a channel error when they press Start. It needs build **102** or later: on build 101 the screen is blank.
 
 Both phones use the same **Room** name (for example `a1`).
 

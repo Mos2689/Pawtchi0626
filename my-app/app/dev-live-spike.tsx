@@ -1,8 +1,8 @@
 /**
  * SPIKE-ONLY — Live Walk v2 Phase A recorder. Lives on spike/live-walk-a only.
  *
- * Renders nothing unless the `dev-live-spike` PostHog flag is on for this
- * account (lib/dev/liveSpike.ts useLiveSpikeAccess). Open with
+ * TestFlight only — delete before an App Store release. Only the accounts in
+ * private.live_spike_testers can join its room (lib/dev/liveSpike.ts). Open with
  * pawtchi://dev-live-spike. Runbook: supabase/spike/RUNBOOK.md.
  */
 
@@ -11,7 +11,6 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { color, font, radius, space, type } from '../constants/design';
 import {
-  useLiveSpikeAccess,
   deleteAllRuns,
   listRuns,
   manualPing,
@@ -25,13 +24,10 @@ import {
   useLiveSpike,
 } from '../lib/dev/liveSpike';
 import type { SpikeRole } from '../lib/dev/liveSpikeSummary';
-import { currentUserId } from '../lib/sessionUser';
 
 const NOTES = ['Locking now', 'Unlocked', 'Walking', 'Standing still', 'Walk ended'];
 
 export default function DevLiveSpikeScreen() {
-  const access = useLiveSpikeAccess();
-  if (access !== 'on') return <AccessState access={access} />;
   return <Recorder />;
 }
 
@@ -49,29 +45,6 @@ function Button({ label, onPress, tone = 'plain', disabled = false }: {
     >
       <Text style={styles.buttonLabel}>{label}</Text>
     </Pressable>
-  );
-}
-
-/**
- * What a tester sees instead of the recorder. Never a blank page: a blank
- * page cannot tell "still checking" from "this account is not enabled".
- */
-function AccessState({ access }: { access: 'checking' | 'off' }) {
-  const insets = useSafeAreaInsets();
-  const [who, setWho] = useState<string | null>(null);
-  useEffect(() => {
-    void currentUserId().then(id => setWho(id ? id.slice(0, 8) : null));
-  }, []);
-  return (
-    <View style={[styles.root, styles.access, { paddingTop: insets.top + space.xxxl }]}>
-      <Text style={styles.title}>Live walk spike</Text>
-      <Text style={styles.stat}>
-        {access === 'checking'
-          ? 'Checking whether this account can use the recorder…'
-          : 'The recorder is not enabled for this account. Turn on the dev-live-spike flag for it in PostHog, then close and reopen the app.'}
-      </Text>
-      <Text style={styles.line}>Signed in as {who ?? 'nobody'}</Text>
-    </View>
   );
 }
 
@@ -176,7 +149,6 @@ function Recorder() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.surface },
-  access: { paddingHorizontal: space.lg, gap: space.md },
   content: { paddingHorizontal: space.lg, gap: space.md },
   title: { ...type.title, color: color.ink },
   label: { ...type.label, color: color.slate, marginTop: space.sm },
