@@ -61,6 +61,20 @@ export const READ_ONLY_RPCS: ReadonlySet<string> = new Set([
   'get_pro_offer_state',
   'get_pro_offer_config',
   'get_my_creator_code',
+  // Live Walk v2 read (20261004000000), STABLE, checked 2026-10-05.
+  'live_walk_positions',
+]);
+
+/**
+ * Writes that are safe to send again because a repeat cannot do anything
+ * twice — the server recognises it:
+ *   begin_live_session    the same start token returns the same generation;
+ *   publish_live_location the same (gen, seq) is answered `stale`, unchanged.
+ * Treated like reads by the retry layer. Add a name only with that guarantee.
+ */
+export const IDEMPOTENT_WRITE_RPCS: ReadonlySet<string> = new Set([
+  'begin_live_session',
+  'publish_live_location',
 ]);
 
 export type RequestKind = 'excluded' | 'repeatable' | 'write';
@@ -86,7 +100,7 @@ export function requestKind(url: string, method: string): RequestKind {
   if (!path.startsWith('/rest/v1/')) return 'excluded';
   if (verb === 'GET' || verb === 'HEAD') return 'repeatable';
   const rpc = /^\/rest\/v1\/rpc\/([a-z0-9_]+)$/i.exec(path)?.[1];
-  if (verb === 'POST' && rpc && READ_ONLY_RPCS.has(rpc)) return 'repeatable';
+  if (verb === 'POST' && rpc && (READ_ONLY_RPCS.has(rpc) || IDEMPOTENT_WRITE_RPCS.has(rpc))) return 'repeatable';
   return 'write';
 }
 
