@@ -27,8 +27,9 @@ import * as Sharing from 'expo-sharing';
 import { create } from 'zustand';
 import { RealtimeClient, type RealtimeChannel } from '@supabase/supabase-js';
 
+import { useEffect, useState } from 'react';
 import { supabase } from '../supabase';
-import { isPerfFlagOn } from '../perfFlags';
+import { posthog } from '../analytics';
 import { currentUserId } from '../sessionUser';
 import { useWalkStore } from '../../store/useWalkStore';
 import {
@@ -39,9 +40,60 @@ import {
   type SpikeRole,
 } from './liveSpikeSummary';
 
-/** Whether the recorder is unlocked for this session (flag, or a local env override). */
-export function liveSpikeEnabled(): boolean {
-  return process.env.EXPO_PUBLIC_LIVE_SPIKE === '1' || isPerfFlagOn('devLiveSpike');
+const SPIKE_FLAG = 'dev-live-spike';
+
+/**
+ * Whether the recorder is unlocked right now: the `dev-live-spike` PostHog
+ * flag, or a local build's EXPO_PUBLIC_LIVE_SPIKE=1.
+ *
+ * Read live every time, deliberately NOT through isPerfFlagOn. Perf flags are
+ * frozen at their first answer for the session, and opening the recorder's
+ * link from Safari cold-starts the app straight onto this screen — before
+ * PostHog has loaded the signed-in account's flags. The first answer was
+ * "off", it stuck, and the screen stayed blank.
+ */
+export function liveSpikeAllowedNow(): boolean | null {
+  if (process.env.EXPO_PUBLIC_LIVE_SPIKE === '1') return true;
+  if (!posthog) return false;
+  try {
+    const answer = posthog.isFeatureEnabled(SPIKE_FLAG);
+    return answer === undefined ? null : answer === true;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The recorder's access, kept current: 'checking' until PostHog has an answer
+ * for this account (it asks for a fresh one on open), then 'on' or 'off',
+ * changing if the flags change while the screen is up. Gives up waiting after
+ * 15 s, so the screen says something instead of checking for ever.
+ */
+export function useLiveSpikeAccess(): 'checking' | 'on' | 'off' {
+  const [access, setAccess] = useState<'checking' | 'on' | 'off'>(() => {
+    const now = liveSpikeAllowedNow();
+    return now === null ? 'checking' : now ? 'on' : 'off';
+  });
+  useEffect(() => {
+    const read = (settled: boolean) => {
+      const now = liveSpikeAllowedNow();
+      if (now !== null) setAccess(now ? 'on' : 'off');
+      else if (settled) setAccess('off');
+    };
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = posthog?.onFeatureFlags(() => read(true));
+      void posthog?.reloadFeatureFlagsAsync().then(() => read(true)).catch(() => read(true));
+    } catch {
+      read(true);
+    }
+    const giveUp = setTimeout(() => read(true), 15_000);
+    return () => {
+      clearTimeout(giveUp);
+      unsubscribe?.();
+    };
+  }, []);
+  return access;
 }
 
 const TICK_MS = 5_000;
@@ -253,7 +305,7 @@ async function ping(via: string): Promise<void> {
 }
 
 export async function startSpike(room: string, role: SpikeRole, meetupId: string | null): Promise<void> {
-  if (!liveSpikeEnabled() || useLiveSpike.getState().running) return;
+  if (liveSpikeAllowedNow() !== true || useLiveSpike.getState().running) return;
   if (!ROOM.test(room)) throw new Error('Room: 1–64 lowercase letters, digits or dashes.');
   if (meetupId && !UUID.test(meetupId)) throw new Error('Meetup id: leave it empty, or use the id of a meetup you are in.');
   const userId = await currentUserId();

@@ -45,12 +45,6 @@ export const PERF_FLAGS = {
   killNetRetry: 'kill-net-retry',
   /** Live walk: apply position events directly; fewer close-check polls. */
   liveDeltas: 'perf-live-deltas',
-  /**
-   * Not a performance change: unlocks the Live Walk v2 device-spike recorder
-   * (pawtchi://dev-live-spike, lib/dev/liveSpike.ts). Off for everyone but the
-   * two test accounts. Delete with the recorder once the spike is done.
-   */
-  devLiveSpike: 'dev-live-spike',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;

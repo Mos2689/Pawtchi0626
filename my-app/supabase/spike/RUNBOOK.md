@@ -64,7 +64,9 @@ Then, in PostHog, create a boolean flag **`dev-live-spike`**, released to **0%**
 
 ## Step 3: Open the recorder
 
-On each phone, open `pawtchi://dev-live-spike`. You can type it into Safari or Chrome, or tap it in a note. Without the `dev-live-spike` flag this screen is blank. For your two test accounts it shows the recorder. If it is blank on a test phone, close and reopen the app once so the flag loads.
+On each phone, open `pawtchi://dev-live-spike`. You can type it into Safari or Chrome, or tap it in a note. For your two test accounts it shows the recorder; for anyone else it says the recorder is not enabled.
+
+**On build 101 only**, the screen can come up blank: opening the link with the app closed checks the flag before PostHog has loaded it, and the answer sticks. Fix: swipe Pawtchi away, open it normally, wait about 30 seconds on Home, then open the link. Later builds check live and show "Checking access" instead.
 
 Both phones use the same **Room** name (for example `a1`).
 
