@@ -9,6 +9,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { color, font, radius, space, type } from '../constants/design';
 import {
   deleteAllRuns,
@@ -50,6 +51,11 @@ function Button({ label, onPress, tone = 'plain', disabled = false }: {
 
 function Recorder() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  // Opened from a link with the app closed, there is nothing behind this
+  // screen to go back to, so Close falls through to Home. Leaving never stops
+  // a run: the recorder lives outside this screen.
+  const close = () => { if (router.canGoBack()) router.back(); else router.replace('/(tabs)' as never); };
   const view = useLiveSpike();
   const [room, setRoom] = useState('a1');
   const [meetup, setMeetup] = useState(suggestedMeetup);
@@ -76,7 +82,11 @@ function Recorder() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: insets.top + space.lg, paddingBottom: insets.bottom + space.xxxl }]}>
-      <Text style={styles.title}>Live walk spike</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Live walk spike</Text>
+        <Button label="Close" onPress={close} />
+      </View>
+      {view.running ? <Text style={styles.label}>Recording. Close this screen and lock the phone as you like; it keeps going until you press Stop here.</Text> : null}
 
       <Text style={styles.label}>Room (the same short name on both phones)</Text>
       <TextInput
@@ -150,7 +160,8 @@ function Recorder() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.surface },
   content: { paddingHorizontal: space.lg, gap: space.md },
-  title: { ...type.title, color: color.ink },
+  title: { ...type.title, color: color.ink, flex: 1 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   label: { ...type.label, color: color.slate, marginTop: space.sm },
   input: {
     ...type.body,
