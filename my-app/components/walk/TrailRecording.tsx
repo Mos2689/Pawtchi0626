@@ -67,6 +67,11 @@ import { supabase } from '../../lib/supabase';
 import { withTimeout } from '../../lib/withTimeout';
 import { isPerfFlagOn } from '../../lib/perfFlags';
 import { closeCheckDue } from '../../lib/community/liveRoster';
+import { LivePublisher, type LiveTransport, type PublisherSample } from '../../lib/community/livePublisher';
+import { acquireLiveLink } from '../../lib/community/liveLink';
+import { liveRealtimeClient } from '../../lib/community/liveLinkClient';
+import { rpcWithClock, serverNowEstimate } from '../../lib/community/liveClock';
+import { randomUUID } from '../../lib/uuid';
 import { useWalkStore } from '../../store/useWalkStore';
 import type { ActiveWalkTrail } from '../../lib/walk/walkTracker';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -94,6 +99,20 @@ const PUBLISH_TIMEOUT_MS = 10_000;
 /** Points kept in a published trace. Enough shape, not the whole recording. */
 const TRACE_POINTS = 160;
 
+/** The recorder's state as the live sender wants it; null before the first fix. */
+function publisherSample(state: Pick<ReturnType<typeof useWalkStore.getState>, 'session' | 'lastObservation'>): PublisherSample | null {
+  const point = state.session?.lastAccepted;
+  if (!state.session || !point) return null;
+  return {
+    path: state.session.path,
+    lat: point.lat,
+    lng: point.lng,
+    fixAtWall: point.timestamp,
+    obsAtWall: state.lastObservation?.at ?? null,
+    obsAccuracy: state.lastObservation?.accuracy ?? null,
+  };
+}
+
 export function TrailRecording() {
   const { user } = useAuth();
   const activePet = useActivePetStore(state => state.activePet);
@@ -101,6 +120,7 @@ export function TrailRecording() {
   const marker = useWalkStore(state => state.marker);
   const session = useWalkStore(state => state.session);
   const lastResult = useWalkStore(state => state.lastResult);
+  const lastObservation = useWalkStore(state => state.lastObservation);
   const endWalk = useWalkStore(state => state.endWalk);
   const pathname = usePathname();
 
@@ -343,7 +363,17 @@ export function TrailRecording() {
    * The timeout only frees the slot; the request itself is not cancelled.
    */
   const publishingRef = useRef(false);
+  /**
+   * Live Walk v2, decided once per walk: a recording never switches path
+   * half-way. Off, the legacy 12-second upsert below runs as it always has.
+   */
+  const liveV2Ref = useRef<{ walkId: string | undefined; on: boolean } | null>(null);
+  if (liveV2Ref.current?.walkId !== trail?.walkId) {
+    liveV2Ref.current = { walkId: trail?.walkId, on: isPerfFlagOn('liveWalkV2') };
+  }
+  const liveV2 = liveV2Ref.current?.on ?? false;
   useEffect(() => {
+    if (liveV2) return;
     const point = session?.lastAccepted;
     if (!trail?.shareLocation || phase !== 'tracking' || !point) return;
     if (point.timestamp - lastLocationRef.current < LOCATION_INTERVAL_MS) return;
@@ -361,7 +391,65 @@ export function TrailRecording() {
     )
       .catch(() => {})
       .finally(() => { publishingRef.current = false; });
-  }, [trail, phase, session?.lastAccepted, session?.path]);
+  }, [liveV2, trail, phase, session?.lastAccepted, session?.path]);
+
+  /**
+   * Live Walk v2 — the sender (lib/community/livePublisher.ts).
+   *
+   * One per recording runtime, so a relaunch mid-walk makes a new one and with
+   * it a new session generation. It starts on `db` and is moved to whatever the
+   * walk says (`live_transport`) by the close checks below, which already read
+   * the walk — that is also how the emergency switch reaches a walk in
+   * progress.
+   */
+  const publisherRef = useRef<LivePublisher | null>(null);
+  const transportRef = useRef<LiveTransport>('db');
+  /** Set by the close follower: an end hint from the host triggers one check. */
+  const endHintRef = useRef<(() => void) | null>(null);
+  const publisherUserId = user?.id ?? null;
+  const tracking = phase === 'tracking';
+  useEffect(() => {
+    // `tracking`, not `starting`: a refusal stops a publisher for good, so it
+    // must not ask before the walk is fully underway.
+    if (!liveV2 || !tracking || !trail?.shareLocation || !publisherUserId) return;
+    const walk = trail.walkId;
+    const publisher = new LivePublisher(
+      {
+        rpc: (fn, args) => rpcWithClock(fn, args),
+        acquireLink: consumer => acquireLiveLink(liveRealtimeClient, publisherUserId, walk, consumer, 'walker'),
+        serverNow: serverNowEstimate,
+        wall: () => Date.now(),
+        mono: () => globalThis.performance?.now?.() ?? Date.now(),
+        newToken: randomUUID,
+        setTimer: (fn, ms) => setTimeout(fn, ms),
+        clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        onEndHint: () => endHintRef.current?.(),
+      },
+      walk,
+      publisherUserId,
+      transportRef.current,
+    );
+    publisherRef.current = publisher;
+    // Seed it with what is already recorded, so a phone standing still at a
+    // relaunch still checkpoints without waiting for its next fix.
+    const sample = publisherSample(useWalkStore.getState());
+    if (sample) publisher.update(sample);
+    publisher.start();
+    return () => {
+      publisher.stop();
+      if (publisherRef.current === publisher) publisherRef.current = null;
+    };
+  }, [liveV2, tracking, trail?.walkId, trail?.shareLocation, publisherUserId]);
+
+  // Every location batch (they keep arriving while the phone is locked and
+  // moving) and every new raw reading feed it.
+  useEffect(() => {
+    const sample = publisherSample({ session, lastObservation });
+    if (sample) publisherRef.current?.update(sample);
+  }, [session, lastObservation]);
+
+  // The foreground heartbeat: lets a phone standing still keep checkpointing.
+  useEffect(() => { publisherRef.current?.tick(); }, [now]);
 
   /**
    * The walk is over: attach it to the outing, close this walker's
@@ -470,6 +558,13 @@ export function TrailRecording() {
     return isHostRef.current;
   }, [packId, userId]);
 
+  /** The walk's transport as the server has it; the sender follows it mid-walk. */
+  const followTransport = useCallback((value: unknown) => {
+    if (value !== 'db' && value !== 'broadcast') return;
+    transportRef.current = value;
+    publisherRef.current?.setTransport(value);
+  }, []);
+
   const followHostClose = useCallback(async (walk: ClosableWalk | null | undefined) => {
     if (!walkId || !walk) return;
     if (walk.state !== 'completed' && walk.state !== 'cancelled') return;
@@ -508,7 +603,10 @@ export function TrailRecording() {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'community_walks', filter: `id=eq.${walkId}` },
-        payload => { void followHostClose(payload.new as ClosableWalk); },
+        payload => {
+          followTransport((payload.new as { live_transport?: unknown })?.live_transport);
+          void followHostClose(payload.new as ClosableWalk);
+        },
       )
       .subscribe(status => { subscribed = status === 'SUBSCRIBED'; });
 
@@ -526,16 +624,28 @@ export function TrailRecording() {
       void withTimeout(
         supabase
           .from('community_walks')
-          .select('state')
+          .select(liveV2 ? 'state, live_transport' : 'state')
           .eq('id', walkId)
           .maybeSingle(),
         CLOSE_CHECK_TIMEOUT_MS,
         'closeCheck',
       )
-        .then(({ data }) => { void followHostClose(data as ClosableWalk | null); }, () => {})
+        .then(({ data }) => {
+          followTransport((data as { live_transport?: unknown } | null)?.live_transport);
+          void followHostClose(data as ClosableWalk | null);
+        }, () => {})
         .finally(() => { checking = false; });
     };
     check();
+
+    // A host's end hint (Live Walk v2) is only a hint: it buys one immediate
+    // check, at most every ten seconds, and the walk's own state decides.
+    let lastHintAt = 0;
+    endHintRef.current = () => {
+      if (Date.now() - lastHintAt < 10_000) return;
+      lastHintAt = Date.now();
+      check();
+    };
 
     // Belt and braces for the realtime event. That event is the instant path,
     // but it was silently never delivered for months — community_walks was not
@@ -556,9 +666,10 @@ export function TrailRecording() {
     return () => {
       clearInterval(poll);
       subscription.remove();
+      endHintRef.current = null;
       void supabase.removeChannel(channel);
     };
-  }, [recording, walkId, followHostClose, resolveIsHost]);
+  }, [recording, walkId, followHostClose, resolveIsHost, liveV2, followTransport]);
 
   return null;
 }

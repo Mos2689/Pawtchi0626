@@ -21,6 +21,8 @@ import { resetKnownUsername } from '../lib/communityWalks';
 import { resetSessionUser } from '../lib/sessionUser';
 import { clearProOfferCache } from '../lib/proOffer/client';
 import { clearNotifSync } from '../lib/notifications/notifSync';
+import { releaseAllLiveLinks } from '../lib/community/liveLink';
+import { resetLiveClock } from '../lib/community/liveClock';
 import { WALK_TRACKING_ENABLED } from '../constants/features';
 
 /**
@@ -89,6 +91,11 @@ function clearAllUserState(): void {
   // whoever registers it, so a returning user who skipped registration as
   // "already sent" would have their pushes delivered to the previous account.
   try { clearNotifSync(); } catch {}
+  // Live Walk v2: the private walk rooms joined under this account's token, and
+  // the server-clock estimate taken with it. The next account starts closed
+  // and uncalibrated.
+  try { releaseAllLiveLinks(); } catch {}
+  try { resetLiveClock(); } catch {}
 }
 
 type AuthContextType = {
