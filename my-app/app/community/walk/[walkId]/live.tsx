@@ -57,6 +57,10 @@ import { WALK_CAMERA_ENABLED } from '../../../../constants/features';
 import { useRecorderHandle } from '../../../../lib/walk/recorderHandle';
 import { fitCamera, projectPoint, type MapCamera } from '../../../../lib/walk/mapCamera';
 import { supabase } from '../../../../lib/supabase';
+import { LiveReceiver } from '../../../../lib/community/liveReceiver';
+import { acquireLiveLink } from '../../../../lib/community/liveLink';
+import { liveRealtimeClient } from '../../../../lib/community/liveLinkClient';
+import { reconcileClockNow, rpcWithClock } from '../../../../lib/community/liveClock';
 import { useWalkStore } from '../../../../store/useWalkStore';
 import { useAuth } from '../../../../providers/AuthProvider';
 
@@ -132,6 +136,17 @@ function proximityCopy(meters: number | null, name: string | null, walking: numb
   return `${name} is ${(meters / 1000).toFixed(1)} km away`;
 }
 
+/**
+ * A position as this screen holds it. Live Walk v2 adds `age_known`: when the
+ * GPS age cannot honestly be said (this phone has no server-clock calibration
+ * yet), the marker shows the name alone, never "now".
+ */
+type ShownParty = LiveParty & { contact_at?: string | null; age_known?: boolean };
+
+function ageLabel(party: ShownParty, now: number): string | null {
+  return party.age_known === false ? null : freshness(party.recorded_at, now).label;
+}
+
 function freshness(iso: string, now: number): { label: string; stale: boolean } {
   const age = Math.max(0, now - Date.parse(iso));
   if (age < 30_000) return { label: 'now', stale: false };
@@ -196,7 +211,14 @@ export default function CommunityLiveScreen() {
   const [walk, setWalk] = useState<CommunityWalk | null>(cached?.walk ?? null);
   const [pack, setPack] = useState<CommunityPack | null>(cached?.pack ?? null);
   const [attendance, setAttendance] = useState<WalkAttendance[]>(cached?.attendance ?? []);
-  const [parties, setParties] = useState<LiveParty[]>([]);
+  const [parties, setParties] = useState<ShownParty[]>([]);
+  /**
+   * Live Walk v2 (lib/community/liveReceiver.ts), decided once per visit. On,
+   * every position source goes through the receiver, which also decides who is
+   * still live; off, this screen reads positions exactly as before.
+   */
+  const liveV2 = useMemo(() => isPerfFlagOn('liveWalkV2'), []);
+  const receiverRef = useRef<LiveReceiver | null>(null);
   /**
    * Photos the REST of the pack has shared on this walk, already published.
    *
@@ -276,9 +298,13 @@ export default function CommunityLiveScreen() {
       // this table WHILE its drafts are still in the recorder, so counting
       // both would count each of them twice and the number would climb as the
       // uploads landed. Mine come from the drafts, which are instant anyway.
+      if (liveV2) {
+        void receiverRef.current?.refresh();
+        void receiverRef.current?.refreshTransport();
+      }
       const [outing, live, moments] = await Promise.all([
         loadOuting(walkId),
-        listLiveParties(walkId),
+        liveV2 ? Promise.resolve(null) : listLiveParties(walkId),
         supabase
           .from('community_shared_media')
           .select('id, display_path, capture_lat, capture_lng')
@@ -294,9 +320,9 @@ export default function CommunityLiveScreen() {
       setWalk(outing.walk);
       setPack(outing.pack);
       setAttendance(outing.attendance);
-      setParties(live);
+      if (live) setParties(live);
       await applyOthersMoments(((moments.data ?? []) as OthersRow[]).slice().reverse());
-      setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
+      if (live) setSelectedId(current => current ?? live.find(item => item.user_id === user?.id)?.user_id ?? live[0]?.user_id ?? null);
       setLoadIssue(null);
       return true;
     } catch (cause) {
@@ -305,7 +331,7 @@ export default function CommunityLiveScreen() {
     }
     // `applyOthersMoments` is a `useCallback(…, [])`, so naming it here costs
     // nothing and keeps this list honest.
-  }, [applyOthersMoments, user?.id, walkId]);
+  }, [applyOthersMoments, liveV2, user?.id, walkId]);
 
   /**
    * Just the moving dots. Deliberately not `load()`.
@@ -337,6 +363,10 @@ export default function CommunityLiveScreen() {
   const partiesStale = useRef(false);
   const refreshParties = useCallback(async () => {
     if (!walkId) return;
+    if (liveV2) {
+      await receiverRef.current?.refresh();
+      return;
+    }
     if (partiesInFlight.current) {
       partiesStale.current = true;
       return;
@@ -358,7 +388,7 @@ export default function CommunityLiveScreen() {
     } finally {
       partiesInFlight.current = false;
     }
-  }, [user?.id, walkId]);
+  }, [liveV2, user?.id, walkId]);
 
   /** `load`, retried on its own after a failure (hooks/useAutoRetry.ts). */
   const run = useAutoRetry(load);
@@ -476,6 +506,12 @@ export default function CommunityLiveScreen() {
       // Positions move; rosters do not. Only the other two tables change
       // anything this screen would have to re-derive.
       .on('postgres_changes', { event: '*', schema: 'public', table: 'community_live_locations', filter: `walk_id=eq.${walkId}` }, payload => {
+        // Live Walk v2: the row goes to the receiver, which orders it by
+        // session and sequence and dates it by when the server heard it.
+        if (liveV2) {
+          receiverRef.current?.onRow(payload.new);
+          return;
+        }
         // perf-live-deltas: the event carries the row, so apply it. The full
         // read stays for (re)subscribe, foreground and once a minute below.
         if (lighter) {
@@ -489,26 +525,84 @@ export default function CommunityLiveScreen() {
       // The walk itself. Added when the host became the only person who can
       // end it: without this a member's phone never learned the walk was over
       // and kept recording into a trail that had closed.
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'community_walks', filter: `id=eq.${walkId}` }, scheduleReload)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'community_walks', filter: `id=eq.${walkId}` }, payload => {
+        // The emergency switch reaches a running walk here first.
+        const transport = (payload.new as { live_transport?: unknown } | null)?.live_transport;
+        if (liveV2 && (transport === 'db' || transport === 'broadcast')) receiverRef.current?.setTransport(transport);
+        scheduleReload();
+      })
       .subscribe(status => {
         // Every (re)join can follow a gap in which events were missed, so the
         // event-driven map catches up with one full read.
-        if (lighter && status === 'SUBSCRIBED') void refreshParties();
+        if ((lighter || liveV2) && status === 'SUBSCRIBED') void refreshParties();
       });
     return () => { void supabase.removeChannel(channel); };
     // `scheduleReload` is stable where `load` was not, so the channel is no
     // longer torn down and re-subscribed every time `load`'s identity changes.
-  }, [lighter, refreshParties, scheduleReload, walkId]);
+  }, [lighter, liveV2, refreshParties, scheduleReload, walkId]);
 
   /**
    * perf-live-deltas: a once-a-minute full read, so anything the event stream
    * dropped is corrected within a minute rather than never.
    */
   useEffect(() => {
-    if (!lighter || !walkId) return;
+    if (!lighter || liveV2 || !walkId) return;
     const timer = setInterval(() => { void refreshParties(); }, LIVE_RECONCILE_MS);
     return () => clearInterval(timer);
-  }, [lighter, refreshParties, walkId]);
+  }, [lighter, liveV2, refreshParties, walkId]);
+
+  /**
+   * Live Walk v2: the receiver for this visit. It runs its own reads (once a
+   * minute; every 15 s while a Broadcast walk's room is down) and, on a
+   * Broadcast walk, the private room. The host's end hint reloads at once.
+   */
+  const viewerId = user?.id ?? null;
+  useEffect(() => {
+    if (!liveV2 || !walkId || !viewerId) return;
+    const receiver = new LiveReceiver(
+      {
+        readPositions: () => rpcWithClock('live_walk_positions', { p_walk_id: walkId }),
+        readTransport: async () => {
+          const { data, error } = await supabase
+            .from('community_walks')
+            .select('live_transport')
+            .eq('id', walkId)
+            .maybeSingle();
+          const value = error ? null : (data as { live_transport?: unknown } | null)?.live_transport;
+          return value === 'db' || value === 'broadcast' ? value : null;
+        },
+        acquireLink: consumer => acquireLiveLink(liveRealtimeClient, viewerId, walkId, consumer, 'viewer'),
+        clock: reconcileClockNow,
+        mono: () => globalThis.performance?.now?.() ?? Date.now(),
+        setTimer: (fn, ms) => setTimeout(fn, ms),
+        clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        onParties: next => {
+          setParties(next);
+          setSelectedId(current => current ?? next.find(item => item.user_id === viewerId)?.user_id ?? next[0]?.user_id ?? null);
+        },
+        onEndHint: scheduleReload,
+      },
+      walkId,
+      viewerId,
+    );
+    receiverRef.current = receiver;
+    receiver.start();
+    return () => {
+      receiver.stop();
+      if (receiverRef.current === receiver) receiverRef.current = null;
+    };
+  }, [liveV2, scheduleReload, viewerId, walkId]);
+
+  // Attendance decides who may be on the map at all. After the receiver
+  // effect, and keyed on the same ids, so a new receiver is told at once.
+  const walkState = walk?.state ?? null;
+  useEffect(() => {
+    if (!liveV2 || !walkState) return;
+    const sharing = attendance
+      .filter(person => person.status === 'walking' && person.share_location)
+      .map(person => person.user_id);
+    receiverRef.current?.setAttendance(sharing, walkState === 'active');
+  }, [attendance, liveV2, viewerId, walkId, walkState]);
 
   /**
    * A coarse clock, for deciding who has gone quiet.
@@ -526,8 +620,10 @@ export default function CommunityLiveScreen() {
    */
   const staleClock = Math.floor(now / 15_000) * 15_000;
   const visibleParties = useMemo(
-    () => parties.filter(party => !freshness(party.recorded_at, staleClock).stale),
-    [parties, staleClock],
+    // v2: the receiver already judged contact (Presence, heard time) on a
+    // fresh clock; the GPS age here is only a label.
+    () => (liveV2 ? parties : parties.filter(party => !freshness(party.recorded_at, staleClock).stale)),
+    [liveV2, parties, staleClock],
   );
   const walking = useMemo(
     () => attendance.filter(person => person.status === 'walking'),
@@ -565,7 +661,7 @@ export default function CommunityLiveScreen() {
     const here = personalSession?.lastAccepted;
     if (!user?.id || !here) return visibleParties;
     const mine = visibleParties.find(party => party.user_id === user.id);
-    const updated: LiveParty = {
+    const updated: ShownParty = {
       walk_id: walkId ?? '',
       user_id: user.id,
       accuracy_m: null,
@@ -824,6 +920,9 @@ export default function CommunityLiveScreen() {
         // what they walked; they lose the choice of when to stop.
         try {
           await closeOuting(walkId);
+          // Live Walk v2: tell a Broadcast walk's room straight away. Only a
+          // hint — each phone still checks the walk's own state.
+          receiverRef.current?.sendEndHint();
           // The walk screen skips its refetch inside the freshness window, and
           // its snapshot still says `active`. Without this, a host who ends a
           // walk and steps back within that window is offered "Join the walk"
@@ -1005,7 +1104,7 @@ export default function CommunityLiveScreen() {
               onPress={() => setSelectedId(party.user_id)}
               style={[styles.partyMarker, { left: at.x - 25, top: at.y - 25 }]}
               accessibilityRole="button"
-              accessibilityLabel={`${names}, ${freshness(party.recorded_at, now).label}`}
+              accessibilityLabel={ageLabel(party, now) ? `${names}, ${ageLabel(party, now)}` : names}
             >
               <DogAvatar
                 dog={dog}
@@ -1014,7 +1113,7 @@ export default function CommunityLiveScreen() {
               />
               <View style={[styles.markerLabel, selectedId === party.user_id && styles.markerLabelSelected]}>
                 <Text style={styles.markerLabelText} numberOfLines={1}>
-                  {names} · {freshness(party.recorded_at, now).label}
+                  {ageLabel(party, now) ? `${names} · ${ageLabel(party, now)}` : names}
                 </Text>
               </View>
             </Pressable>
