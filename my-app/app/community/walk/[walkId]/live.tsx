@@ -577,6 +577,14 @@ export default function CommunityLiveScreen() {
         setTimer: (fn, ms) => setTimeout(fn, ms),
         clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
         onParties: next => {
+          if (__DEV__) {
+            // Dev builds only: what the map decided, in the Metro terminal.
+            const clock = reconcileClockNow();
+            console.log('[live-v2] map', {
+              clockOffsetMs: clock.offsetMs === null ? 'NOT CALIBRATED' : Math.round(clock.offsetMs),
+              walkers: next.map(p => `${p.user_id.slice(0, 8)} age_known=${p.age_known} fix=${p.recorded_at}`),
+            });
+          }
           setParties(next);
           setSelectedId(current => current ?? next.find(item => item.user_id === viewerId)?.user_id ?? next[0]?.user_id ?? null);
         },

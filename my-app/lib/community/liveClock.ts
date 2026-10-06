@@ -31,7 +31,12 @@ function readServerNow(data: unknown): number | null {
 /** Record one answer's `server_now`, timed by the round trip that carried it. */
 export function noteServerNow(data: unknown, sentMono: number): void {
   const serverNow = readServerNow(data);
-  if (serverNow === null) return;
+  if (serverNow === null) {
+    if (__DEV__ && (data as { server_now?: unknown } | null)?.server_now !== undefined) {
+      console.log('[live-v2] clock: could not read server_now', (data as { server_now?: unknown }).server_now);
+    }
+    return;
+  }
   clock = addClockSample(clock, { serverNow, sentMono, receivedMono: mono(), receivedWall: Date.now() });
 }
 
