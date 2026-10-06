@@ -271,3 +271,16 @@ describe('stopping', () => {
     expect(t.lists.length).toBe(renders);
   });
 });
+
+describe('field-health summary', () => {
+  it('counts reads, rows and walkers seen, and carries no coordinates or ids', async () => {
+    const t = setup();
+    t.receiver.start();
+    await flush(); await flush();
+    t.receiver.onRow(row({ seq: 2 }));
+    t.receiver.stop();
+    const summary = t.receiver.summary();
+    expect(summary).toMatchObject({ transport: 'db', reads_ok: 1, reads_failed: 0, rows: 1, max_walkers: 1, clock_known: true });
+    expect(JSON.stringify(summary)).not.toMatch(/-33\.|151\.|2222|3333/);
+  });
+});

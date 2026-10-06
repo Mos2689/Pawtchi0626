@@ -73,6 +73,7 @@ import { acquireLiveLink } from '../../lib/community/liveLink';
 import { liveRealtimeClient } from '../../lib/community/liveLinkClient';
 import { rpcWithClock, serverNowEstimate } from '../../lib/community/liveClock';
 import { randomUUID } from '../../lib/uuid';
+import { track } from '../../lib/analytics';
 import { useWalkStore } from '../../store/useWalkStore';
 import type { ActiveWalkTrail } from '../../lib/walk/walkTracker';
 import { useActivePetStore } from '../../store/useActivePetStore';
@@ -439,6 +440,7 @@ export function TrailRecording() {
     publisher.start();
     return () => {
       publisher.stop();
+      track('live_walk_sender_summary', publisher.summary());
       if (publisherRef.current === publisher) publisherRef.current = null;
     };
   }, [liveV2, tracking, trail?.walkId, trail?.shareLocation, publisherUserId]);

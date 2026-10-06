@@ -61,6 +61,7 @@ import { LiveReceiver } from '../../../../lib/community/liveReceiver';
 import { acquireLiveLink } from '../../../../lib/community/liveLink';
 import { liveRealtimeClient } from '../../../../lib/community/liveLinkClient';
 import { reconcileClockNow, rpcWithClock } from '../../../../lib/community/liveClock';
+import { track } from '../../../../lib/analytics';
 import { useWalkStore } from '../../../../store/useWalkStore';
 import { useAuth } from '../../../../providers/AuthProvider';
 
@@ -599,6 +600,7 @@ export default function CommunityLiveScreen() {
     receiver.start();
     return () => {
       receiver.stop();
+      track('live_walk_viewer_summary', receiver.summary());
       if (receiverRef.current === receiver) receiverRef.current = null;
     };
   }, [liveV2, scheduleReload, viewerId, walkId]);

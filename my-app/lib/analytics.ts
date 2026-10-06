@@ -229,6 +229,11 @@ export type AnalyticsEvent =
   | 'walk_bg_self_stopped'
   | 'walk_recover_reconnect'
   | 'walk_recover_finalize'
+  // Live Walk v2 field health (Phase 5): ONE summary per phone per walk — the
+  // sender's when its recording leaves the walk, the map's when it is closed.
+  // Counts and timings only: never a coordinate, a route, a token or an id.
+  | 'live_walk_sender_summary'
+  | 'live_walk_viewer_summary'
   | 'walk_shared'
   // Paw Moment share card — the walk→Instagram loop. `viewed` fires when the
   // card preview opens, `shared` when the native sheet completes (the OS

@@ -88,6 +88,17 @@ export class LivePublisher {
   private beginFailures = 0;
   private beginTimer: unknown = null;
   private stoppedFor: StopReason | 'ended' | null = null;
+  /** Field-health tallies for `summary()` — counts only, nothing identifying. */
+  private readonly counts = {
+    beginAttempts: 0,
+    rpcOk: 0,
+    rpcStale: 0,
+    rpcFailed: 0,
+    posSent: 0,
+    snapSent: 0,
+    transportSwitches: 0,
+  };
+  private readonly startedMono: number;
 
   constructor(
     private readonly deps: PublisherDeps,
@@ -96,6 +107,25 @@ export class LivePublisher {
     private transport: LiveTransport,
   ) {
     this.token = deps.newToken();
+    this.startedMono = deps.mono();
+  }
+
+  /** What this runtime did, for the one `live_walk_sender_summary` event. */
+  summary(): Record<string, string | number | boolean | null> {
+    return {
+      transport: this.transport,
+      got_session: this.state.gen !== null,
+      stopped: this.stoppedFor ?? 'running',
+      duration_s: Math.round((this.deps.mono() - this.startedMono) / 1000),
+      begin_attempts: this.counts.beginAttempts,
+      rpc_ok: this.counts.rpcOk,
+      rpc_stale: this.counts.rpcStale,
+      rpc_failed: this.counts.rpcFailed,
+      pos_sent: this.counts.posSent,
+      snap_sent: this.counts.snapSent,
+      transport_switches: this.counts.transportSwitches,
+      clock_known: this.deps.serverNow() !== null,
+    };
   }
 
   /** The generation this runtime holds, once the server has issued it. */
@@ -136,6 +166,7 @@ export class LivePublisher {
     const wall = this.deps.wall();
     for (const action of plan.actions) {
       if (action.type === 'pos' && link) {
+        this.counts.posSent += 1;
         void link.send('pos', buildPos({
           user: this.userId,
           gen,
@@ -150,6 +181,7 @@ export class LivePublisher {
           points: sample.path.slice(action.pathIndex, action.pathIndex + action.count),
         }));
       } else if (action.type === 'snap' && link) {
+        this.counts.snapSent += 1;
         void link.send('snap', buildSnap({
           user: this.userId,
           gen,
@@ -166,6 +198,7 @@ export class LivePublisher {
   setTransport(transport: LiveTransport): void {
     if (transport === this.transport) return;
     this.transport = transport;
+    this.counts.transportSwitches += 1;
     this.syncLink();
     this.tick();
   }
@@ -209,6 +242,7 @@ export class LivePublisher {
   private async begin(): Promise<void> {
     if (this.beginning || this.stoppedFor || this.state.gen !== null) return;
     this.beginning = true;
+    this.counts.beginAttempts += 1;
     let status: unknown = null;
     let gen: unknown = null;
     try {
@@ -265,6 +299,9 @@ export class LivePublisher {
     } catch {
       result = 'failed';
     }
+    if (result === 'ok') this.counts.rpcOk += 1;
+    else if (result === 'stale') this.counts.rpcStale += 1;
+    else if (result === 'failed') this.counts.rpcFailed += 1;
     if (this.stoppedFor || this.state.gen !== gen) return;
     this.state = rpcSettled(this.state, result, this.deps.mono());
     if (this.state.stopped) this.finish(this.state.stopped);

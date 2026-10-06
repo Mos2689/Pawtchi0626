@@ -90,6 +90,19 @@ export class LiveReceiver {
   private tickTimer: unknown = null;
   private lastSignature: string | null = null;
   private stopped = false;
+  /** Field-health tallies for `summary()` — counts only, nothing identifying. */
+  private readonly counts = {
+    readsOk: 0,
+    readsFailed: 0,
+    rows: 0,
+    messages: 0,
+    joins: 0,
+    drops: 0,
+    reqSent: 0,
+    maxWalkers: 0,
+    uncalibratedRenders: 0,
+  };
+  private startedMono: number | null = null;
 
   constructor(
     private readonly deps: ReceiverDeps,
@@ -99,8 +112,27 @@ export class LiveReceiver {
     this.state = createReconciler(walkId);
   }
 
+  /** What this visit saw, for the one `live_walk_viewer_summary` event. */
+  summary(): Record<string, string | number | boolean | null> {
+    return {
+      transport: this.transport,
+      duration_s: this.startedMono === null ? 0 : Math.round((this.deps.mono() - this.startedMono) / 1000),
+      reads_ok: this.counts.readsOk,
+      reads_failed: this.counts.readsFailed,
+      rows: this.counts.rows,
+      messages: this.counts.messages,
+      room_joins: this.counts.joins,
+      room_drops: this.counts.drops,
+      catchup_requests: this.counts.reqSent,
+      max_walkers: this.counts.maxWalkers,
+      uncalibrated_renders: this.counts.uncalibratedRenders,
+      clock_known: this.deps.clock().offsetMs !== null,
+    };
+  }
+
   start(): void {
     if (this.stopped) return;
+    this.startedMono = this.deps.mono();
     void this.refreshTransport();
     void this.refresh();
     this.scheduleTick();
@@ -140,6 +172,8 @@ export class LiveReceiver {
           ok = false;
         }
         this.readFailures = ok ? 0 : this.readFailures + 1;
+        if (ok) this.counts.readsOk += 1;
+        else this.counts.readsFailed += 1;
         if (this.stopped) return;
         this.emit();
       } while (this.readAgain && !this.stopped);
@@ -163,6 +197,7 @@ export class LiveReceiver {
     if (this.stopped) return;
     const row = parseLiveRow(raw);
     if (!row) return;
+    this.counts.rows += 1;
     this.state = applyRow(this.state, row, this.deps.clock());
     this.emit();
   }
@@ -214,6 +249,8 @@ export class LiveReceiver {
     const joined = status === 'joined';
     if (joined === this.linkJoined) return;
     this.linkJoined = joined;
+    if (joined) this.counts.joins += 1;
+    else this.counts.drops += 1;
     if (joined) {
       // Events missed while out of the room: one read and a fresh catch-up.
       this.tracker = {};
@@ -226,6 +263,7 @@ export class LiveReceiver {
 
   private onMessage(message: LiveMessage): void {
     if (this.stopped) return;
+    this.counts.messages += 1;
     if (message.kind === 'pos') this.state = applyPos(this.state, message, this.deps.clock());
     else if (message.kind === 'snap') this.state = applySnap(this.state, message);
     else if (message.kind === 'endhint') {
@@ -256,10 +294,13 @@ export class LiveReceiver {
   }
 
   private emit(): void {
-    const parties = selectParties(this.state, this.deps.clock());
+    const clock = this.deps.clock();
+    const parties = selectParties(this.state, clock);
+    this.counts.maxWalkers = Math.max(this.counts.maxWalkers, parties.length);
     const sig = signature(parties);
     if (sig !== this.lastSignature) {
       this.lastSignature = sig;
+      if (clock.offsetMs === null && parties.length) this.counts.uncalibratedRenders += 1;
       this.deps.onParties(parties);
     }
     this.askForMissingRoute();
@@ -270,6 +311,9 @@ export class LiveReceiver {
     if (!link || !this.linkJoined || !link.isReady()) return;
     const { tracker, want } = catchUpDue(this.tracker, walkersBehind(this.state), this.deps.mono());
     this.tracker = tracker;
-    if (want) void link.send('req', buildReq(this.userId, want));
+    if (want) {
+      this.counts.reqSent += 1;
+      void link.send('req', buildReq(this.userId, want));
+    }
   }
 }

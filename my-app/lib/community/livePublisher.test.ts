@@ -200,3 +200,17 @@ describe('on a broadcast walk', () => {
     expect(t.stops).toEqual([]);
   });
 });
+
+describe('field-health summary', () => {
+  it('counts what happened, and carries no coordinates or ids', async () => {
+    const t = setup({ publish: { status: 'stale' } });
+    t.publisher.update(t.sample(3));
+    t.publisher.start();
+    await flush(); await flush();
+    t.publisher.stop();
+    const summary = t.publisher.summary();
+    expect(summary).toMatchObject({ transport: 'db', got_session: true, stopped: 'ended', begin_attempts: 1, rpc_stale: 1, rpc_ok: 0 });
+    const text = JSON.stringify(summary);
+    expect(text).not.toMatch(/-33\.|151\.|1111|3333/);
+  });
+});
