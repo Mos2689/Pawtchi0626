@@ -168,6 +168,14 @@ interface WalkState {
    *  and flush the offline queue. NEVER starts tracking. */
   recoverOrphanedWalk: () => Promise<void>;
   dismissSummary: () => void;
+  /**
+   * A meetup walk's wrap-up is done: forget it entirely (phase, result, route).
+   * A meetup walk ends on the pack's memory, never on the solo summary, so
+   * nothing would otherwise move the store off `summary` until the next start.
+   * Only clears if `walkSessionId` is still the finished walk sitting there —
+   * a walk started since is never touched.
+   */
+  clearFinishedWalk: (walkSessionId: string) => void;
   /** No-finalize kill — leak recovery / mid-walk sign-out. Clears the record,
    *  stops the OS task, clears the buffer, resets to idle. */
   hardStopTracking: () => Promise<void>;
@@ -454,6 +462,12 @@ export const useWalkStore = create<WalkState>((set, get) => ({
   },
 
   dismissSummary: () => set({ phase: 'idle', lastResult: null }),
+
+  clearFinishedWalk: (walkSessionId: string) => {
+    const { phase, lastResult } = get();
+    if (phase !== 'summary' || lastResult?.walkSessionId !== walkSessionId) return;
+    set({ phase: 'idle', lastResult: null, session: null, lastObservation: null, capReached: false });
+  },
 
   hardStopTracking: async () => {
     setLiveListener(null);

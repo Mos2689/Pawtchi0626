@@ -67,6 +67,7 @@ import { supabase } from '../../lib/supabase';
 import { withTimeout } from '../../lib/withTimeout';
 import { isPerfFlagOn } from '../../lib/perfFlags';
 import { closeCheckDue } from '../../lib/community/liveRoster';
+import { recordingTrail } from '../../lib/community/recordingTrail';
 import { LivePublisher, type LiveTransport, type PublisherSample } from '../../lib/community/livePublisher';
 import { acquireLiveLink } from '../../lib/community/liveLink';
 import { liveRealtimeClient } from '../../lib/community/liveLinkClient';
@@ -139,9 +140,10 @@ export function TrailRecording() {
    * Cleared when the walk goes fully idle, so at rest this holds nothing.
    */
   const trailRef = useRef<ActiveWalkTrail | null>(null);
-  if (marker?.trail) trailRef.current = marker.trail;
-  if (phase === 'idle') trailRef.current = null;
-  const trail = marker?.trail ?? trailRef.current;
+  // Forgotten the moment a new walk starts, not only at rest — see
+  // lib/community/recordingTrail.ts for the bug that rule closes.
+  trailRef.current = recordingTrail(marker?.trail, phase, trailRef.current);
+  const trail = trailRef.current;
 
   /**
    * Is a Trail walk in flight at all — including its wrap-up?
@@ -462,6 +464,7 @@ export function TrailRecording() {
     if (phase !== 'summary' || !lastResult || !trail || !activePet?.id || !user?.id) return;
     if (finishedForRef.current === lastResult.walkSessionId) return;
     finishedForRef.current = lastResult.walkSessionId;
+    const finishedWalk = lastResult.walkSessionId;
     void Promise.allSettled([
       linkPersonalWalk({
         communityWalkId: trail.walkId,
@@ -486,6 +489,10 @@ export function TrailRecording() {
       // The memory screen may be waiting on exactly this — see legSettle.
       settleLeg(trail.walkId);
       settlingForRef.current = null;
+      // Nothing of this walk is needed any more: it is saved, linked and its
+      // photos swept. Put the recorder back at rest so the next walk starts
+      // clean (and this meetup stops being "the trail" — recordingTrail.ts).
+      useWalkStore.getState().clearFinishedWalk(finishedWalk);
     });
   }, [phase, lastResult, trail, activePet?.id, user?.id, captures]);
 
@@ -572,6 +579,9 @@ export function TrailRecording() {
     if (!shouldFollowHostClose(walk, isHost)) return;
     const current = useWalkStore.getState().phase;
     if (current !== 'tracking' && current !== 'starting') return;
+    // Only ever finish the recording that belongs to THIS meetup. A close for
+    // an earlier meetup must never end a walk that has since started.
+    if (useWalkStore.getState().marker?.trail?.walkId !== walkId) return;
     if (followedCloseRef.current === walkId) return;
     followedCloseRef.current = walkId;
 
