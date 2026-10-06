@@ -10,6 +10,7 @@ import { composeOutingSnapshot, decodeOuting, type PackAttendanceEntry } from '.
 import { isPerfFlagOn } from './perfFlags';
 import { LIVE_PROTOCOL } from './community/liveProtocol';
 import { pickNextOpenWalk } from './community/walkPass';
+import { parseWalkCards, type WalkCard } from './community/walkCards';
 
 export { isValidUsername, normalizeUsername } from './communityUsername';
 
@@ -1001,6 +1002,19 @@ export async function listTrailRoutes(
     if (typeof row?.pack_id === 'string' && route.length > 1 && !out[row.pack_id]) out[row.pack_id] = route;
   }
   return out;
+}
+
+/**
+ * What each of a meetup's finished walks draws as a card: cover photo, counts,
+ * the longest leg, one thinned route per walker (20261007000000). Null on a
+ * database without the function — the screen then draws its cards from the
+ * walks alone. Any other failure rejects, so the caller keeps what it has.
+ */
+export async function listPackWalkCards(packId: string): Promise<WalkCard[] | null> {
+  const { data, error } = await supabase.rpc('community_pack_walk_cards', { p_pack_id: packId, p_limit: 20 });
+  if (error && isMissingFunction(error.message)) return null;
+  if (error) throw new Error(error.message);
+  return parseWalkCards(data);
 }
 
 /** The three-hop version, kept for a database without `community_trail_routes`. */

@@ -50,6 +50,7 @@ export const READ_ONLY_RPCS: ReadonlySet<string> = new Set([
   'community_memory',
   'community_trails_for_me',
   'community_trail_routes',
+  'community_pack_walk_cards',
   'community_claims_for_packs',
   'community_previous_invitees',
   'community_invitation_preview',

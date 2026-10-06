@@ -22,6 +22,7 @@ import {
   approveExternalInvite,
   listExternalInviteClaims,
   loadOuting,
+  listPackWalkCards,
   loadPack,
   type CommunityDog,
   type CommunityPack,
@@ -36,6 +37,9 @@ import { useAuth } from '../../../providers/AuthProvider';
 import { useAutoRetry } from '../../../hooks/useAutoRetry';
 import { dateFormat } from '../../../lib/dateFormats';
 import { requestedLine, requesterDogs, requesterName } from '../../../lib/community/joinRequest';
+import { communityMediaUrls } from '../../../lib/communityMedia';
+import type { WalkCard } from '../../../lib/community/walkCards';
+import { WalkMemoryCard } from '../../../components/community/WalkMemoryCard';
 
 export default function PackHomeScreen() {
   const router = useRouter();
@@ -63,6 +67,10 @@ export default function PackHomeScreen() {
   const [claims, setClaims] = useState<ExternalInviteClaim[]>([]);
   const [invited, setInvited] = useState<PendingInvite[]>(cached?.invited ?? []);
   const [respondingClaim, setRespondingClaim] = useState<string | null>(null);
+  /** What each finished walk's card draws, by walk id — decoration, loaded behind the meetup. */
+  const [walkCards, setWalkCards] = useState<Record<string, WalkCard>>({});
+  /** Signed cover URLs, by storage path. */
+  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
   /**
    * Whether there is anything on screen worth believing. Not "is a request in
    * flight".
@@ -109,6 +117,18 @@ export default function PackHomeScreen() {
       setMembers(data.members);
       setWalks(data.walks);
       setInvited(data.invited);
+      // The archive's pictures. Never awaited and never fatal: the cards draw
+      // from the walks alone until this lands, and a failure keeps what was drawn.
+      if (data.walks.some(walk => walk.state === 'completed')) {
+        void listPackWalkCards(packId)
+          .then(async found => {
+            if (!found) return;
+            setWalkCards(Object.fromEntries(found.map(card => [card.walkId, card])));
+            const paths = found.flatMap(card => (card.coverPath ? [card.coverPath] : []));
+            if (paths.length) setCoverUrls(await communityMediaUrls(paths));
+          })
+          .catch(() => {});
+      }
 
       const isOwnerNow = data.pack.owner_id === user?.id;
       if (!isOwnerNow) {
@@ -238,6 +258,10 @@ export default function PackHomeScreen() {
   const { width: windowWidth } = useWindowDimensions();
   /** Three to a row inside the 16 pt page margins. */
   const tileWidth = Math.floor((windowWidth - space.lg * 2 - TILE_GAP * 2) / 3);
+  /** Full width for one walk; otherwise three quarters, so the next one peeks. */
+  const memoryCardWidth = memories.length > 1
+    ? Math.round(windowWidth * 0.74)
+    : windowWidth - space.lg * 2;
   /** Numbers are only said once there is an answer to say them about. */
   const known = loaded || allDogs.length > 0;
   const dogNames = allDogs.map(dog => dog.name);
@@ -515,24 +539,41 @@ export default function PackHomeScreen() {
           })}
         </View>
 
-        <SectionHead title="Our walks" />
-        {memories.length ? memories.map(walk => (
-          <Pressable
-            key={walk.id}
-            onPress={() => router.push(`/community/walk/${walk.id}/memory` as never)}
-            style={({ pressed }) => [styles.listRow, pressed && styles.pressed]}
-            accessibilityRole="button"
-            accessibilityLabel={`Open the memory of ${walk.title}`}
+        <SectionHead
+          title="Our walks"
+          actions={memories.length > 1 ? [{ label: `${memories.length} walks`, onPress: () => {}, muted: true, passive: true }] : []}
+        />
+        {memories.length ? (
+          // A rail, like a listing page's: the next card peeks in from the edge
+          // so it reads as "there is more". One walk simply fills the width.
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={memoryCardWidth + MEMORY_GAP}
+            decelerationRate="fast"
+            disableIntervalMomentum
+            style={styles.memoryRail}
+            contentContainerStyle={styles.memoryRailContent}
           >
-            <DateChip iso={walk.ended_at ?? walk.scheduled_for} quiet />
-            <View style={styles.flex}>
-              <Text style={styles.listTitle} numberOfLines={1}>{walk.title}</Text>
-              {walk.meeting_label ? <Text style={styles.listMeta} numberOfLines={1}>{walk.meeting_label}</Text> : null}
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={color.pass.faint} />
-          </Pressable>
-        )) : loaded ? (
-          <Text style={styles.archiveEmptyText}>The first shared memory appears here after your walk.</Text>
+            {memories.map(walk => {
+              const card = walkCards[walk.id];
+              return (
+                <WalkMemoryCard
+                  key={walk.id}
+                  walk={walk}
+                  card={card}
+                  coverUrl={card?.coverPath ? coverUrls[card.coverPath] : undefined}
+                  width={memoryCardWidth}
+                  onOpen={() => router.push(`/community/walk/${walk.id}/memory` as never)}
+                />
+              );
+            })}
+          </ScrollView>
+        ) : loaded ? (
+          <View style={styles.archiveEmpty}>
+            <Ionicons name="images-outline" size={18} color={color.pass.faint} />
+            <Text style={styles.archiveEmptyText}>The first shared memory appears here after your walk — routes, photos and all.</Text>
+          </View>
         ) : null}
 
         {error ? <Text style={communityScreenStyles.error}>{error}</Text> : null}
@@ -602,18 +643,21 @@ function SectionHead({
   actions = [],
 }: {
   title: string;
-  actions?: { label: string; onPress: () => void; muted?: boolean }[];
+  /** `passive`: a count, said where an action would be, not something to tap. */
+  actions?: { label: string; onPress: () => void; muted?: boolean; passive?: boolean }[];
 }) {
   return (
     <View style={styles.sectionHead}>
       <Text style={styles.sectionTitle}>{title}</Text>
       {actions.length ? (
         <View style={styles.sectionActions}>
-          {actions.map(action => (
+          {actions.map(action => (action.passive ? (
+            <Text key={action.label} style={[styles.sectionAction, styles.sectionActionMuted, styles.sectionCount]}>{action.label}</Text>
+          ) : (
             <Pressable key={action.label} onPress={action.onPress} hitSlop={8} accessibilityRole="button">
               <Text style={[styles.sectionAction, action.muted && styles.sectionActionMuted]}>{action.label}</Text>
             </Pressable>
-          ))}
+          )))}
         </View>
       ) : null}
     </View>
@@ -648,6 +692,8 @@ function DateChip({ iso, live, quiet }: { iso?: string | null; live?: boolean; q
 
 /** Three tiles to a row, ten points apart. */
 const TILE_GAP = 10;
+/** Between memory cards in the rail. */
+const MEMORY_GAP = 12;
 
 const BADGE_BOX: Record<TileBadge, object> = {
   you: { backgroundColor: color.yellow, borderColor: color.yellow },
@@ -845,7 +891,21 @@ const styles = StyleSheet.create({
   badge: { height: 20, paddingHorizontal: space.sm, borderRadius: 6, borderWidth: 1, justifyContent: 'center' },
   badgeText: { fontFamily: font.bold, fontSize: 8.5, letterSpacing: 1 },
 
-  archiveEmptyText: { ...type.body, fontSize: 12.5, color: color.pass.muted, paddingHorizontal: space.xs },
+  sectionCount: { fontFamily: font.regular },
+  // Bleeds to the screen's edges so the cards scroll under the page margin.
+  memoryRail: { marginHorizontal: -space.lg },
+  memoryRailContent: { paddingHorizontal: space.lg, gap: MEMORY_GAP },
+  archiveEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    padding: space.lg,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: color.pass.ringAsked,
+  },
+  archiveEmptyText: { flex: 1, ...type.body, fontSize: 12.5, lineHeight: 18, color: color.pass.muted },
 
   privacyNote: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.xxxl, paddingHorizontal: space.xs },
   privacyText: { flex: 1, fontFamily: font.regular, fontSize: 11.5, lineHeight: 16, color: color.pass.muted },
