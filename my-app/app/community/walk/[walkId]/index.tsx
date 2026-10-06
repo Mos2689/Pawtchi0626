@@ -395,6 +395,7 @@ export default function OutingScreen() {
       packId: walk.pack_id,
       packName: pack.name,
       shareLocation,
+      liveV2: isPerfFlagOn('liveWalkV2'),
     });
     if (result === 'denied') {
       setError('Location access is off, so this walk can’t be measured.');

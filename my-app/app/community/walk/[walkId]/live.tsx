@@ -220,7 +220,12 @@ export default function CommunityLiveScreen() {
    * every position source goes through the receiver, which also decides who is
    * still live; off, this screen reads positions exactly as before.
    */
-  const liveV2 = useMemo(() => isPerfFlagOn('liveWalkV2'), []);
+  // On the phone recording this walk, the walk's own stored decision (see
+  // TrailRecording); otherwise the flag.
+  const liveV2 = useMemo(() => {
+    const trail = useWalkStore.getState().marker?.trail;
+    return trail && trail.walkId === walkId && trail.liveV2 !== undefined ? trail.liveV2 : isPerfFlagOn('liveWalkV2');
+  }, [walkId]);
   const receiverRef = useRef<LiveReceiver | null>(null);
   /**
    * Photos the REST of the pack has shared on this walk, already published.

@@ -276,12 +276,14 @@ export const useWalkStore = create<WalkState>((set, get) => ({
     let next: WalkSessionState = session;
     for (const p of points) next = ingestPoint(next, p, config);
     const newest = points[points.length - 1];
-    if (newest) set({ lastObservation: { at: newest.timestamp, accuracy: newest.accuracy } });
 
     if (session.status === 'active' && next.status === 'auto_paused') {
       track('walk_auto_paused', { elapsed_s: Math.round((Date.now() - marker.startedAt) / 1000) });
     }
-    set({ session: next });
+    // One update per batch: the live sender reads both together.
+    set(newest
+      ? { session: next, lastObservation: { at: newest.timestamp, accuracy: newest.accuracy } }
+      : { session: next });
 
     const last = points[points.length - 1];
     const stop = checkAutoStop(next, last?.timestamp ?? Date.now(), config);

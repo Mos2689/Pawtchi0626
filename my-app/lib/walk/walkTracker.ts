@@ -77,6 +77,13 @@ export interface ActiveWalkTrail {
   packName: string;
   /** Whether this walker agreed to broadcast their position to the pack. */
   shareLocation: boolean;
+  /**
+   * Live Walk v2, decided when the walk starts (the flags are loaded by then)
+   * and kept with the walk, so a relaunch mid-walk — when the flags may not
+   * have loaded yet — cannot quietly switch it back to the old path. Absent on
+   * records written before this existed: those ask the flag.
+   */
+  liveV2?: boolean;
 }
 
 /** The durable "a walk is happening" record — everything finalize needs. */

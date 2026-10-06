@@ -368,11 +368,13 @@ export function TrailRecording() {
   const publishingRef = useRef(false);
   /**
    * Live Walk v2, decided once per walk: a recording never switches path
-   * half-way. Off, the legacy 12-second upsert below runs as it always has.
+   * half-way. The walk's own record carries the decision made when it started
+   * (`trail.liveV2`), so a relaunch before the flags load keeps it; only older
+   * records ask the flag. Off, the legacy 12-second upsert below runs as always.
    */
   const liveV2Ref = useRef<{ walkId: string | undefined; on: boolean } | null>(null);
   if (liveV2Ref.current?.walkId !== trail?.walkId) {
-    liveV2Ref.current = { walkId: trail?.walkId, on: isPerfFlagOn('liveWalkV2') };
+    liveV2Ref.current = { walkId: trail?.walkId, on: trail?.liveV2 ?? isPerfFlagOn('liveWalkV2') };
   }
   const liveV2 = liveV2Ref.current?.on ?? false;
   useEffect(() => {
