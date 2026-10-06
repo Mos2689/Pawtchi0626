@@ -63,9 +63,19 @@ function labelFor(spot: PawtchiSpot): string {
  * map provider thinks you meant, which may be a different park entirely.
  */
 export function directionsUrl(spot: PawtchiSpot, platform: DirectionsPlatform): string {
-  const lat = spot.latitude;
-  const lng = spot.longitude;
-  const label = labelFor(spot);
+  return placeDirectionsUrl({ lat: spot.latitude, lng: spot.longitude, label: labelFor(spot) }, platform);
+}
+
+/** Any named place — a Spot, or a meetup's meeting point. Same rules as above. */
+export interface DirectionsPlace {
+  lat: number;
+  lng: number;
+  label: string;
+}
+
+export function placeDirectionsUrl(place: DirectionsPlace, platform: DirectionsPlatform): string {
+  const { lat, lng } = place;
+  const label = place.label.replace(/[\r\n]+/g, ' ').trim().slice(0, 80);
 
   if (platform === 'ios') {
     // `dirflg=w` asks Apple Maps for walking directions. A driving route to a

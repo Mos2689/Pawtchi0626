@@ -145,6 +145,27 @@ export const color = {
     hairline: '#E8EAF2',
   },
 
+  // ── The walk pass (meetup detail, design "Detail 1 — The pass", Oct 2026) ──
+  // Warm paper and warm hairlines, scoped to Connect's walk screens. The pass
+  // itself is `navy` (the design's near-black, translated to the brand ground,
+  // the same call the live map made), the CTA is `yellow`, and the one
+  // decision that is yours is marked `electric` (Connect's sanctioned blue).
+  pass: {
+    paper: '#FBFAF5',          // screen ground — and the pass's notches, which must match it
+    hairline: '#E4E3D8',       // borders and rules on paper
+    hairlineStrong: '#D8D7C9', // the secondary button's outline
+    ringAsked: '#C9C8BA',      // dashed ring: asked, no answer yet
+    avatarGround: '#F1F0E7',
+    mapGround: '#F2F1E9',      // the meeting-point thumbnail
+    mapWater: '#DEE4FA',
+    muted: '#6A6A62',          // secondary text on paper
+    faint: '#9A9A90',          // declined, chevrons
+    onNavyMuted: '#A8A89C',    // secondary text on the pass
+    onNavyFaint: '#8A8A80',    // eyebrows on the pass
+    perforation: 'rgba(255, 255, 255, 0.26)',
+    outlineOnNavy: 'rgba(255, 255, 255, 0.22)',
+  },
+
   // Text on light
   ink: '#0f172a',
   slate: '#475569',

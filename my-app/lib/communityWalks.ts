@@ -9,6 +9,7 @@ import { toInvitationPreview, type InvitationPreview } from './community/invitat
 import { composeOutingSnapshot, decodeOuting, type PackAttendanceEntry } from './community/outingDoc';
 import { isPerfFlagOn } from './perfFlags';
 import { LIVE_PROTOCOL } from './community/liveProtocol';
+import { pickNextOpenWalk } from './community/walkPass';
 
 export { isValidUsername, normalizeUsername } from './communityUsername';
 
@@ -584,6 +585,26 @@ export async function listWalkInvitations(): Promise<WalkInvitation[]> {
       meetingLabel: walk.meeting_label,
     };
   });
+}
+
+/**
+ * The walk a new member should answer next in a meetup: one running now, else
+ * the soonest planned. Null when there is none (or it could not be read — the
+ * caller then simply stays where it is).
+ *
+ * Exists because joining a meetup is not joining its walk: a walk planned
+ * before you joined has no seat for you, and nothing said so (device report,
+ * 2026-10-07). Accepting now leads straight to that walk's "Can you make it?".
+ */
+export async function nextOpenWalkId(packId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('community_walks')
+    .select('id, state, scheduled_for')
+    .eq('pack_id', packId)
+    .in('state', ['planned', 'active'])
+    .limit(10);
+  if (error || !data) return null;
+  return pickNextOpenWalk(data as { id: string; state: string; scheduled_for: string | null }[]);
 }
 
 export async function respondToInvitation(invitationId: string, accept: boolean): Promise<void> {

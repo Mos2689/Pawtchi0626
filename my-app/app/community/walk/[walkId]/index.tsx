@@ -1,8 +1,10 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { describeError, errorCopy, isTransientError, toAppError, type AppError } from '../../../../lib/appError';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
+import * as Location from 'expo-location';
 import { showBlockedPermission } from '../../../../lib/permissions/blockedPermission';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,7 +14,7 @@ import {
   DogAvatar,
   communityScreenStyles,
 } from '../../../../components/community/CommunityUI';
-import { color, font, makeShadow, radius, space, type } from '../../../../constants/design';
+import { color, font, radius, space, type } from '../../../../constants/design';
 import { useWalkEnabled } from '../../../../hooks/useWalkEnabled';
 import { useAutoRetry } from '../../../../hooks/useAutoRetry';
 import { ErrorState } from '../../../../components/ErrorState';
@@ -46,39 +48,11 @@ import { useActivePetStore } from '../../../../store/useActivePetStore';
 import { useWalkStore } from '../../../../store/useWalkStore';
 import { useAuth } from '../../../../providers/AuthProvider';
 import { dateFormat } from '../../../../lib/dateFormats';
-
-type DateDetails = {
-  /** The chip's two lines. Month above, day below. */
-  month: string;
-  day: string;
-  /** The sentence beside the chip. Never repeats what the chip already says. */
-  when: string;
-};
-
-/**
- * `known` is whether the walk itself has arrived. Without it every placeholder
- * on this screen made a claim: a walk that had not loaded yet rendered exactly
- * like a walk whose host had genuinely not picked a date, down to the em dash.
- *
- * The split between the chip and the sentence is deliberate. The card used to
- * show "THU 24" in the chip and "Thursday, 24 Sep" beside it — the same fact,
- * twice, a centimetre apart. The chip now carries the month and the date, the
- * line carries the weekday and the time, and between them they say it once.
- */
-function dateDetails(value: string | null, known = true): DateDetails {
-  if (!known) return { month: '', day: '', when: '' };
-  const undated = { month: 'TBC', day: '—', when: 'Date to be confirmed' };
-  if (!value) return undated;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return undated;
-  return {
-    month: dateFormat({ month: 'short' }).format(date).toUpperCase(),
-    day: dateFormat({ day: 'numeric' }).format(date),
-    when: `${dateFormat({ weekday: 'long' }).format(date)}, ${
-      dateFormat({ hour: 'numeric', minute: '2-digit' }).format(date)
-    }`,
-  };
-}
+import { passEyebrow, passTime, rosterBadge, distanceFromYou, type RosterRing } from '../../../../lib/community/walkPass';
+import { placeDirectionsUrl } from '../../../../lib/spots/directions';
+import { haversineMeters, type GeoPoint } from '../../../../lib/walk/geo';
+import { deriveDogWalkProfile } from '../../../../lib/walk/dogCalibration';
+import { dogPaceKmh, formatEta, walkEtaMinutes } from '../../../../lib/walk/wayfinding';
 
 /**
  * Whether the walk's own title says anything the trail's name does not.
@@ -278,7 +252,6 @@ export default function OutingScreen() {
   // The trail's host, not this walk's organiser. Starting, editing and
   // inviting all belong to them now — see isTrailHost.
   const isOrganizer = isTrailHost(pack, user?.id);
-  const date = useMemo(() => dateDetails(walk?.scheduled_for ?? null, !!walk), [walk]);
   /** Only shown when the host actually named this walk something of its own. */
   const named = distinctTitle(walk?.title, pack?.name);
   const comingCount = attendance.filter(row => ['coming', 'checked_in', 'walking', 'finished'].includes(row.status)).length;
@@ -525,6 +498,75 @@ export default function OutingScreen() {
     // failed refresh never takes the button away.
     || (!previewOnly && !rosterKnown);
 
+  // ── The pass ────────────────────────────────────────────────────────────
+  const insets = useSafeAreaInsets();
+  /** My answer, or null when I am in the pack but was not asked to this one. */
+  const myStatus = mine ? mine.status : null;
+  const inPack = !!mine || notAsked.some(row => row.user_id === user?.id);
+  const hostRow = attendance.find(row => row.user_id === walk?.organizer_id);
+  const hostName = hostRow
+    ? hostRow.user_id === user?.id ? 'You' : firstName(hostRow.person?.full_name || hostRow.person?.username)
+    : null;
+  const hostDog = hostRow?.dogs?.[0]?.name;
+  const hostLine = walk && hostName
+    ? `${hostName}${hostDog ? ` & ${hostDog}` : ''} ${hostDog || hostName === 'You' ? 'are' : 'is'} hosting`
+    : '';
+  const eyebrow = passEyebrow({ state: walk?.state, isHost: isOrganizer, myStatus });
+  const when = useMemo(() => passTime(walk?.scheduled_for, {
+    time: value => dateFormat({ hour: '2-digit', minute: '2-digit' }).format(value),
+    date: value => dateFormat({ weekday: 'long', day: 'numeric', month: 'long' }).format(value),
+  }), [walk?.scheduled_for]);
+  /** A guest's answer, pinned to the footer — asked or merely in the pack. */
+  const canAnswer = walk?.state === 'planned' && !isOrganizer && inPack;
+  const answerPrompt = myStatus === 'coming'
+    ? 'You said you’re coming'
+    : myStatus === 'cant_make_it' ? 'You said you can’t make it' : 'Can you make it?';
+  const startsAt = walk?.scheduled_for && !Number.isNaN(Date.parse(walk.scheduled_for))
+    ? dateFormat({ hour: 'numeric', minute: '2-digit' }).format(new Date(walk.scheduled_for))
+    : null;
+  const waitingLine = `${hostName && hostName !== 'You' ? hostName : 'The host'} starts the walk${startsAt ? ` at ${startsAt}` : ''}`;
+
+  // ── The meeting point, from here ────────────────────────────────────────
+  // Only a position the phone already has: this screen never asks for
+  // location — the walk itself does that, with its disclosure, when it starts.
+  const [here, setHere] = useState<GeoPoint | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const permission = await Location.getForegroundPermissionsAsync();
+        if (!permission.granted) return;
+        const last = await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 });
+        if (alive && last) setHere({ lat: last.coords.latitude, lng: last.coords.longitude });
+      } catch {
+        // No distance, then — the card still opens directions.
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const meeting = walk && walk.meeting_lat != null && walk.meeting_lng != null
+    ? { lat: walk.meeting_lat, lng: walk.meeting_lng }
+    : null;
+  const distanceM = here && meeting ? haversineMeters(here, meeting) : null;
+  const paceKmh = useMemo(() => dogPaceKmh(deriveDogWalkProfile({
+    species: activePet?.species ?? 'dog',
+    breed: activePet?.breed ?? null,
+    ageYears: activePet?.age_years ?? null,
+    weightKg: activePet?.current_weight_kg ?? null,
+    medicalConditions: activePet?.medical_conditions ?? null,
+  }).paceBandKmh), [activePet]);
+  const distanceTitle = distanceM === null ? 'See the meeting point' : distanceFromYou(distanceM);
+  const eta = distanceM === null ? '' : formatEta(walkEtaMinutes(distanceM, paceKmh));
+  const distanceDetail = distanceM === null || !eta || distanceM > 8_000
+    ? 'Opens in your maps app'
+    : `${eta.charAt(0).toUpperCase()}${eta.slice(1)} on foot`;
+  const openDirections = () => {
+    if (!meeting) return;
+    const place = { ...meeting, label: walk?.meeting_label || 'Meeting point' };
+    Linking.openURL(placeDirectionsUrl(place, Platform.OS === 'ios' ? 'ios' : 'android'))
+      .catch(() => Linking.openURL(placeDirectionsUrl(place, 'web')).catch(() => {}));
+  };
+
   /** Nothing to show and the last try failed: the calm card, not an empty shell. */
   const unavailable = !walk && !!loadIssue && !loadInFlight;
   const loadIssueLine = loadIssue ? errorCopy(loadIssue, { context: 'community_load' }).message : null;
@@ -569,20 +611,17 @@ export default function OutingScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.headerButton} accessibilityRole="button" accessibilityLabel="Go back">
-          <Ionicons name="chevron-back" size={22} color={color.navy} />
+        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Go back">
+          <Ionicons name="chevron-back" size={20} color={color.navy} />
         </Pressable>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {pack?.name ?? ''}
-        </Text>
         {isOrganizer && walk?.state === 'planned' ? (
           <Pressable
             onPress={() => router.push(`/community/${walk.pack_id}/plan?walkId=${walk.id}` as never)}
-            style={styles.headerButton}
+            style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}
             accessibilityRole="button"
             accessibilityLabel="Edit this walk"
           >
-            <Ionicons name="ellipsis-horizontal" size={21} color={color.navy} />
+            <Ionicons name="ellipsis-horizontal" size={19} color={color.navy} />
           </Pressable>
         ) : <View style={styles.headerButtonSpacer} />}
       </View>
@@ -600,70 +639,72 @@ export default function OutingScreen() {
           </View>
         ) : (
           <>
-          {/* ── One card, one grid ──────────────────────────────────────────
-              Two facts, said the same way twice over: a 52pt block, a 14pt gap,
-              then an eyebrow above a value. Both rows share that lead width and
-              that gap, which is the whole repair — they used to be 54+20 and
-              40+16, so the two text columns began eighteen points apart and the
-              card read as though it had been assembled by two people. */}
-          <View style={styles.planCard}>
-            {named ? <Text style={styles.planName} numberOfLines={2}>{named}</Text> : null}
-
-            <View style={styles.planRow}>
-              <View style={styles.dateChip}>
-                <Text style={styles.dateMonth}>{date.month}</Text>
-                <Text style={styles.dateDay}>{date.day}</Text>
-              </View>
-              <View style={styles.planCell}>
+          {/* ── The pass ────────────────────────────────────────────────────
+              A ticket: who, what and when above the perforation, where below
+              it. The notches are circles in the screen's own colour, so the
+              card reads as torn rather than drawn. */}
+          <View style={styles.pass} accessibilityLabel="Walk pass">
+            <View style={styles.passTop}>
+              {eyebrow.text ? (
                 <View style={styles.eyebrowRow}>
-                  {walk?.state === 'active' ? <View style={styles.liveDot} /> : null}
-                  <Text style={[styles.cellEyebrow, walk?.state === 'active' && styles.cellEyebrowLive]}>
-                    {walk?.state === 'active' ? 'WALKING NOW' : 'WHEN'}
-                  </Text>
+                  {eyebrow.live ? <View style={styles.liveDot} /> : null}
+                  <Text style={styles.passEyebrow}>{eyebrow.text}</Text>
                 </View>
-                <Text style={styles.cellValue} numberOfLines={2}>
-                  {walk ? date.when : ''}
-                </Text>
+              ) : null}
+              <Text style={styles.passTitle} numberOfLines={2}>{walk ? (named ?? pack?.name ?? '') : ''}</Text>
+              {hostLine ? <Text style={styles.passHost} numberOfLines={1}>{hostLine}</Text> : null}
+              <View style={styles.timeRow}>
+                <Text style={styles.timeBig}>{walk ? when.time : ' '}</Text>
+                {walk && when.period ? <Text style={styles.timePeriod}>{when.period}</Text> : null}
               </View>
+              <Text style={styles.passDate}>{walk ? when.date : ' '}</Text>
             </View>
 
-            <View style={styles.planRule} />
+            <View style={styles.perforation}>
+              <View style={styles.perforationClip}><View style={styles.perforationLine} /></View>
+              <View style={[styles.notch, styles.notchLeft]} />
+              <View style={[styles.notch, styles.notchRight]} />
+            </View>
 
-            <View style={styles.planRow}>
-              <View style={styles.locationMark}>
-                <Ionicons name="location" size={20} color={color.navy} />
+            <View style={styles.meetRow}>
+              <View style={styles.meetMark}>
+                <Ionicons name="location-outline" size={22} color={color.navy} />
               </View>
-              <View style={styles.planCell}>
-                <Text style={styles.cellEyebrow}>MEETING POINT</Text>
-                <Text style={styles.cellValue} numberOfLines={2}>
+              <View style={styles.meetCopy}>
+                <Text style={styles.meetEyebrow}>MEETING POINT</Text>
+                <Text style={styles.meetName} numberOfLines={2}>
                   {walk ? walk.meeting_label || 'To be confirmed' : ''}
                 </Text>
+                {walk?.note ? <Text style={styles.meetNote} numberOfLines={3}>{walk.note}</Text> : null}
               </View>
+              {meeting ? (
+                <Pressable
+                  onPress={openDirections}
+                  style={({ pressed }) => [styles.directions, pressed && styles.pressed]}
+                  accessibilityRole="link"
+                  accessibilityLabel="Directions to the meeting point"
+                >
+                  <Text style={styles.directionsText}>Directions</Text>
+                </Pressable>
+              ) : null}
             </View>
-
-            {/* Full width, under both rows. A sentence indented into a column two
-                thirds of the card wide wraps into a ribbon. */}
-            {walk?.note ? <Text style={styles.planNote}>{walk.note}</Text> : null}
           </View>
 
           <View style={styles.sectionHeading}>
-            <Text style={styles.sectionTitle}>Who’s walking</Text>
+            <Text style={styles.sectionTitle}>Who is walking</Text>
             <Text style={styles.comingCount}>
               {rosterKnown ? `${comingCount} of ${attendance.length} coming` : ' '}
             </Text>
           </View>
 
-          <View style={styles.roster}>
-            {/* Rows the shape of people while a partial prime waits on the
+          <View style={styles.faces}>
+            {/* Circles the shape of people while a partial prime waits on the
                 roster, rather than a blank gap that reads as "nobody". */}
             {!rosterKnown && attendance.length === 0
-              ? SKELETON_ROWS.map(width => (
-                <View key={width} style={styles.personRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-                  <View style={styles.skeletonAvatar} />
-                  <View style={styles.personCopy}>
-                    <View style={[styles.skeletonLine, { width }]} />
-                    <View style={[styles.skeletonLine, styles.skeletonLineShort]} />
-                  </View>
+              ? SKELETON_FACES.map(key => (
+                <View key={key} style={styles.face} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                  <View style={[styles.faceRing, styles.skeletonRing]} />
+                  <View style={styles.skeletonName} />
                 </View>
               ))
               : null}
@@ -673,58 +714,21 @@ export default function OutingScreen() {
               const ownerName = firstName(person.person?.full_name || person.person?.username);
               const dogNames = person.dogs?.map(dog => dog.name).join(' & ');
               const avatarDog = person.dogs?.[0] ?? { id: person.user_id, name: ownerName, image_url: person.person?.avatar_url ?? null };
-              const answeredYes = ['coming', 'checked_in', 'walking', 'finished'].includes(person.status);
+              const badge = rosterBadge({ status: person.status, isOrganizer: organizer, isMe, walkState: walk?.state });
               return (
-                <View key={person.user_id} style={styles.personRow}>
-                  <DogAvatar dog={avatarDog} size={48} />
-                  <View style={styles.personCopy}>
-                    <Text style={styles.personName} numberOfLines={1}>{dogNames ? `${ownerName} & ${dogNames}` : ownerName}</Text>
-                    {/* Suppressed where a button beside it already says the same
-                        word: my own answered row showed "Coming" in grey text
-                        next to a yellow chip reading "Coming". */}
-                    {walk?.state === 'planned' && isMe && !organizer && person.status !== 'invited'
-                      ? null
-                      : <Text style={styles.personStatus}>{statusCopy(person, organizer)}</Text>}
+                <View
+                  key={person.user_id}
+                  style={styles.face}
+                  accessible
+                  accessibilityLabel={`${isMe ? 'You' : ownerName}${dogNames ? ` and ${dogNames}` : ''}, ${statusCopy(person, organizer)}`}
+                >
+                  <View style={[styles.faceRing, RING_STYLE[badge.ring]]}>
+                    <DogAvatar dog={avatarDog} size={FACE - 6} />
                   </View>
-
-                  {/* One fixed-width column for whatever ends the row. Without
-                      it a Host pill, two answer buttons and a bare tick each set
-                      their own right edge, and four rows stack into a ragged
-                      margin that reads as a layout bug. */}
-                  <View style={styles.rowAction}>
-                    {walk?.state === 'planned' && isMe && !organizer ? (
-                      <View style={styles.responseGroup}>
-                        <Pressable
-                          onPress={() => void respond('coming')}
-                          disabled={busy}
-                          style={[styles.responseButton, person.status === 'coming' && styles.responseButtonSelected]}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: person.status === 'coming' }}
-                        >
-                          <Text style={[styles.responseButtonText, person.status === 'coming' && styles.responseTextSelected]}>
-                            Coming
-                          </Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => void respond('cant_make_it')}
-                          disabled={busy}
-                          style={[styles.responseButton, person.status === 'cant_make_it' && styles.responseButtonMutedSelected]}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: person.status === 'cant_make_it' }}
-                        >
-                          <Text style={styles.responseMutedText}>Can’t</Text>
-                        </Pressable>
-                      </View>
-                    ) : organizer ? (
-                      <View style={styles.hostBadge}><Text style={styles.hostBadgeText}>HOST</Text></View>
-                    ) : answeredYes ? (
-                      <Ionicons name="checkmark-circle" size={23} color={color.success} />
-                    ) : person.status === 'cant_make_it' ? (
-                      <Ionicons name="close-circle" size={23} color={color.slateFaint} />
-                    ) : (
-                      <Ionicons name="time-outline" size={21} color={color.slateFaint} />
-                    )}
-                  </View>
+                  <Text style={[styles.faceName, badge.ring === 'cant' && styles.faceFaded, badge.ring === 'asked' && styles.faceMuted]} numberOfLines={1}>
+                    {isMe ? 'You' : ownerName}
+                  </Text>
+                  <Text style={[styles.faceLabel, LABEL_STYLE[badge.ring]]} numberOfLines={1}>{badge.label}</Text>
                 </View>
               );
             })}
@@ -732,9 +736,7 @@ export default function OutingScreen() {
 
           {notAsked.length ? (
             <View style={styles.notAskedBlock}>
-              <Text style={styles.notAskedTitle}>
-                Also in the pack · not asked to this one
-              </Text>
+              <Text style={styles.notAskedTitle}>Also in the pack · not asked to this one</Text>
               {shownNotAsked.map(person => {
                 const ownerName = firstName(person.person?.full_name || person.person?.username);
                 const dogNames = person.dogs?.map(dog => dog.name).join(' & ');
@@ -746,46 +748,56 @@ export default function OutingScreen() {
                       <DogAvatar dog={avatarDog} size={36} />
                     </View>
                     <Text style={styles.notAskedName} numberOfLines={1}>
-                      {dogNames ? `${ownerName} & ${dogNames}` : ownerName}
+                      {isMe ? 'You' : dogNames ? `${ownerName} & ${dogNames}` : ownerName}
                     </Text>
                     {/* Nobody asked them, and they can still come — being in the
-                        pack is the permission. The host gets the other half of
-                        that: asking them without leaving this screen. */}
-                    {/* The same fixed column as the roster above, so both lists
-                        share one right margin instead of two. */}
-                    <View style={styles.rowAction}>
-                      {isMe && walk?.state === 'planned' ? (
-                        <Pressable
-                          onPress={() => void respond('coming')}
-                          disabled={busy}
-                          style={styles.notAskedJoin}
-                          accessibilityRole="button"
-                          accessibilityLabel="Come to this walk anyway"
-                        >
-                          <Text style={styles.notAskedJoinText}>I’ll come</Text>
-                        </Pressable>
-                      ) : isOrganizer && walk?.state === 'planned' ? (
-                        <Pressable
-                          onPress={() => void invite(person.user_id)}
-                          disabled={inviting !== null}
-                          style={({ pressed }) => [
-                            styles.notAskedInvite,
-                            (pressed || inviting === person.user_id) && styles.notAskedInvitePressed,
-                          ]}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Ask ${ownerName} to this walk`}
-                        >
-                          <Ionicons name="add" size={15} color={color.navy} />
-                          <Text style={styles.notAskedInviteText}>
-                            {inviting === person.user_id ? 'Asking…' : 'Invite'}
-                          </Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
+                        pack is the permission (their answer is the footer below).
+                        The host gets the other half: asking them from here. */}
+                    {!isMe && isOrganizer && walk?.state === 'planned' ? (
+                      <Pressable
+                        onPress={() => void invite(person.user_id)}
+                        disabled={inviting !== null}
+                        style={({ pressed }) => [
+                          styles.notAskedInvite,
+                          (pressed || inviting === person.user_id) && styles.pressed,
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Ask ${ownerName} to this walk`}
+                      >
+                        <Ionicons name="add" size={15} color={color.navy} />
+                        <Text style={styles.notAskedInviteText}>
+                          {inviting === person.user_id ? 'Asking…' : 'Invite'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 );
               })}
             </View>
+          ) : null}
+
+          {meeting && walk?.state !== 'completed' && walk?.state !== 'cancelled' ? (
+            <Pressable
+              onPress={openDirections}
+              style={({ pressed }) => [styles.mapCard, pressed && styles.pressed]}
+              accessibilityRole="link"
+              accessibilityLabel={`${distanceTitle}. ${distanceDetail}. Opens directions.`}
+            >
+              <View style={styles.mapThumb}>
+                <Svg width={92} height={72} viewBox="0 0 92 72">
+                  <Rect width={92} height={72} fill={color.pass.mapGround} />
+                  <Path d="M0 52 C 16 48, 28 58, 46 55 S 76 46, 92 50 L92 72 L0 72 Z" fill={color.pass.mapWater} />
+                  <Path d="M-4 30 H 96" stroke={color.surface} strokeWidth={5} strokeLinecap="round" />
+                  <Path d="M58 -4 V 76" stroke={color.surface} strokeWidth={5} strokeLinecap="round" />
+                  <Circle cx={44} cy={28} r={9} fill={color.yellow} stroke={color.navy} strokeWidth={3} />
+                </Svg>
+              </View>
+              <View style={styles.mapCopy}>
+                <Text style={styles.mapTitle} numberOfLines={1}>{distanceTitle}</Text>
+                <Text style={styles.mapDetail} numberOfLines={1}>{distanceDetail}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={color.pass.faint} />
+            </Pressable>
           ) : null}
 
           {myDogs.length > 1 && walk?.state !== 'completed' ? (
@@ -817,159 +829,189 @@ export default function OutingScreen() {
           {/* A refresh that failed while the walk is on screen: said quietly,
               because nothing is lost and the screen is already trying again. */}
           {!error && walk && loadIssueLine ? <Text style={styles.staleNote}>{loadIssueLine}</Text> : null}
+          </>
+        )}
+      </ScrollView>
 
-          {/* Waiting is not an action, so it does not get an action's shape.
-              A full-width slab in the brand's loudest colour, greyed out and
-              reading "Waiting for organiser", made the most prominent object on
-              the screen the one telling you there is nothing to do. */}
+      {/* ── The footer ────────────────────────────────────────────────────
+          Pinned, because the one thing this screen asks of you should never
+          scroll away. Waiting on the host is not an action, so it is a quiet
+          line above the answer, not a greyed-out button. */}
+      {!unavailable && walk ? (
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space.lg) + 6 }]}>
           {waiting ? (
             <View style={styles.waitingNote}>
-              <Ionicons name="time-outline" size={16} color={color.slateMuted} />
-              <Text style={styles.waitingText}>{primaryLabel}</Text>
+              <Ionicons name="time-outline" size={14} color={color.pass.muted} />
+              <Text style={styles.waitingText}>{waitingLine}</Text>
             </View>
-          ) : (
+          ) : null}
+          {canAnswer ? (
+            <>
+              <Text style={styles.answerPrompt}>{answerPrompt}</Text>
+              <View style={styles.answerRow}>
+                <Pressable
+                  onPress={() => void respond('coming')}
+                  disabled={busy}
+                  style={({ pressed }) => [styles.comingButton, pressed && styles.pressed, busy && styles.disabled]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: myStatus === 'coming', disabled: busy }}
+                >
+                  {myStatus === 'coming' ? <Ionicons name="checkmark" size={18} color={color.navy} /> : null}
+                  <Text style={styles.comingText}>{myStatus === 'coming' ? 'You’re coming' : 'Coming'}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void respond('cant_make_it')}
+                  disabled={busy}
+                  style={({ pressed }) => [
+                    styles.cantButton,
+                    myStatus === 'cant_make_it' && styles.cantButtonSelected,
+                    pressed && styles.pressed,
+                    busy && styles.disabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: myStatus === 'cant_make_it', disabled: busy }}
+                >
+                  <Text style={styles.cantText}>Can’t make it</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : !waiting && walk.state !== 'cancelled' ? (
             <Pressable
               onPress={openPrimaryAction}
               disabled={primaryDisabled}
-              style={({ pressed }) => [
-                styles.primaryAction,
-                primaryDisabled && styles.primaryActionDisabled,
-                pressed && styles.primaryActionPressed,
-              ]}
+              style={({ pressed }) => [styles.primaryAction, primaryDisabled && styles.disabled, pressed && styles.pressed]}
               accessibilityRole="button"
               accessibilityState={{ disabled: primaryDisabled }}
             >
               <Text style={styles.primaryActionText}>{primaryLabel}</Text>
             </Pressable>
-          )}
-          </>
-        )}
-      </ScrollView>
+          ) : walk.state === 'cancelled' ? (
+            <Text style={styles.cancelledText}>{primaryLabel}</Text>
+          ) : null}
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
-/**
- * The plan card's grid, as three numbers rather than six scattered ones.
- *
- * Every leading block is CARD_LEAD wide and every row uses CARD_GAP, so the
- * eyebrows and values in both rows begin on the same vertical line. Named
- * because the previous version set these per row and they drifted apart.
- */
-const CARD_PAD = 20;
-const CARD_LEAD = 52;
-const CARD_GAP = 14;
+/** The faces' outer size; the avatar sits inside a 3 pt ring. */
+const FACE = 54;
+const SKELETON_FACES = ['a', 'b', 'c'] as const;
 
-/** Name-line widths of the placeholder rows; uneven so they read as names. */
-const SKELETON_ROWS = ['58%', '44%', '66%'] as const;
+const RING_STYLE: Record<RosterRing, object> = {
+  host: { borderColor: color.navy },
+  decide: { borderColor: color.electric, borderStyle: 'dashed' },
+  coming: { borderColor: color.yellow },
+  walking: { borderColor: color.yellow },
+  finished: { borderColor: color.pass.hairline },
+  asked: { borderColor: color.pass.ringAsked, borderStyle: 'dashed' },
+  cant: { borderColor: color.pass.hairline, opacity: 0.55 },
+};
+
+const LABEL_STYLE: Record<RosterRing, object> = {
+  host: { color: color.navy },
+  decide: { color: color.electric },
+  coming: { color: color.pass.muted },
+  walking: { color: color.navy },
+  finished: { color: color.pass.muted },
+  asked: { color: color.pass.muted },
+  cant: { color: color.pass.faint },
+};
+
+/** Where the perforation sits: its notches overhang the pass by half their size. */
+const NOTCH = 22;
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#FBFAF7' },
-  flex: { flex: 1 },
-  header: { minHeight: 72, paddingHorizontal: space.xl, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  headerButton: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center', backgroundColor: color.surface },
-  headerButtonSpacer: { width: 46, height: 46 },
-  headerTitle: { flex: 1, paddingHorizontal: space.sm, fontFamily: font.bold, fontSize: 21, lineHeight: 26, letterSpacing: -0.5, color: color.navy, textAlign: 'center' },
-  scroll: { paddingHorizontal: space.xl, paddingBottom: 80 },
-  planCard: {
-    marginTop: space.sm,
-    backgroundColor: color.navy,
-    borderRadius: radius.xxl,
-    padding: CARD_PAD,
-    ...makeShadow(7, 22, 0.12),
-  },
-  planName: {
-    fontFamily: font.bold,
-    fontSize: 18,
-    lineHeight: 23,
-    letterSpacing: -0.3,
-    color: color.surface,
-    marginBottom: space.lg,
-  },
-  /**
-   * The grid. Both rows use this and nothing else sets its own lead width.
-   * `flex-start` because a cell can wrap to two lines and the block beside it
-   * cannot — centring made the chip drift down the card as the place name got
-   * longer.
-   */
-  planRow: { flexDirection: 'row', alignItems: 'flex-start', gap: CARD_GAP },
-  planCell: { flex: 1, minWidth: 0, paddingTop: 2 },
-
-  dateChip: {
-    width: CARD_LEAD,
-    height: CARD_LEAD,
-    borderRadius: radius.md,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+  screen: { flex: 1, backgroundColor: color.pass.paper },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.lg, paddingTop: space.lg },
+  headerButton: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.pass.hairline,
+    backgroundColor: color.pass.paper,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dateMonth: { fontFamily: font.bold, fontSize: 9.5, letterSpacing: 1, color: color.creamDim },
-  dateDay: { fontFamily: font.bold, fontSize: 21, lineHeight: 25, color: color.yellow },
+  headerButtonSpacer: { width: 44, height: 44 },
+  scroll: { paddingBottom: space.xxl },
+  pressed: { opacity: 0.85 },
+  disabled: { opacity: 0.45 },
 
-  locationMark: {
-    width: CARD_LEAD,
-    height: CARD_LEAD,
-    borderRadius: radius.md,
-    backgroundColor: color.yellow,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  eyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 13 },
+  // ── The pass ──
+  pass: { marginTop: space.lg, marginHorizontal: space.lg, backgroundColor: color.navy, borderRadius: 26 },
+  passTop: { paddingTop: 22, paddingHorizontal: 22, paddingBottom: 20 },
+  eyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
   liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: color.yellow },
-  cellEyebrow: { fontFamily: font.bold, fontSize: 9.5, letterSpacing: 1.1, color: 'rgba(255,255,255,0.45)' },
-  cellEyebrowLive: { color: color.yellow },
-  cellValue: {
-    fontFamily: font.bold,
-    fontSize: 15.5,
-    lineHeight: 21,
-    letterSpacing: -0.2,
-    color: color.surface,
-    marginTop: 3,
-  },
+  passEyebrow: { fontFamily: font.bold, fontSize: 10, letterSpacing: 1.6, color: color.yellow },
+  passTitle: { fontFamily: font.bold, fontSize: 27, lineHeight: 33, letterSpacing: -0.7, color: color.pass.paper },
+  passHost: { fontFamily: font.regular, fontSize: 12.5, lineHeight: 17, color: color.pass.onNavyMuted, marginTop: 4 },
+  timeRow: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm, marginTop: 18 },
+  timeBig: { fontFamily: font.bold, fontSize: 46, lineHeight: 50, letterSpacing: -1.4, color: color.pass.paper, fontVariant: ['tabular-nums'] },
+  timePeriod: { fontFamily: font.bold, fontSize: 16, color: color.pass.onNavyMuted },
+  passDate: { fontFamily: font.bold, fontSize: 10.5, letterSpacing: 1.7, color: color.yellow, marginTop: space.sm },
 
-  // Indented to the text column, so the rule starts where the reading starts
-  // rather than cutting under the chips.
-  planRule: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    marginVertical: space.lg,
-    marginLeft: CARD_LEAD + CARD_GAP,
-  },
-  planNote: {
-    fontFamily: font.medium,
-    fontSize: 12.5,
-    lineHeight: 18,
-    color: 'rgba(255,255,255,0.62)',
-    marginTop: space.lg,
-    marginLeft: CARD_LEAD + CARD_GAP,
-  },
+  // A dashed line on one side only does not render on iOS, so the line is a
+  // fully dashed box inside a clip one stroke tall.
+  perforation: { height: 2, justifyContent: 'center' },
+  perforationClip: { marginHorizontal: space.lg, height: 1.5, overflow: 'hidden' },
+  perforationLine: { height: 4, borderWidth: 1.5, borderStyle: 'dashed', borderColor: color.pass.perforation, borderRadius: 1 },
+  notch: { position: 'absolute', top: 1 - NOTCH / 2, width: NOTCH, height: NOTCH, borderRadius: NOTCH / 2, backgroundColor: color.pass.paper },
+  notchLeft: { left: -NOTCH / 2 },
+  notchRight: { right: -NOTCH / 2 },
 
+  meetRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 18, paddingHorizontal: 22 },
+  meetMark: { width: 48, height: 48, borderRadius: 15, backgroundColor: color.yellow, alignItems: 'center', justifyContent: 'center' },
+  meetCopy: { flex: 1, minWidth: 0, gap: 2 },
+  meetEyebrow: { fontFamily: font.bold, fontSize: 9.5, letterSpacing: 1.3, color: color.pass.onNavyFaint },
+  meetName: { fontFamily: font.bold, fontSize: 17, lineHeight: 22, letterSpacing: -0.3, color: color.pass.paper },
+  meetNote: { fontFamily: font.regular, fontSize: 11.5, lineHeight: 16, color: color.pass.onNavyMuted },
+  directions: {
+    height: 44,
+    paddingHorizontal: space.lg,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.pass.outlineOnNavy,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  directionsText: { fontFamily: font.semibold, fontSize: 12.5, color: color.pass.paper },
+
+  // ── Who is walking ──
   sectionHeading: {
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
     gap: space.md,
-    marginTop: space.xxl,
-    marginBottom: space.sm,
+    paddingHorizontal: space.xl,
+    paddingTop: 22,
   },
-  sectionTitle: { ...type.heading, color: color.navy, fontSize: 19 },
-  comingCount: { ...type.caption, fontSize: 10.5, letterSpacing: 0.6, color: color.slateFaint },
-  notAskedBlock: { marginTop: space.lg },
-  notAskedTitle: { ...type.caption, fontSize: 10.5, color: color.slateFaint, marginBottom: space.sm },
-  notAskedRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: 48 },
-  notAskedAvatar: { opacity: 0.5 },
-  notAskedName: { ...type.body, fontSize: 13, color: color.slateMuted, flex: 1 },
-  notAskedJoin: {
-    minHeight: 36,
-    paddingHorizontal: 14,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: color.hairline,
+  sectionTitle: { fontFamily: font.bold, fontSize: 17, lineHeight: 22, letterSpacing: -0.3, color: color.navy },
+  comingCount: { fontFamily: font.regular, fontSize: 12.5, color: color.pass.muted },
+  faces: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 12, paddingTop: 14, rowGap: space.lg },
+  face: { width: '20%', alignItems: 'center', gap: 6 },
+  faceRing: {
+    width: FACE,
+    height: FACE,
+    borderRadius: FACE / 2,
+    borderWidth: 3,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: color.pass.avatarGround,
   },
-  notAskedJoinText: { ...type.label, fontSize: 12, color: color.navy },
+  faceName: { fontFamily: font.semibold, fontSize: 11.5, color: color.navy, maxWidth: '100%' },
+  faceMuted: { color: color.pass.muted },
+  faceFaded: { color: color.pass.faint },
+  faceLabel: { fontFamily: font.bold, fontSize: 8.5, letterSpacing: 0.9 },
+  skeletonRing: { borderColor: color.pass.hairline },
+  skeletonName: { width: 34, height: 9, borderRadius: 5, backgroundColor: color.pass.hairline },
+
+  notAskedBlock: { marginTop: space.xl, paddingHorizontal: space.xl },
+  notAskedTitle: { ...type.caption, fontSize: 10.5, color: color.pass.faint, marginBottom: space.sm },
+  notAskedRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: 48 },
+  notAskedAvatar: { opacity: 0.5 },
+  notAskedName: { ...type.body, fontSize: 13, color: color.pass.muted, flex: 1 },
   notAskedInvite: {
     minHeight: 36,
     flexDirection: 'row',
@@ -979,75 +1021,88 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: color.yellow,
   },
-  notAskedInvitePressed: { opacity: 0.85 },
   notAskedInviteText: { ...type.label, fontSize: 12, color: color.navy },
-  roster: { gap: 2 },
-  personRow: { minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: space.md },
-  skeletonAvatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: color.hairline },
-  skeletonLine: { height: 12, borderRadius: 6, backgroundColor: color.hairline },
-  skeletonLineShort: { width: '34%', height: 10, borderRadius: 5, marginTop: 8 },
-  personCopy: { flex: 1, minWidth: 0 },
-  /** The one column every row's trailing element lives in. */
-  rowAction: { width: 112, alignItems: 'flex-end', justifyContent: 'center' },
-  personName: { ...type.label, color: color.navy, fontSize: 13.5 },
-  personStatus: { ...type.body, color: color.slateMuted, marginTop: 2 },
-  // Bordered, because white-on-warm-paper is invisible — the old pill read as
-  // a gap in the row rather than as a label.
-  hostBadge: {
-    minHeight: 26,
-    justifyContent: 'center',
-    backgroundColor: color.surface,
+
+  // ── The meeting point, from here ──
+  mapCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginTop: space.xl,
+    marginHorizontal: space.lg,
+    padding: space.md,
     borderWidth: 1,
-    borderColor: color.hairline,
-    borderRadius: radius.pill,
-    paddingHorizontal: 11,
+    borderColor: color.pass.hairline,
+    borderRadius: radius.xl,
+    backgroundColor: color.pass.paper,
   },
-  hostBadgeText: { fontFamily: font.bold, fontSize: 9.5, letterSpacing: 0.8, color: color.slateMuted },
-  responseGroup: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  // Equal halves of the fixed column, so the pair reads as one control rather
-  // than as two chips that happen to sit together.
-  responseButton: {
-    width: 53,
-    minHeight: 36,
+  mapThumb: { width: 92, height: 72, borderRadius: 14, overflow: 'hidden' },
+  mapCopy: { flex: 1, minWidth: 0, gap: 3 },
+  mapTitle: { fontFamily: font.bold, fontSize: 14.5, letterSpacing: -0.2, color: color.navy },
+  mapDetail: { fontFamily: font.regular, fontSize: 11.5, color: color.pass.muted },
+
+  dogPicker: { marginTop: space.xl, paddingHorizontal: space.xl },
+  dogPickerLabel: { ...type.caption, color: color.pass.muted, marginBottom: space.sm },
+  dogChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  dogChoice: {
+    minHeight: 46,
+    paddingHorizontal: space.sm,
+    paddingRight: space.md,
     borderRadius: radius.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    borderWidth: 1,
+    borderColor: color.pass.hairline,
+  },
+  dogChoiceSelected: { backgroundColor: color.electricSoft, borderColor: color.electric },
+  dogChoiceText: { ...type.label, color: color.navy },
+  error: { ...type.bodyMedium, color: color.error, marginTop: space.md, paddingHorizontal: space.xl },
+  staleNote: { ...type.body, fontSize: 12.5, color: color.pass.muted, marginTop: space.md, paddingHorizontal: space.xl },
+  unavailable: { marginTop: space.xxl, paddingHorizontal: space.xl },
+
+  // ── The footer ──
+  footer: {
+    borderTopWidth: 1,
+    borderTopColor: color.pass.hairline,
+    backgroundColor: color.pass.paper,
+    paddingTop: 14,
+    paddingHorizontal: space.lg,
+    gap: 10,
+  },
+  waitingNote: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingBottom: 4 },
+  waitingText: { fontFamily: font.regular, fontSize: 11.5, color: color.pass.muted },
+  answerPrompt: { fontFamily: font.semibold, fontSize: 13, color: color.pass.muted },
+  answerRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  comingButton: {
+    flex: 1,
+    height: 56,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: color.surface,
-    borderWidth: 1,
-    borderColor: color.hairline,
+    gap: 6,
   },
-  responseButtonSelected: { backgroundColor: color.yellow, borderColor: color.yellow },
-  responseButtonMutedSelected: { backgroundColor: color.surfaceSubtle, borderColor: color.slateFaint },
-  responseButtonText: { fontFamily: font.bold, fontSize: 10.5, color: color.slateMuted },
-  responseTextSelected: { color: color.navy },
-  responseMutedText: { fontFamily: font.bold, fontSize: 10.5, color: color.slateMuted },
-  dogPicker: { marginTop: space.xl },
-  dogPickerLabel: { ...type.caption, color: color.slateMuted, marginBottom: space.sm },
-  dogChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
-  dogChoice: { minHeight: 46, paddingHorizontal: space.sm, paddingRight: space.md, borderRadius: radius.pill, flexDirection: 'row', alignItems: 'center', gap: space.sm, backgroundColor: color.surface },
-  dogChoiceSelected: { backgroundColor: color.electricSoft, borderWidth: 1, borderColor: color.electric },
-  dogChoiceText: { ...type.label, color: color.navy },
-  error: { ...type.bodyMedium, color: color.error, marginTop: space.md },
-  staleNote: { ...type.body, fontSize: 12.5, color: color.slateMuted, marginTop: space.md },
-  unavailable: { marginTop: space.xxl },
+  comingText: { fontFamily: font.bold, fontSize: 16, letterSpacing: -0.2, color: color.navy },
+  cantButton: {
+    width: 126,
+    height: 56,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    borderColor: color.pass.hairlineStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cantButtonSelected: { backgroundColor: color.pass.avatarGround, borderColor: color.pass.faint },
+  cantText: { fontFamily: font.semibold, fontSize: 14, color: color.navy },
   primaryAction: {
-    marginTop: space.lg,
-    minHeight: 56,
-    borderRadius: radius.lg,
+    height: 56,
+    borderRadius: radius.pill,
     backgroundColor: color.yellow,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryActionDisabled: { opacity: 0.45 },
-  primaryActionPressed: { opacity: 0.88 },
-  primaryActionText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
-  waitingNote: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    minHeight: 48,
-    marginTop: space.lg,
-  },
-  waitingText: { ...type.label, fontSize: 12.5, color: color.slateMuted },
+  primaryActionText: { fontFamily: font.bold, fontSize: 16, letterSpacing: -0.2, color: color.navy },
+  cancelledText: { fontFamily: font.semibold, fontSize: 13, color: color.pass.muted, textAlign: 'center', paddingVertical: space.md },
 });

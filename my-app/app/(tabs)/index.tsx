@@ -68,6 +68,7 @@ import {
   listPacks,
   listTrailRoutes,
   listWalkInvitations,
+  nextOpenWalkId,
   respondToInvitation,
   setAttendance,
   type CommunityInvitation,
@@ -709,13 +710,23 @@ export default function HomeScreen() {
 
   /** Answering an invitation refreshes both lists — accepting makes a trail. */
   const onRespondInvite = React.useCallback(async (invitationId: string, accept: boolean) => {
+    const packId = trailInvites.find(invite => invite.id === invitationId)?.pack_id ?? null;
     await respondToInvitation(invitationId, accept);
     setTrailInvites(current => current.filter(invite => invite.id !== invitationId));
     // Through the same door as every other ask, so the answer is saved and the
     // status stays honest. A failure here keeps the list rather than throwing
     // out of an invitation that has already been accepted.
-    if (accept) refreshConnect();
-  }, [refreshConnect]);
+    if (!accept) return;
+    refreshConnect();
+    // Joining a meetup is not joining its walk. If one is already planned (or
+    // running), go straight to it, where "Can you make it?" is waiting — the
+    // invitation's push was the only one they would get (2026-10-07).
+    if (!packId) return;
+    const walkId = await nextOpenWalkId(packId).catch(() => null);
+    if (!walkId) return;
+    setWaitingOpen(false);
+    router.push(`/community/walk/${walkId}` as never);
+  }, [refreshConnect, router, trailInvites]);
 
   /**
    * Re-answer "is the map far enough away to be worth a new search?".
