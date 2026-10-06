@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { describeError } from '../../../lib/appError';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -10,10 +10,9 @@ import {
   CommunityButton,
   CommunityCard,
   DogAvatar,
-  DogStack,
   communityScreenStyles,
 } from '../../../components/community/CommunityUI';
-import { color, font, space, type } from '../../../constants/design';
+import { color, font, radius, space, type } from '../../../constants/design';
 import { TOGETHER_READ_TIMEOUT_MS, cacheKey, readSnapshot } from '../../../lib/communityCache';
 import { timed } from '../../../lib/community/perf';
 import { prefetchOuting } from '../../../lib/community/outingPrefetch';
@@ -24,10 +23,11 @@ import {
   listExternalInviteClaims,
   loadOuting,
   loadPack,
-  removePackMember,
+  type CommunityDog,
   type CommunityPack,
   type CommunityWalk,
   type ExternalInviteClaim,
+  type OutingSnapshot,
   type PackMember,
   type PackSnapshot,
   type PendingInvite,
@@ -36,13 +36,6 @@ import { useAuth } from '../../../providers/AuthProvider';
 import { useAutoRetry } from '../../../hooks/useAutoRetry';
 import { dateFormat } from '../../../lib/dateFormats';
 import { requestedLine, requesterDogs, requesterName } from '../../../lib/community/joinRequest';
-
-function dateLabel(value: string | null): string {
-  if (!value) return 'Date to be confirmed';
-  return dateFormat({
-    weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  }).format(new Date(value));
-}
 
 export default function PackHomeScreen() {
   const router = useRouter();
@@ -177,38 +170,6 @@ export default function PackHomeScreen() {
   const isOwner = !!pack && pack.owner_id === user?.id;
 
   /**
-   * Removing someone is immediate and total — they lose the archive, the plans
-   * and any live position the moment it happens — so it asks first. The
-   * confirmation names the person rather than saying "this member", because the
-   * whole point of a private trail is that you know exactly who is in it.
-   */
-  const confirmRemove = (member: PackMember) => {
-    const who = member.person?.full_name || (member.person?.username ? `@${member.person.username}` : 'this owner');
-    Alert.alert(
-      `Remove ${who}?`,
-      'They lose access to this meetup, its plans and its shared memories. Photos they contributed stay unless they remove them.',
-      [
-        { text: 'Keep them', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setError(null);
-              try {
-                await removePackMember(packId!, member.user_id);
-                await run();
-              } catch (cause) {
-                setError(describeError(cause, 'community_action'));
-              }
-            })();
-          },
-        },
-      ],
-    );
-  };
-
-  /**
    * Refetched on every focus, behind the snapshot.
    *
    * ── Why there is no freshness gate here ──────────────────────────────────
@@ -273,58 +234,89 @@ export default function PackHomeScreen() {
   // to still be editable.
   const canEditPlan = !!nextWalk && isOwner && nextWalk.state === 'planned';
 
+  // ── What the redesign derives (design "Private meetup — the pack") ──────
+  const { width: windowWidth } = useWindowDimensions();
+  /** Three to a row inside the 16 pt page margins. */
+  const tileWidth = Math.floor((windowWidth - space.lg * 2 - TILE_GAP * 2) / 3);
+  /** Numbers are only said once there is an answer to say them about. */
+  const known = loaded || allDogs.length > 0;
+  const dogNames = allDogs.map(dog => dog.name);
+  const heroBlurb = !known
+    ? ' '
+    : dogNames.length === 0
+      ? 'A private pack. Only invited owners can see it.'
+      : `A private pack for ${
+        dogNames.length <= 3
+          ? dogNames.length === 1 ? dogNames[0] : `${dogNames.slice(0, -1).join(', ')} and ${dogNames[dogNames.length - 1]}`
+          : `${dogNames.slice(0, 2).join(', ')} and ${dogNames.length - 2} more`
+      }. Only invited owners can see it.`;
+  /**
+   * Who is coming to the next walk, when this phone already knows: the pack
+   * read primes each walk's roster (perf-walk-instant-open). Otherwise the
+   * card says what it can — the pack's dogs and how many owners there are —
+   * rather than guessing at answers it has not seen.
+   */
+  const nextOuting = useMemo(
+    () => (nextWalk ? readSnapshot<OutingSnapshot>(cacheKey.outing(nextWalk.id)) : null),
+    // `walks` because a reload re-primes the snapshot this reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nextWalk?.id, walks],
+  );
+  const coming = nextOuting && !nextOuting.partial
+    ? nextOuting.attendance.filter(row => ['coming', 'checked_in', 'walking'].includes(row.status))
+    : null;
+  const nextFaces: CommunityDog[] = coming
+    ? coming.map(row => row.dogs?.[0] ?? { id: row.user_id, name: row.person?.full_name ?? 'Friend', image_url: row.person?.avatar_url ?? null })
+    : allDogs;
+  const nextLine = !nextWalk
+    ? ''
+    : nextWalk.state === 'active'
+      ? 'Walking now'
+      : coming
+        ? coming.length === 0
+          ? 'No answers yet'
+          : coming.length >= members.length
+            ? members.length === 2 ? 'Both owners coming' : 'Everyone’s coming'
+            : `${coming.length} of ${members.length} coming`
+        : `${members.length} ${members.length === 1 ? 'owner' : 'owners'} in this meetup`;
+
   return (
-    <SafeAreaView style={communityScreenStyles.screen}>
-      {/* One plain row, the way the rest of the app does chrome: a back arrow,
-          the trail's name, and the single action worth keeping at the top. The
-          old header stacked an eyebrow, a title and a subtitle before any
-          content had started, which pushed the trail itself below the fold. */}
+    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
+      {/* Two circles and nothing between them: the meetup's name is the
+          hero's job now, so the header does not say it twice. */}
       <View style={styles.navRow}>
-        <Pressable onPress={() => router.back()} style={styles.circleAction} accessibilityRole="button" accessibilityLabel="Go back">
-          <Ionicons name="arrow-back" size={21} color={color.navy} />
+        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.circleAction, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Go back">
+          <Ionicons name="chevron-back" size={20} color={color.navy} />
         </Pressable>
-        <Text style={styles.navTitle} numberOfLines={1}>{pack?.name ?? 'Your meetup'}</Text>
-        {/* Inviting belongs to the host. A spacer rather than nothing, so the
-            title stays centred for a member — an action that disappears and
-            takes the layout with it reads as a bug. */}
-        {isOwner ? (
-          <Pressable
-            onPress={() => router.push(`/community/${packId}/invite` as never)}
-            style={styles.circleAction}
-            accessibilityRole="button"
-            accessibilityLabel="Invite someone to this meetup"
-          >
-            <Ionicons name="person-add-outline" size={19} color={color.navy} />
-          </Pressable>
-        ) : (
-          <View style={styles.circleActionSpacer} />
-        )}
+        <Pressable
+          onPress={() => router.push(`/community/${packId}/settings` as never)}
+          style={({ pressed }) => [styles.circleAction, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Meetup options"
+        >
+          <Ionicons name="ellipsis-horizontal" size={19} color={color.navy} />
+        </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         {loadIssue && !error ? <Text style={styles.loadIssue}>{loadIssue}</Text> : null}
-        {/* The trail, as an object. Everything identifying it lives on one navy
-            card so the sections below can be about what happens next. */}
+
+        {/* ── The meetup, as an object ──────────────────────────────────────
+            Nothing here may claim "0 dogs" or "0 walks" before the meetup has
+            loaded — on a cold start there is no snapshot, and a blank hero used
+            to read as an empty meetup for a round trip. */}
         <View style={styles.hero}>
-          <View style={styles.heroRing} pointerEvents="none" />
-          <Text style={styles.heroEyebrow}>PRIVATE MEETUP</Text>
-          <Text style={styles.heroName}>{(pack?.name ?? 'Your meetup').toUpperCase()}</Text>
-          {/* Nothing here may claim "no dogs yet" or "0 walks" before the
-              meetup has loaded — on a cold start there is no snapshot, and the
-              blank hero used to read as an empty meetup for a round trip. */}
-          <Text style={styles.heroBlurb}>
-            {allDogs.length > 0
-              ? `A shared history of ${allDogs.map(dog => dog.name).slice(0, 3).join(', ')}, made together.`
-              : loaded
-                ? 'Invite the owners you already walk with, and the history starts here.'
-                : ' '}
-          </Text>
-          {allDogs.length > 0 ? <View style={styles.heroDogs}><DogStack dogs={allDogs} max={4} /></View> : null}
-          <Text style={styles.heroCount}>
-            {loaded || allDogs.length > 0
-              ? `${allDogs.length} ${allDogs.length === 1 ? 'dog' : 'dogs'} · ${memories.length} ${memories.length === 1 ? 'walk' : 'walks'} together`
-              : ' '}
-          </Text>
+          <View style={styles.heroEyebrowRow}>
+            <Ionicons name="lock-closed-outline" size={12} color={color.yellow} />
+            <Text style={styles.heroEyebrow}>PRIVATE MEETUP</Text>
+          </View>
+          <Text style={styles.heroName} numberOfLines={2}>{pack?.name ?? 'Your meetup'}</Text>
+          <Text style={styles.heroBlurb}>{heroBlurb}</Text>
+          <View style={styles.stats}>
+            <Stat value={known ? String(memories.length) : ' '} label="WALKS TOGETHER" first />
+            <Stat value={known ? String(allDogs.length) : ' '} label={allDogs.length === 1 ? 'DOG' : 'DOGS'} />
+            <Stat value={known ? String(members.length) : ' '} label={members.length === 1 ? 'OWNER' : 'OWNERS'} />
+          </View>
         </View>
 
         {claims.length ? (
@@ -371,8 +363,7 @@ export default function PackHomeScreen() {
 
         <SectionHead
           title={laterWalks.length ? 'Upcoming walks' : 'Next walk'}
-          actionLabel={nextWalk && isOwner ? 'Plan another' : undefined}
-          onAction={nextWalk && isOwner ? () => router.push(`/community/${packId}/plan` as never) : undefined}
+          actions={nextWalk && isOwner ? [{ label: 'Plan another', onPress: () => router.push(`/community/${packId}/plan` as never) }] : []}
         />
 
         {nextWalk ? (
@@ -380,33 +371,33 @@ export default function PackHomeScreen() {
             <View style={styles.walkCard}>
               <View style={styles.walkLine}>
                 <DateChip iso={nextWalk.scheduled_for} live={nextWalk.state === 'active'} />
-                <View style={styles.flex}>
+                <View style={styles.walkCopy}>
                   <Text style={styles.walkTitle} numberOfLines={1}>{nextWalk.title}</Text>
-                  <Text style={styles.walkMeta}>{dateLabel(nextWalk.scheduled_for)}</Text>
-                  <Text style={styles.walkMeta}>{nextWalk.meeting_label}</Text>
+                  <Text style={styles.walkMeta} numberOfLines={1}>{whenLine(nextWalk.scheduled_for)}</Text>
+                  {nextWalk.meeting_label ? <Text style={styles.walkMeta} numberOfLines={1}>{nextWalk.meeting_label}</Text> : null}
                 </View>
                 {/* Editing lives on the card it edits, rather than as a second
                     button competing with the yellow one below. */}
                 {canEditPlan ? (
                   <Pressable
                     onPress={() => router.push(`/community/${packId}/plan?walkId=${nextWalk.id}` as never)}
-                    style={styles.editIcon}
-                    hitSlop={10}
+                    style={({ pressed }) => [styles.editButton, pressed && styles.pressed]}
                     accessibilityRole="button"
                     accessibilityLabel="Change the time, meeting point or note"
                   >
-                    <Ionicons name="create-outline" size={18} color={color.navy} />
+                    <Ionicons name="pencil-outline" size={17} color={color.navy} />
                   </Pressable>
                 ) : null}
               </View>
-              {nextWalk.note ? <Text style={styles.walkNote}>{nextWalk.note}</Text> : null}
               <View style={styles.attendance}>
-                {allDogs.length > 0 ? <DogStack dogs={allDogs} max={3} /> : <View />}
-                <Text style={styles.attendanceText} numberOfLines={1}>
-                  {nextWalk.state === 'active'
-                    ? 'Walking now'
-                    : `${members.length} ${members.length === 1 ? 'owner' : 'owners'} in this meetup`}
-                </Text>
+                <View style={styles.faceStack}>
+                  {nextFaces.slice(0, 4).map((dog, index) => (
+                    <View key={dog.id} style={[styles.miniFace, index > 0 && styles.miniFaceOverlap, { zIndex: 4 - index }]}>
+                      <DogAvatar dog={dog} size={24} />
+                    </View>
+                  ))}
+                </View>
+                <Text style={styles.attendanceText} numberOfLines={1}>{nextLine}</Text>
               </View>
             </View>
             <Pressable
@@ -428,8 +419,7 @@ export default function PackHomeScreen() {
             {/* Two different sentences, because the reader's position is
                 different. The host is being asked to do something; a member is
                 being told why there is nothing here, which is not their doing
-                and not theirs to fix. Offering them a button that the database
-                would refuse is worse than offering them nothing. */}
+                and not theirs to fix. */}
             <Text style={styles.emptyWalkBody}>
               {isOwner
                 ? 'Pick a time and a meeting point. Everyone can answer without starting location sharing.'
@@ -454,18 +444,18 @@ export default function PackHomeScreen() {
                 key={walk.id}
                 onPressIn={() => prefetchWalk(walk.id)}
                 onPress={() => router.push(`/community/walk/${walk.id}` as never)}
-                style={styles.laterRow}
+                style={({ pressed }) => [styles.listRow, pressed && styles.pressed]}
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${walk.title}`}
               >
                 <DateChip iso={walk.scheduled_for} live={walk.state === 'active'} quiet={walk.state !== 'active'} />
                 <View style={styles.flex}>
-                  <Text style={styles.laterTitle} numberOfLines={1}>{walk.title}</Text>
-                  <Text style={styles.laterMeta} numberOfLines={1}>
-                    {walk.scheduled_for ? dateLabel(walk.scheduled_for) : 'Date to be confirmed'} · {walk.meeting_label}
+                  <Text style={styles.listTitle} numberOfLines={1}>{walk.title}</Text>
+                  <Text style={styles.listMeta} numberOfLines={1}>
+                    {whenLine(walk.scheduled_for)}{walk.meeting_label ? ` · ${walk.meeting_label}` : ''}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={19} color={color.slateFaint} />
+                <Ionicons name="chevron-forward" size={18} color={color.pass.faint} />
               </Pressable>
             ))}
           </View>
@@ -473,122 +463,158 @@ export default function PackHomeScreen() {
 
         <SectionHead
           title="The pack"
-          actionLabel={isOwner ? 'Invite' : undefined}
-          onAction={isOwner ? () => router.push(`/community/${packId}/invite` as never) : undefined}
+          actions={isOwner ? [
+            { label: 'Manage', onPress: () => router.push(`/community/${packId}/settings` as never), muted: true },
+            { label: 'Invite', onPress: () => router.push(`/community/${packId}/invite` as never) },
+          ] : []}
         />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.memberRail}>
-          {members.map((member, index) => {
+        <View style={styles.packGrid}>
+          {members.map(member => {
             const dog = member.dogs[0] ?? { id: member.user_id, name: member.person?.full_name ?? 'Friend', image_url: member.person?.avatar_url ?? null };
-            // The owner cannot be removed and nobody removes themselves here —
-            // leaving is a different decision, and it lives in settings.
-            const canRemove = isOwner && member.role !== 'owner' && member.user_id !== user?.id;
+            const isMe = member.user_id === user?.id;
+            const isHost = member.role === 'owner';
+            const badge: TileBadge = isMe ? 'you' : isHost ? 'host' : 'member';
             return (
-              <View key={member.user_id} style={styles.memberCard}>
-                <DogAvatar dog={dog} size={56} ringColor={index === 0 ? color.yellow : color.surface} />
-                <Text style={styles.dogName} numberOfLines={1}>{member.dogs.map(item => item.name).join(' & ') || member.person?.full_name || 'Friend'}</Text>
-                <Text style={styles.ownerName} numberOfLines={1}>{member.person?.username ? `@${member.person.username}` : member.role === 'owner' ? 'Meetup host' : 'Pack member'}</Text>
-                {canRemove ? (
-                  <Pressable onPress={() => confirmRemove(member)} style={styles.removeMember} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove ${member.person?.full_name || member.person?.username || 'this member'}`}>
-                    <Text style={styles.removeMemberText}>Remove</Text>
-                  </Pressable>
-                ) : null}
+              <View key={member.user_id} style={[styles.tile, { width: tileWidth }]}>
+                <View style={[styles.tileRing, isMe ? styles.ringYou : styles.ringMember]}>
+                  <DogAvatar dog={dog} size={46} />
+                </View>
+                <Text style={styles.tileName} numberOfLines={1}>
+                  {member.dogs.map(item => item.name).join(' & ') || firstNameOf(member.person?.full_name) || 'Friend'}
+                </Text>
+                <Text style={styles.tileHandle} numberOfLines={1}>
+                  {member.person?.username ? `@${member.person.username}` : firstNameOf(member.person?.full_name) || ' '}
+                </Text>
+                <Badge kind={badge} />
               </View>
             );
           })}
 
           {invited.map(person => {
             const dog = person.dogs[0] ?? { id: person.id, name: person.full_name ?? 'Friend', image_url: person.avatar_url ?? null };
-            const declined = person.state === 'declined';
+            const kind: TileBadge = person.state === 'declined' ? 'declined' : person.expired ? 'expired' : 'invited';
             return (
-              <View key={person.invitation_id} style={styles.memberCard}>
-                {/* Dimmed rather than absent: the host asked for this person, and
-                    a gap where they should be is what made an invitation look
-                    like it had never sent. */}
-                <View style={styles.invitedAvatar}>
-                  <DogAvatar dog={dog} size={56} ringColor={color.hairline} />
+              <View key={person.invitation_id} style={[styles.tile, { width: tileWidth }]}>
+                {/* Present rather than absent: the host asked for this person,
+                    and a gap where they should be is what made an invitation
+                    look like it had never sent. */}
+                <View style={[styles.tileRing, kind === 'invited' ? styles.ringInvited : styles.ringLapsed]}>
+                  <View style={kind === 'invited' ? null : styles.faded}>
+                    <DogAvatar dog={dog} size={46} />
+                  </View>
                 </View>
-                <Text style={styles.dogName} numberOfLines={1}>
-                  {person.dogs.map(item => item.name).join(' & ') || person.full_name || 'Friend'}
+                <Text style={styles.tileName} numberOfLines={1}>
+                  {person.dogs.map(item => item.name).join(' & ') || firstNameOf(person.full_name) || 'Friend'}
                 </Text>
-                <View style={styles.invitedStatus}>
-                  <Ionicons
-                    name={declined ? 'close-circle' : person.expired ? 'alert-circle' : 'time-outline'}
-                    size={12}
-                    color={declined ? color.error : person.expired ? color.alert : color.slateMuted}
-                  />
-                  <Text
-                    style={[styles.invitedStatusText, declined && styles.invitedDeclined, person.expired && styles.invitedExpired]}
-                    numberOfLines={1}
-                  >
-                    {declined ? 'Declined' : person.expired ? 'Expired' : 'Invited'}
-                  </Text>
-                </View>
+                <Text style={styles.tileHandle} numberOfLines={1}>
+                  {person.username ? `@${person.username}` : ' '}
+                </Text>
+                <Badge kind={kind} />
               </View>
             );
           })}
-        </ScrollView>
+        </View>
 
         <SectionHead title="Our walks" />
         {memories.length ? memories.map(walk => (
           <Pressable
             key={walk.id}
             onPress={() => router.push(`/community/walk/${walk.id}/memory` as never)}
-            style={styles.memoryRow}
+            style={({ pressed }) => [styles.listRow, pressed && styles.pressed]}
             accessibilityRole="button"
             accessibilityLabel={`Open the memory of ${walk.title}`}
           >
             <DateChip iso={walk.ended_at ?? walk.scheduled_for} quiet />
             <View style={styles.flex}>
-              <Text style={styles.memoryTitle} numberOfLines={1}>{walk.title}</Text>
-              <Text style={styles.memoryMeta} numberOfLines={1}>{walk.meeting_label}</Text>
+              <Text style={styles.listTitle} numberOfLines={1}>{walk.title}</Text>
+              {walk.meeting_label ? <Text style={styles.listMeta} numberOfLines={1}>{walk.meeting_label}</Text> : null}
             </View>
-            <Ionicons name="chevron-forward" size={19} color={color.slateFaint} />
+            <Ionicons name="chevron-forward" size={18} color={color.pass.faint} />
           </Pressable>
         )) : loaded ? (
-          <View style={styles.archiveEmpty}>
-            <Text style={styles.archiveEmptyText}>The first shared memory appears here after your walk.</Text>
-          </View>
+          <Text style={styles.archiveEmptyText}>The first shared memory appears here after your walk.</Text>
         ) : null}
 
-        <Pressable
-          onPress={() => router.push(`/community/${packId}/settings` as never)}
-          style={styles.settingsRow}
-          accessibilityRole="button"
-        >
-          <Ionicons name="settings-outline" size={18} color={color.slateMuted} />
-          <Text style={styles.settingsText}>Meetup settings</Text>
-        </Pressable>
-
         {error ? <Text style={communityScreenStyles.error}>{error}</Text> : null}
+
+        <View style={styles.privacyNote}>
+          <Ionicons name="lock-closed-outline" size={14} color={color.pass.muted} />
+          <Text style={styles.privacyText}>Walks here stay between the pack. Nobody else can find this meetup.</Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
+function firstNameOf(value: string | null | undefined): string {
+  return value?.trim().split(/\s+/)[0] ?? '';
+}
+
+/** "7 Oct at 9:14 AM" — the chip beside it already says the weekday. */
+function whenLine(value: string | null): string {
+  if (!value) return 'Date to be confirmed';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Date to be confirmed';
+  return `${dateFormat({ day: 'numeric', month: 'short' }).format(date)} at ${
+    dateFormat({ hour: 'numeric', minute: '2-digit' }).format(date)
+  }`;
+}
+
+/** One of the hero's three numbers, with a rule before every one but the first. */
+function Stat({ value, label, first }: { value: string; label: string; first?: boolean }) {
+  return (
+    <View style={[styles.stat, !first && styles.statRuled]}>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+type TileBadge = 'you' | 'host' | 'member' | 'invited' | 'declined' | 'expired';
+
+const BADGE_TEXT: Record<TileBadge, string> = {
+  you: 'YOU',
+  host: 'HOST',
+  member: 'MEMBER',
+  invited: 'INVITED',
+  declined: 'DECLINED',
+  expired: 'EXPIRED',
+};
+
+function Badge({ kind }: { kind: TileBadge }) {
+  return (
+    <View style={[styles.badge, BADGE_BOX[kind]]}>
+      <Text style={[styles.badgeText, BADGE_INK[kind]]}>{BADGE_TEXT[kind]}</Text>
+    </View>
+  );
+}
+
 /**
- * A section heading and, optionally, the one thing you can do to that section.
+ * A section heading and the things you can do to that section.
  *
  * Sentence case at reading size rather than the tiny all-caps eyebrow used
  * elsewhere: these are headings on a page someone scrolls, not labels on a
- * dense form, and the trailing text action is what keeps each section to a
- * single obvious next move.
+ * dense form, and the trailing text actions keep each section to an obvious
+ * next move.
  */
 function SectionHead({
   title,
-  actionLabel,
-  onAction,
+  actions = [],
 }: {
   title: string;
-  actionLabel?: string;
-  onAction?: () => void;
+  actions?: { label: string; onPress: () => void; muted?: boolean }[];
 }) {
   return (
     <View style={styles.sectionHead}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      {actionLabel && onAction ? (
-        <Pressable onPress={onAction} hitSlop={8} accessibilityRole="button">
-          <Text style={styles.sectionAction}>{actionLabel}</Text>
-        </Pressable>
+      {actions.length ? (
+        <View style={styles.sectionActions}>
+          {actions.map(action => (
+            <Pressable key={action.label} onPress={action.onPress} hitSlop={8} accessibilityRole="button">
+              <Text style={[styles.sectionAction, action.muted && styles.sectionActionMuted]}>{action.label}</Text>
+            </Pressable>
+          ))}
+        </View>
       ) : null}
     </View>
   );
@@ -605,8 +631,8 @@ function DateChip({ iso, live, quiet }: { iso?: string | null; live?: boolean; q
   const date = iso ? new Date(iso) : null;
   const valid = !!date && !Number.isNaN(date.getTime());
   return (
-    <View style={[styles.dateChip, quiet && styles.dateChipQuiet, live && styles.dateChipLive]}>
-      <Text style={[styles.dateChipMonth, quiet && styles.dateChipMonthQuiet]}>
+    <View style={[styles.dateChip, quiet && styles.dateChipQuiet]}>
+      <Text style={[styles.dateChipTop, quiet && styles.dateChipTopQuiet, live && styles.dateChipTopLive]}>
         {live
           ? 'NOW'
           : valid
@@ -620,95 +646,102 @@ function DateChip({ iso, live, quiet }: { iso?: string | null; live?: boolean; q
   );
 }
 
+/** Three tiles to a row, ten points apart. */
+const TILE_GAP = 10;
+
+const BADGE_BOX: Record<TileBadge, object> = {
+  you: { backgroundColor: color.yellow, borderColor: color.yellow },
+  host: { backgroundColor: color.navy, borderColor: color.navy },
+  member: { borderColor: color.pass.hairlineStrong },
+  invited: { borderColor: color.electric, borderStyle: 'dashed' },
+  declined: { borderColor: color.pass.hairlineStrong },
+  expired: { borderColor: color.pass.hairlineStrong },
+};
+
+const BADGE_INK: Record<TileBadge, object> = {
+  you: { color: color.navy },
+  host: { color: color.yellow },
+  member: { color: color.pass.muted },
+  invited: { color: color.electric },
+  declined: { color: color.error },
+  expired: { color: color.alertDeep },
+};
+
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: color.pass.paper },
   flex: { flex: 1 },
-  scroll: { paddingHorizontal: space.xl, paddingBottom: 120 },
+  scroll: { paddingHorizontal: space.lg, paddingBottom: space.xxxl },
+  pressed: { opacity: 0.85 },
 
   navRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    minHeight: 56,
-    paddingHorizontal: space.xl,
-    paddingTop: space.sm,
-    marginBottom: space.md,
+    justifyContent: 'space-between',
+    paddingHorizontal: space.lg,
+    paddingTop: space.lg,
   },
-  navTitle: { ...type.heading, fontSize: 21, letterSpacing: -0.4, color: color.navy, flex: 1 },
   circleAction: {
     width: 44,
     height: 44,
-    borderRadius: 22,
-    backgroundColor: color.surface,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.pass.hairline,
+    backgroundColor: color.pass.paper,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // Holds the invite button's place for a member, so the title stays centred.
-  // Transparent, not `circleAction` — reusing that style would leave a white
-  // circle sitting there with nothing in it.
-  circleActionSpacer: { width: 44, height: 44 },
 
-  hero: {
-    position: 'relative',
-    overflow: 'hidden',
-    minHeight: 218,
-    borderRadius: 28,
-    backgroundColor: color.navy,
-    padding: 22,
-    marginBottom: space.xxl,
+  // ── Hero ──
+  hero: { marginTop: space.lg, borderRadius: 26, backgroundColor: color.navy, padding: 22 },
+  heroEyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  heroEyebrow: { fontFamily: font.bold, fontSize: 10, letterSpacing: 1.6, color: color.yellow },
+  heroName: { fontFamily: font.bold, fontSize: 31, lineHeight: 35, letterSpacing: -0.9, color: color.pass.paper, marginTop: space.sm },
+  heroBlurb: { fontFamily: font.regular, fontSize: 13, lineHeight: 19, color: color.pass.onNavyMuted, marginTop: space.sm },
+  stats: {
+    flexDirection: 'row',
+    marginTop: space.xl,
+    paddingTop: 18,
+    borderTopWidth: 1,
+    borderTopColor: color.hairlineOnNavy,
   },
-  /** The one flourish: a thick yellow ring cropped by the card's own corner. */
-  heroRing: {
-    position: 'absolute',
-    right: -28,
-    bottom: -49,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    borderWidth: 38,
-    borderColor: 'rgba(244,246,0,0.14)',
-  },
-  heroEyebrow: { ...type.caption, color: color.yellow },
-  heroName: {
-    width: '78%',
-    fontFamily: font.display,
-    fontSize: 38,
-    // See the note on the invite screen's `display`: a line box tighter than
-    // the font size clips Bebas at the top in RN.
-    lineHeight: 40,
-    letterSpacing: 0.5,
-    color: color.cream,
-    marginTop: space.md,
-    marginBottom: space.sm,
-  },
-  heroBlurb: { width: '72%', ...type.body, fontSize: 12.5, lineHeight: 18, color: color.creamDim },
-  heroDogs: { marginTop: space.lg },
-  heroCount: { ...type.label, fontSize: 11, color: color.creamFaint, marginTop: 9 },
+  stat: { flex: 1, gap: 5 },
+  statRuled: { paddingLeft: space.lg, borderLeftWidth: 1, borderLeftColor: color.hairlineOnNavy },
+  statValue: { fontFamily: font.bold, fontSize: 22, lineHeight: 27, letterSpacing: -0.4, color: color.pass.paper, fontVariant: ['tabular-nums'] },
+  statLabel: { fontFamily: font.bold, fontSize: 9, letterSpacing: 1.3, color: color.pass.onNavyFaint },
 
+  // ── Sections ──
   sectionHead: {
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
+    gap: space.md,
+    paddingHorizontal: space.xs,
+    paddingTop: space.xxl,
     marginBottom: space.md,
   },
-  sectionTitle: { ...type.heading, fontSize: 17, color: color.navy },
-  sectionAction: { fontFamily: font.bold, fontSize: 12.5, color: color.electric },
+  sectionTitle: { fontFamily: font.bold, fontSize: 17, lineHeight: 22, letterSpacing: -0.3, color: color.navy },
+  sectionActions: { flexDirection: 'row', alignItems: 'baseline', gap: space.lg },
+  sectionAction: { fontFamily: font.semibold, fontSize: 13, color: color.electric },
+  sectionActionMuted: { color: color.pass.muted },
 
+  // ── Next walk ──
   walkCard: {
-    padding: 18,
-    borderRadius: 21,
+    padding: 14,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: color.hairline,
-    backgroundColor: color.surface,
+    borderColor: color.pass.hairline,
+    backgroundColor: color.pass.paper,
   },
-  walkLine: { flexDirection: 'row', gap: 13, alignItems: 'center' },
-  walkTitle: { ...type.bodyMedium, fontSize: 15, color: color.ink, marginBottom: 4 },
-  walkMeta: { ...type.body, fontSize: 12, lineHeight: 17, color: color.slateMuted },
-  walkNote: { ...type.body, fontSize: 12.5, color: color.slateMuted, marginTop: space.md },
-  editIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: color.surfaceSubtle,
+  walkLine: { flexDirection: 'row', gap: 14, alignItems: 'center' },
+  walkCopy: { flex: 1, minWidth: 0, gap: 3 },
+  walkTitle: { fontFamily: font.bold, fontSize: 16, letterSpacing: -0.3, color: color.navy },
+  walkMeta: { fontFamily: font.regular, fontSize: 12, color: color.pass.muted },
+  editButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: color.pass.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -716,104 +749,106 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: space.md,
-    marginTop: 15,
-    paddingTop: 13,
+    gap: 10,
+    marginTop: space.md,
+    paddingTop: space.md,
     borderTopWidth: 1,
-    borderTopColor: color.hairline,
+    borderTopColor: color.pass.hairline,
   },
-  attendanceText: { ...type.label, fontSize: 11, color: color.slateMuted, flexShrink: 1 },
-  emptyWalkTitle: { ...type.heading, fontSize: 15, color: color.ink },
-  emptyWalkBody: { ...type.body, fontSize: 12.5, lineHeight: 18, color: color.slateMuted, marginTop: 4 },
+  faceStack: { flexDirection: 'row', alignItems: 'center', minHeight: 28 },
+  miniFace: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: color.yellow,
+    backgroundColor: color.pass.avatarGround,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniFaceOverlap: { marginLeft: -9 },
+  attendanceText: { fontFamily: font.regular, fontSize: 12, color: color.pass.muted, flexShrink: 1 },
+  emptyWalkTitle: { fontFamily: font.bold, fontSize: 15, color: color.navy },
+  emptyWalkBody: { ...type.body, fontSize: 12.5, lineHeight: 18, color: color.pass.muted, marginTop: 4 },
 
   dateChip: {
-    width: 52,
-    borderRadius: 14,
+    width: 58,
+    height: 58,
+    borderRadius: 16,
     backgroundColor: color.navy,
-    paddingVertical: 8,
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 1,
   },
-  dateChipQuiet: { backgroundColor: color.surfaceSubtle },
-  dateChipLive: { backgroundColor: color.error },
-  dateChipMonth: { fontFamily: font.bold, fontSize: 9, letterSpacing: 1, color: color.cream },
-  dateChipMonthQuiet: { color: color.slateMuted },
-  dateChipDay: { fontFamily: font.display, fontSize: 20, lineHeight: 22, color: color.yellow },
-  dateChipDayQuiet: { color: color.navy },
+  dateChipQuiet: { width: 48, height: 48, borderRadius: 14, backgroundColor: color.pass.avatarGround },
+  dateChipTop: { fontFamily: font.bold, fontSize: 9, letterSpacing: 1.2, color: color.pass.onNavyFaint },
+  dateChipTopQuiet: { color: color.pass.muted },
+  dateChipTopLive: { color: color.yellow },
+  dateChipDay: { fontFamily: font.bold, fontSize: 23, lineHeight: 27, color: color.yellow },
+  dateChipDayQuiet: { fontSize: 18, lineHeight: 22, color: color.navy },
 
   primary: {
-    minHeight: 52,
-    borderRadius: 17,
+    height: 56,
+    borderRadius: radius.pill,
     backgroundColor: color.yellow,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: space.md,
-    marginBottom: space.xxl,
+    marginTop: 14,
   },
-  primaryInline: { marginBottom: 0, alignSelf: 'stretch' },
-  primaryText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
-  pressed: { opacity: 0.9 },
+  primaryInline: { alignSelf: 'stretch' },
+  primaryText: { fontFamily: font.bold, fontSize: 16, letterSpacing: -0.2, color: color.navy },
 
-  loadIssue: { ...type.body, fontSize: 12.5, color: color.slateMuted, textAlign: 'center', marginBottom: space.md },
+  loadIssue: { ...type.body, fontSize: 12.5, color: color.pass.muted, textAlign: 'center', marginTop: space.md },
   /** A quiet placeholder the height of a line, not a spinner over the screen. */
-  skeletonLine: {
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: color.hairline,
-    width: '62%',
-  },
-  laterList: { marginTop: space.md, marginBottom: space.xxl },
-  laterRow: {
+  skeletonLine: { height: 14, borderRadius: 7, backgroundColor: color.pass.hairline, width: '62%' },
+
+  laterList: { marginTop: space.md },
+  listRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: color.hairline,
+    borderBottomColor: color.pass.hairline,
   },
-  laterTitle: { ...type.bodyMedium, fontSize: 13, color: color.ink },
-  laterMeta: { ...type.caption, fontSize: 10, color: color.slateMuted, marginTop: 3 },
-  memberRail: { gap: space.md, paddingBottom: space.xl, paddingRight: space.xl },
-  memberCard: {
-    width: 104,
+  listTitle: { fontFamily: font.semibold, fontSize: 13.5, color: color.navy },
+  listMeta: { fontFamily: font.regular, fontSize: 11.5, color: color.pass.muted, marginTop: 2 },
+
+  // ── The pack ──
+  packGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: TILE_GAP },
+  tile: {
     alignItems: 'center',
-    gap: 3,
-    backgroundColor: color.surface,
+    gap: 6,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: color.pass.hairline,
     borderRadius: 18,
-    paddingVertical: space.md,
-    paddingHorizontal: space.sm,
   },
-  dogName: { ...type.label, fontSize: 12, color: color.navy, marginTop: 6 },
-  ownerName: { ...type.caption, fontSize: 9.5, color: color.slateFaint },
-  removeMember: { minHeight: 28, justifyContent: 'center' },
-  removeMemberText: { ...type.caption, fontSize: 9.5, color: color.error },
-  invitedAvatar: { opacity: 0.5 },
-  invitedStatus: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  invitedStatusText: { ...type.caption, fontSize: 9.5, color: color.slateMuted },
-  invitedDeclined: { color: color.error },
-  invitedExpired: { color: color.alert },
-
-  memoryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: color.hairline,
-  },
-  memoryTitle: { ...type.bodyMedium, fontSize: 13, color: color.ink },
-  memoryMeta: { ...type.caption, fontSize: 10, color: color.slateMuted, marginTop: 3 },
-  archiveEmpty: { paddingVertical: space.lg },
-  archiveEmptyText: { ...type.body, fontSize: 12.5, color: color.slateMuted },
-
-  settingsRow: {
-    flexDirection: 'row',
+  tileRing: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 3,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    minHeight: 48,
-    marginTop: space.xxl,
+    backgroundColor: color.pass.avatarGround,
+    marginBottom: 2,
   },
-  settingsText: { ...type.label, fontSize: 12.5, color: color.slateMuted },
+  ringYou: { borderColor: color.yellow },
+  ringMember: { borderColor: color.navy },
+  ringInvited: { borderColor: color.electric, borderStyle: 'dashed' },
+  ringLapsed: { borderColor: color.pass.hairline },
+  faded: { opacity: 0.5 },
+  tileName: { fontFamily: font.bold, fontSize: 13.5, color: color.navy, maxWidth: '100%' },
+  tileHandle: { fontFamily: font.regular, fontSize: 10, color: color.pass.muted, maxWidth: '100%' },
+  badge: { height: 20, paddingHorizontal: space.sm, borderRadius: 6, borderWidth: 1, justifyContent: 'center' },
+  badgeText: { fontFamily: font.bold, fontSize: 8.5, letterSpacing: 1 },
+
+  archiveEmptyText: { ...type.body, fontSize: 12.5, color: color.pass.muted, paddingHorizontal: space.xs },
+
+  privacyNote: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.xxxl, paddingHorizontal: space.xs },
+  privacyText: { flex: 1, fontFamily: font.regular, fontSize: 11.5, lineHeight: 16, color: color.pass.muted },
 
   claimCard: { gap: space.md, marginBottom: space.md },
   claimTop: { flexDirection: 'row', alignItems: 'center', gap: space.md },
@@ -827,10 +862,10 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     paddingVertical: 6,
     paddingHorizontal: space.md,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     backgroundColor: color.electricSoft,
   },
   claimContextText: { ...type.label, fontSize: 12, color: color.navy },
-  claimNotice: { ...type.body, fontSize: 13, color: color.slateMuted, textAlign: 'center', marginBottom: space.lg },
+  claimNotice: { ...type.body, fontSize: 13, color: color.pass.muted, textAlign: 'center', marginTop: space.md },
   claimActions: { flexDirection: 'row', gap: space.sm },
 });
