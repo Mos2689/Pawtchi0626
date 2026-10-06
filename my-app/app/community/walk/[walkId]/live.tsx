@@ -116,6 +116,8 @@ const HEADER_LAYOUT = LinearTransition.duration(260).easing(Easing.out(Easing.cu
 /** The resting chip's width, and the card's padding. The row is built from both. */
 const CHIP_WIDTH = 74;
 const HEADER_PAD = 5;
+/** The back button at the head of the pill. */
+const BACK_SIZE = 34;
 
 
 /**
@@ -885,7 +887,7 @@ export default function CommunityLiveScreen() {
    * chip when closed, and a `flex: 1` child inside a self-sizing parent has
    * nothing to divide. This is the rest of the row, exactly.
    */
-  const detailWidth = Math.max(0, windowWidth - space.lg * 2 - CHIP_WIDTH - space.sm - HEADER_PAD * 2);
+  const detailWidth = Math.max(0, windowWidth - space.lg * 2 - BACK_SIZE - space.sm - CHIP_WIDTH - space.sm - HEADER_PAD * 2);
 
   const partyLine = walking.length > 1
     ? `${walking.length} walking · ${dogCount} ${dogCount === 1 ? 'dog' : 'dogs'}`
@@ -1037,6 +1039,18 @@ export default function CommunityLiveScreen() {
         layout={HEADER_LAYOUT}
         style={[styles.packHeader, { top: insets.top + 12 }]}
       >
+        {/* Leaving the map is not leaving the walk: recording lives at the
+            app root (TrailRecording) and carries on. iOS has no system back,
+            so without this the only way out was finishing. */}
+        <Pressable
+          onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)' as never))}
+          hitSlop={8}
+          style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Leave the map. Your walk keeps recording."
+        >
+          <Ionicons name="chevron-back" size={18} color={color.cream} />
+        </Pressable>
         <Pressable
           onPress={() => setHeaderOpen(open => !open)}
           hitSlop={10}
@@ -1271,6 +1285,14 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: color.navy,
     ...makeShadow(8, 22, 0.22),
+  },
+  backButton: {
+    width: BACK_SIZE,
+    height: BACK_SIZE,
+    borderRadius: BACK_SIZE / 2,
+    backgroundColor: color.navyRaised,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   liveChip: {
     flexDirection: 'row',
