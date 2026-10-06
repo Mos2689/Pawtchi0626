@@ -1119,10 +1119,15 @@ export default function CommunityLiveScreen() {
                 size={50}
                 ringColor={colorFor(party.user_id)}
               />
-              <View style={[styles.markerLabel, selectedId === party.user_id && styles.markerLabelSelected]}>
-                <Text style={styles.markerLabelText} numberOfLines={1}>
-                  {ageLabel(party, now) ? `${names} · ${ageLabel(party, now)}` : names}
-                </Text>
+              {/* A row wider than the 50 pt marker, so the pill sizes to its
+                  text — inside the marker alone it was squeezed to ~50 pt and
+                  "Bruno · 2m ago" read "Bruno ·…". */}
+              <View style={styles.markerLabelRow} pointerEvents="none">
+                <View style={[styles.markerLabel, selectedId === party.user_id && styles.markerLabelSelected]}>
+                  <Text style={styles.markerLabelText} numberOfLines={1}>
+                    {ageLabel(party, now) ? `${names} · ${ageLabel(party, now)}` : names}
+                  </Text>
+                </View>
               </View>
             </Pressable>
           );
@@ -1291,7 +1296,9 @@ const styles = StyleSheet.create({
   inviteButtonText: { fontFamily: font.bold, fontSize: 12.5, color: color.navy },
   partyMarker: { position: 'absolute', zIndex: 6, width: 50, height: 50, alignItems: 'center' },
   partyAnchor: { position: 'absolute', zIndex: 5, width: 8, height: 8, borderRadius: 4, borderWidth: 1.5, borderColor: color.surface },
-  markerLabel: { position: 'absolute', top: 42, maxWidth: 132, paddingHorizontal: 8, minHeight: 22, borderRadius: radius.pill, backgroundColor: color.navy, alignItems: 'center', justifyContent: 'center' },
+  // Centred under the 50 pt marker: (50 − 132) / 2 = −41.
+  markerLabelRow: { position: 'absolute', top: 42, left: -41, width: 132, alignItems: 'center' },
+  markerLabel: { maxWidth: 132, paddingHorizontal: 8, minHeight: 22, borderRadius: radius.pill, backgroundColor: color.navy, alignItems: 'center', justifyContent: 'center' },
   markerLabelSelected: { backgroundColor: '#031A22' },
   markerLabelText: { fontFamily: font.bold, fontSize: 8.5, color: color.surface },
   errorChip: { position: 'absolute', zIndex: 9, left: space.xl, right: space.xl, padding: space.sm, borderRadius: radius.md, backgroundColor: color.errorSoft },
