@@ -11,7 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "103",
+      "buildNumber": "104",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:pawtchi.com",
@@ -47,7 +47,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 97,
+      "versionCode": 98,
       "permissions": [
         "android.permission.INTERNET"
       ],
