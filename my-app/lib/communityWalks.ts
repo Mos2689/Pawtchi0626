@@ -1215,7 +1215,7 @@ export async function joinOuting(
     p_share_location: shareLocation,
     p_start: !!options.start,
     p_live_protocol: LIVE_PROTOCOL,
-    p_request_broadcast: isPerfFlagOn('liveWalkV2'),
+    p_request_broadcast: isPerfFlagOn('liveWalkV2') && isPerfFlagOn('liveWalkBroadcast'),
   });
   const { error } = v2.error && isMissingFunction(v2.error.message)
     ? await supabase.rpc('join_community_walk', {

@@ -52,6 +52,13 @@ export const PERF_FLAGS = {
    * today's path. Read once per session, so a walk never switches mid-way.
    */
   liveWalkV2: 'live-walk-v2',
+  /**
+   * Live Walk v2's fast path: a phone with BOTH this and live-walk-v2 asks for
+   * the Broadcast transport when it starts or joins a walk. Separate so v2 can
+   * be on for everyone while Broadcast is still tried by testers only; the
+   * server switch (private.live_settings.broadcast_enabled) still decides.
+   */
+  liveWalkBroadcast: 'live-walk-broadcast',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;

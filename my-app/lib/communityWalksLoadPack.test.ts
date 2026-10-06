@@ -118,10 +118,14 @@ describe('joinOuting', () => {
     }]);
   });
 
-  it('asks for Broadcast only when Live Walk v2 is on for this phone', async () => {
+  it('asks for Broadcast only when both Live Walk v2 and its Broadcast flag are on', async () => {
+    const asked = () => (mockRpcCalls[mockRpcCalls.length - 1].args as { p_request_broadcast: boolean }).p_request_broadcast;
     setPerfFlagOverride('liveWalkV2', true);
     await joinOuting('w1', ['d1'], true, { start: true });
-    expect((mockRpcCalls[0].args as { p_request_broadcast: boolean }).p_request_broadcast).toBe(true);
+    expect(asked()).toBe(false);
+    setPerfFlagOverride('liveWalkBroadcast', true);
+    await joinOuting('w1', ['d1'], true, { start: true });
+    expect(asked()).toBe(true);
   });
 
   it('uses the v1 join on a database without v2', async () => {
