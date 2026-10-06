@@ -25,6 +25,7 @@ import {
   createSession,
   finalizeSession,
   ingestPoint,
+  meetupSessionConfig,
   EndReason,
   RawGpsPoint,
   SessionConfig,
@@ -182,7 +183,9 @@ interface WalkState {
 }
 
 function configFor(marker: ActiveWalkMarker): SessionConfig {
-  return sessionConfigFor(marker.profile);
+  const base = sessionConfigFor(marker.profile);
+  // A meetup leg ends when the host closes it; see meetupSessionConfig.
+  return marker.trail ? meetupSessionConfig(base) : base;
 }
 
 function replayBuffer(

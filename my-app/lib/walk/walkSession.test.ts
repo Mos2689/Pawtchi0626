@@ -4,6 +4,7 @@ import {
   checkAutoStop,
   finalizeSession,
   DEFAULT_SESSION_CONFIG,
+  meetupSessionConfig,
   RawGpsPoint,
   WalkSessionState,
 } from './walkSession';
@@ -150,6 +151,35 @@ describe('walkSession — pause and stop', () => {
     const stop = checkAutoStop(s, now);
     expect(stop.shouldStop).toBe(true);
     expect(stop.reason).toBe('auto_home');
+  });
+
+  describe('a meetup walk', () => {
+    const meetup = meetupSessionConfig(DEFAULT_SESSION_CONFIG);
+
+    it('keeps going through ten minutes standing at the meeting point', () => {
+      const { s, endMs } = stationaryAfterWalk(10 * 60);
+      expect(checkAutoStop(s, endMs, meetup).shouldStop).toBe(false);
+    });
+
+    it('still stops a phone left behind for half an hour', () => {
+      const { s, endMs } = stationaryAfterWalk(30 * 60);
+      expect(checkAutoStop(s, endMs, meetup)).toEqual({ shouldStop: true, reason: 'auto_stationary' });
+    });
+
+    it('never ends on looping back to where it started', () => {
+      let s = ingestAll(walkTrace(5 * 60, 1.4));
+      const base = 5 * 60_000;
+      const outM = 5 * 60 * 1.4;
+      for (let t = 5; t <= 5 * 60; t += 5) s = ingestPoint(s, pt(outM - t * 1.4, base + t * 1000));
+      const backMs = base + 5 * 60_000;
+      for (let t = 5; t <= 4.5 * 60; t += 5) s = ingestPoint(s, pt(0, backMs + t * 1000));
+      expect(checkAutoStop(s, T0 + backMs + 4.5 * 60_000, meetup).shouldStop).toBe(false);
+    });
+
+    it('keeps a longer tolerance a breed profile already gave', () => {
+      const lenient = { ...DEFAULT_SESSION_CONFIG, autoStopStationaryMs: 45 * 60_000 };
+      expect(meetupSessionConfig(lenient).autoStopStationaryMs).toBe(45 * 60_000);
+    });
   });
 
   it('hard-caps a session left running', () => {

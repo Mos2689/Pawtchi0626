@@ -529,6 +529,29 @@ export function ingestPoint(
   };
 }
 
+/**
+ * A meetup walk's auto-stop: the host ends it for everyone, so the solo rules
+ * that guess "the walk is over" mostly misfire here.
+ *
+ *   - No home-return stop. A meetup often loops back to its meeting point, and
+ *     "back where you started, lingering a minute" is the group saying goodbye,
+ *     not one person arriving home.
+ *   - Standing still for 30 minutes, not 10. People wait at a meeting point and
+ *     talk; ten minutes of that ended a member's walk mid-meetup (device test,
+ *     2026-10-06). Thirty still catches a phone left behind.
+ *
+ * The hard cap stays.
+ */
+export const MEETUP_STATIONARY_STOP_MS = 30 * 60_000;
+
+export function meetupSessionConfig(base: SessionConfig): SessionConfig {
+  return {
+    ...base,
+    autoStopStationaryMs: Math.max(base.autoStopStationaryMs, MEETUP_STATIONARY_STOP_MS),
+    minDurationForHomeStopMs: Number.POSITIVE_INFINITY,
+  };
+}
+
 export interface StopCheck {
   shouldStop: boolean;
   reason?: Extract<EndReason, 'auto_stationary' | 'auto_home' | 'time_cap'>;
