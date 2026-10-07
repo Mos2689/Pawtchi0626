@@ -47,3 +47,7 @@ app-example
 /android
 email-preview.html
 .tmp-assets/
+
+# Load-test credentials and reports (scripts/load)
+scripts/load/accounts*.json
+scripts/load/report-*.json
