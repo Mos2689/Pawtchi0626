@@ -1,7 +1,10 @@
 const fakeFlags: Record<string, boolean | undefined> = {};
+let fakeDistinctId = 'user-1';
 const fake = {
   ready: () => Promise.resolve(),
   isFeatureEnabled: jest.fn((key: string) => fakeFlags[key]),
+  getDistinctId: () => fakeDistinctId,
+  reloadFeatureFlagsAsync: jest.fn(async () => ({})),
 };
 const analyticsMock: { posthog: typeof fake | null } = { posthog: fake };
 
@@ -11,6 +14,7 @@ import {
   isPerfFlagOn,
   PERF_FLAGS,
   resetPerfFlagsForTests,
+  readFlagForUser,
   setPerfFlagOverride,
   whenPerfFlagsReady,
 } from './perfFlags';
@@ -20,6 +24,8 @@ beforeEach(() => {
   fake.isFeatureEnabled.mockClear();
   fake.isFeatureEnabled.mockImplementation((key: string) => fakeFlags[key]);
   analyticsMock.posthog = fake;
+  fakeDistinctId = 'user-1';
+  fake.reloadFeatureFlagsAsync.mockClear();
   resetPerfFlagsForTests({ ready: true });
 });
 
@@ -89,5 +95,36 @@ describe('whenPerfFlagsReady', () => {
     resetPerfFlagsForTests({ ready: false });
     analyticsMock.posthog = null;
     await expect(whenPerfFlagsReady(60_000)).resolves.toBe(false);
+  });
+});
+
+describe('readFlagForUser', () => {
+  it('reloads flags for the signed-in user, then reads', async () => {
+    fake.reloadFeatureFlagsAsync.mockImplementation(async () => {
+      fakeFlags[PERF_FLAGS.announceConnect] = true;
+      return {};
+    });
+    await expect(readFlagForUser('announceConnect', 'user-1', 1000)).resolves.toBe(true);
+    expect(fake.reloadFeatureFlagsAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits until PostHog has identified this user', async () => {
+    fakeDistinctId = 'anonymous';
+    setTimeout(() => { fakeDistinctId = 'user-1'; }, 50);
+    fakeFlags[PERF_FLAGS.announceConnect] = true;
+    await expect(readFlagForUser('announceConnect', 'user-1', 2000)).resolves.toBe(true);
+  });
+
+  it('is off when PostHog never identifies this user in time', async () => {
+    fakeDistinctId = 'anonymous';
+    fakeFlags[PERF_FLAGS.announceConnect] = true;
+    await expect(readFlagForUser('announceConnect', 'user-1', 100)).resolves.toBe(false);
+  });
+
+  it('does not change what isPerfFlagOn holds', async () => {
+    expect(isPerfFlagOn('announceConnect')).toBe(false);
+    fakeFlags[PERF_FLAGS.announceConnect] = true;
+    await expect(readFlagForUser('announceConnect', 'user-1', 500)).resolves.toBe(true);
+    expect(isPerfFlagOn('announceConnect')).toBe(false);
   });
 });

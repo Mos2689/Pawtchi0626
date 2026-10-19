@@ -115,6 +115,44 @@ export function whenPerfFlagsReady(timeoutMs: number): Promise<boolean> {
   });
 }
 
+/**
+ * One flag, evaluated for THIS signed-in person, fetched fresh.
+ *
+ * `isPerfFlagOn` answers from whatever PostHog persisted last launch, and holds
+ * it. That is right for a code path, and wrong for a decision taken once at
+ * launch for a specific account: the app identifies to PostHog only after its
+ * own async sign-in work (app/_layout.tsx), so a read in that gap evaluates
+ * the anonymous visitor — never in a tester list — and a newly created flag is
+ * not in the persisted set at all. Both read as "off".
+ *
+ * So: wait (up to `timeoutMs` in total) until PostHog's distinct id is this
+ * user, ask for fresh flags, then read. Not held, so it never changes what
+ * `isPerfFlagOn` returns. Off on timeout, as always.
+ */
+export async function readFlagForUser(flag: PerfFlag, userId: string, timeoutMs: number): Promise<boolean> {
+  const forced = overrides.get(flag);
+  if (forced !== undefined) return forced;
+  if (!posthog) return false;
+  const client = posthog;
+  const deadline = Date.now() + timeoutMs;
+  const left = () => Math.max(0, deadline - Date.now());
+
+  if (!(await whenPerfFlagsReady(left()))) return false;
+  try {
+    while (client.getDistinctId() !== userId) {
+      if (left() === 0) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, left())));
+    }
+    await Promise.race([
+      client.reloadFeatureFlagsAsync(),
+      new Promise((resolve) => setTimeout(resolve, left())),
+    ]);
+    return client.isFeatureEnabled(PERF_FLAGS[flag]) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a performance change is switched on for this session. */
 export function isPerfFlagOn(flag: PerfFlag): boolean {
   const forced = overrides.get(flag);

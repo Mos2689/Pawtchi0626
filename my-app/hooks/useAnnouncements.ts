@@ -28,7 +28,7 @@ import { AppState } from 'react-native';
 import { useRouter } from 'expo-router';
 
 import { ANNOUNCEMENTS, type Announcement } from '../lib/announcements/catalogue';
-import { pickAnnouncement } from '../lib/announcements/eligibility';
+import { isEligible, pickAnnouncement } from '../lib/announcements/eligibility';
 import {
   readAnnouncementState,
   recordCompleted,
@@ -37,14 +37,22 @@ import {
   resetAnnouncementState,
   rewindAnnouncementStateForDev,
 } from '../lib/announcements/announcementState';
-import { isPerfFlagOn, whenPerfFlagsReady } from '../lib/perfFlags';
+import { readFlagForUser, type PerfFlag } from '../lib/perfFlags';
 import { track } from '../lib/analytics';
 import type { AnnouncementOutcome } from '../components/announcements/AnnouncementSheet';
 
 const SETTLE_MS = 1500;
 const NEW_OPEN_AFTER_MS = 30 * 60 * 1000;
-/** Flags normally load in well under a second; past this, read them as off. */
-const FLAG_WAIT_MS = 4000;
+/**
+ * Budget for PostHog to know who this is and return fresh flags. Normally
+ * well under a second; past this the flag reads as off for this open.
+ */
+const FLAG_WAIT_MS = 6000;
+
+/** Development only: say why nothing showed. Silent in release builds. */
+function devLog(message: string, extra?: unknown): void {
+  if (__DEV__) console.log(`[announcements] ${message}`, extra ?? '');
+}
 
 interface Options {
   userId: string | null | undefined;
@@ -86,7 +94,10 @@ export function useAnnouncements({ userId, ready, isDogOwner, otherOverlayOpen, 
 
   // Another moment this open means no announcement this open.
   React.useEffect(() => {
-    if (otherOverlayOpen && !showing) standDownFor.current = openToken;
+    if (otherOverlayOpen && !showing && standDownFor.current !== openToken) {
+      standDownFor.current = openToken;
+      devLog('another Home pop-up is open; standing down until the next app open');
+    }
   }, [otherOverlayOpen, showing, openToken]);
 
   // Read inside the async decision so it sees the latest values, not the
@@ -95,30 +106,60 @@ export function useAnnouncements({ userId, ready, isDogOwner, otherOverlayOpen, 
   latest.current = { otherOverlayOpen, walkActive, isDogOwner };
 
   React.useEffect(() => {
-    if (!userId || !ready || otherOverlayOpen || walkActive || showing) return;
+    if (!userId || !ready) {
+      devLog('waiting for sign-in and the active pet');
+      return;
+    }
+    if (otherOverlayOpen || walkActive || showing) return;
     if (decidedFor.current === openToken || standDownFor.current === openToken) return;
 
     let cancelled = false;
     const token = openToken;
+    devLog('deciding in 1.5 s');
     const timer = setTimeout(() => {
       void (async () => {
-        await whenPerfFlagsReady(FLAG_WAIT_MS);
         const state = await readAnnouncementState(userId);
-        if (cancelled) return;
         const now = Date.now();
+        const isDogOwner = latest.current.isDogOwner;
+
+        // Everything except the flag first, so PostHog is only asked about
+        // announcements that could actually show (and only those count as
+        // exposures).
+        const candidates = ANNOUNCEMENTS.filter((entry) =>
+          isEligible(entry, state[entry.id], { isDogOwner, isFlagOn: () => true }, now),
+        );
+        const flags = new Map<PerfFlag, boolean>();
+        for (const entry of candidates) {
+          if (entry.gateFlag && !flags.has(entry.gateFlag)) {
+            flags.set(entry.gateFlag, await readFlagForUser(entry.gateFlag, userId, FLAG_WAIT_MS));
+          }
+        }
+        if (cancelled) {
+          devLog('cancelled while deciding; will retry');
+          return;
+        }
         const pick = pickAnnouncement(
-          ANNOUNCEMENTS,
+          candidates,
           state,
-          { isDogOwner: latest.current.isDogOwner, isFlagOn: isPerfFlagOn },
+          { isDogOwner, isFlagOn: (flag) => flags.get(flag) === true },
           now,
         );
         // Something else claimed the screen while we were reading: try again
         // on the next open rather than stacking on top of it.
         if (latest.current.otherOverlayOpen || latest.current.walkActive || standDownFor.current === token) {
+          devLog('another pop-up or a walk took the screen; skipping this open');
           return;
         }
         decidedFor.current = token;
-        if (!pick) return;
+        if (!pick) {
+          devLog('nothing to show', {
+            isDogOwner,
+            candidates: candidates.map((c) => c.id),
+            flags: Object.fromEntries(flags),
+            state,
+          });
+          return;
+        }
         const record = await recordShown(userId, pick.id, now);
         if (cancelled) return;
         track('announcement_shown', { id: pick.id, show_number: record.shows });
