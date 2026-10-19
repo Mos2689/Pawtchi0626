@@ -1,4 +1,4 @@
-import { ANNOUNCEMENTS, BODY_MAX, TITLE_MAX } from './catalogue';
+import { ANNOUNCEMENTS, BODY_MAX, EYEBROW_MAX, TITLE_MAX } from './catalogue';
 import { PERF_FLAGS } from '../perfFlags';
 
 describe('announcement catalogue', () => {
@@ -12,7 +12,8 @@ describe('announcement catalogue', () => {
     // first version feel crowded.
     expect(a.title.length).toBeLessThanOrEqual(TITLE_MAX);
     expect(a.body.length).toBeLessThanOrEqual(BODY_MAX);
-    for (const text of [a.title, a.body, a.cta.label]) {
+    if (a.eyebrow != null) expect(a.eyebrow.length).toBeLessThanOrEqual(EYEBROW_MAX);
+    for (const text of [a.eyebrow ?? 'x', a.title, a.body, a.cta.label]) {
       expect(text).not.toMatch(/!/);
       expect(text.trim()).toBe(text);
       expect(text.length).toBeGreaterThan(0);

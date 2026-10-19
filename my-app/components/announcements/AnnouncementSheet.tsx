@@ -45,17 +45,25 @@ import { useEvent } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
 
-import { color, font, motion, radius, space } from '../../constants/design';
+import { color, font, motion, radius, space, type } from '../../constants/design';
 import { haptic } from '../../lib/haptics';
 import type { Announcement } from '../../lib/announcements/catalogue';
 import { ANNOUNCEMENT_MEDIA } from './announcementMedia';
 
 export type AnnouncementOutcome = 'cta' | 'close' | 'swipe' | 'backdrop' | 'back';
 
-const SHEET_FRACTION = 0.4;
-const SHEET_MIN = 320;
-const SHEET_MAX = 460;
-const MEDIA_FRACTION = 0.45;
+/**
+ * The sheet is as tall as what it holds: the media band, the text, one gap,
+ * the button. It used to be a fixed 40% of the screen with a spacer pushing
+ * the button down, which left a dead band between the text and the button on
+ * taller phones. Fitting the content lands near 40% on a standard iPhone and
+ * keeps the button with the words it belongs to.
+ */
+const MEDIA_FRACTION = 0.18;
+const MEDIA_MIN = 140;
+const MEDIA_MAX = 200;
+/** Space between the last line of text and the button. */
+const CTA_GAP = space.xxl;
 const BACKDROP_OPACITY = 0.4;
 
 const ENTER_MS = motion.duration.slow;
@@ -82,12 +90,16 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
   const insets = useSafeAreaInsets();
   const reduceMotion = useReducedMotion();
 
-  const bodyH = Math.round(Math.min(SHEET_MAX, Math.max(SHEET_MIN, windowH * SHEET_FRACTION)));
-  const sheetH = bodyH + insets.bottom;
-  const mediaH = Math.round(bodyH * MEDIA_FRACTION);
+  const mediaH = Math.round(Math.min(MEDIA_MAX, Math.max(MEDIA_MIN, windowH * MEDIA_FRACTION)));
+  // Above the home indicator where there is one; a comfortable margin where not.
+  const bottomPad = Math.max(insets.bottom, space.lg) + space.sm;
 
   const shown = useSharedValue(0); // 0 hidden → 1 open; drives backdrop and fade
-  const offset = useSharedValue(reduceMotion ? 0 : sheetH); // translateY
+  // The sheet's measured height. Until layout it is the window, so the sheet
+  // starts fully below the screen whatever it turns out to measure.
+  const sheetH = useSharedValue(windowH);
+  const offset = useSharedValue(reduceMotion ? 0 : windowH); // translateY
+  const entered = React.useRef(false);
   // Title, body and button follow the sheet in, one stagger step apart.
   const titleIn = useSharedValue(0);
   const bodyIn = useSharedValue(0);
@@ -105,7 +117,6 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
       bodyIn.value = 1;
       ctaIn.value = 1;
     } else {
-      offset.value = withTiming(0, { duration: ENTER_MS, easing: ENTER_EASING });
       const reveal = { duration: REVEAL_MS, easing: EXIT_EASING };
       titleIn.value = withDelay(STAGGER_MS, withTiming(1, reveal));
       bodyIn.value = withDelay(STAGGER_MS * 2, withTiming(1, reveal));
@@ -114,6 +125,18 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
     // Mount-only: the sheet animates in exactly once per showing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** First layout: now the real height is known, slide up from exactly below. */
+  const onSheetLayout = React.useCallback(
+    (h: number) => {
+      sheetH.value = h;
+      if (entered.current || reduceMotion) return;
+      entered.current = true;
+      offset.value = h;
+      offset.value = withTiming(0, { duration: ENTER_MS, easing: ENTER_EASING });
+    },
+    [offset, reduceMotion, sheetH],
+  );
 
   const close = React.useCallback(
     (outcome: AnnouncementOutcome) => {
@@ -126,7 +149,7 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
       };
       shown.value = withTiming(0, { duration: EXIT_MS, easing: EXIT_EASING }, reduceMotion ? finish : undefined);
       if (!reduceMotion) {
-        offset.value = withTiming(sheetH, { duration: EXIT_MS, easing: EXIT_EASING }, finish);
+        offset.value = withTiming(sheetH.value, { duration: EXIT_MS, easing: EXIT_EASING }, finish);
       }
     },
     [exiting, offset, onClosed, reduceMotion, sheetH, shown],
@@ -150,13 +173,13 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
         .onEnd((e) => {
           if (reduceMotion || exiting.value) return;
           const y = e.translationY;
-          if (y > 0 && (y > bodyH * DISMISS_FRACTION || e.velocityY > DISMISS_VELOCITY)) {
+          if (y > 0 && (y > sheetH.value * DISMISS_FRACTION || e.velocityY > DISMISS_VELOCITY)) {
             runOnJS(close)('swipe');
           } else {
             offset.value = withTiming(0, { duration: motion.duration.base, easing: ENTER_EASING });
           }
         }),
-    [bodyH, close, exiting, offset, reduceMotion],
+    [close, exiting, offset, reduceMotion, sheetH],
   );
 
   const backdropStyle = useAnimatedStyle(() => ({ opacity: shown.value * BACKDROP_OPACITY }));
@@ -191,7 +214,8 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
 
         <GestureDetector gesture={pan}>
           <Animated.View
-            style={[styles.sheet, { height: sheetH, paddingBottom: insets.bottom }, sheetStyle]}
+            style={[styles.sheet, { paddingBottom: bottomPad }, sheetStyle]}
+            onLayout={(e) => onSheetLayout(e.nativeEvent.layout.height)}
             accessibilityViewIsModal
           >
             <View style={[styles.media, { height: mediaH }]}>
@@ -209,14 +233,16 @@ export function AnnouncementSheet({ announcement, onClosed }: Props) {
             </View>
 
             <View style={styles.content}>
-              <Animated.Text style={[styles.title, titleStyle]} accessibilityRole="header">
-                {announcement.title}
-              </Animated.Text>
+              <Animated.View style={titleStyle} accessible accessibilityRole="header">
+                {announcement.eyebrow ? (
+                  <Text style={styles.eyebrow} numberOfLines={1}>{announcement.eyebrow}</Text>
+                ) : null}
+                <Text style={styles.title}>{announcement.title}</Text>
+              </Animated.View>
               <Animated.Text style={[styles.body, bodyStyle]} numberOfLines={1}>
                 {announcement.body}
               </Animated.Text>
-              <View style={styles.spacer} />
-              <Animated.View style={ctaStyle}>
+              <Animated.View style={[styles.ctaWrap, ctaStyle]}>
                 <Pressable
                   onPress={onCta}
                   onPressIn={() => { pressed.value = withSpring(motion.scale.press, motion.spring.press); }}
@@ -311,10 +337,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  content: { flex: 1, paddingHorizontal: space.xl, paddingTop: space.lg + 2, paddingBottom: space.lg + 2 },
+  content: { paddingHorizontal: space.xl, paddingTop: space.xl },
+  eyebrow: { ...type.label, color: color.slate, marginBottom: 2 },
   title: { fontFamily: font.bold, fontSize: 21, lineHeight: 26, letterSpacing: -0.3, color: color.navy },
   body: { fontFamily: font.regular, fontSize: 14, lineHeight: 20, color: color.slate, marginTop: space.xs },
-  spacer: { flex: 1, minHeight: space.md },
+  ctaWrap: { marginTop: CTA_GAP },
   cta: {
     height: 48,
     borderRadius: radius.lg,

@@ -24,6 +24,7 @@
 
 import type { PerfFlag } from '../perfFlags';
 
+export const EYEBROW_MAX = 24;
 export const TITLE_MAX = 24;
 export const BODY_MAX = 48;
 
@@ -56,6 +57,8 @@ export interface Announcement {
   /** Close, swipe or backdrop tap this many times and it is done for good. */
   maxDismissals: number;
   media: AnnouncementMediaKey;
+  /** Optional small line above the title that names what is new. */
+  eyebrow?: string;
   title: string;
   body: string;
   cta: {
@@ -75,6 +78,7 @@ export const ANNOUNCEMENTS: readonly Announcement[] = [
     minHoursBetween: 24,
     maxDismissals: 2,
     media: 'connect-loop',
+    eyebrow: 'Connect is live',
     title: 'Walk together',
     body: 'Plan a meetup. Every dog on one live map.',
     cta: { label: 'Plan a meetup', route: '/(tabs)?segment=together' },
