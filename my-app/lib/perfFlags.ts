@@ -59,6 +59,12 @@ export const PERF_FLAGS = {
    * server switch (private.live_settings.broadcast_enabled) still decides.
    */
   liveWalkBroadcast: 'live-walk-broadcast',
+  /**
+   * Not a performance change: the remote start/stop for the Connect launch
+   * announcement sheet (lib/announcements/catalogue.ts). Same rules apply:
+   * off until PostHog says on, so the build ships silent.
+   */
+  announceConnect: 'announce-connect',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;
@@ -66,16 +72,47 @@ export type PerfFlag = keyof typeof PERF_FLAGS;
 const held = new Map<PerfFlag, boolean>();
 const overrides = new Map<PerfFlag, boolean>();
 let ready = false;
+let readyWaiters: (() => void)[] = [];
+
+function markReady(): void {
+  ready = true;
+  const waiters = readyWaiters;
+  readyWaiters = [];
+  for (const w of waiters) w();
+}
 
 if (posthog) {
   try {
     posthog
       .ready()
-      .then(() => { ready = true; })
+      .then(markReady)
       .catch(() => {});
   } catch {
     // An SDK without ready() leaves every flag off, which is the safe answer.
   }
+}
+
+/**
+ * Resolves true once flags can be read, or false after `timeoutMs`.
+ *
+ * For a decision made ONCE that would otherwise read an early "off" as the
+ * answer — the launch announcement on app open. Never needed for a check that
+ * runs again later anyway.
+ */
+export function whenPerfFlagsReady(timeoutMs: number): Promise<boolean> {
+  if (ready) return Promise.resolve(true);
+  if (!posthog) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      readyWaiters = readyWaiters.filter((w) => w !== done);
+      resolve(false);
+    }, timeoutMs);
+    const done = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    readyWaiters.push(done);
+  });
 }
 
 /** Whether a performance change is switched on for this session. */

@@ -438,7 +438,12 @@ export type AnalyticsEvent =
   | 'walk_intro_video_skipped'
   | 'walk_intro_video_completed'
   | 'walk_intro_video_cta_clicked'
-  | 'walk_intro_video_failed';
+  | 'walk_intro_video_failed'
+  // Launch announcement sheet (lib/announcements). Props are `id` and
+  // `show_number` only; `dismissed` adds `via` (close | swipe | backdrop | back).
+  | 'announcement_shown'
+  | 'announcement_cta'
+  | 'announcement_dismissed';
 
 export type AnalyticsProps = Record<string, string | number | boolean | null | undefined>;
 

@@ -7,7 +7,13 @@ const analyticsMock: { posthog: typeof fake | null } = { posthog: fake };
 
 jest.mock('./analytics', () => analyticsMock);
 
-import { isPerfFlagOn, PERF_FLAGS, resetPerfFlagsForTests, setPerfFlagOverride } from './perfFlags';
+import {
+  isPerfFlagOn,
+  PERF_FLAGS,
+  resetPerfFlagsForTests,
+  setPerfFlagOverride,
+  whenPerfFlagsReady,
+} from './perfFlags';
 
 beforeEach(() => {
   for (const key of Object.keys(fakeFlags)) delete fakeFlags[key];
@@ -66,5 +72,22 @@ describe('isPerfFlagOn', () => {
     expect(isPerfFlagOn('walkInstantOpen')).toBe(true);
     setPerfFlagOverride('walkInstantOpen', undefined);
     expect(isPerfFlagOn('walkInstantOpen')).toBe(false);
+  });
+});
+
+describe('whenPerfFlagsReady', () => {
+  it('resolves true at once when flags are already loaded', async () => {
+    await expect(whenPerfFlagsReady(10)).resolves.toBe(true);
+  });
+
+  it('gives up and resolves false when flags never load', async () => {
+    resetPerfFlagsForTests({ ready: false });
+    await expect(whenPerfFlagsReady(10)).resolves.toBe(false);
+  });
+
+  it('resolves false at once without a PostHog client', async () => {
+    resetPerfFlagsForTests({ ready: false });
+    analyticsMock.posthog = null;
+    await expect(whenPerfFlagsReady(60_000)).resolves.toBe(false);
   });
 });

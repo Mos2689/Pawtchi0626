@@ -39,6 +39,7 @@ import { track } from '../../lib/analytics';
 import { deferContextFetch } from '../../lib/health/lazyContext';
 import { isPerfFlagOn } from '../../lib/perfFlags';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
+import { useAnnouncements } from '../../hooks/useAnnouncements';
 import {
   SPOTS_OSM_MVP_ENABLED,
   WALK_CAMERA_ENABLED,
@@ -144,6 +145,7 @@ import {
   useUnreadSegments,
 } from '../../store/useNotificationCenterStore';
 import { NotificationPrimer } from '../../components/NotificationPrimer';
+import { AnnouncementSheet } from '../../components/announcements/AnnouncementSheet';
 import { FirstWalkIntroVideo } from '../../components/FirstWalkIntroVideo';
 import { useFirstWalkIntro } from '../../hooks/useFirstWalkIntro';
 import { useWalkStore } from '../../store/useWalkStore';
@@ -1537,6 +1539,25 @@ export default function HomeScreen() {
     onStartWalk();
   }, [closeIntro, onStartWalk]);
 
+  // ── Launch announcements ──────────────────────────────────────────────────
+  // At most one per app open, and only when none of Home's own moments is
+  // up (see hooks/useAnnouncements.ts). The milestone and template queues
+  // count as busy while non-empty, whichever of them is on screen.
+  const pendingMilestoneCount = usePawPrintStore(s => s.pendingMilestones.length);
+  const pendingUnlockCount = usePawPrintStore(s => s.pendingTemplateUnlocks.length);
+  const { announcement, onClosed: onAnnouncementClosed } = useAnnouncements({
+    userId: user?.id,
+    ready: !!activePet?.id,
+    isDogOwner: walkEnabled,
+    otherOverlayOpen:
+      !!walksignMoment ||
+      homePrimerVisible ||
+      introVisible ||
+      waitingOpen ||
+      (walkEnabled && (pendingMilestoneCount > 0 || pendingUnlockCount > 0)),
+    walkActive: walkPhase !== 'idle',
+  });
+
   const latestWalkId = recentWalks[0]?.id;
   const openWalkStory = useCallback((walkId: string) => {
     const walk = recentWalks.find(w => w.id === walkId) ?? recentWalks[0];
@@ -1581,6 +1602,8 @@ export default function HomeScreen() {
   // anything is how opt-in ended up at 9%.
   React.useEffect(() => {
     if (primerConsidered.current) return;
+    // Never on top of a launch announcement; considered again once it closes.
+    if (announcement) return;
     if (!activePet || notifPermission.status === 'loading') return;
     if (!notifPermission.canAsk || notifPermission.isGranted) return;
     const hasLogged = todayCalories > 0 || currentStreak > 0;
@@ -1599,7 +1622,7 @@ export default function HomeScreen() {
         p_primer_shown: true,
       }).then(() => {});
     })();
-  }, [activePet, notifPermission.status, notifPermission.canAsk, notifPermission.isGranted, todayCalories, currentStreak, user?.id]);
+  }, [activePet, announcement, notifPermission.status, notifPermission.canAsk, notifPermission.isGranted, todayCalories, currentStreak, user?.id]);
 
   const notificationsUnreachable =
     notifPermission.status !== 'loading' && !notifPermission.isReachable;
@@ -1699,6 +1722,13 @@ export default function HomeScreen() {
         onDismiss={handleIntroDismiss}
         onStartWalk={handleIntroStartWalk}
       />
+      {announcement ? (
+        <AnnouncementSheet
+          key={announcement.id}
+          announcement={announcement}
+          onClosed={onAnnouncementClosed}
+        />
+      ) : null}
     </>
   );
 
