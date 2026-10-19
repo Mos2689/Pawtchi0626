@@ -52,8 +52,23 @@ export async function insertKeepsake(
       .insert(buildKeepsakeInsert(input))
       .select(SELECT_COLUMNS)
       .single();
-    if (error) return null;
-    return normalizeKeepsake(data);
+    if (!error) return normalizeKeepsake(data);
+
+    // Idempotent on the shutter-time id. A row that already exists under this
+    // photo's id is a success, not a failure: the write reached the server but
+    // its reply was lost to a dropped signal, or recovery and the summary flush
+    // raced. Returning null here would park the photo in the outbox forever,
+    // retrying a duplicate key on every drain, and its thumbnail would never
+    // upload.
+    if (error.code === '23505' && input.mediaId) {
+      const existing = await supabase
+        .from('walk_media')
+        .select(SELECT_COLUMNS)
+        .eq('id', input.mediaId)
+        .maybeSingle();
+      if (!existing.error && existing.data) return normalizeKeepsake(existing.data);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -226,6 +241,62 @@ export async function fetchPendingThumbnails(petId: string, limit = 20): Promise
     return data.flatMap((row) => normalizeKeepsake(row) ?? []);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Every keepsake of this OWNER still owing a thumbnail whose original this
+ * phone may hold — across all pets, unlike `fetchPendingThumbnails`, because
+ * recovery runs at app level and a multi-dog owner's photos belong to several.
+ *
+ * Oldest first: the photo that has gone longest without a durable copy is the
+ * one most at risk.
+ */
+export async function fetchOwnerPendingThumbnails(ownerId: string, limit = 20): Promise<Keepsake[]> {
+  try {
+    const { data, error } = await supabase
+      .from('walk_media')
+      .select(SELECT_COLUMNS)
+      .eq('owner_id', ownerId)
+      .is('thumb_path', null)
+      .not('local_path', 'is', null)
+      .order('captured_at', { ascending: true })
+      .limit(limit);
+    if (error || !data) return [];
+    return data.flatMap((row) => normalizeKeepsake(row) ?? []);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * This owner's saved walks that started inside [fromMs, toMs], as id + start.
+ *
+ * What capture-journal recovery matches entries against: the row's
+ * `started_at` is written from the same millisecond as the durable walk
+ * record's `startedAt` (walkSync.ts), so a narrow window finds the one walk.
+ * Null on failure, so the caller can tell "no such walk" from "could not ask".
+ */
+export async function fetchWalkStartsBetween(
+  ownerId: string,
+  fromMs: number,
+  toMs: number,
+): Promise<{ id: string; startedAt: number }[] | null> {
+  try {
+    const { data, error } = await supabase
+      .from('walk_sessions')
+      .select('id, started_at')
+      .eq('owner_id', ownerId)
+      .gte('started_at', new Date(fromMs).toISOString())
+      .lte('started_at', new Date(toMs).toISOString())
+      .limit(200);
+    if (error || !data) return null;
+    return data.flatMap((row: { id: unknown; started_at: unknown }) => {
+      const startedAt = typeof row.started_at === 'string' ? Date.parse(row.started_at) : NaN;
+      return typeof row.id === 'string' && Number.isFinite(startedAt) ? [{ id: row.id, startedAt }] : [];
+    });
+  } catch {
+    return null;
   }
 }
 

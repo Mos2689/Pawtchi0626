@@ -169,6 +169,17 @@ export async function enqueueOutbox(
 }
 
 /**
+ * Forget every queued entry of one walk — the walk was discarded, so its rows
+ * can never be written (walk_media.walk_session_id would point at nothing) and
+ * retrying them would only fail forever.
+ */
+export async function dropOutboxForWalk(walkSessionId: string): Promise<void> {
+  const existing = await readOutbox();
+  const kept = existing.filter((e) => e.walkSessionId !== walkSessionId);
+  if (kept.length !== existing.length) await writeOutbox(kept);
+}
+
+/**
  * Filenames the storage sweep must not touch.
  *
  * For a queued entry the container file is the only copy anywhere — there is no
@@ -210,7 +221,8 @@ export interface DrainResult {
  * The row is what matters; the thumbnail follows it and is allowed to fail
  * indefinitely, exactly as in the live flush path. So an entry leaves the queue
  * the moment its row exists — at that point the keepsake is discoverable, and
- * `fetchPendingThumbnails` is already the mechanism that finishes the job.
+ * keepsakeRecovery.retryPendingThumbnails finishes the job on the next launch
+ * or foreground.
  *
  * An entry whose file has vanished (reinstall, a sweep from before it was
  * protected) is still written: the time, the place and the walk are real facts

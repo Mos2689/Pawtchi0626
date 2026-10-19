@@ -234,6 +234,14 @@ export type AnalyticsEvent =
   // Counts and timings only: never a coordinate, a route, a token or an id.
   | 'live_walk_sender_summary'
   | 'live_walk_viewer_summary'
+  // Walk-photo durability (Oct 2026): what recovery finished on launch or
+  // foreground, and one summary per walk of the capture pipeline. Counts only —
+  // never a filename, a coordinate or an id.
+  | 'keepsake_recovery_summary'
+  | 'keepsake_pipeline_summary'
+  | 'keepsake_backup_summary'
+  | 'walk_photo_backup_toggled'
+  | 'walk_photos_exported'
   | 'walk_shared'
   // Paw Moment share card — the walk→Instagram loop. `viewed` fires when the
   // card preview opens, `shared` when the native sheet completes (the OS

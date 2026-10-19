@@ -21,9 +21,16 @@
  * confuse the two: it emptied its queue before awaiting the insert, so a write
  * that failed took the keepsake with it — on a walk, where no signal is the
  * ordinary case rather than the edge one. Failures now go to
- * lib/walk/keepsakeOutbox.ts and are retried at the start of the next walk, and
- * their files are protected from the storage sweep in the meantime, because a
- * queued entry's container copy is the only copy of that photograph anywhere.
+ * lib/walk/keepsakeOutbox.ts and are retried on every launch and foreground
+ * (hooks/useKeepsakeRecovery.ts), and their files are protected from the
+ * storage sweep in the meantime, because a queued entry's container copy is the
+ * only copy of that photograph anywhere.
+ *
+ * ── Memory is not a record ──
+ * Drafts in `pendingRef` die with the process. Every capture is therefore also
+ * written to the capture journal at the shutter (lib/walk/captureJournal.ts):
+ * a restored or remounted walk re-reads its photos from there, and recovery
+ * attaches anything left over to its saved walk.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -48,7 +55,14 @@ import {
   attachThumbnail,
 } from '../lib/walk/keepsakeSync';
 import { uploadThumbnail, thumbnailUrl } from '../lib/walk/keepsakeThumbnail';
-import { sweepKeepsakeFiles } from '../lib/walk/keepsakeFile';
+import { keepsakeFileUri, sweepKeepsakeFiles } from '../lib/walk/keepsakeFile';
+import {
+  appendJournal,
+  entriesForWalk,
+  journalLocalPaths,
+  readJournal,
+  removeFromJournal,
+} from '../lib/walk/captureJournal';
 import {
   drainOutbox,
   enqueueOutbox,
@@ -59,6 +73,7 @@ import {
 } from '../lib/walk/keepsakeOutbox';
 import { outboxPorts } from '../lib/walk/keepsakeOutboxPorts';
 import { newClientId } from '../lib/walk/clientId';
+import { track } from '../lib/analytics';
 import { readPlacePromptLog, recordPlacePrompt } from '../lib/walk/placePromptLog';
 import { haversineMeters } from '../lib/walk/geo';
 import type { WalkCaptureResult } from '../components/walk/WalkCamera';
@@ -132,6 +147,8 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
   const [captures, setCaptures] = useState<PendingCapture[]>([]);
 
   const pendingRef = useRef<PendingCapture[]>([]);
+  /** Bumped when restored journal entries land in `pendingRef`, so the flush re-checks. */
+  const [seedTick, setSeedTick] = useState(0);
   const promptStateRef = useRef<CapturePromptState>(initialCapturePromptState);
   const placeLogRef = useRef<Record<string, number>>({});
   const placeOffersRef = useRef(0);
@@ -167,6 +184,44 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
     setCaptures([]);
     setPrompt(null);
   }, [startedAt]);
+
+  // ── Restore this walk's photos from the capture journal ──
+  //
+  // The journal (lib/walk/captureJournal.ts) is written at the shutter, so a
+  // walk restored after the app was killed — or a walk screen that unmounted
+  // and came back mid-walk — gets back every photo it already had. Before
+  // this, those lived only in `pendingRef` and died with the process.
+  useEffect(() => {
+    if (!enabled || startedAt == null || !ownerId) return;
+    let cancelled = false;
+    void readJournal().then((journal) => {
+      if (cancelled) return;
+      const known = new Set(pendingRef.current.map((c) => c.mediaId));
+      const restored: PendingCapture[] = entriesForWalk(journal, ownerId, startedAt)
+        .filter((e) => !known.has(e.mediaId))
+        .map((e) => ({
+          uri: keepsakeFileUri(e.localPath) ?? e.cacheUri ?? '',
+          localPath: e.localPath,
+          width: e.width ?? 0,
+          height: e.height ?? 0,
+          capturedAt: e.capturedAt,
+          source: e.source,
+          mediaId: e.mediaId,
+          lat: e.lat,
+          lng: e.lng,
+          routeIndex: e.routeIndex,
+          elapsedS: e.elapsedS,
+          placeKey: e.placeKey,
+        }));
+      if (restored.length === 0) return;
+      pendingRef.current.push(...restored);
+      setCaptures((prev) => [...prev, ...restored].sort((a, b) => a.capturedAt - b.capturedAt));
+      setSeedTick((t) => t + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, startedAt, ownerId]);
 
   // ── The sniff-triggered capture prompt ──
   useEffect(() => {
@@ -273,7 +328,7 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
   // A photo taken HERE gets the live fix, because here is where it was taken.
   const onCaptured = useCallback(
     (result: WalkCaptureResult) => {
-      accept({
+      const capture: PendingCapture = {
         ...result,
         // Named here, at the shutter, and never re-named. See PendingCapture.
         mediaId: newClientId(),
@@ -285,9 +340,32 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
             : null,
         elapsedS: startedAt != null ? elapsedSecondsInto(startedAt, result.capturedAt) : null,
         placeKey: placeKeyOrNull(lat, lng),
-      });
+      };
+      // Written down before anything else can go wrong: until the walk saves,
+      // this entry is the only record that the photo belongs to this walk.
+      if (ownerId && petId && startedAt != null) {
+        void appendJournal({
+          mediaId: capture.mediaId,
+          ownerId,
+          petId,
+          walkStartedAt: startedAt,
+          capturedAt: capture.capturedAt,
+          lat: capture.lat,
+          lng: capture.lng,
+          routeIndex: capture.routeIndex,
+          elapsedS: capture.elapsedS,
+          placeKey: capture.placeKey,
+          source: capture.source,
+          localPath: capture.localPath,
+          cacheUri: capture.localPath ? null : capture.uri,
+          width: capture.width,
+          height: capture.height,
+          journaledAt: Date.now(),
+        });
+      }
+      accept(capture);
     },
-    [accept, lat, lng, session, startedAt],
+    [accept, lat, lng, session, startedAt, ownerId, petId],
   );
 
   // Importing an existing photo is NOT here. It happens on the walk summary,
@@ -306,6 +384,7 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
 
     void (async () => {
       const failed: KeepsakeOutboxEntry[] = [];
+      const written: string[] = [];
 
       for (const capture of batch) {
         const stored = await insertKeepsake({
@@ -367,6 +446,7 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
           });
           continue;
         }
+        written.push(capture.mediaId);
 
         // The thumbnail follows the row rather than gating it: a keepsake that
         // has not uploaded yet is still perfectly usable from the local
@@ -382,6 +462,20 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
       }
 
       if (failed.length > 0) await enqueueOutbox(failed);
+      // Only now, with every photo either written or queued, is the journal's
+      // copy of this walk redundant. Earlier would leave a window in which a
+      // crash loses a photo from both places.
+      await removeFromJournal([...written, ...failed.flatMap((f) => (f.mediaId ? [f.mediaId] : []))]);
+
+      // One line of field health per walk — counts only (the support
+      // diagnostics privacy boundary). `cache_only` is a photo that could not
+      // be copied into the container at all: the case most likely to vanish.
+      track('keepsake_pipeline_summary', {
+        captured: batch.length,
+        inserted: written.length,
+        queued: failed.length,
+        cache_only: batch.filter((c) => !c.localPath).length,
+      });
 
       // ── Keep our own copies within budget ──
       //
@@ -392,19 +486,22 @@ export function useWalkKeepsakes(input: UseWalkKeepsakesInput) {
       // For both, the file we hold is the only copy anywhere, and the budget
       // yields to that.
       try {
-        const [pending, queued] = await Promise.all([
+        const [pending, queued, journal] = await Promise.all([
           fetchPendingThumbnails(petId, 100),
           readOutbox(),
+          readJournal(),
         ]);
         sweepKeepsakeFiles([
           ...pending.flatMap((k) => (k.localPath ? [k.localPath] : [])),
           ...outboxLocalPaths(queued),
+          // Journaled photos have no row yet — the file is the only copy.
+          ...journalLocalPaths(journal),
         ]);
       } catch {
         // A sweep that does not happen costs disk, never a photo.
       }
     })();
-  }, [enabled, walkSessionId, ownerId, petId]);
+  }, [enabled, walkSessionId, ownerId, petId, seedTick]);
 
   // ── Retry whatever a previous walk could not write ──
   //
