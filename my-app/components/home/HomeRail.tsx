@@ -391,8 +391,11 @@ function WalkCard({ item, onPress }: { item: RailWalkItem; onPress: () => void }
       </Text>
       <MetaRow
         items={[
+          // A dated card trades its minutes for the day: four items do not fit
+          // the card's width, and "when" matters more than "how long" here.
+          ...(item.dayLabel ? [{ text: item.dayLabel }] : []),
           { text: `${formatKm(item.km)} km` },
-          { text: `${item.minutes} min` },
+          ...(item.dayLabel ? [] : [{ text: `${item.minutes} min` }]),
           ...(item.sniffCount > 0
             ? [{ text: `${item.sniffCount} sniffs`, tone: 'found' as const }]
             : []),

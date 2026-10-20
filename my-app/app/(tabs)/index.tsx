@@ -125,6 +125,12 @@ import {
   type RailSegment,
 } from '../../lib/home/homeRail';
 import {
+  galleryReachable,
+  railWalkState,
+  walkDayLabel,
+  walkFeedErrorCopy,
+} from '../../lib/home/recentWalksFallback';
+import {
   clearPendingWalksignCelebration,
   readPendingWalksignCelebration,
   type PendingWalksignCelebration,
@@ -293,7 +299,13 @@ export default function HomeScreen() {
     status: subStatus,
     daysLeft: subDaysLeft,
   } = useSubscription();
-  const { walks: recentWalks, loading: walksLoading } = useRecentWalks(activePet?.id, 7);
+  const {
+    walks: recentWalks,
+    loading: walksLoading,
+    scope: walksScope,
+    status: walksStatus,
+    refetch: refetchWalks,
+  } = useRecentWalks(activePet?.id, 7);
   const storyTotals = usePawPrintStore(s => s.totals);
   const primeWalkStory = useWalkStoryStore(s => s.prime);
   const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
@@ -302,10 +314,15 @@ export default function HomeScreen() {
 
   // ── The rail ──────────────────────────────────────────────────────────────
   const [segment, setSegment] = React.useState<RailSegment>('walks');
-  const walkItems = useMemo(
-    () => (walkEnabled ? buildWalkItems(recentWalks, activePet?.name) : []),
-    [walkEnabled, recentWalks, activePet?.name],
-  );
+  const walkItems = useMemo(() => {
+    if (!walkEnabled) return [];
+    const items = buildWalkItems(recentWalks, activePet?.name);
+    // Walks from outside this week say which day they were, so a fortnight-old
+    // walk beside the Today card is not read as this week's.
+    return walksScope === 'latest'
+      ? items.map(item => ({ ...item, dayLabel: walkDayLabel(item.startedAt) }))
+      : items;
+  }, [walkEnabled, recentWalks, activePet?.name, walksScope]);
   const sniffItems = useMemo(
     () => (walkEnabled ? buildSniffItems(recentWalks, activePet?.name) : []),
     [walkEnabled, recentWalks, activePet?.name],
@@ -900,7 +917,26 @@ export default function HomeScreen() {
     // as long as the query took. The feed is cached now so this is a first-run
     // path rather than an every-launch one — but on that first run it must
     // still promise cards rather than deny them.
-    if (walkItems.length === 0 && walksLoading) {
+    const walkState = railWalkState({
+      walkCount: walkItems.length,
+      loading: walksLoading,
+      status: walksStatus,
+    });
+    // A failed load with nothing on screen is not "no walks". Say what
+    // happened, reassure, and offer the retry.
+    if (walkState === 'error') {
+      return [
+        {
+          kind: 'message' as const,
+          id: 'walks-error',
+          title: walkFeedErrorCopy.title,
+          body: walkFeedErrorCopy.body,
+          action: walkFeedErrorCopy.action,
+          onAction: () => { void refetchWalks(); },
+        },
+      ];
+    }
+    if (walkState === 'loading') {
       return [
         {
           kind: 'loading' as const,
@@ -931,6 +967,8 @@ export default function HomeScreen() {
     segment,
     walkItems,
     walksLoading,
+    walksStatus,
+    refetchWalks,
     todayTotals,
     currentWeather,
     petName,
@@ -1875,7 +1913,7 @@ export default function HomeScreen() {
         <View style={styles.cabinet} pointerEvents="box-none">
           <Reanimated.View entering={entrance(1)} pointerEvents="box-none">
             <MapControls
-              galleryEnabled={walkItems.length >= 2}
+              galleryEnabled={galleryReachable(walkItems.length)}
               onFindFriend={() => router.push('/invite' as any)}
               // A searched-elsewhere map is just as "off its default" as a
               // swiped rail, and this is the one control that takes it back.
