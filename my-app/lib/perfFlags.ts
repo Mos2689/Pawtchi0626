@@ -59,6 +59,12 @@ export const PERF_FLAGS = {
    * server switch (private.live_settings.broadcast_enabled) still decides.
    */
   liveWalkBroadcast: 'live-walk-broadcast',
+  /**
+   * Not a performance change: the remote start/stop for the Connect launch
+   * announcement sheet (lib/announcements/catalogue.ts). Same rules apply:
+   * off until PostHog says on, so the build ships silent.
+   */
+  announceConnect: 'announce-connect',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;
@@ -66,15 +72,84 @@ export type PerfFlag = keyof typeof PERF_FLAGS;
 const held = new Map<PerfFlag, boolean>();
 const overrides = new Map<PerfFlag, boolean>();
 let ready = false;
+let readyWaiters: (() => void)[] = [];
+
+function markReady(): void {
+  ready = true;
+  const waiters = readyWaiters;
+  readyWaiters = [];
+  for (const w of waiters) w();
+}
 
 if (posthog) {
   try {
     posthog
       .ready()
-      .then(() => { ready = true; })
+      .then(markReady)
       .catch(() => {});
   } catch {
     // An SDK without ready() leaves every flag off, which is the safe answer.
+  }
+}
+
+/**
+ * Resolves true once flags can be read, or false after `timeoutMs`.
+ *
+ * For a decision made ONCE that would otherwise read an early "off" as the
+ * answer — the launch announcement on app open. Never needed for a check that
+ * runs again later anyway.
+ */
+export function whenPerfFlagsReady(timeoutMs: number): Promise<boolean> {
+  if (ready) return Promise.resolve(true);
+  if (!posthog) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      readyWaiters = readyWaiters.filter((w) => w !== done);
+      resolve(false);
+    }, timeoutMs);
+    const done = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    readyWaiters.push(done);
+  });
+}
+
+/**
+ * One flag, evaluated for THIS signed-in person, fetched fresh.
+ *
+ * `isPerfFlagOn` answers from whatever PostHog persisted last launch, and holds
+ * it. That is right for a code path, and wrong for a decision taken once at
+ * launch for a specific account: the app identifies to PostHog only after its
+ * own async sign-in work (app/_layout.tsx), so a read in that gap evaluates
+ * the anonymous visitor — never in a tester list — and a newly created flag is
+ * not in the persisted set at all. Both read as "off".
+ *
+ * So: wait (up to `timeoutMs` in total) until PostHog's distinct id is this
+ * user, ask for fresh flags, then read. Not held, so it never changes what
+ * `isPerfFlagOn` returns. Off on timeout, as always.
+ */
+export async function readFlagForUser(flag: PerfFlag, userId: string, timeoutMs: number): Promise<boolean> {
+  const forced = overrides.get(flag);
+  if (forced !== undefined) return forced;
+  if (!posthog) return false;
+  const client = posthog;
+  const deadline = Date.now() + timeoutMs;
+  const left = () => Math.max(0, deadline - Date.now());
+
+  if (!(await whenPerfFlagsReady(left()))) return false;
+  try {
+    while (client.getDistinctId() !== userId) {
+      if (left() === 0) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, left())));
+    }
+    await Promise.race([
+      client.reloadFeatureFlagsAsync(),
+      new Promise((resolve) => setTimeout(resolve, left())),
+    ]);
+    return client.isFeatureEnabled(PERF_FLAGS[flag]) === true;
+  } catch {
+    return false;
   }
 }
 
