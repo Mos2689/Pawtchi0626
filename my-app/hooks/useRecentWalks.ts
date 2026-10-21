@@ -43,6 +43,15 @@ import { parseWalkStoryWeather } from '../lib/walkStorySnapshot';
 import type { WalkWeather } from '../lib/walkStory';
 import { usePetContextStore } from '../store/usePetContextStore';
 import { homeMark } from '../lib/perf/homeTrace';
+import {
+  LATEST_WALKS_LIMIT,
+  needsLatestFallback,
+  type RecentWalksScope,
+  type RecentWalksStatus,
+} from '../lib/home/recentWalksFallback';
+
+const WALK_COLUMNS =
+  'id, started_at, duration_s, moving_time_s, distance_m, route, pause_points, sniff_points, avg_speed_kmh, validation_verdict, start_label, end_label, farthest_label, weather';
 
 export interface RecentWalk {
   id: string;
@@ -131,6 +140,34 @@ function feedCacheKey(petId: string, days: number): string {
 }
 
 /**
+ * The latest walks of any date, shown when the week is empty. Cached on their
+ * own key and read with no date cutoff, so a quiet week opens on the dog's
+ * real history instead of an empty rail while the query runs.
+ */
+function latestCacheKey(petId: string): string {
+  return `${FEED_CACHE_PREFIX}${petId}:latest`;
+}
+
+async function readCachedLatest(petId: string): Promise<RecentWalk[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(latestCacheKey(petId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as RecentWalk[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedLatest(petId: string, walks: RecentWalk[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(latestCacheKey(petId), JSON.stringify(walks.slice(0, CACHE_MAX_WALKS)));
+  } catch {
+    // Same as writeCachedWalks: a cache, not a record.
+  }
+}
+
+/**
  * Read the cached feed. Never throws; a malformed entry is treated as a miss.
  *
  * The window is a rolling one, so a cache written yesterday can hold walks that
@@ -191,6 +228,13 @@ export function useRecentWalks(
   // start is not a resolved empty feed, and callers render a very different
   // (and much more damaging) card if they are told that it is.
   const [loading, setLoading] = useState<boolean>(WALK_TRACKING_ENABLED && !!petId);
+  /** Whether `walks` is this week's, or the dog's latest because the week was empty. */
+  const [scope, setScope] = useState<RecentWalksScope>('week');
+  /**
+   * How the last load ended. Only `ready` may let the rail say "No walks yet";
+   * `error` with nothing on screen is a retry card, never an empty one.
+   */
+  const [status, setStatus] = useState<RecentWalksStatus>('idle');
 
   /**
    * Whether the network has answered for the CURRENT pet and window.
@@ -246,7 +290,7 @@ export function useRecentWalks(
       const { data, error } = await withTimeout(
         supabase
           .from('walk_sessions')
-          .select('id, started_at, duration_s, moving_time_s, distance_m, route, pause_points, sniff_points, avg_speed_kmh, validation_verdict, start_label, end_label, farthest_label, weather')
+          .select(WALK_COLUMNS)
           .eq('pet_id', forPet)
           .neq('validation_verdict', 'likely_vehicle')
           .gte('started_at', startIso)
@@ -268,6 +312,7 @@ export function useRecentWalks(
         // that those walks stopped existing — blanking the rail on a dropped
         // connection would throw away the only useful thing we have.
         console.error('[useRecentWalks] fetch error', error);
+        setStatus('error');
         return;
       }
 
@@ -275,11 +320,40 @@ export function useRecentWalks(
       // the phone's local calendar day window so a walk that started at
       // 23:59 UTC just outside the window doesn't surface.
       const cutoffYmd = getLocalYMD(startOfDayNDaysAgo(rangeDays - 1));
-      const filtered = (data ?? []).filter(
+      let rows = (data ?? []).filter(
         (w) => getLocalYMD(new Date(w.started_at)) >= cutoffYmd,
       );
 
-      const parsed: RecentWalk[] = filtered.map(row => {
+      // A quiet week is not an empty history. Ask for the latest walks of any
+      // date, so the rail, the route lines and the gallery button show the
+      // dog's real past instead of "No walks yet".
+      let nextScope: RecentWalksScope = 'week';
+      if (needsLatestFallback(rows.length)) {
+        const latest = await withTimeout(
+          supabase
+            .from('walk_sessions')
+            .select(WALK_COLUMNS)
+            .eq('pet_id', forPet)
+            .neq('validation_verdict', 'likely_vehicle')
+            .order('started_at', { ascending: false })
+            .limit(LATEST_WALKS_LIMIT)
+            .then(r => r),
+          FEED_TIMEOUT_MS,
+          'useRecentWalks.latest',
+        );
+        if (pass !== passId.current || forPet !== petIdRef.current) return;
+        if (latest.error) {
+          // The week is known to be empty, but whether the dog has ANY walks is
+          // not: that is a failed load, and it must not be read as "none".
+          console.error('[useRecentWalks] latest fetch error', latest.error);
+          setStatus('error');
+          return;
+        }
+        rows = latest.data ?? [];
+        nextScope = 'latest';
+      }
+
+      const parsed: RecentWalk[] = rows.map(row => {
         // route/pause_points are JSONB — normalize both to GeoPoint[]. Missing
         // pause_points (older rows, NULL column) degrades to a loop-less card.
         const route = parseGeoPoints(row.route as unknown);
@@ -301,6 +375,8 @@ export function useRecentWalks(
       });
 
       setWalks(parsed);
+      setScope(nextScope);
+      setStatus('ready');
       answered.current = true;
       // Recorded on success only. A failed or timed-out pass must leave the
       // signature stale so the next focus tries again rather than treating a
@@ -308,12 +384,18 @@ export function useRecentWalks(
       deliveredKey.current = forKey;
       deliveredAt.current = Date.now();
       homeMark('walks_resolved');
-      void writeCachedWalks(forPet, rangeDays, parsed);
+      if (nextScope === 'week') {
+        void writeCachedWalks(forPet, rangeDays, parsed);
+      } else {
+        void writeCachedWalks(forPet, rangeDays, []);
+        void writeCachedLatest(forPet, parsed);
+      }
     } catch (e) {
       // A timeout lands here too, and is treated exactly like an error: whatever
       // is on screen stays, and `loading` clears so the rail stops promising
       // cards that are not coming.
       console.error('[useRecentWalks] unexpected', e);
+      if (pass === passId.current) setStatus('error');
     } finally {
       if (pass === passId.current) setLoading(false);
     }
@@ -331,6 +413,8 @@ export function useRecentWalks(
     // A different pet is a different feed; nothing already delivered covers it.
     deliveredKey.current = null;
     deliveredAt.current = 0;
+    setScope('week');
+    setStatus('idle');
 
     if (!WALK_TRACKING_ENABLED || !petId) {
       setWalks([]);
@@ -345,9 +429,11 @@ export function useRecentWalks(
 
     let cancelled = false;
     void (async () => {
-      const cached = await readCachedWalks(petId, days);
+      const week = await readCachedWalks(petId, days);
+      const cached = week ?? (await readCachedLatest(petId));
       if (cancelled || answered.current || !cached) return;
       setWalks(cached);
+      setScope(week ? 'week' : 'latest');
       homeMark('walks_cached');
     })();
 
@@ -374,5 +460,5 @@ export function useRecentWalks(
     }, [fetchWalks, petId, days, dataVersion]),
   );
 
-  return { walks, loading, refetch: fetchWalks };
+  return { walks, loading, scope, status, refetch: fetchWalks };
 }

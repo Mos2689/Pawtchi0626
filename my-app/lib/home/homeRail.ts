@@ -83,6 +83,11 @@ export interface RailWalkItem {
   sniffCount: number;
   /** Frames the map when this card is centred. */
   route: GeoPoint[] | null;
+  /**
+   * The walk's day ("Yesterday", "6 Oct"), set only when the rail is showing
+   * the latest walks because this week has none. Absent on an ordinary week.
+   */
+  dayLabel?: string | null;
 }
 
 export interface RailSniffItem {
