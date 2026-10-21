@@ -43,6 +43,8 @@ import * as MediaLibrary from 'expo-media-library';
 import { resolveKeepsake, type PhotoAccess } from '../lib/walk/keepsakeResolve';
 import { keepsakeFileUri } from '../lib/walk/keepsakeFile';
 import { thumbnailUrl } from '../lib/walk/keepsakeThumbnail';
+import { rehydrateFromBackup } from '../lib/walk/keepsakeBackup';
+import { restorePorts } from '../lib/walk/keepsakeBackupPorts';
 import type { Keepsake } from '../lib/walk/keepsake';
 
 export interface ResolvedKeepsakeImage {
@@ -101,6 +103,22 @@ export function useKeepsakeImage(
         if (cancelled) return;
         setState({ uri: ownedUri, rung: 'original', loading: false });
         return;
+      }
+
+      // ── Rung 1a′: Pawtchi's own copy, restored from the owner's backup ──
+      //
+      // Only where the user asked to SEE the photograph (the same opt-in as the
+      // camera-roll rung): a full-size download is the wrong price for a map
+      // pin. Owners who never turned backup on have no `original_path`, so this
+      // is one cheap read that answers null and falls through. Once restored,
+      // the file lives under keepsakes/ and rung 1a answers next time for free.
+      if (allowLocalOriginal) {
+        const restored = await rehydrateFromBackup(restorePorts, keepsake);
+        if (cancelled) return;
+        if (restored) {
+          setState({ uri: restored, rung: 'original', loading: false });
+          return;
+        }
       }
 
       // ── Rung 1b: the camera-roll original ──

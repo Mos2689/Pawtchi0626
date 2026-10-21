@@ -15,6 +15,8 @@ import { WalkTrackingIndicator } from '../../components/WalkTrackingIndicator';
 import { SplitTabBar } from '../../components/navigation/SplitTabBar';
 import { ProfileTabIcon } from '../../components/navigation/ProfileTabIcon';
 import { useWalkEnabled } from '../../hooks/useWalkEnabled';
+import { useKeepsakeRecovery } from '../../hooks/useKeepsakeRecovery';
+import { WALK_CAMERA_ENABLED } from '../../constants/features';
 import { reconcilePersistedWeightPlan } from '../../lib/weightPlanService';
 import { deferContextFetch } from '../../lib/health/lazyContext';
 import { isPerfFlagOn } from '../../lib/perfFlags';
@@ -68,6 +70,9 @@ export default function TabLayout() {
   const activePet = useActivePetStore(s => s.activePet);
   // Walks are dogs-only — cats keep a plain "Activity" tab with no walk surfaces.
   const walkEnabled = useWalkEnabled();
+  // Finish unfinished walk photos (journal rescue, outbox, missing thumbnails)
+  // on launch and every foreground — fire-and-forget, never part of the boot gate.
+  useKeepsakeRecovery(session?.user?.id ?? null, WALK_CAMERA_ENABLED);
   const petLoading = useActivePetStore(s => s.isLoading);
   const petError = useActivePetStore(s => s.error);
   const fetchStreak = useStreakStore(s => s.fetchStreak);

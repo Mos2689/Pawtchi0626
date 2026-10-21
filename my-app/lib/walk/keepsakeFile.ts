@@ -170,6 +170,69 @@ export async function persistCapture(input: {
 }
 
 /**
+ * Copy a capture into the container WITHOUT downscaling. The fallback when
+ * `persistCapture` fails — usually the manipulator under memory pressure, the
+ * same moment iOS is most likely to empty the camera's cache. A full-size file
+ * costs more disk; a photo left in the cache costs the photo.
+ */
+export function copyCaptureAsIs(uri: string, capturedAt: number): PersistedCapture | null {
+  const dir = keepsakeDirectory();
+  if (!dir) return null;
+  try {
+    const fileName = newFileName(capturedAt);
+    const destination = new File(dir, fileName);
+    new File(uri).copy(destination);
+    return destination.exists ? { fileName, uri: destination.uri } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `persistCapture`, then once more after a short pause, then a full-size copy.
+ * Null only when the filesystem refused all three — the caller then journals
+ * the cache uri and uploads a thumbnail before iOS can reclaim it.
+ */
+export async function persistCaptureDurably(input: {
+  uri: string;
+  capturedAt: number;
+  width?: number | null;
+  height?: number | null;
+}): Promise<PersistedCapture | null> {
+  const first = await persistCapture(input);
+  if (first) return first;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const second = await persistCapture(input);
+  if (second) return second;
+  return copyCaptureAsIs(input.uri, input.capturedAt);
+}
+
+/**
+ * Download a backed-up photo into the container (keepsakeBackup restore).
+ *
+ * Saved under the row's own filename when that name is safe and free, so the
+ * row needs no update; otherwise under a fresh name the caller writes back.
+ */
+export async function restoreKeepsakeFile(
+  url: string,
+  preferredName: string | null,
+): Promise<PersistedCapture | null> {
+  const dir = keepsakeDirectory();
+  if (!dir) return null;
+  try {
+    const fileName =
+      preferredName && isSafeName(preferredName) && !new File(dir, preferredName).exists
+        ? preferredName
+        : newFileName(Date.now());
+    const destination = new File(dir, fileName);
+    const downloaded = await File.downloadFileAsync(url, destination);
+    return downloaded.exists ? { fileName, uri: downloaded.uri } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve a stored filename to something `<Image>` can load.
  *
  * Returns null when the file is not there, which is an ordinary outcome rather

@@ -69,7 +69,7 @@ import { estimateDogSteps, formatStepsProse } from '../lib/walk/stepEstimate';
 // described the same way wherever it is read back.
 import { elapsedPhrase, partOfDay } from '../lib/walk/keepsakeCaption';
 import * as ImagePicker from 'expo-image-picker';
-import { persistCapture } from '../lib/walk/keepsakeFile';
+import { persistCaptureDurably } from '../lib/walk/keepsakeFile';
 import { exifCapturedAt, exifCoordinate } from '../lib/walk/keepsakeExif';
 import {
   elapsedSecondsInto,
@@ -120,6 +120,9 @@ import {
 } from '../constants/features';
 import { createWalkStorySnapshot } from '../lib/walkStorySnapshot';
 import { discardWalk } from '../lib/walk/discardWalk';
+import { discardWalkPhotos } from '../lib/walk/discardWalkPhotos';
+import { useBackupHint } from '../hooks/useBackupHint';
+import { BACKUP_HINT_ACTION, BACKUP_HINT_BODY, BACKUP_HINT_DISMISS, BACKUP_HINT_TITLE } from '../lib/walk/backupCopy';
 import { getLocalYMD } from '../lib/dateUtils';
 import { reportError, toAppError } from '../lib/appError';
 import { LocationDisclosure } from '../components/walk/LocationDisclosure';
@@ -204,7 +207,11 @@ function WalkScreenInner() {
    * condition left to check here.
    */
   const keepsakes = useWalkKeepsakes({
-    enabled: WALK_CAMERA_ENABLED,
+    // A Trail's photos belong to TrailRecording's instance. This screen only
+    // sees a Trail marker for the moment before it redirects (see the guard
+    // below), and must not restore that walk's journal into a hook that is
+    // about to unmount.
+    enabled: WALK_CAMERA_ENABLED && !marker?.trail,
     ownerId: user?.id ?? null,
     petId: activePet?.id ?? null,
     session,
@@ -1025,6 +1032,9 @@ function WalkSummaryView({
     [keepsakes, imported],
   );
 
+  // One-time offer of photo backup, only after a walk that kept photos.
+  const backupHint = useBackupHint(user?.id ?? null, moments.length, WALK_CAMERA_ENABLED);
+
   const keepsakePins = useMemo<KeepsakeMapPin[]>(
     () =>
       moments.flatMap(k =>
@@ -1116,7 +1126,7 @@ function WalkSummaryView({
       const hasCoordinate = coordinate != null;
       const withinWalk = isWithinWalkWindow(startedAtMs, endedAtMs, capturedAt);
 
-      const persisted = await persistCapture({
+      const persisted = await persistCaptureDurably({
         uri: asset.uri,
         capturedAt,
         width: asset.width,
@@ -1185,7 +1195,13 @@ function WalkSummaryView({
   const confirmDiscard = useCallback(() => {
     Alert.alert(
       'Discard this walk?',
-      `This removes it from ${petName}’s walk history and today’s activity. This can’t be undone.`,
+      // Photos go with the walk (walk_media cascades from walk_sessions), so
+      // say so — discarding used to delete them without a word.
+      `This removes it from ${petName}’s walk history and today’s activity.` +
+        (moments.length > 0
+          ? ` Its ${moments.length === 1 ? 'photo' : `${moments.length} photos`} will be deleted too.`
+          : '') +
+        ' This can’t be undone.',
       [
         { text: 'Keep walk', style: 'cancel' },
         {
@@ -1202,6 +1218,12 @@ function WalkSummaryView({
                 walkDate: getLocalYMD(new Date(summary.startedAt)),
                 outcome: sync.outcome,
                 matchedActivityId: sync.matchedActivityId,
+              });
+              // Only after the walk is really gone: its photos' files, journal
+              // entries and queued writes would otherwise linger forever.
+              await discardWalkPhotos({
+                walkSessionId: result.walkSessionId,
+                photos: moments.map((m) => ({ mediaId: m.mediaId, localPath: m.localPath })),
               });
               haptic.success();
               onDone();
@@ -1221,6 +1243,7 @@ function WalkSummaryView({
     activePet?.id,
     user?.id,
     discarding,
+    moments,
     onDone,
     petName,
     result.walkSessionId,
@@ -1576,6 +1599,33 @@ function WalkSummaryView({
             </Reanimated.View>
           );
         })}
+
+        {backupHint.visible && (
+          <View style={styles.beat}>
+            <View style={styles.beatRail}>
+              <View style={styles.railLine} />
+            </View>
+            <View style={[styles.beatBody, styles.backupHint]}>
+              <Text style={styles.beatTitle}>{BACKUP_HINT_TITLE}</Text>
+              <Text style={styles.backupHintBody}>{BACKUP_HINT_BODY}</Text>
+              <View style={styles.backupHintActions}>
+                <TouchableOpacity
+                  onPress={() => {
+                    backupHint.dismiss();
+                    router.push('/(tabs)/profile' as never);
+                  }}
+                  accessibilityRole="button"
+                  style={styles.backupHintPrimary}
+                >
+                  <Text style={styles.backupHintPrimaryText}>{BACKUP_HINT_ACTION}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={backupHint.dismiss} accessibilityRole="button" hitSlop={8}>
+                  <Text style={styles.backupHintDismiss}>{BACKUP_HINT_DISMISS}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* ── Beat: home again ──
             The last node draws no line below it, which is what makes the trail
@@ -2245,6 +2295,39 @@ const styles = StyleSheet.create({
     fontFamily: font.medium,
     color: color.slateFaint,
     marginTop: 2,
+  },
+  backupHint: {
+    backgroundColor: color.surfaceSubtle,
+    borderRadius: radius.lg,
+    padding: space.md,
+    marginBottom: space.md,
+  },
+  backupHintBody: {
+    ...type.body,
+    color: color.slate,
+    marginTop: 4,
+  },
+  backupHintActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.lg,
+    marginTop: space.md,
+  },
+  backupHintPrimary: {
+    backgroundColor: color.navy,
+    borderRadius: radius.pill,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+  },
+  backupHintPrimaryText: {
+    ...type.label,
+    fontFamily: font.bold,
+    color: color.cream,
+  },
+  backupHintDismiss: {
+    ...type.label,
+    fontFamily: font.medium,
+    color: color.slateFaint,
   },
   /**
    * Portrait 3:4 — the shape the walk camera actually saves, so a keepsake is

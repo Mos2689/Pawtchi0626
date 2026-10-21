@@ -45,7 +45,7 @@ export default function PrivacyScreen() {
                     <Text style={styles.companyName}>Hey Living Club Pty Ltd</Text>
                     <Text style={styles.companyAddress}>128 Tallawong Road{'\n'}Rouse Hill, NSW 2152, Australia</Text>
                     <Text style={styles.companyAddress}>Contact: privacy@heylivingclub.com</Text>
-                    <Text style={[styles.companyAddress, { marginTop: space.md, color: color.yellow }]}>Last updated: August 2026</Text>
+                    <Text style={[styles.companyAddress, { marginTop: space.md, color: color.yellow }]}>Last updated: October 2026</Text>
                 </View>
 
                 <Text style={styles.paragraph}>
@@ -72,6 +72,9 @@ export default function PrivacyScreen() {
                     {'\n'}• <Text style={B}>Please be aware.</Text> Because a walk usually begins and ends at home, a stored route and its start label can indicate where you live, and a series of walks can show your usual routine. Only you can see your walks in the App.
                     {'\n'}• <Text style={B}>Background behaviour.</Text> So a walk is not lost when your screen locks, tracking continues in the background — on Android through a visible ongoing notification, and on iOS through the system background-location mode with the status indicator showing. Tracking continues even if you close the App, until the walk ends or you end it. We do not collect your location when a walk is not running, and we never request “always allow” background location permission.
                     {'\n'}• <Text style={B}>On your device.</Text> A high-detail trace is held on your device only while the walk is running and is erased when the walk finishes. If a finished walk cannot be uploaded straight away it waits on your device until it can be.
+                    {'\n\n'}<Text style={B}>Walk photos.</Text> Photos you take with the walk camera, or add to a walk afterwards, are saved inside the App on your device. A small thumbnail (about 320 pixels on its longest side), the time the photo was taken and its position along the walk are uploaded so the moment appears in your walk history.
+                    {'\n'}• <Text style={B}>Optional backup.</Text> If you turn on “Back up walk photos” in your Profile, a full-size copy of each walk photo is also stored privately in our file storage, so your photos can be restored if you reinstall the App or change phones. Only you can see these copies. Backup is off unless you turn it on, and turning it off deletes the backed-up copies.
+                    {'\n'}• <Text style={B}>Without backup.</Text> The full-size photo exists only on your device. If you delete the App or move to a new phone without restoring a full device backup, only the thumbnail remains.
                     {'\n\n'}<Text style={B}>Insights we derive.</Text> From your walk history the App works out patterns — how often you repeat a route, roughly what time of day you head out, how many different places you visit, and how often you loop back home — and uses them to give your pet a “Walksign”, a character reading that can change over time. These are conclusions drawn from your movements, and we treat them as personal information.
                     {'\n\n'}<Text style={B}>Purchase information.</Text> If you subscribe, the payment itself is completed by Apple or Google and we never see your card details. We receive subscription entitlement status, plan identifier, purchase and renewal dates, and a subscriber identifier that is linked to your account so we can unlock premium features and restore purchases.
                     {'\n\n'}<Text style={B}>Rewards.</Text> Streak counts and paw-coin balances earned by logging activity.

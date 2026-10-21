@@ -58,6 +58,16 @@ import { ProfileMembershipCard } from '../../components/ProfileMembershipCard';
 import { buildProfileMembershipPresentation } from '../../lib/profileMembership';
 import { loadMyCreatorCode, type MyCreatorCode } from '../../lib/creatorCode/client';
 import { creatorRedemptionLine } from '../../lib/creatorCode/copy';
+import { clearBackups, fetchBackupEnabled, setBackupEnabled } from '../../lib/walk/keepsakeBackupSync';
+import {
+  BACKUP_FAILED_BODY, BACKUP_FAILED_TITLE, BACKUP_OFF_BODY, BACKUP_OFF_CONFIRM, BACKUP_OFF_TITLE,
+  BACKUP_ON_BODY, BACKUP_ON_CONFIRM, BACKUP_ON_TITLE, BACKUP_ROW_LABEL, backupRowSub,
+  EXPORT_CONFIRM, EXPORT_CONFIRM_BODY, EXPORT_CONFIRM_TITLE, EXPORT_DENIED_BODY, EXPORT_DENIED_TITLE,
+  EXPORT_ROW_LABEL, EXPORT_ROW_SUB, exportDoneBody,
+} from '../../lib/walk/backupCopy';
+import { exportWalkPhotos } from '../../lib/walk/exportWalkPhotos';
+import { runKeepsakeRecovery } from '../../hooks/useKeepsakeRecovery';
+import { WALK_CAMERA_ENABLED } from '../../constants/features';
 
 // Profile — the pet's identity card. A navy hero carries who they are; the
 // light sections below are quiet, single-recipe rows. One yellow per surface:
@@ -128,6 +138,81 @@ export default function ProfileScreen() {
   // screen, so re-fetching every time Profile comes forward would be a request
   // per tab switch for a number that almost never changed.
   const [myCreatorCode, setMyCreatorCode] = useState<MyCreatorCode | null>(null);
+
+  // ── Walk photo backup (opt-in) ──
+  // Null until read; the row still renders, just without an On/Off state.
+  const [photoBackup, setPhotoBackup] = useState<boolean | null>(null);
+  const [photoBackupBusy, setPhotoBackupBusy] = useState(false);
+  useEffect(() => {
+    if (!WALK_CAMERA_ENABLED || !user?.id) return;
+    let alive = true;
+    void fetchBackupEnabled(user.id).then(on => {
+      if (alive) setPhotoBackup(on);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [user?.id]);
+  const [exportProgress, setExportProgress] = useState<string | null>(null);
+  const saveWalkPhotos = () => {
+    if (!user?.id || exportProgress) return;
+    const ownerId = user.id;
+    Alert.alert(EXPORT_CONFIRM_TITLE, EXPORT_CONFIRM_BODY, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: EXPORT_CONFIRM,
+        onPress: async () => {
+          setExportProgress('Starting…');
+          try {
+            const r = await exportWalkPhotos(ownerId, (done, total) => setExportProgress(`${done} of ${total}`));
+            if (!r) {
+              Alert.alert(EXPORT_DENIED_TITLE, EXPORT_DENIED_BODY);
+              return;
+            }
+            track('walk_photos_exported', { saved: r.saved, not_on_phone: r.notOnPhone, failed: r.failed });
+            Alert.alert(EXPORT_ROW_LABEL, exportDoneBody(r.saved, r.notOnPhone));
+          } catch {
+            Alert.alert(BACKUP_FAILED_TITLE, BACKUP_FAILED_BODY);
+          } finally {
+            setExportProgress(null);
+          }
+        },
+      },
+    ]);
+  };
+  const togglePhotoBackup = () => {
+    if (!user?.id || photoBackupBusy) return;
+    const ownerId = user.id;
+    const turningOn = photoBackup !== true;
+    Alert.alert(
+      turningOn ? BACKUP_ON_TITLE : BACKUP_OFF_TITLE,
+      turningOn ? BACKUP_ON_BODY : BACKUP_OFF_BODY,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: turningOn ? BACKUP_ON_CONFIRM : BACKUP_OFF_CONFIRM,
+          style: turningOn ? 'default' : 'destructive',
+          onPress: async () => {
+            setPhotoBackupBusy(true);
+            try {
+              // Off: delete first, and only then record "off" — so the owner is
+              // never told the backups are gone while some remain.
+              if (!turningOn && (await clearBackups(ownerId)) === null) throw new Error('clear failed');
+              if (!(await setBackupEnabled(ownerId, turningOn))) throw new Error('save failed');
+              setPhotoBackup(turningOn);
+              track('walk_photo_backup_toggled', { on: turningOn });
+              // Start backing up now, not at the next foreground.
+              if (turningOn) void runKeepsakeRecovery(ownerId);
+            } catch {
+              Alert.alert(BACKUP_FAILED_TITLE, BACKUP_FAILED_BODY);
+            } finally {
+              setPhotoBackupBusy(false);
+            }
+          },
+        },
+      ],
+    );
+  };
   useEffect(() => {
     let alive = true;
     loadMyCreatorCode().then(row => {
@@ -1424,6 +1509,26 @@ export default function ProfileScreen() {
             label="Notifications"
             onPress={() => router.push('/notifications' as any)}
           />
+          {WALK_CAMERA_ENABLED && (
+            <Row
+              icon="cloud-queue"
+              label={BACKUP_ROW_LABEL}
+              sub={backupRowSub(photoBackup)}
+              trailing="none"
+              loading={photoBackupBusy}
+              onPress={togglePhotoBackup}
+            />
+          )}
+          {WALK_CAMERA_ENABLED && (
+            <Row
+              icon="photo-library"
+              label={EXPORT_ROW_LABEL}
+              sub={exportProgress ? `Saving… ${exportProgress}` : EXPORT_ROW_SUB}
+              trailing="none"
+              disabled={!!exportProgress}
+              onPress={saveWalkPhotos}
+            />
+          )}
           <Row icon="group-add" label="Invite a friend" onPress={() => router.push('/invite' as any)} />
           {/* Only for accounts with a linked creator code — get_my_creator_code()
               returns nothing for everyone else, which is why there is no

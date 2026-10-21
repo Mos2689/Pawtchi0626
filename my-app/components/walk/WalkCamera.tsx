@@ -88,7 +88,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { color, font, motion, radius, space } from '../../constants/design';
 import { BreathingPaw } from '../BreathingPaw';
 import { haptic } from '../../lib/haptics';
-import { persistCapture } from '../../lib/walk/keepsakeFile';
+import { persistCaptureDurably } from '../../lib/walk/keepsakeFile';
 
 /** What the walk knows, shown live above the frame. */
 export interface WalkCameraContext {
@@ -360,7 +360,7 @@ export function WalkCamera({ visible, onClose, onCaptured, context, sharing }: W
       // The copy the app actually renders from, and it needs no permission to
       // write or to read. A capture that gets this far survives anything that
       // fails after it.
-      const persisted = await persistCapture({
+      const persisted = await persistCaptureDurably({
         uri: photo.uri,
         capturedAt,
         width: photo.width,
@@ -632,7 +632,7 @@ function PermissionGate({
       <Text style={styles.gateTitle}>Capture the walk</Text>
       <Text style={styles.gateBody}>
         Photos stay in Pawtchi, on this phone. Only a small thumbnail and where along the walk
-        it was taken are ever uploaded.
+        it was taken are uploaded, unless you turn on photo backup in Profile.
       </Text>
       {canAskAgain ? (
         <TouchableOpacity style={styles.gateButton} onPress={onRequest} accessibilityRole="button">
