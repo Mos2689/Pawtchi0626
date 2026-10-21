@@ -28,12 +28,18 @@ export interface ExportResult {
   failed: number;
 }
 
+/**
+ * Add-only, named so lib/privacy/photoLibraryAccess.test.ts can verify it: the
+ * library's API takes the flag positionally, and a bare `true` says nothing.
+ */
+const ADD_ONLY = { writeOnly: true } as const;
+
 /** Null when add-only access was refused. */
 export async function exportWalkPhotos(
   ownerId: string,
   onProgress?: (done: number, total: number) => void,
 ): Promise<ExportResult | null> {
-  const permission = await MediaLibrary.requestPermissionsAsync(true);
+  const permission = await MediaLibrary.requestPermissionsAsync(ADD_ONLY.writeOnly);
   if (!permission.granted) return null;
 
   const names: string[] = [];
