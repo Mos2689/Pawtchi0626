@@ -90,7 +90,7 @@ export const FAQS: readonly FaqEntry[] = [
     id: 'delete_account',
     question: 'How do I delete my account and my data?',
     answer:
-      'Delete account sits at the bottom of the Profile tab, and it removes your account, your animals and everything logged against them. It cannot be undone and it does not cancel a subscription, so cancel that first if you have one.',
+      'Delete account sits at the bottom of the Profile tab, and it removes your account, your animals and everything logged against them. Photos you added to a group meetup stay in the other walkers’ memories. It cannot be undone and it does not cancel a subscription, so cancel that first if you have one.',
     action: { label: 'Open Profile', id: 'open_profile' },
   },
   {
