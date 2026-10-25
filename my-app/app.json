@@ -2,7 +2,7 @@
   "expo": {
     "name": "Pawtchi",
     "slug": "pawtchi",
-    "version": "1.0.27",
+    "version": "1.0.28",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "pawtchi",
@@ -11,7 +11,7 @@
     "owner": "hey_mousami",
     "ios": {
       "bundleIdentifier": "com.heymousami.myapp",
-      "buildNumber": "105",
+      "buildNumber": "107",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:pawtchi.com",
@@ -47,7 +47,7 @@
     },
     "android": {
       "package": "com.pawtchi.app",
-      "versionCode": 99,
+      "versionCode": 100,
       "permissions": [
         "android.permission.INTERNET"
       ],
