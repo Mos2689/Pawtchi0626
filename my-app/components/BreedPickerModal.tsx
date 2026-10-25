@@ -13,11 +13,12 @@
  * owner's own word for their dog is worse than an unmatched string.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text,
-  TextInput, TouchableOpacity, View,
+  Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text,
+  TextInput, TouchableOpacity, View, useWindowDimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 
 import { color, font, motion, radius, space } from '../constants/design';
@@ -65,13 +66,36 @@ export function BreedPickerModal({
     onClose();
   };
 
+  // ── Fit between the status bar and the keyboard ──
+  // The list used to be a fixed 440 tall. With the keyboard up there is not
+  // room for that plus the header and search, so the sheet pushed its own
+  // title off the top of the screen (sign-up v2 device test, 25 Oct). The sheet
+  // is now capped at the space actually free, and the list shrinks into it.
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvent, e => setKeyboardHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  // iOS lifts the sheet with KeyboardAvoidingView padding, so the keyboard's
+  // height is not available to it; Android resizes the window itself.
+  const sheetMaxHeight =
+    windowHeight - insets.top - space.md - (Platform.OS === 'ios' ? keyboardHeight : 0);
+
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={close}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.modalOverlay}
       >
-        <View style={styles.modalContent}>
+        <View style={[styles.modalContent, { maxHeight: sheetMaxHeight }]}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Select breed</Text>
             <TouchableOpacity onPress={close}>
@@ -104,7 +128,7 @@ export function BreedPickerModal({
           </View>
 
           <ScrollView
-            style={{ maxHeight: 440 }}
+            style={styles.list}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
@@ -159,6 +183,8 @@ const styles = StyleSheet.create({
     paddingTop: space.lg,
     paddingBottom: 32,
   },
+  // Never taller than 440, and shrinks when the sheet is capped above.
+  list: { maxHeight: 440, flexShrink: 1 },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
