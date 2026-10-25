@@ -215,7 +215,7 @@ export default function SignupScreen() {
     track('ui_button_tapped', { button_name: 'pick_avatar', screen: 'signup' });
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
