@@ -6,10 +6,11 @@
 
 import React from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { ZoomIn, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
-import { color, font, motion, radius, signupType, space } from '../../constants/design';
+import { color, font, radius, signupType, space } from '../../constants/design';
+import { PRESS_SCALE, PRESS_TIMING, settleIn } from './signupMotion';
 import { fillCopy, type Heading } from '../../lib/signup/copy';
 import { dogNameOrFallback } from '../../lib/signup/signupFlow';
 
@@ -53,7 +54,7 @@ export function DogCard({ name, imageUri, tags }: { name: string; imageUri: stri
         </Text>
         <View style={styles.tags}>
           {tags.map(tag => (
-            <Animated.View key={tag} entering={ZoomIn.springify().damping(14)} style={styles.tag}>
+            <Animated.View key={tag} entering={settleIn()} style={styles.tag}>
               <Text style={styles.tagText}>{tag}</Text>
             </Animated.View>
           ))}
@@ -68,8 +69,8 @@ function usePress() {
   const style = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
   return {
     style,
-    onPressIn: () => { scale.value = withSpring(motion.scale.chip, motion.spring.press); },
-    onPressOut: () => { scale.value = withSpring(1, motion.spring.press); },
+    onPressIn: () => { scale.value = withTiming(PRESS_SCALE, PRESS_TIMING); },
+    onPressOut: () => { scale.value = withTiming(1, PRESS_TIMING); },
   };
 }
 
@@ -134,7 +135,7 @@ export function SignupTile({
             <MaterialCommunityIcons name={icon} size={22} color={color.navy} />
           </View>
           {selected && (
-            <Animated.View entering={ZoomIn.springify().damping(14)} style={styles.tileCheck}>
+            <Animated.View entering={settleIn()} style={styles.tileCheck}>
               <MaterialCommunityIcons name="check" size={14} color={color.navy} />
             </Animated.View>
           )}

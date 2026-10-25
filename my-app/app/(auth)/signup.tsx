@@ -38,18 +38,21 @@ import * as ImagePicker from 'expo-image-picker';
 import Animated, {
   Easing,
   FadeIn,
-  FadeInDown,
   FadeOut,
-  SlideInLeft,
-  SlideInRight,
   useAnimatedProps,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
   withSequence,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
+import {
+  itemEntering,
+  stepEntering,
+  SWELL_DOWN,
+  SWELL_SCALE,
+  SWELL_UP,
+} from '../../components/signup/signupMotion';
 import Svg, { Circle } from 'react-native-svg';
 
 import { color, font, motion, radius, signupType, space } from '../../constants/design';
@@ -206,7 +209,7 @@ export default function SignupScreen() {
     }
     ring.value = 0;
     ring.value = withTiming(1, { duration: motion.duration.ring, easing: Easing.out(Easing.cubic) });
-    pop.value = withSequence(withSpring(1.06, motion.spring.bouncy), withSpring(1, motion.spring.gentle));
+    pop.value = withSequence(withTiming(SWELL_SCALE, SWELL_UP), withTiming(1, SWELL_DOWN));
   };
 
   // ── Breed search ─────────────────────────────────────────────────────────
@@ -304,11 +307,11 @@ export default function SignupScreen() {
   };
 
   // ── Layout ───────────────────────────────────────────────────────────────
-  const entering = reduceMotion
-    ? FadeIn.duration(180)
-    : (direction === 1 ? SlideInRight : SlideInLeft).duration(320).easing(Easing.bezier(0.23, 1, 0.32, 1));
+  // Smooth, not springy: a step glides 24 pt in from the side it came from,
+  // its blocks rise 8 pt a beat apart (components/signup/signupMotion.ts).
+  const entering = reduceMotion ? FadeIn.duration(180) : stepEntering(direction);
   const exiting = FadeOut.duration(140);
-  const item = (i: number) => (reduceMotion ? undefined : FadeInDown.duration(320).delay(60 + i * 50));
+  const item = (i: number) => (reduceMotion ? undefined : itemEntering(i));
 
   const body = (() => {
     switch (step) {

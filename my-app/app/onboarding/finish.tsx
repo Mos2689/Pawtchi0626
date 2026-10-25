@@ -25,7 +25,6 @@ import { StatusBar } from 'expo-status-bar';
 import Animated, {
   Easing,
   FadeIn,
-  FadeInDown,
   useAnimatedProps,
   useReducedMotion,
   useSharedValue,
@@ -40,6 +39,7 @@ import { TextField } from '../../components/ui/TextField';
 import { BreathingPaw } from '../../components/BreathingPaw';
 import { SignupHeading } from '../../components/signup/SignupParts';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
+import { itemEntering } from '../../components/signup/signupMotion';
 import { fillCopy, signupCopy } from '../../lib/signup/copy';
 import { clearSignupDraft, getSignupDraft, loadSignupDraft, type SignupDraft } from '../../lib/signup/signupDraft';
 import { saveMyUsername } from '../../lib/communityWalks';
@@ -179,7 +179,7 @@ export default function SignupFinishScreen() {
   const canUseNew = isValidUsername(normalizedNew) && !blocksSave(availability);
 
   const name = draft?.name ?? '';
-  const item = (i: number) => (reduceMotion ? undefined : FadeInDown.duration(320).delay(80 + i * 60));
+  const item = (i: number) => (reduceMotion ? undefined : itemEntering(i));
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + space.sm, paddingBottom: Math.max(insets.bottom, space.lg) }]}>
