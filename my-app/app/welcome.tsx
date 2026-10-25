@@ -15,7 +15,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { color, font, space, motion } from '../constants/design';
 import { useAuth } from '../providers/AuthProvider';
 import { track } from '../lib/analytics';
-import { signupV2Enabled } from '../lib/signup/signupGate';
+import { prefetchSignupFlag, signupV2Enabled } from '../lib/signup/signupGate';
 import { BreathingPaw } from '../components/BreathingPaw';
 
 // Local bundled asset — resolved at build time by Metro and packaged into the
@@ -41,9 +41,12 @@ export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
 
-  // Track explicit welcome screen view
+  // Track explicit welcome screen view. Also fetch fresh flags now, so a
+  // brand-new install knows whether it gets sign-up v2 by the time "Get
+  // started" is tapped (see lib/signup/signupGate.ts).
   useEffect(() => {
     track('welcome_screen_viewed', {});
+    prefetchSignupFlag();
   }, []);
 
   const player = useVideoPlayer(INTRO_VIDEO_SOURCE, (p) => {
