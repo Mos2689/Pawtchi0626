@@ -100,6 +100,21 @@ export type RailEntry =
       visits?: number;
     }
   | { kind: 'empty'; id: string; petName: string }
+  /**
+   * The end of the walk rail while there are older walks: loads the page
+   * before the oldest card. Card-shaped so the rail reads as one continuous
+   * logbook, and without geography, so settling on it leaves the map alone.
+   */
+  | {
+      kind: 'more';
+      id: string;
+      title: string;
+      body: string;
+      action: string;
+      loading: boolean;
+      loadingLabel: string;
+      onAction: () => void;
+    }
   /** A resolved state that is not a card — empty, error, prompt. */
   | { kind: 'message'; id: string; title: string; body: string; action?: string; onAction?: () => void }
   /**
@@ -182,6 +197,17 @@ export function HomeRail({ entries, onSelect, onOpenWalk, onOpenSpot }: HomeRail
             );
           case 'empty':
             return <EmptyCard petName={item.petName} />;
+          case 'more':
+            return (
+              <MoreCard
+                title={item.title}
+                body={item.body}
+                action={item.action}
+                loading={item.loading}
+                loadingLabel={item.loadingLabel}
+                onAction={item.onAction}
+              />
+            );
           case 'message':
             return (
               <MessageCard
@@ -391,11 +417,8 @@ function WalkCard({ item, onPress }: { item: RailWalkItem; onPress: () => void }
       </Text>
       <MetaRow
         items={[
-          // A dated card trades its minutes for the day: four items do not fit
-          // the card's width, and "when" matters more than "how long" here.
-          ...(item.dayLabel ? [{ text: item.dayLabel }] : []),
           { text: `${formatKm(item.km)} km` },
-          ...(item.dayLabel ? [] : [{ text: `${item.minutes} min` }]),
+          { text: `${item.minutes} min` },
           ...(item.sniffCount > 0
             ? [{ text: `${item.sniffCount} sniffs`, tone: 'found' as const }]
             : []),
@@ -472,6 +495,57 @@ function NearbySpotCard({
  * the screen keeps exactly one shape. An error that replaces the whole surface
  * would also throw away the map, which is still perfectly useful.
  */
+/**
+ * "Earlier walks" — the last card on the walk rail while older walks exist.
+ * Breathes with the app's working paw while the page loads, and keeps the
+ * cards already shown if it fails.
+ */
+function MoreCard({
+  title,
+  body,
+  action,
+  loading,
+  loadingLabel,
+  onAction,
+}: {
+  title: string;
+  body: string;
+  action: string;
+  loading: boolean;
+  loadingLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <View style={styles.card}>
+      <View style={[styles.thumb, styles.thumbSpot]}>
+        {loading ? (
+          <BreathingPaw size={26} workingColor={color.navy} />
+        ) : (
+          <MaterialCommunityIcons name="history" size={22} color={color.slateFaint} />
+        )}
+      </View>
+      <Text style={styles.title} numberOfLines={1}>
+        {title}
+      </Text>
+      {loading ? (
+        <Text style={styles.messageBody} numberOfLines={1}>
+          {loadingLabel}
+        </Text>
+      ) : (
+        <TouchableOpacity
+          style={styles.messageAction}
+          onPress={onAction}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={`${action}. ${body}`}
+        >
+          <Text style={styles.messageActionText}>{action}</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 function MessageCard({
   title,
   body,
