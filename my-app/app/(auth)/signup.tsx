@@ -43,6 +43,9 @@ import Animated, {
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
+  cancelAnimation,
+  interpolateColor,
+  withRepeat,
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
@@ -203,14 +206,40 @@ export default function SignupScreen() {
   const ring = useSharedValue(0);
   const pop = useSharedValue(1);
   const press = useSharedValue(1);
+  /**
+   * The "opening your photos" moment (device feedback, 25 Oct: the breathing
+   * paw on the same cream didn't catch the eye). The circle fills brand
+   * yellow the instant it is tapped and soft yellow rings ripple outward,
+   * two half a beat apart, until the picker is up. The photo's arrival keeps
+   * its own single ring-draw and swell, so "working" and "done" never look
+   * alike.
+   */
+  const glow = useSharedValue(0);
+  const ripple = useSharedValue(0);
   const ringProps = useAnimatedProps(() => ({ strokeDashoffset: RING_C * (1 - ring.value) }));
-  const popStyle = useAnimatedStyle(() => ({ transform: [{ scale: pop.value * press.value }] }));
+  const popStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pop.value * press.value }],
+    backgroundColor: interpolateColor(glow.value, [0, 1], [color.cream, color.yellow]),
+  }));
+  const rippleA = useAnimatedStyle(() => {
+    const p = ripple.value;
+    return { opacity: (1 - p) * 0.8, transform: [{ scale: 1 + p * 0.34 }] };
+  });
+  const rippleB = useAnimatedStyle(() => {
+    const p = (ripple.value + 0.5) % 1;
+    return { opacity: (1 - p) * 0.8, transform: [{ scale: 1 + p * 0.34 }] };
+  });
 
   const pickPhoto = async () => {
     if (pickingRef.current) return;
     pickingRef.current = true;
     setPicking(true);
     haptic.tap();
+    glow.value = withTiming(1, { duration: 200, easing: Easing.bezier(0.23, 1, 0.32, 1) });
+    if (!reduceMotion) {
+      ripple.value = 0;
+      ripple.value = withRepeat(withTiming(1, { duration: 1100, easing: Easing.out(Easing.cubic) }), -1, false);
+    }
     track('ui_button_tapped', { button_name: 'pick_avatar', screen: 'signup' });
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -231,6 +260,9 @@ export default function SignupScreen() {
       ring.value = withTiming(1, { duration: motion.duration.ring, easing: Easing.out(Easing.cubic) });
       pop.value = withSequence(withTiming(SWELL_SCALE, SWELL_UP), withTiming(1, SWELL_DOWN));
     } finally {
+      cancelAnimation(ripple);
+      ripple.value = 0;
+      glow.value = withTiming(0, { duration: 260, easing: Easing.bezier(0.23, 1, 0.32, 1) });
       pickingRef.current = false;
       setPicking(false);
     }
@@ -385,6 +417,12 @@ export default function SignupScreen() {
                 accessibilityLabel={imageUri ? C.photo.change : C.photo.add}
                 accessibilityState={{ busy: picking }}
               >
+                {picking && !reduceMotion && (
+                  <View pointerEvents="none" style={styles.rippleLayer}>
+                    <Animated.View style={[styles.ripple, rippleA]} />
+                    <Animated.View style={[styles.ripple, rippleB]} />
+                  </View>
+                )}
                 <Animated.View style={[styles.photoCircle, popStyle]}>
                   {imageUri ? (
                     <Image source={{ uri: imageUri }} style={styles.photoImg} />
@@ -395,7 +433,9 @@ export default function SignupScreen() {
                       ) : (
                         <MaterialIcons name="add-a-photo" size={34} color={color.slateFaint} />
                       )}
-                      <Text style={styles.photoHint}>{picking ? C.photo.opening : C.photo.add}</Text>
+                      <Text style={[styles.photoHint, picking && styles.photoHintWorking]}>
+                        {picking ? C.photo.opening : C.photo.add}
+                      </Text>
                     </View>
                   )}
                 </Animated.View>
@@ -794,6 +834,18 @@ const styles = StyleSheet.create({
   photoImg: { width: '100%', height: '100%' },
   photoEmpty: { alignItems: 'center', gap: 6 },
   photoHint: { fontFamily: font.medium, fontSize: 13, color: color.slateMuted },
+  photoHintWorking: { fontFamily: font.semibold, color: color.navy },
+  rippleLayer: { position: 'absolute', top: 8, left: 8, width: RING - 16, height: RING - 16 },
+  ripple: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: RING - 16,
+    height: RING - 16,
+    borderRadius: radius.pill,
+    borderWidth: 3,
+    borderColor: color.yellow,
+  },
   ring: { position: 'absolute', top: 0, left: 0 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   tiles: { flexDirection: 'row', gap: space.md },
