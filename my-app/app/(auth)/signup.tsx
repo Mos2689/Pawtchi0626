@@ -39,7 +39,6 @@ import * as ImagePicker from 'expo-image-picker';
 import Animated, {
   Easing,
   FadeIn,
-  FadeOut,
   useAnimatedProps,
   useAnimatedStyle,
   useReducedMotion,
@@ -48,10 +47,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import {
-  itemEntering,
   PRESS_SCALE,
   PRESS_TIMING,
-  stepEntering,
   SWELL_DOWN,
   SWELL_SCALE,
   SWELL_UP,
@@ -65,6 +62,7 @@ import { BreathingPaw } from '../../components/BreathingPaw';
 import { BreedPickerModal } from '../../components/BreedPickerModal';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
 import { DogCard, SignupChip, SignupHeading, SignupTile } from '../../components/signup/SignupParts';
+import { Reveal } from '../../components/signup/Reveal';
 import { supabase } from '../../lib/supabase';
 import { track } from '../../lib/analytics';
 import { haptic } from '../../lib/haptics';
@@ -340,21 +338,19 @@ export default function SignupScreen() {
 
   // ── Layout ───────────────────────────────────────────────────────────────
   // Smooth, not springy: a step glides 24 pt in from the side it came from,
-  // its blocks rise 8 pt a beat apart (components/signup/signupMotion.ts).
-  const entering = reduceMotion ? FadeIn.duration(180) : stepEntering(direction);
-  const exiting = FadeOut.duration(140);
-  const item = (i: number) => (reduceMotion ? undefined : itemEntering(i));
+  // its blocks rise 8 pt a beat apart. Driven by <Reveal> (animated style),
+  // never by `entering` layout animations, which clip TextInputs on iOS.
 
   const body = (() => {
     switch (step) {
       case 'name':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.name.heading} name={name} />
-            </Animated.View>
-            <Animated.Text entering={item(1)} style={styles.sub}>{C.name.sub}</Animated.Text>
-            <Animated.View entering={item(2)}>
+            </Reveal>
+            <Reveal i={1}><Text style={styles.sub}>{C.name.sub}</Text></Reveal>
+            <Reveal i={2}>
               <TextField
                 containerStyle={styles.field}
                 value={name}
@@ -367,19 +363,19 @@ export default function SignupScreen() {
                 onSubmitEditing={() => dogName && complete()}
                 accessibilityLabel="Dog's name"
               />
-            </Animated.View>
+            </Reveal>
           </>
         );
       case 'photo':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.photo.heading} name={name} />
-            </Animated.View>
-            <Animated.Text entering={item(1)} style={styles.sub}>
+            </Reveal>
+            <Reveal i={1}><Text style={styles.sub}>
               {fillCopy(C.photo.sub, { name: shownName })}
-            </Animated.Text>
-            <Animated.View entering={item(2)} style={styles.photoWrap}>
+            </Text></Reveal>
+            <Reveal i={2} style={styles.photoWrap}>
               <Pressable
                 onPress={pickPhoto}
                 onPressIn={() => { press.value = withTiming(PRESS_SCALE, PRESS_TIMING); }}
@@ -423,19 +419,19 @@ export default function SignupScreen() {
                 </Svg>
                 </View>
               </Pressable>
-            </Animated.View>
+            </Reveal>
           </>
         );
       case 'breed':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.breed.heading} name={name} />
-            </Animated.View>
-            <Animated.Text entering={item(1)} style={styles.sub}>
+            </Reveal>
+            <Reveal i={1}><Text style={styles.sub}>
               {fillCopy(C.breed.sub, { name: shownName })}
-            </Animated.Text>
-            <Animated.View entering={item(2)}>
+            </Text></Reveal>
+            <Reveal i={2}>
               <TextField
                 height={50}
                 fontSize={15}
@@ -447,8 +443,8 @@ export default function SignupScreen() {
                 autoCorrect={false}
                 accessibilityLabel={C.breed.search}
               />
-            </Animated.View>
-            <Animated.View entering={item(3)}>
+            </Reveal>
+            <Reveal i={3}>
               <Text style={styles.label}>
                 {(typedBreed ? C.breed.matches : C.breed.popular).toUpperCase()}
               </Text>
@@ -475,7 +471,7 @@ export default function SignupScreen() {
                   />
                 )}
               </View>
-            </Animated.View>
+            </Reveal>
             <BreedPickerModal
               visible={allBreedsOpen}
               species="dog"
@@ -488,11 +484,11 @@ export default function SignupScreen() {
       case 'age':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.age.heading} name={name} />
-            </Animated.View>
-            <Animated.Text entering={item(1)} style={styles.sub}>{C.age.sub}</Animated.Text>
-            <Animated.View entering={item(2)} style={styles.chips}>
+            </Reveal>
+            <Reveal i={1}><Text style={styles.sub}>{C.age.sub}</Text></Reveal>
+            <Reveal i={2} style={styles.chips}>
               {AGE_CHOICES.map(a => (
                 <SignupChip
                   key={a.label}
@@ -501,17 +497,17 @@ export default function SignupScreen() {
                   onPress={() => { setAgeLabel(a.label); haptic.select(); }}
                 />
               ))}
-            </Animated.View>
+            </Reveal>
           </>
         );
       case 'first_dog':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.firstDog.heading} name={name} />
-            </Animated.View>
-            <Animated.Text entering={item(1)} style={styles.sub}>{C.firstDog.sub}</Animated.Text>
-            <Animated.View entering={item(2)} style={styles.tiles}>
+            </Reveal>
+            <Reveal i={1}><Text style={styles.sub}>{C.firstDog.sub}</Text></Reveal>
+            <Reveal i={2} style={styles.tiles}>
               <SignupTile
                 label={C.firstDog.yes}
                 caption={C.firstDog.yesCaption}
@@ -526,19 +522,19 @@ export default function SignupScreen() {
                 selected={firstDog === false}
                 onPress={() => { setFirstDog(false); autoAdvance(); }}
               />
-            </Animated.View>
+            </Reveal>
           </>
         );
       case 'walkers':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.walkers.heading} name={name} />
-            </Animated.View>
-            <Animated.Text entering={item(1)} style={styles.sub}>
+            </Reveal>
+            <Reveal i={1}><Text style={styles.sub}>
               {fillCopy(C.walkers.sub, { name: shownName })}
-            </Animated.Text>
-            <Animated.View entering={item(2)} style={styles.tiles}>
+            </Text></Reveal>
+            <Reveal i={2} style={styles.tiles}>
               <SignupTile
                 label={C.walkers.few}
                 caption={C.walkers.fewCaption}
@@ -553,16 +549,16 @@ export default function SignupScreen() {
                 selected={walkers === 3}
                 onPress={() => { setWalkers(3); autoAdvance(); }}
               />
-            </Animated.View>
+            </Reveal>
           </>
         );
       case 'account':
         return (
           <>
-            <Animated.View entering={item(0)}>
+            <Reveal i={0}>
               <SignupHeading heading={C.account.heading} name={name} compact />
-            </Animated.View>
-            <Animated.View entering={item(1)}>
+            </Reveal>
+            <Reveal i={1}>
               <Text style={styles.label}>
                 {C.account.usernameLabel.toUpperCase()}
                 <Text style={styles.labelOptional}>{`  ·  ${C.account.optional}`}</Text>
@@ -588,8 +584,8 @@ export default function SignupScreen() {
               >
                 {usernameNote}
               </Text>
-            </Animated.View>
-            <Animated.View entering={item(2)}>
+            </Reveal>
+            <Reveal i={2}>
               <Text style={styles.label}>{C.account.emailLabel.toUpperCase()}</Text>
               <TextField
                 containerStyle={styles.field}
@@ -603,8 +599,8 @@ export default function SignupScreen() {
                 autoComplete="email"
                 accessibilityLabel={C.account.emailLabel}
               />
-            </Animated.View>
-            <Animated.View entering={item(3)}>
+            </Reveal>
+            <Reveal i={3}>
               <Text style={styles.label}>{C.account.passwordLabel.toUpperCase()}</Text>
               <TextField
                 containerStyle={styles.field}
@@ -638,7 +634,7 @@ export default function SignupScreen() {
                   ]}
                 />
               </View>
-            </Animated.View>
+            </Reveal>
             {formError && (
               <View style={styles.errorRow}>
                 <MaterialIcons name="error-outline" size={15} color={color.error} />
@@ -741,14 +737,16 @@ export default function SignupScreen() {
               centre, so a short step does not leave a dead band above the
               footer. The account step is long and meets the keyboard, so it
               stays top-aligned. */}
-          <Animated.View
+          <Reveal
             key={step}
-            entering={entering}
-            exiting={exiting}
+            dx={24 * direction}
+            dy={0}
+            duration={340}
+            delay={0}
             style={[styles.body, step !== 'account' && styles.bodyCentered]}
           >
             {body}
-          </Animated.View>
+          </Reveal>
           {step === 'account' && <View style={styles.flex} />}
           <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space.lg) }]}>{footer}</View>
         </ScrollView>
