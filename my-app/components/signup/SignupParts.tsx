@@ -76,12 +76,15 @@ function usePress() {
 
 export function SignupChip({
   label,
-  selected,
+  selected = false,
   onPress,
+  more = false,
 }: {
   label: string;
-  selected: boolean;
+  selected?: boolean;
   onPress: () => void;
+  /** A "see the rest" chip: quiet fill and a chevron, never selected. */
+  more?: boolean;
 }) {
   const press = usePress();
   return (
@@ -90,11 +93,14 @@ export function SignupChip({
         onPress={onPress}
         onPressIn={press.onPressIn}
         onPressOut={press.onPressOut}
-        style={[styles.chip, selected && styles.chipSelected]}
+        style={[styles.chip, more && styles.chipMore, selected && styles.chipSelected]}
         accessibilityRole="button"
         accessibilityState={{ selected }}
       >
-        <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+        <View style={styles.chipRow}>
+          <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+          {more && <MaterialCommunityIcons name="chevron-right" size={16} color={color.navy} />}
+        </View>
       </Pressable>
     </Animated.View>
   );
@@ -182,6 +188,8 @@ const styles = StyleSheet.create({
     backgroundColor: color.surface,
   },
   chipSelected: { backgroundColor: color.navy, borderColor: color.navy },
+  chipMore: { backgroundColor: color.cream, borderColor: color.cream, paddingRight: 10 },
+  chipRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   chipText: { fontFamily: font.semibold, fontSize: 13, color: color.navy },
   chipTextSelected: { color: color.yellow },
   tileWrap: { flex: 1 },

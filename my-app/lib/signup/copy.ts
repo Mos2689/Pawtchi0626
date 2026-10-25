@@ -32,7 +32,10 @@ export const signupCopy = {
   breed: {
     heading: { title: 'What breed is {name}', end: '?' } as Heading,
     sub: "Helps Pawtchi read {name}'s pace on a walk.",
-    search: 'Search breeds',
+    search: 'Search all breeds',
+    popular: 'Popular',
+    matches: 'Matches',
+    allBreeds: 'All breeds',
     useTyped: 'Use "{query}"',
     cta: 'Next',
     skip: 'Not sure',

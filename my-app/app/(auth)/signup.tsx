@@ -62,6 +62,7 @@ import { color, font, motion, radius, signupType, space } from '../../constants/
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { TextField } from '../../components/ui/TextField';
 import { BreathingPaw } from '../../components/BreathingPaw';
+import { BreedPickerModal } from '../../components/BreedPickerModal';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
 import { DogCard, SignupChip, SignupHeading, SignupTile } from '../../components/signup/SignupParts';
 import { supabase } from '../../lib/supabase';
@@ -238,11 +239,17 @@ export default function SignupScreen() {
   };
 
   // ── Breed search ─────────────────────────────────────────────────────────
+  // Empty search: the popular shortcuts, labelled as such, plus an "All
+  // breeds" chip that opens the full list — eight chips on their own read as
+  // the whole catalogue (device feedback, 25 Oct). Typing: every match.
+  // A breed picked from the full list joins the chips so it shows as chosen.
+  const [allBreedsOpen, setAllBreedsOpen] = useState(false);
   const breedOptions = useMemo(() => {
     const q = breedQuery.trim().toLowerCase();
-    if (!q) return [...POPULAR_BREEDS];
-    return breedsFor('dog').filter(b => b.toLowerCase().includes(q)).slice(0, 8);
-  }, [breedQuery]);
+    if (q) return breedsFor('dog').filter(b => b.toLowerCase().includes(q));
+    const popular = [...POPULAR_BREEDS];
+    return breed && !popular.includes(breed) ? [breed, ...popular] : popular;
+  }, [breed, breedQuery]);
   const typedBreed = breedQuery.trim();
   const showTypedBreed =
     typedBreed.length > 1 && !breedsFor('dog').some(b => b.toLowerCase() === typedBreed.toLowerCase());
@@ -441,18 +448,41 @@ export default function SignupScreen() {
                 accessibilityLabel={C.breed.search}
               />
             </Animated.View>
-            <Animated.View entering={item(3)} style={styles.chips}>
-              {breedOptions.map(b => (
-                <SignupChip key={b} label={b} selected={breed === b} onPress={() => { setBreed(b); haptic.select(); }} />
-              ))}
-              {showTypedBreed && (
-                <SignupChip
-                  label={fillCopy(C.breed.useTyped, { query: typedBreed })}
-                  selected={breed === typedBreed}
-                  onPress={() => { setBreed(typedBreed); haptic.select(); }}
-                />
-              )}
+            <Animated.View entering={item(3)}>
+              <Text style={styles.label}>
+                {(typedBreed ? C.breed.matches : C.breed.popular).toUpperCase()}
+              </Text>
+              <View style={styles.chips}>
+                {breedOptions.map(b => (
+                  <SignupChip key={b} label={b} selected={breed === b} onPress={() => { setBreed(b); haptic.select(); }} />
+                ))}
+                {showTypedBreed && (
+                  <SignupChip
+                    label={fillCopy(C.breed.useTyped, { query: typedBreed })}
+                    selected={breed === typedBreed}
+                    onPress={() => { setBreed(typedBreed); haptic.select(); }}
+                  />
+                )}
+                {!typedBreed && (
+                  <SignupChip
+                    label={C.breed.allBreeds}
+                    more
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      track('ui_button_tapped', { button_name: 'all_breeds', screen: 'signup' });
+                      setAllBreedsOpen(true);
+                    }}
+                  />
+                )}
+              </View>
             </Animated.View>
+            <BreedPickerModal
+              visible={allBreedsOpen}
+              species="dog"
+              value={breed ?? ''}
+              onSelect={b => { setBreed(b); setBreedQuery(''); haptic.select(); }}
+              onClose={() => setAllBreedsOpen(false)}
+            />
           </>
         );
       case 'age':
