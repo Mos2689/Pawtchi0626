@@ -128,9 +128,9 @@ import {
 import {
   galleryReachable,
   railWalkState,
-  walkDayLabel,
   walkFeedErrorCopy,
-} from '../../lib/home/recentWalksFallback';
+  walkFeedMoreCopy,
+} from '../../lib/home/walkFeed';
 import {
   clearPendingWalksignCelebration,
   readPendingWalksignCelebration,
@@ -304,10 +304,13 @@ export default function HomeScreen() {
   const {
     walks: recentWalks,
     loading: walksLoading,
-    scope: walksScope,
     status: walksStatus,
     refetch: refetchWalks,
-  } = useRecentWalks(activePet?.id, 7);
+    hasMore: walksHasMore,
+    loadingMore: walksLoadingMore,
+    moreFailed: walksMoreFailed,
+    loadMore: loadMoreWalks,
+  } = useRecentWalks(activePet?.id);
   const storyTotals = usePawPrintStore(s => s.totals);
   const primeWalkStory = useWalkStoryStore(s => s.prime);
   const injectSubscriptionData = usePetContextStore(s => s.injectSubscriptionData);
@@ -316,15 +319,12 @@ export default function HomeScreen() {
 
   // ── The rail ──────────────────────────────────────────────────────────────
   const [segment, setSegment] = React.useState<RailSegment>('walks');
-  const walkItems = useMemo(() => {
-    if (!walkEnabled) return [];
-    const items = buildWalkItems(recentWalks, activePet?.name);
-    // Walks from outside this week say which day they were, so a fortnight-old
-    // walk beside the Today card is not read as this week's.
-    return walksScope === 'latest'
-      ? items.map(item => ({ ...item, dayLabel: walkDayLabel(item.startedAt) }))
-      : items;
-  }, [walkEnabled, recentWalks, activePet?.name, walksScope]);
+  // Every walk is built the same way, however old: one card rule, no date
+  // window (lib/home/walkFeed.ts).
+  const walkItems = useMemo(
+    () => (walkEnabled ? buildWalkItems(recentWalks, activePet?.name) : []),
+    [walkEnabled, recentWalks, activePet?.name],
+  );
   const sniffItems = useMemo(
     () => (walkEnabled ? buildSniffItems(recentWalks, activePet?.name) : []),
     [walkEnabled, recentWalks, activePet?.name],
@@ -963,6 +963,19 @@ export default function HomeScreen() {
         ? { kind: 'today' as const, id: 'today', totals: todayTotals, weather: currentWeather }
         : { kind: 'empty' as const, id: 'empty', petName },
       ...walks,
+      // The walks before these, a page at a time, until there are none left.
+      ...(walkItems.length > 0 && walksHasMore
+        ? [{
+            kind: 'more' as const,
+            id: 'walks-more',
+            title: walksMoreFailed ? walkFeedMoreCopy.errorTitle : walkFeedMoreCopy.title,
+            body: walkFeedMoreCopy.body,
+            action: walksMoreFailed ? walkFeedMoreCopy.errorAction : walkFeedMoreCopy.action,
+            loading: walksLoadingMore,
+            loadingLabel: walkFeedMoreCopy.loading,
+            onAction: () => { void loadMoreWalks(); },
+          }]
+        : []),
     ];
   }, [
     walkEnabled,
@@ -971,6 +984,10 @@ export default function HomeScreen() {
     walksLoading,
     walksStatus,
     refetchWalks,
+    walksHasMore,
+    walksLoadingMore,
+    walksMoreFailed,
+    loadMoreWalks,
     todayTotals,
     currentWeather,
     petName,
