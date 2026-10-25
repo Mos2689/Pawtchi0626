@@ -18,7 +18,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { BackHandler, Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { BackHandler, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -34,8 +34,9 @@ import Animated, {
 } from 'react-native-reanimated';
 import Svg, { Circle, Path } from 'react-native-svg';
 
-import { color, font, radius, signupType, space } from '../../constants/design';
+import { color, font, signupType, space } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { TextField } from '../../components/ui/TextField';
 import { BreathingPaw } from '../../components/BreathingPaw';
 import { SignupHeading } from '../../components/signup/SignupParts';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
@@ -203,20 +204,18 @@ export default function SignupFinishScreen() {
           </Animated.View>
           <Animated.Text entering={item(1)} style={styles.sub}>{C.usernameTakenSub}</Animated.Text>
           <Animated.View entering={item(2)}>
-            <View style={[styles.inputRow, statusTone(availability) === 'bad' && styles.inputBad]}>
-              <Text style={styles.at}>@</Text>
-              <TextInput
-                style={styles.inputBare}
-                value={newName}
-                onChangeText={v => setNewName(normalizeUsername(v))}
-                placeholder={signupCopy.account.usernamePlaceholder}
-                placeholderTextColor={color.slateFaint}
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={24}
-                accessibilityLabel={signupCopy.account.usernameLabel}
-              />
-            </View>
+            <TextField
+              containerStyle={[styles.field, statusTone(availability) === 'good' && styles.fieldGood]}
+              error={statusTone(availability) === 'bad'}
+              leading={<Text style={styles.at}>@</Text>}
+              value={newName}
+              onChangeText={v => setNewName(normalizeUsername(v))}
+              placeholder={signupCopy.account.usernamePlaceholder}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={24}
+              accessibilityLabel={signupCopy.account.usernameLabel}
+            />
             {!!note && (
               <Text style={[styles.hint, statusTone(availability) === 'bad' && styles.hintBad]}>{note}</Text>
             )}
@@ -304,19 +303,8 @@ const styles = StyleSheet.create({
   },
   doneInitial: { backgroundColor: color.electric, alignItems: 'center', justifyContent: 'center' },
   doneInitialText: { fontFamily: font.memoryBold, fontSize: 18, color: color.yellow },
-  inputRow: {
-    height: 52,
-    marginTop: space.lg,
-    borderRadius: radius.md + 2,
-    borderWidth: 1.5,
-    borderColor: color.hairline,
-    paddingHorizontal: space.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-  },
-  inputBad: { borderColor: color.error },
-  inputBare: { flex: 1, height: '100%', fontFamily: font.medium, fontSize: 16, color: color.navy },
+  field: { marginTop: space.lg, backgroundColor: color.surface, borderWidth: 1.5 },
+  fieldGood: { borderColor: color.success },
   at: { fontFamily: font.medium, fontSize: 16, color: color.slateFaint },
   hint: { ...signupType.label, letterSpacing: 0, fontFamily: font.regular, fontSize: 12, color: color.slateMuted, marginTop: 6 },
   hintBad: { color: color.error },

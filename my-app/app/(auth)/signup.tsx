@@ -26,7 +26,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   Image,
@@ -55,6 +54,7 @@ import Svg, { Circle } from 'react-native-svg';
 
 import { color, font, motion, radius, signupType, space } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
+import { TextField } from '../../components/ui/TextField';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
 import { DogCard, SignupChip, SignupHeading, SignupTile } from '../../components/signup/SignupParts';
 import { supabase } from '../../lib/supabase';
@@ -320,12 +320,11 @@ export default function SignupScreen() {
             </Animated.View>
             <Animated.Text entering={item(1)} style={styles.sub}>{C.name.sub}</Animated.Text>
             <Animated.View entering={item(2)}>
-              <TextInput
-                style={styles.input}
+              <TextField
+                containerStyle={styles.field}
                 value={name}
                 onChangeText={setName}
                 placeholder={C.name.placeholder}
-                placeholderTextColor={color.slateFaint}
                 autoCapitalize="words"
                 autoCorrect={false}
                 maxLength={30}
@@ -388,14 +387,15 @@ export default function SignupScreen() {
             <Animated.Text entering={item(1)} style={styles.sub}>
               {fillCopy(C.breed.sub, { name: shownName })}
             </Animated.Text>
-            <Animated.View entering={item(2)} style={styles.searchWrap}>
-              <MaterialIcons name="search" size={18} color={color.slateFaint} />
-              <TextInput
-                style={styles.searchInput}
+            <Animated.View entering={item(2)}>
+              <TextField
+                height={50}
+                fontSize={15}
+                containerStyle={[styles.field, styles.searchField]}
+                leading={<MaterialIcons name="search" size={18} color={color.slateFaint} />}
                 value={breedQuery}
                 onChangeText={setBreedQuery}
                 placeholder={C.breed.search}
-                placeholderTextColor={color.slateFaint}
                 autoCorrect={false}
                 accessibilityLabel={C.breed.search}
               />
@@ -496,26 +496,18 @@ export default function SignupScreen() {
                 {C.account.usernameLabel.toUpperCase()}
                 <Text style={styles.labelOptional}>{`  ·  ${C.account.optional}`}</Text>
               </Text>
-              <View
-                style={[
-                  styles.inputRow,
-                  usernameTone === 'bad' && styles.inputBad,
-                  usernameTone === 'good' && styles.inputGood,
-                ]}
-              >
-                <Text style={styles.at}>@</Text>
-                <TextInput
-                  style={styles.inputBare}
-                  value={username}
-                  onChangeText={v => { setUsername(normalizeUsername(v)); setFormError(null); }}
-                  placeholder={C.account.usernamePlaceholder}
-                  placeholderTextColor={color.slateFaint}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  maxLength={24}
-                  accessibilityLabel={C.account.usernameLabel}
-                />
-              </View>
+              <TextField
+                containerStyle={[styles.field, usernameTone === 'good' && styles.fieldGood]}
+                error={usernameTone === 'bad'}
+                leading={<Text style={styles.at}>@</Text>}
+                value={username}
+                onChangeText={v => { setUsername(normalizeUsername(v)); setFormError(null); }}
+                placeholder={C.account.usernamePlaceholder}
+                autoCapitalize="none"
+                autoCorrect={false}
+                maxLength={24}
+                accessibilityLabel={C.account.usernameLabel}
+              />
               <Text
                 style={[
                   styles.hint,
@@ -528,12 +520,11 @@ export default function SignupScreen() {
             </Animated.View>
             <Animated.View entering={item(2)}>
               <Text style={styles.label}>{C.account.emailLabel.toUpperCase()}</Text>
-              <TextInput
-                style={styles.input}
+              <TextField
+                containerStyle={styles.field}
                 value={email}
                 onChangeText={v => { setEmail(v); setFormError(null); }}
                 placeholder={C.account.emailPlaceholder}
-                placeholderTextColor={color.slateFaint}
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="email-address"
@@ -544,28 +535,27 @@ export default function SignupScreen() {
             </Animated.View>
             <Animated.View entering={item(3)}>
               <Text style={styles.label}>{C.account.passwordLabel.toUpperCase()}</Text>
-              <View style={styles.inputRow}>
-                <TextInput
-                  style={styles.inputBare}
-                  value={password}
-                  onChangeText={v => { setPassword(v); setFormError(null); }}
-                  placeholder={C.account.passwordPlaceholder}
-                  placeholderTextColor={color.slateFaint}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  textContentType="newPassword"
-                  autoComplete="password-new"
-                  accessibilityLabel={C.account.passwordLabel}
-                />
-                <TouchableOpacity
-                  onPress={() => setShowPassword(v => !v)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  accessibilityLabel={showPassword ? C.account.hidePassword : C.account.showPassword}
-                >
-                  <MaterialIcons name={showPassword ? 'visibility-off' : 'visibility'} size={20} color={color.slateFaint} />
-                </TouchableOpacity>
-              </View>
+              <TextField
+                containerStyle={styles.field}
+                value={password}
+                onChangeText={v => { setPassword(v); setFormError(null); }}
+                placeholder={C.account.passwordPlaceholder}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="newPassword"
+                autoComplete="password-new"
+                accessibilityLabel={C.account.passwordLabel}
+                trailing={
+                  <TouchableOpacity
+                    onPress={() => setShowPassword(v => !v)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    accessibilityLabel={showPassword ? C.account.hidePassword : C.account.showPassword}
+                  >
+                    <MaterialIcons name={showPassword ? 'visibility-off' : 'visibility'} size={20} color={color.slateFaint} />
+                  </TouchableOpacity>
+                }
+              />
               <View style={styles.strengthTrack}>
                 <View
                   style={[
@@ -707,31 +697,12 @@ const styles = StyleSheet.create({
   body: { paddingTop: space.xl },
   bodyCentered: { flex: 1, justifyContent: 'center', paddingTop: 0, paddingBottom: space.xxxl * 2 },
   sub: { fontFamily: font.regular, fontSize: 14, lineHeight: 20, color: color.slate, marginTop: space.sm, marginBottom: space.lg },
-  input: {
-    height: 52,
-    borderRadius: radius.md + 2,
-    borderWidth: 1.5,
-    borderColor: color.hairline,
-    paddingHorizontal: space.lg,
-    fontFamily: font.medium,
-    fontSize: 16,
-    color: color.navy,
-    backgroundColor: color.surface,
-  },
-  inputRow: {
-    height: 52,
-    borderRadius: radius.md + 2,
-    borderWidth: 1.5,
-    borderColor: color.hairline,
-    paddingHorizontal: space.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    backgroundColor: color.surface,
-  },
-  inputBad: { borderColor: color.error },
-  inputGood: { borderColor: color.success },
-  inputBare: { flex: 1, height: '100%', fontFamily: font.medium, fontSize: 16, color: color.navy },
+  // Fields are components/ui/TextField: the box takes the height and centres
+  // the text; the input itself never gets one (iOS sits Montserrat low in a
+  // fixed-height TextInput — lib/ui/textFieldLayout.ts).
+  field: { backgroundColor: color.surface, borderWidth: 1.5 },
+  fieldGood: { borderColor: color.success },
+  searchField: { marginBottom: space.md },
   at: { fontFamily: font.medium, fontSize: 16, color: color.slateFaint },
   label: { ...signupType.label, color: color.slate, marginTop: space.lg, marginBottom: space.sm },
   labelOptional: { fontFamily: font.regular, letterSpacing: 0, color: color.slateFaint },
@@ -755,18 +726,6 @@ const styles = StyleSheet.create({
   photoEmpty: { alignItems: 'center', gap: 6 },
   photoHint: { fontFamily: font.medium, fontSize: 13, color: color.slateMuted },
   ring: { position: 'absolute', top: 0, left: 0 },
-  searchWrap: {
-    height: 48,
-    borderRadius: radius.md + 2,
-    borderWidth: 1.5,
-    borderColor: color.hairline,
-    paddingHorizontal: space.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    marginBottom: space.md,
-  },
-  searchInput: { flex: 1, height: '100%', fontFamily: font.medium, fontSize: 15, color: color.navy },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   tiles: { flexDirection: 'row', gap: space.md },
   footer: { paddingTop: space.lg, gap: space.xs },
