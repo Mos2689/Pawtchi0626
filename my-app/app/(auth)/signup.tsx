@@ -19,6 +19,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BackHandler,
+  Keyboard,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -48,6 +49,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import {
   itemEntering,
+  PRESS_SCALE,
+  PRESS_TIMING,
   stepEntering,
   SWELL_DOWN,
   SWELL_SCALE,
@@ -58,6 +61,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { color, font, motion, radius, signupType, space } from '../../constants/design';
 import { PawtchiButton } from '../../components/PawtchiButton';
 import { TextField } from '../../components/ui/TextField';
+import { BreathingPaw } from '../../components/BreathingPaw';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
 import { DogCard, SignupChip, SignupHeading, SignupTile } from '../../components/signup/SignupParts';
 import { supabase } from '../../lib/supabase';
@@ -118,6 +122,14 @@ export default function SignupScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The photo picker is opening. iOS takes a beat to present it the first
+   * time in a session; without this the tap looked ignored and people tapped
+   * again (device feedback, 25 Oct). The ref also stops a second tap from
+   * asking for a second picker while the first is on its way.
+   */
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
 
   const dogName = name.trim();
   const shownName = dogNameOrFallback(name);
@@ -139,6 +151,9 @@ export default function SignupScreen() {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
     setDirection(next > stepIndex ? 1 : -1);
     setFormError(null);
+    // A keyboard left up from the name field would swallow the first tap on
+    // the next step's controls.
+    Keyboard.dismiss();
     setStepIndex(Math.max(0, Math.min(SIGNUP_STEPS.length - 1, next)));
   }, [stepIndex]);
 
@@ -188,28 +203,38 @@ export default function SignupScreen() {
   // ── Photo: pick, prepare, and let it arrive with a ring ──────────────────
   const ring = useSharedValue(0);
   const pop = useSharedValue(1);
+  const press = useSharedValue(1);
   const ringProps = useAnimatedProps(() => ({ strokeDashoffset: RING_C * (1 - ring.value) }));
-  const popStyle = useAnimatedStyle(() => ({ transform: [{ scale: pop.value }] }));
+  const popStyle = useAnimatedStyle(() => ({ transform: [{ scale: pop.value * press.value }] }));
 
   const pickPhoto = async () => {
+    if (pickingRef.current) return;
+    pickingRef.current = true;
+    setPicking(true);
+    haptic.tap();
     track('ui_button_tapped', { button_name: 'pick_avatar', screen: 'signup' });
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (result.canceled || !result.assets?.length) return;
-    const prepared = await prepareImageForUpload(result.assets[0]);
-    setImageUri(prepared.uri);
-    haptic.success();
-    if (reduceMotion) {
-      ring.value = 1;
-      return;
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const prepared = await prepareImageForUpload(result.assets[0]);
+      setImageUri(prepared.uri);
+      haptic.success();
+      if (reduceMotion) {
+        ring.value = 1;
+        return;
+      }
+      ring.value = 0;
+      ring.value = withTiming(1, { duration: motion.duration.ring, easing: Easing.out(Easing.cubic) });
+      pop.value = withSequence(withTiming(SWELL_SCALE, SWELL_UP), withTiming(1, SWELL_DOWN));
+    } finally {
+      pickingRef.current = false;
+      setPicking(false);
     }
-    ring.value = 0;
-    ring.value = withTiming(1, { duration: motion.duration.ring, easing: Easing.out(Easing.cubic) });
-    pop.value = withSequence(withTiming(SWELL_SCALE, SWELL_UP), withTiming(1, SWELL_DOWN));
   };
 
   // ── Breed search ─────────────────────────────────────────────────────────
@@ -350,20 +375,32 @@ export default function SignupScreen() {
             <Animated.View entering={item(2)} style={styles.photoWrap}>
               <Pressable
                 onPress={pickPhoto}
+                onPressIn={() => { press.value = withTiming(PRESS_SCALE, PRESS_TIMING); }}
+                onPressOut={() => { press.value = withTiming(1, PRESS_TIMING); }}
+                hitSlop={12}
                 accessibilityRole="button"
                 accessibilityLabel={imageUri ? C.photo.change : C.photo.add}
+                accessibilityState={{ busy: picking }}
               >
                 <Animated.View style={[styles.photoCircle, popStyle]}>
                   {imageUri ? (
                     <Image source={{ uri: imageUri }} style={styles.photoImg} />
                   ) : (
                     <View style={styles.photoEmpty}>
-                      <MaterialIcons name="add-a-photo" size={34} color={color.slateFaint} />
-                      <Text style={styles.photoHint}>{C.photo.add}</Text>
+                      {picking ? (
+                        <BreathingPaw size={30} workingColor={color.navy} />
+                      ) : (
+                        <MaterialIcons name="add-a-photo" size={34} color={color.slateFaint} />
+                      )}
+                      <Text style={styles.photoHint}>{picking ? C.photo.opening : C.photo.add}</Text>
                     </View>
                   )}
                 </Animated.View>
-                <Svg width={RING} height={RING} style={styles.ring} pointerEvents="none">
+                {/* The ring is drawing only. A plain View owns pointerEvents
+                    here because react-native-svg does not reliably honour it
+                    on iOS, and a ring that catches taps eats the first one. */}
+                <View pointerEvents="none" style={styles.ring}>
+                <Svg width={RING} height={RING}>
                   <AnimatedCircle
                     cx={RING / 2}
                     cy={RING / 2}
@@ -377,6 +414,7 @@ export default function SignupScreen() {
                     transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
                   />
                 </Svg>
+                </View>
               </Pressable>
             </Animated.View>
           </>

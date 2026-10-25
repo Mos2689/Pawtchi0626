@@ -25,6 +25,7 @@ export const signupCopy = {
     sub: "It's how friends spot {name} on a shared walk.",
     add: 'Add a photo',
     change: 'Change photo',
+    opening: 'Opening your photos…',
     cta: 'Next',
     skip: 'Skip for now',
   },
