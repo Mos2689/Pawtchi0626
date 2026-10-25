@@ -39,7 +39,7 @@ import { TextField } from '../../components/ui/TextField';
 import { BreathingPaw } from '../../components/BreathingPaw';
 import { SignupHeading } from '../../components/signup/SignupParts';
 import { SignupRouteProgress } from '../../components/signup/SignupRouteProgress';
-import { itemEntering } from '../../components/signup/signupMotion';
+import { Reveal } from '../../components/signup/Reveal';
 import { fillCopy, signupCopy } from '../../lib/signup/copy';
 import { clearSignupDraft, getSignupDraft, loadSignupDraft, type SignupDraft } from '../../lib/signup/signupDraft';
 import { saveMyUsername } from '../../lib/communityWalks';
@@ -179,7 +179,6 @@ export default function SignupFinishScreen() {
   const canUseNew = isValidUsername(normalizedNew) && !blocksSave(availability);
 
   const name = draft?.name ?? '';
-  const item = (i: number) => (reduceMotion ? undefined : itemEntering(i));
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + space.sm, paddingBottom: Math.max(insets.bottom, space.lg) }]}>
@@ -199,11 +198,11 @@ export default function SignupFinishScreen() {
 
       {phase === 'username' && (
         <View style={styles.body}>
-          <Animated.View entering={item(0)}>
+          <Reveal i={0}>
             <SignupHeading heading={{ title: fillCopy(C.usernameTaken.title, { username: takenName }), end: '.' }} name={name} compact />
-          </Animated.View>
-          <Animated.Text entering={item(1)} style={styles.sub}>{C.usernameTakenSub}</Animated.Text>
-          <Animated.View entering={item(2)}>
+          </Reveal>
+          <Reveal i={1}><Text style={styles.sub}>{C.usernameTakenSub}</Text></Reveal>
+          <Reveal i={2}>
             <TextField
               containerStyle={[styles.field, statusTone(availability) === 'good' && styles.fieldGood]}
               error={statusTone(availability) === 'bad'}
@@ -219,7 +218,7 @@ export default function SignupFinishScreen() {
             {!!note && (
               <Text style={[styles.hint, statusTone(availability) === 'bad' && styles.hintBad]}>{note}</Text>
             )}
-          </Animated.View>
+          </Reveal>
           <View style={styles.flex} />
           <PawtchiButton title={C.usernameUse} variant="primary" disabled={!canUseNew} onPress={() => void run(normalizedNew)} />
           <TouchableOpacity style={styles.skip} onPress={() => void run('')} accessibilityRole="button">
@@ -230,10 +229,10 @@ export default function SignupFinishScreen() {
 
       {phase === 'error' && (
         <View style={styles.body}>
-          <Animated.View entering={item(0)}>
+          <Reveal i={0}>
             <SignupHeading heading={C.failed} name={name} compact />
-          </Animated.View>
-          {!!errorMessage && <Animated.Text entering={item(1)} style={styles.sub}>{errorMessage}</Animated.Text>}
+          </Reveal>
+          {!!errorMessage && <Reveal i={1}><Text style={styles.sub}>{errorMessage}</Text></Reveal>}
           <View style={styles.flex} />
           <PawtchiButton title={C.retry} variant="primary" onPress={() => void run(null)} />
         </View>
@@ -241,7 +240,7 @@ export default function SignupFinishScreen() {
 
       {phase === 'done' && (
         <View style={[styles.body, styles.doneBody]}>
-          <Animated.View entering={item(0)}>
+          <Reveal i={0}>
             <Svg width={240} height={200} viewBox="0 0 240 200">
               <Path d="M0 60H240M0 140H240M70 0V200M170 0V200" stroke={color.cream} strokeWidth={12} />
               <AnimatedPath
@@ -262,15 +261,15 @@ export default function SignupFinishScreen() {
                 <Text style={styles.doneInitialText}>{name.slice(0, 1).toUpperCase()}</Text>
               </View>
             )}
-          </Animated.View>
-          <Animated.View entering={item(1)} style={styles.doneText}>
+          </Reveal>
+          <Reveal i={1} style={styles.doneText}>
             <SignupHeading heading={C.welcome} name={name} />
             <Text style={[styles.sub, styles.centerText]}>{C.welcomeSub}</Text>
-          </Animated.View>
+          </Reveal>
           <View style={styles.flex} />
-          <Animated.View entering={item(2)} style={styles.fullWidth}>
+          <Reveal i={2} style={styles.fullWidth}>
             <PawtchiButton title={C.cta} variant="primary" onPress={() => router.replace('/(tabs)' as never)} />
-          </Animated.View>
+          </Reveal>
         </View>
       )}
     </View>
