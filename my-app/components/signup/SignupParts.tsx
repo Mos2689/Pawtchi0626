@@ -99,12 +99,21 @@ export function SignupChip({
   );
 }
 
+/**
+ * A two-way answer as a proper card: an icon in a soft circle, the answer,
+ * and a short caption, with a tick once chosen. Both tiles in a pair share a
+ * height so the row reads as one decision, not two stray boxes.
+ */
 export function SignupTile({
   label,
+  caption,
+  icon,
   selected,
   onPress,
 }: {
   label: string;
+  caption: string;
+  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
   selected: boolean;
   onPress: () => void;
 }) {
@@ -118,8 +127,20 @@ export function SignupTile({
         style={[styles.tile, selected && styles.chipSelected]}
         accessibilityRole="button"
         accessibilityState={{ selected }}
+        accessibilityLabel={`${label}. ${caption}`}
       >
+        <View style={styles.tileTop}>
+          <View style={[styles.tileIcon, selected && styles.tileIconSelected]}>
+            <MaterialCommunityIcons name={icon} size={22} color={color.navy} />
+          </View>
+          {selected && (
+            <Animated.View entering={ZoomIn.springify().damping(14)} style={styles.tileCheck}>
+              <MaterialCommunityIcons name="check" size={14} color={color.navy} />
+            </Animated.View>
+          )}
+        </View>
         <Text style={[styles.tileText, selected && styles.chipTextSelected]}>{label}</Text>
+        <Text style={[styles.tileCaption, selected && styles.tileCaptionSelected]}>{caption}</Text>
       </Pressable>
     </Animated.View>
   );
@@ -164,14 +185,33 @@ const styles = StyleSheet.create({
   chipTextSelected: { color: color.yellow },
   tileWrap: { flex: 1 },
   tile: {
+    flex: 1,
     borderWidth: 1.5,
     borderColor: color.hairline,
-    borderRadius: radius.lg + 2,
-    paddingVertical: 18,
-    paddingHorizontal: 14,
+    borderRadius: radius.xl,
+    padding: space.lg,
     backgroundColor: color.surface,
-    minHeight: 76,
-    justifyContent: 'flex-end',
+    minHeight: 152,
   },
-  tileText: { fontFamily: font.bold, fontSize: 14, color: color.navy },
+  tileTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: space.lg },
+  tileIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.pill,
+    backgroundColor: color.cream,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileIconSelected: { backgroundColor: color.yellow },
+  tileCheck: {
+    width: 22,
+    height: 22,
+    borderRadius: radius.pill,
+    backgroundColor: color.yellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileText: { fontFamily: font.bold, fontSize: 15, lineHeight: 20, color: color.navy },
+  tileCaption: { fontFamily: font.regular, fontSize: 12.5, lineHeight: 17, color: color.slateMuted, marginTop: 4 },
+  tileCaptionSelected: { color: color.creamDim },
 });

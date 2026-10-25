@@ -82,6 +82,8 @@ import {
   type SignupStepId,
 } from '../../lib/signup/signupFlow';
 import { clearSignupDraft, saveSignupDraft } from '../../lib/signup/signupDraft';
+import { useUsernameAvailability } from '../../hooks/useUsernameAvailability';
+import { blocksSave, statusMessage, statusTone } from '../../lib/community/usernameStatus';
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 const RING = 150;
@@ -219,18 +221,30 @@ export default function SignupScreen() {
 
   // ── Account ──────────────────────────────────────────────────────────────
   const userFormat = usernameFormat(username);
+  // The same live check the old identity screen had (debounced, stale answers
+  // dropped), asked through the anon-callable RPC because nobody is signed in
+  // yet. "Unknown" never blocks; only a definite "taken" does.
+  const usernameStatus = useUsernameAvailability(username, null, 'signup');
+  const usernameTaken = userFormat === 'ok' && blocksSave(usernameStatus);
+  const usernameTone = userFormat === 'bad' ? 'bad' : statusTone(usernameStatus);
+  const usernameNote =
+    userFormat === 'bad'
+      ? C.account.usernameError
+      : statusMessage(usernameStatus, username) ?? C.account.usernameHint;
   const strength = passwordStrength(password);
-  const canCreate = canCreateAccount({ email, password, username });
+  const canCreate = canCreateAccount({ email, password, username }) && !usernameTaken;
 
   const createAccount = async () => {
     if (submitting) return;
     if (!canCreate) {
       setFormError(
-        !isValidEmail(email)
-          ? 'Check your email address.'
-          : password.length < PASSWORD_MIN
-            ? `Use at least ${PASSWORD_MIN} characters for your password.`
-            : C.account.usernameError,
+        usernameTaken
+          ? C.account.usernameTaken
+          : !isValidEmail(email)
+            ? 'Check your email address.'
+            : password.length < PASSWORD_MIN
+              ? `Use at least ${PASSWORD_MIN} characters for your password.`
+              : C.account.usernameError,
       );
       haptic.warning();
       return;
@@ -427,8 +441,20 @@ export default function SignupScreen() {
             </Animated.View>
             <Animated.Text entering={item(1)} style={styles.sub}>{C.firstDog.sub}</Animated.Text>
             <Animated.View entering={item(2)} style={styles.tiles}>
-              <SignupTile label={C.firstDog.yes} selected={firstDog === true} onPress={() => { setFirstDog(true); autoAdvance(); }} />
-              <SignupTile label={C.firstDog.no} selected={firstDog === false} onPress={() => { setFirstDog(false); autoAdvance(); }} />
+              <SignupTile
+                label={C.firstDog.yes}
+                caption={C.firstDog.yesCaption}
+                icon="star-four-points-outline"
+                selected={firstDog === true}
+                onPress={() => { setFirstDog(true); autoAdvance(); }}
+              />
+              <SignupTile
+                label={C.firstDog.no}
+                caption={C.firstDog.noCaption}
+                icon="heart-multiple-outline"
+                selected={firstDog === false}
+                onPress={() => { setFirstDog(false); autoAdvance(); }}
+              />
             </Animated.View>
           </>
         );
@@ -442,8 +468,20 @@ export default function SignupScreen() {
               {fillCopy(C.walkers.sub, { name: shownName })}
             </Animated.Text>
             <Animated.View entering={item(2)} style={styles.tiles}>
-              <SignupTile label={C.walkers.few} selected={walkers === 1} onPress={() => { setWalkers(1); autoAdvance(); }} />
-              <SignupTile label={C.walkers.many} selected={walkers === 3} onPress={() => { setWalkers(3); autoAdvance(); }} />
+              <SignupTile
+                label={C.walkers.few}
+                caption={C.walkers.fewCaption}
+                icon="account-multiple-outline"
+                selected={walkers === 1}
+                onPress={() => { setWalkers(1); autoAdvance(); }}
+              />
+              <SignupTile
+                label={C.walkers.many}
+                caption={C.walkers.manyCaption}
+                icon="account-group-outline"
+                selected={walkers === 3}
+                onPress={() => { setWalkers(3); autoAdvance(); }}
+              />
             </Animated.View>
           </>
         );
@@ -458,7 +496,13 @@ export default function SignupScreen() {
                 {C.account.usernameLabel.toUpperCase()}
                 <Text style={styles.labelOptional}>{`  ·  ${C.account.optional}`}</Text>
               </Text>
-              <View style={[styles.inputRow, userFormat === 'bad' && styles.inputBad]}>
+              <View
+                style={[
+                  styles.inputRow,
+                  usernameTone === 'bad' && styles.inputBad,
+                  usernameTone === 'good' && styles.inputGood,
+                ]}
+              >
                 <Text style={styles.at}>@</Text>
                 <TextInput
                   style={styles.inputBare}
@@ -472,8 +516,14 @@ export default function SignupScreen() {
                   accessibilityLabel={C.account.usernameLabel}
                 />
               </View>
-              <Text style={[styles.hint, userFormat === 'bad' && styles.hintBad]}>
-                {userFormat === 'bad' ? C.account.usernameError : C.account.usernameHint}
+              <Text
+                style={[
+                  styles.hint,
+                  usernameTone === 'bad' && styles.hintBad,
+                  usernameTone === 'good' && styles.hintGood,
+                ]}
+              >
+                {usernameNote}
               </Text>
             </Animated.View>
             <Animated.View entering={item(2)}>
@@ -626,10 +676,19 @@ export default function SignupScreen() {
           bounces={false}
           showsVerticalScrollIndicator={false}
         >
-          <Animated.View key={step} entering={entering} exiting={exiting} style={styles.body}>
+          {/* Questions sit in the middle of the free space, a little above
+              centre, so a short step does not leave a dead band above the
+              footer. The account step is long and meets the keyboard, so it
+              stays top-aligned. */}
+          <Animated.View
+            key={step}
+            entering={entering}
+            exiting={exiting}
+            style={[styles.body, step !== 'account' && styles.bodyCentered]}
+          >
             {body}
           </Animated.View>
-          <View style={styles.flex} />
+          {step === 'account' && <View style={styles.flex} />}
           <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space.lg) }]}>{footer}</View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -646,6 +705,7 @@ const styles = StyleSheet.create({
   cardSpacer: { height: 44 + space.md },
   scroll: { flexGrow: 1, paddingHorizontal: space.xxl },
   body: { paddingTop: space.xl },
+  bodyCentered: { flex: 1, justifyContent: 'center', paddingTop: 0, paddingBottom: space.xxxl * 2 },
   sub: { fontFamily: font.regular, fontSize: 14, lineHeight: 20, color: color.slate, marginTop: space.sm, marginBottom: space.lg },
   input: {
     height: 52,
@@ -670,12 +730,14 @@ const styles = StyleSheet.create({
     backgroundColor: color.surface,
   },
   inputBad: { borderColor: color.error },
+  inputGood: { borderColor: color.success },
   inputBare: { flex: 1, height: '100%', fontFamily: font.medium, fontSize: 16, color: color.navy },
   at: { fontFamily: font.medium, fontSize: 16, color: color.slateFaint },
   label: { ...signupType.label, color: color.slate, marginTop: space.lg, marginBottom: space.sm },
   labelOptional: { fontFamily: font.regular, letterSpacing: 0, color: color.slateFaint },
   hint: { fontFamily: font.regular, fontSize: 12, color: color.slateMuted, marginTop: 6 },
   hintBad: { color: color.error },
+  hintGood: { color: color.success },
   strengthTrack: { height: 4, borderRadius: 2, backgroundColor: color.track, marginTop: space.sm, overflow: 'hidden' },
   strengthFill: { height: '100%', borderRadius: 2 },
   photoWrap: { alignItems: 'center', marginTop: space.md },
