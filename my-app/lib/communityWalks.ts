@@ -364,6 +364,27 @@ export async function isUsernameAvailable(value: string): Promise<boolean | null
   }
 }
 
+/**
+ * The same question for someone who has no account yet — sign-up v2's last
+ * screen. A separate RPC because the signed-in one answers NULL to anon by
+ * design (20261025000000_signup_username_available.sql). NULL here means
+ * "unknown", exactly as above: before that migration is applied, the field
+ * simply shows no verdict and the claim on onboarding/finish still decides.
+ */
+export async function isUsernameAvailableForSignup(value: string): Promise<boolean | null> {
+  const username = normalizeUsername(value);
+  if (!isValidUsername(username)) return null;
+  try {
+    const { data, error } = await supabase.rpc('signup_username_available', {
+      p_username: username,
+    });
+    if (error) return null;
+    return typeof data === 'boolean' ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function lookupUsername(value: string): Promise<UsernameMatch | null> {
   const username = normalizeUsername(value);
   if (!isValidUsername(username)) return null;

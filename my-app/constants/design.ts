@@ -46,7 +46,8 @@ export const color = {
   // It is NOT a second CTA colour. Yellow still marks the one thing that
   // matters per surface; blue never fills a button, never carries body text,
   // and never appears on the navy ground. Reach for it only when the thing
-  // being marked is something the dog *found*.
+  // being marked is something the dog *found* — with one sanctioned exception
+  // (Oct 2026): the walking marker and home pin on the sign-up progress route.
   electric: '#144EFF',
   electricSoft: 'rgba(20, 78, 255, 0.10)',
 
@@ -375,8 +376,13 @@ export const font = {
   // takes two, and its round bowls make a bold title look inflated rather than
   // confident.
   //
-  // Sanctioned surface: the Walk Memory viewer (components/walk/KeepsakeViewer).
-  // Nowhere else. Every screen, card and button stays on Montserrat.
+  // Sanctioned surfaces:
+  //   1. The Walk Memory viewer (components/walk/KeepsakeViewer).
+  //   2. Sign-up v2 headings and field labels (app/(auth)/signup.tsx and
+  //      onboarding/finish, Oct 2026) — the founder chose the viewer's voice for
+  //      the first screens a new owner sees. Body copy and buttons there stay
+  //      on Montserrat.
+  // Nowhere else. Every other screen, card and button stays on Montserrat.
   memoryRegular: 'PlusJakartaSans_400Regular',
   memoryMedium: 'PlusJakartaSans_500Medium',
   memorySemibold: 'PlusJakartaSans_600SemiBold',
@@ -456,6 +462,15 @@ export const motion = {
     uiShift: 2, //         secondary-motion nudge (px)
     particleFade: 400, //  fur-dust fade as the ribbon flows off
   },
+} as const;
+
+// Sign-up v2 type — the walk viewer's face (see the font fence above): a big
+// tight sentence-case heading whose end punctuation is set in yellow, and a
+// small spaced-caps label for the account fields.
+export const signupType = {
+  heading: { fontFamily: font.memoryBold, fontSize: 31, lineHeight: 35, letterSpacing: -1 },
+  headingCompact: { fontFamily: font.memoryBold, fontSize: 27, lineHeight: 31, letterSpacing: -0.8 },
+  label: { fontFamily: font.memorySemibold, fontSize: 11, lineHeight: 14, letterSpacing: 1.2 },
 } as const;
 
 // Type scale — size/lineHeight/family presets. Spread into styles:

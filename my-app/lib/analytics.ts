@@ -451,7 +451,19 @@ export type AnalyticsEvent =
   // `show_number` only; `dismissed` adds `via` (close | swipe | backdrop | back).
   | 'announcement_shown'
   | 'announcement_cta'
-  | 'announcement_dismissed';
+  | 'announcement_dismissed'
+  // Sign-up v2 (app/(auth)/signup.tsx). Steps: name | photo | breed | age |
+  // first_dog | walkers | account, with step_index and total. A separate
+  // funnel from onboarding_* so the two flows can be compared while the
+  // signup-v2 flag splits traffic.
+  | 'signup_step_viewed'
+  | 'signup_step_completed'
+  | 'signup_step_skipped'
+  | 'signup_back'
+  | 'signup_account_submitted'
+  | 'signup_account_failed'
+  | 'signup_finish_failed'
+  | 'signup_completed';
 
 export type AnalyticsProps = Record<string, string | number | boolean | null | undefined>;
 

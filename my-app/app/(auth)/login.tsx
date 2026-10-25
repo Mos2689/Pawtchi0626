@@ -25,6 +25,7 @@ import { PawtchiButton } from '../../components/PawtchiButton';
 import { CountUpText } from '../../components/CountUpText';
 import { track } from '../../lib/analytics';
 import { clearFreshSignup, markFreshSignup } from '../../lib/onboardingFunnel';
+import { signupV2Enabled } from '../../lib/signup/signupGate';
 import { errorCopy, reportError, toAppError } from '../../lib/appError';
 import { haptic } from '../../lib/haptics';
 import Svg, { Rect, Path, Circle, Ellipse } from 'react-native-svg';
@@ -515,6 +516,11 @@ export default function LoginScreen() {
               </Text>
               <TouchableOpacity onPress={() => { 
                 const newMode = !isSignUp;
+                if (newMode && signupV2Enabled()) {
+                  track('auth_mode_switched', { to_mode: 'signup_v2' });
+                  router.replace('/(auth)/signup' as any);
+                  return;
+                }
                 setIsSignUp(newMode); 
                 setFormError(null); 
                 track('auth_mode_switched', { to_mode: newMode ? 'signup' : 'signin' });

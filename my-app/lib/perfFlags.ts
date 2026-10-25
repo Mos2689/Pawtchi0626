@@ -65,6 +65,13 @@ export const PERF_FLAGS = {
    * off until PostHog says on, so the build ships silent.
    */
   announceConnect: 'announce-connect',
+  /**
+   * Sign-up v2 (dog first, one question per screen, account last). Read at the
+   * Welcome screen, before anyone is signed in, so it evaluates anonymously:
+   * roll it out by percentage, not by tester id. Off = the classic login
+   * sign-up and onboarding/identity, untouched.
+   */
+  signupV2: 'signup-v2',
 } as const;
 
 export type PerfFlag = keyof typeof PERF_FLAGS;

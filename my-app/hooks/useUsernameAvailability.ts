@@ -22,7 +22,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { isUsernameAvailable } from '../lib/communityWalks';
+import { isUsernameAvailable, isUsernameAvailableForSignup } from '../lib/communityWalks';
 import {
   localStatus, statusFromAnswer, type UsernameStatus,
 } from '../lib/community/usernameStatus';
@@ -38,6 +38,11 @@ const DEBOUNCE_MS = 450;
 export function useUsernameAvailability(
   value: string,
   current?: string | null,
+  /**
+   * 'signup' asks the anon-callable check, for sign-up v2's account screen
+   * where nobody is signed in yet. Everywhere else stays on the signed-in one.
+   */
+  mode: 'account' | 'signup' = 'account',
 ): UsernameStatus {
   // Seeded from the synchronous answer so the very first paint is already
   // right — an empty field must not flash "checking" before settling on idle.
@@ -72,14 +77,15 @@ export function useUsernameAvailability(
       // The question, captured so the reply can be matched to it. A slow check
       // for "bell" must not repaint a field that now reads "bella".
       const asked = value;
-      void isUsernameAvailable(asked).then(answer => {
+      const check = mode === 'signup' ? isUsernameAvailableForSignup : isUsernameAvailable;
+      void check(asked).then(answer => {
         if (!live.current || latest.current !== asked) return;
         setStatus(statusFromAnswer(answer));
       });
     }, DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [value, current]);
+  }, [value, current, mode]);
 
   return status;
 }
