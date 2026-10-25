@@ -46,8 +46,10 @@ export const color = {
   // It is NOT a second CTA colour. Yellow still marks the one thing that
   // matters per surface; blue never fills a button, never carries body text,
   // and never appears on the navy ground. Reach for it only when the thing
-  // being marked is something the dog *found* — with one sanctioned exception
-  // (Oct 2026): the walking marker and home pin on the sign-up progress route.
+  // being marked is something the dog *found* — with sanctioned exceptions on
+  // sign-up v2 (Oct 2026): the walking marker and home pin on the progress
+  // route, and the photo circle's "opening your photos" fill and ripples
+  // (yellow is already the Next button there).
   electric: '#144EFF',
   electricSoft: 'rgba(20, 78, 255, 0.10)',
 

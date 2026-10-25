@@ -208,8 +208,9 @@ export default function SignupScreen() {
   const press = useSharedValue(1);
   /**
    * The "opening your photos" moment (device feedback, 25 Oct: the breathing
-   * paw on the same cream didn't catch the eye). The circle fills brand
-   * yellow the instant it is tapped and soft yellow rings ripple outward,
+   * paw on the same cream didn't catch the eye). The circle fills electric
+   * blue the instant it is tapped — not yellow, which the Next button already
+   * owns on this screen — and soft electric rings ripple outward,
    * two half a beat apart, until the picker is up. The photo's arrival keeps
    * its own single ring-draw and swell, so "working" and "done" never look
    * alike.
@@ -219,7 +220,7 @@ export default function SignupScreen() {
   const ringProps = useAnimatedProps(() => ({ strokeDashoffset: RING_C * (1 - ring.value) }));
   const popStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pop.value * press.value }],
-    backgroundColor: interpolateColor(glow.value, [0, 1], [color.cream, color.yellow]),
+    backgroundColor: interpolateColor(glow.value, [0, 1], [color.cream, color.electric]),
   }));
   const rippleA = useAnimatedStyle(() => {
     const p = ripple.value;
@@ -429,7 +430,7 @@ export default function SignupScreen() {
                   ) : (
                     <View style={styles.photoEmpty}>
                       {picking ? (
-                        <BreathingPaw size={30} workingColor={color.navy} />
+                        <BreathingPaw size={30} workingColor={color.surface} />
                       ) : (
                         <MaterialIcons name="add-a-photo" size={34} color={color.slateFaint} />
                       )}
@@ -834,7 +835,7 @@ const styles = StyleSheet.create({
   photoImg: { width: '100%', height: '100%' },
   photoEmpty: { alignItems: 'center', gap: 6 },
   photoHint: { fontFamily: font.medium, fontSize: 13, color: color.slateMuted },
-  photoHintWorking: { fontFamily: font.semibold, color: color.navy },
+  photoHintWorking: { fontFamily: font.semibold, color: color.surface },
   rippleLayer: { position: 'absolute', top: 8, left: 8, width: RING - 16, height: RING - 16 },
   ripple: {
     position: 'absolute',
@@ -844,7 +845,7 @@ const styles = StyleSheet.create({
     height: RING - 16,
     borderRadius: radius.pill,
     borderWidth: 3,
-    borderColor: color.yellow,
+    borderColor: color.electric,
   },
   ring: { position: 'absolute', top: 0, left: 0 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
