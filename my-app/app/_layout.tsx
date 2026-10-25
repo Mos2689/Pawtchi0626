@@ -1,6 +1,8 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments, useRootNavigationState, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { freshSignupDestination } from '../lib/signup/signupFlow';
+import { hasSignupDraft } from '../lib/signup/signupDraft';
 import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import 'react-native-reanimated';
@@ -400,12 +402,15 @@ function RootLayoutNav() {
       // loader) just to rediscover that would be a dead beat in the funnel's
       // most fragile moment.
       const fresh = consumeFreshSignup();
+      // Sign-up v2 already has the dog (a draft on the phone), so a fresh
+      // account there only needs saving; the classic flow still asks for it.
+      const destination = fresh ? freshSignupDestination(hasSignupDraft()) : '/(tabs)';
       if (__DEV__) {
         // Debugging breadcrumb: shows in Metro which way the gate routed.
         // eslint-disable-next-line no-console
-        console.log('[authGate]', fresh ? 'fresh signup → /onboarding/identity' : 'session → /(tabs)');
+        console.log('[authGate]', fresh ? `fresh signup → ${destination}` : 'session → /(tabs)');
       }
-      router.replace(fresh ? '/onboarding/identity' : '/(tabs)');
+      router.replace(destination);
     }
   }, [session, authLoading, navState?.key, segments, router]);
 

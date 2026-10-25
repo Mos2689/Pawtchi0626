@@ -15,6 +15,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { color, font, space, motion } from '../constants/design';
 import { useAuth } from '../providers/AuthProvider';
 import { track } from '../lib/analytics';
+import { signupV2Enabled } from '../lib/signup/signupGate';
 import { BreathingPaw } from '../components/BreathingPaw';
 
 // Local bundled asset — resolved at build time by Metro and packaged into the
@@ -182,7 +183,10 @@ export default function WelcomeScreen() {
                 onPress={() => {
                   Haptics.selectionAsync();
                   track('ui_button_tapped', { button_name: 'get_started', screen: 'welcome' });
-                  router.push({ pathname: '/(auth)/login', params: { mode: 'signup' } } as any);
+                  // Sign-up v2 (dog first, account last) behind its flag; off =
+                  // the classic login sign-up.
+                  if (signupV2Enabled()) router.push('/(auth)/signup' as any);
+                  else router.push({ pathname: '/(auth)/login', params: { mode: 'signup' } } as any);
                 }}
               >
                 <Text style={styles.ctaText}>Get started</Text>

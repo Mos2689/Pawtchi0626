@@ -21,6 +21,7 @@ import { track } from '../../lib/analytics';
 import { errorCopy, reportError, toAppError } from '../../lib/appError';
 import { haptic } from '../../lib/haptics';
 import { markFreshSignup, clearFreshSignup } from '../../lib/onboardingFunnel';
+import { loadSignupDraft } from '../../lib/signup/signupDraft';
 
 const CODE_LENGTH = 6;
 const RESEND_COOLDOWN_S = 30;
@@ -88,6 +89,10 @@ export default function ConfirmEmailScreen() {
     }
     setFormError(null);
     setLoading(true);
+    // Sign-up v2 saved the dog before asking for the account. Warm it back
+    // into memory now (the app may have restarted while the owner fetched the
+    // code), so the gate sees it and routes to onboarding/finish.
+    await loadSignupDraft();
     // Re-mark BEFORE verifyOtp: the session event (and the auth gate's
     // navigation) can fire before this await resumes. With the latch set, the
     // gate routes the confirmed account straight to onboarding — same reasoning
